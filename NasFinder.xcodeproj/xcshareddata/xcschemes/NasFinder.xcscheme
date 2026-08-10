@@ -18,7 +18,7 @@
                BlueprintIdentifier = "A1000000000000000000000A"
                BuildableName = "NasFinder.app"
                BlueprintName = "NasFinder"
-               ReferencedContainer = "container:NasFinder-iOS.xcodeproj">
+               ReferencedContainer = "container:NasFinder.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
          <BuildActionEntry
@@ -32,7 +32,7 @@
                BlueprintIdentifier = "A1000000000000000000000C"
                BuildableName = "NasFinderTests.xctest"
                BlueprintName = "NasFinderTests"
-               ReferencedContainer = "container:NasFinder-iOS.xcodeproj">
+               ReferencedContainer = "container:NasFinder.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
          <BuildActionEntry
@@ -46,7 +46,7 @@
                BlueprintIdentifier = "B20000000000000000000010"
                BuildableName = "NasFinderShare.appex"
                BlueprintName = "NasFinderShare"
-               ReferencedContainer = "container:NasFinder-iOS.xcodeproj">
+               ReferencedContainer = "container:NasFinder.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
       </BuildActionEntries>
@@ -66,7 +66,7 @@
                BlueprintIdentifier = "A1000000000000000000000C"
                BuildableName = "NasFinderTests.xctest"
                BlueprintName = "NasFinderTests"
-               ReferencedContainer = "container:NasFinder-iOS.xcodeproj">
+               ReferencedContainer = "container:NasFinder.xcodeproj">
             </BuildableReference>
          </TestableReference>
       </Testables>
@@ -88,7 +88,7 @@
             BlueprintIdentifier = "A1000000000000000000000A"
             BuildableName = "NasFinder.app"
             BlueprintName = "NasFinder"
-            ReferencedContainer = "container:NasFinder-iOS.xcodeproj">
+            ReferencedContainer = "container:NasFinder.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </LaunchAction>
@@ -105,7 +105,7 @@
             BlueprintIdentifier = "A1000000000000000000000A"
             BuildableName = "NasFinder.app"
             BlueprintName = "NasFinder"
-            ReferencedContainer = "container:NasFinder-iOS.xcodeproj">
+            ReferencedContainer = "container:NasFinder.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>
    </ProfileAction>

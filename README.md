@@ -24,7 +24,7 @@ NasFinder는 iPhone에서 Synology NAS와 SFTP 서버의 파일을 탐색하고,
 
 ## 실행 준비
 
-1. `NasFinder-iOS.xcodeproj`를 Xcode에서 엽니다.
+1. `NasFinder.xcodeproj`를 Xcode에서 엽니다.
 2. 현재 서명 Team은 `T7B4EPLHPK`, 앱 번들 ID는 `com.armsone.nasfinder`로 설정되어 있습니다. 다른 개발자 계정에서는 앱·File Provider·Share·테스트 타깃을 해당 계정 값으로 바꿉니다.
 3. Developer Portal에서 `group.com.armsone.nasfinder` App Group을 앱과 Share/File Provider 확장에 등록합니다.
 4. 실기기에서 로컬 네트워크 권한을 허용합니다.
