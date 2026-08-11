@@ -3,6 +3,7 @@ import Foundation
 actor SynologyFileService: RemoteFileService {
     nonisolated let connection: RemoteConnection
     nonisolated let capabilities: RemoteFileServiceCapabilities = .all
+    nonisolated let permitsFullDownloadForVideoThumbnail = false
 
     private let credential: RemoteCredential
     private let session: URLSession

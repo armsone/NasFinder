@@ -4,6 +4,79 @@ import QuickLookThumbnailing
 import SwiftUI
 import UIKit
 
+@MainActor
+final class RemoteThumbnailActivityTracker: ObservableObject {
+    static let shared = RemoteThumbnailActivityTracker()
+
+    @Published private(set) var isActive = false
+    @Published private(set) var fractionCompleted: Double = 0
+
+    private var activeOperationIDs: Set<UUID> = []
+    private var completedCount = 0
+    private var totalCount = 0
+    private var hideTask: Task<Void, Never>?
+
+    private init() {}
+
+    func begin(_ operationID: UUID) {
+        guard activeOperationIDs.insert(operationID).inserted else { return }
+        hideTask?.cancel()
+        hideTask = nil
+
+        if activeOperationIDs.count == 1 {
+            completedCount = 0
+            totalCount = 0
+            fractionCompleted = 0
+        }
+        totalCount += 1
+        isActive = true
+        updateFraction()
+    }
+
+    func finish(_ operationID: UUID) {
+        guard activeOperationIDs.remove(operationID) != nil else { return }
+        completedCount += 1
+        updateFraction()
+
+        guard activeOperationIDs.isEmpty else { return }
+        fractionCompleted = 1
+        hideTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled, self?.activeOperationIDs.isEmpty == true else { return }
+            self?.isActive = false
+        }
+    }
+
+    private func updateFraction() {
+        guard totalCount > 0 else {
+            fractionCompleted = 0
+            return
+        }
+        fractionCompleted = min(Double(completedCount) / Double(totalCount), 1)
+    }
+}
+
+enum RemoteThumbnailCacheKey {
+    static func remoteData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize
+    ) -> String {
+        let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
+        return "\(item.id)|\(version)|\(item.size ?? -1)|\(size.rawValue)"
+    }
+
+    static func renderedImage(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        displaySize: CGSize,
+        scale: CGFloat
+    ) -> NSString {
+        let pixelWidth = Int((displaySize.width * scale).rounded(.up))
+        let pixelHeight = Int((displaySize.height * scale).rounded(.up))
+        return "\(remoteData(for: item, size: size))|\(pixelWidth)x\(pixelHeight)" as NSString
+    }
+}
+
 struct RemoteThumbnailView: View {
     let item: RemoteFileItem
     let service: any RemoteFileService
@@ -82,14 +155,15 @@ private final class RemoteThumbnailLoader: ObservableObject {
         }
 
         let requestedRemoteSize = requestedRemoteSize(for: size)
-        let cacheKey = cacheKey(
+        let cacheKey = RemoteThumbnailCacheKey.renderedImage(
             for: item,
-            requestedRemoteSize: requestedRemoteSize,
-            displaySize: size
+            size: requestedRemoteSize,
+            displaySize: size,
+            scale: UIScreen.main.scale
         )
-        let diskCacheKey = diskCacheKey(
+        let diskCacheKey = RemoteThumbnailCacheKey.remoteData(
             for: item,
-            requestedRemoteSize: requestedRemoteSize
+            size: requestedRemoteSize
         )
         guard loadedCacheKey != cacheKey else { return }
         loadedCacheKey = cacheKey
@@ -99,7 +173,13 @@ private final class RemoteThumbnailLoader: ObservableObject {
             isLoading = false
             return
         }
-        if let diskData = await RemoteThumbnailDiskCache.shared.data(forKey: diskCacheKey),
+        var cachedDiskData = await RemoteThumbnailDiskCache.shared.data(forKey: diskCacheKey)
+        if cachedDiskData == nil, requestedRemoteSize != .small {
+            cachedDiskData = await RemoteThumbnailDiskCache.shared.data(
+                forKey: RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
+            )
+        }
+        if let diskData = cachedDiskData,
            let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
                data: diskData,
                maximumPixelSize: maximumPixelSize(for: size)
@@ -124,7 +204,9 @@ private final class RemoteThumbnailLoader: ObservableObject {
         operationID = currentOperationID
         image = nil
         isLoading = true
+        RemoteThumbnailActivityTracker.shared.begin(currentOperationID)
         defer {
+            RemoteThumbnailActivityTracker.shared.finish(currentOperationID)
             if operationID == currentOperationID {
                 isLoading = false
                 operationID = nil
@@ -133,12 +215,11 @@ private final class RemoteThumbnailLoader: ObservableObject {
 
         let remoteThumbnailData: Data?
         do {
-            remoteThumbnailData = try await RemoteThumbnailWorkLimiter.shared.withPermit {
-                try await service.thumbnailData(
-                    for: item,
-                    size: requestedRemoteSize
-                )
-            }
+            remoteThumbnailData = try await fetchRemoteThumbnailData(
+                item: item,
+                service: service,
+                size: requestedRemoteSize
+            )
         } catch RemoteThumbnailError.optimizedPreviewUnavailable {
             // SFTP video previews deliberately avoid downloading the complete
             // original when a bounded head/tail range is not sufficient.
@@ -189,17 +270,16 @@ private final class RemoteThumbnailLoader: ObservableObject {
                 }
                 return
             } catch {
-                // A malformed server thumbnail may still have a valid original.
-                // SFTP videos are the exception: never replace the bounded range
-                // contract with an unbounded download of the complete movie.
-                if service.connection.kind == .sftp, item.isVideo {
+                // A malformed server thumbnail may still have a valid original,
+                // except when doing so would require a complete remote movie.
+                if item.isVideo, !service.permitsFullDownloadForVideoThumbnail {
                     cacheNegative(cacheKey, for: 5 * 60)
                     return
                 }
             }
-        } else if service.connection.kind == .sftp, item.isVideo {
-            // SFTP has no server thumbnail API. Never turn a missing optimized
-            // result into an unbounded full-video download.
+        } else if item.isVideo, !service.permitsFullDownloadForVideoThumbnail {
+            // A remote video thumbnail must remain a bounded request. Never
+            // replace a missing optimized result with the complete movie.
             cacheNegative(cacheKey, for: 5 * 60)
             return
         }
@@ -243,6 +323,39 @@ private final class RemoteThumbnailLoader: ObservableObject {
         }
     }
 
+    private func fetchRemoteThumbnailData(
+        item: RemoteFileItem,
+        service: any RemoteFileService,
+        size: RemoteThumbnailSize
+    ) async throws -> Data? {
+        let attemptCount = item.isVideo
+            && service.connection.kind == .synology
+            && !service.permitsFullDownloadForVideoThumbnail
+            ? 3
+            : 1
+
+        var lastError: Error?
+        for attempt in 0..<attemptCount {
+            do {
+                let data = try await RemoteThumbnailWorkLimiter.shared.withPermit {
+                    try await service.thumbnailData(for: item, size: size)
+                }
+                if let data, !data.isEmpty { return data }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+
+            if attempt + 1 < attemptCount {
+                try await Task.sleep(nanoseconds: 650_000_000)
+            }
+        }
+
+        if let lastError { throw lastError }
+        return nil
+    }
+
     private func shouldGenerateThumbnail(for item: RemoteFileItem) -> Bool {
         item.supportsQuickLookThumbnail
     }
@@ -250,7 +363,7 @@ private final class RemoteThumbnailLoader: ObservableObject {
     private func requestedRemoteSize(for size: CGSize) -> RemoteThumbnailSize {
         let maximumPixels = max(size.width, size.height) * UIScreen.main.scale
         if maximumPixels <= 360 { return .small }
-        if maximumPixels <= 640 { return .medium }
+        if maximumPixels <= 1_024 { return .medium }
         return .large
     }
 
@@ -258,28 +371,6 @@ private final class RemoteThumbnailLoader: ObservableObject {
         let maximumPoints = max(size.width, size.height)
         guard maximumPoints.isFinite, maximumPoints > 0 else { return 1 }
         return max(Int((maximumPoints * UIScreen.main.scale).rounded(.up)), 1)
-    }
-
-    private func cacheKey(
-        for item: RemoteFileItem,
-        requestedRemoteSize: RemoteThumbnailSize,
-        displaySize: CGSize
-    ) -> NSString {
-        let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
-        let scale = UIScreen.main.scale
-        let pixelWidth = Int((displaySize.width * scale).rounded(.up))
-        let pixelHeight = Int((displaySize.height * scale).rounded(.up))
-        return "\(item.id)|\(version)|\(item.size ?? -1)|\(requestedRemoteSize.rawValue)|\(pixelWidth)x\(pixelHeight)" as NSString
-    }
-
-    /// Disk entries are shared by list, small-grid, and large-grid layouts.
-    /// The decoded in-memory image still has a display-size-specific key.
-    private func diskCacheKey(
-        for item: RemoteFileItem,
-        requestedRemoteSize: RemoteThumbnailSize
-    ) -> String {
-        let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
-        return "\(item.id)|\(version)|\(item.size ?? -1)|\(requestedRemoteSize.rawValue)"
     }
 
     private func cache(_ image: UIImage, forKey key: NSString) {
@@ -308,13 +399,15 @@ private final class RemoteThumbnailLoader: ObservableObject {
     }
 }
 
-private actor RemoteThumbnailDiskCache {
+actor RemoteThumbnailDiskCache {
     static let shared = RemoteThumbnailDiskCache()
 
     private let fileManager = FileManager.default
     private let directoryURL: URL
-    private let maximumFileCount = 2_000
-    private let maximumAge: TimeInterval = 90 * 24 * 60 * 60
+    private let maximumFileCount = 5_000
+    private let maximumTotalBytes: Int64 = 256 * 1_024 * 1_024
+    private let maximumAge: TimeInterval = 30 * 24 * 60 * 60
+    private var storesSincePrune = 0
 
     init() {
         let baseURL = FileManager.default.urls(
@@ -338,6 +431,10 @@ private actor RemoteThumbnailDiskCache {
         return try? Data(contentsOf: url, options: .mappedIfSafe)
     }
 
+    func containsData(forKey key: String) -> Bool {
+        data(forKey: key) != nil
+    }
+
     func store(_ data: Data, forKey key: String) {
         guard !data.isEmpty else { return }
         do {
@@ -346,7 +443,11 @@ private actor RemoteThumbnailDiskCache {
                 withIntermediateDirectories: true
             )
             try data.write(to: fileURL(forKey: key), options: .atomic)
-            pruneIfNeeded()
+            storesSincePrune += 1
+            if storesSincePrune >= 25 {
+                storesSincePrune = 0
+                pruneIfNeeded()
+            }
         } catch {
             // Disk caching is an optimization. The in-memory thumbnail remains
             // valid even if the cache directory cannot be written.
@@ -360,21 +461,36 @@ private actor RemoteThumbnailDiskCache {
     }
 
     private func pruneIfNeeded() {
+        let keys: Set<URLResourceKey> = [
+            .contentModificationDateKey,
+            .fileSizeKey
+        ]
         guard let urls = try? fileManager.contentsOfDirectory(
             at: directoryURL,
-            includingPropertiesForKeys: [.contentModificationDateKey],
+            includingPropertiesForKeys: Array(keys),
             options: [.skipsHiddenFiles]
-        ), urls.count > maximumFileCount else { return }
+        ) else { return }
 
-        let sorted = urls.sorted {
-            let lhs = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]))?
-                .contentModificationDate ?? .distantPast
-            let rhs = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]))?
-                .contentModificationDate ?? .distantPast
-            return lhs < rhs
+        let entries = urls.map { url in
+            let values = try? url.resourceValues(forKeys: keys)
+            return (
+                url: url,
+                modifiedAt: values?.contentModificationDate ?? .distantPast,
+                byteCount: Int64(values?.fileSize ?? 0)
+            )
         }
-        for url in sorted.prefix(urls.count - maximumFileCount) {
-            try? fileManager.removeItem(at: url)
+        let expirationDate = Date().addingTimeInterval(-maximumAge)
+        for entry in entries where entry.modifiedAt < expirationDate {
+            try? fileManager.removeItem(at: entry.url)
+        }
+
+        var remaining = entries.filter { $0.modifiedAt >= expirationDate }
+            .sorted { $0.modifiedAt < $1.modifiedAt }
+        var totalBytes = remaining.reduce(Int64(0)) { $0 + $1.byteCount }
+        while remaining.count > maximumFileCount || totalBytes > maximumTotalBytes {
+            let entry = remaining.removeFirst()
+            totalBytes -= entry.byteCount
+            try? fileManager.removeItem(at: entry.url)
         }
     }
 }

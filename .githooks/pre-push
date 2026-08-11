@@ -1,0 +1,14 @@
+#!/bin/bash
+
+set -euo pipefail
+
+repository_root="$(git rev-parse --show-toplevel)"
+
+# Consume Git's ref update list before running the guard so hook input cannot
+# leak into a child command. The push itself is allowed only from a clean,
+# named branch with every Codex snapshot anchored to a normal local branch.
+while read -r _local_ref _local_sha _remote_ref _remote_sha; do
+    :
+done
+
+"$repository_root/scripts/repository_guard.sh" push

@@ -19,6 +19,7 @@ actor SFTPFileService: RemoteFileService {
         .streamingMove
     ]
     nonisolated let supportsRangeStreaming = true
+    nonisolated let permitsFullDownloadForVideoThumbnail = false
     private let credential: RemoteCredential
     private let cache: DownloadCache
 
@@ -355,7 +356,7 @@ actor SFTPFileService: RemoteFileService {
             throw SFTPVideoThumbnailPreparationError.imageEncodingFailed
         }
         let options = [
-            kCGImageDestinationLossyCompressionQuality: 0.82
+            kCGImageDestinationLossyCompressionQuality: 0.65
         ] as CFDictionary
         CGImageDestinationAddImage(destination, image, options)
         guard CGImageDestinationFinalize(destination) else {
@@ -2663,7 +2664,7 @@ struct SFTPVideoThumbnailRangePlan: Equatable, Sendable {
         let length: UInt64
     }
 
-    static let maximumTotalBytes: UInt64 = 8 * 1_024 * 1_024
+    static let maximumTotalBytes: UInt64 = 1_536 * 1_024
 
     let fileSize: UInt64
     let segments: [Segment]
@@ -2705,22 +2706,22 @@ private extension RemoteThumbnailSize {
     var videoThumbnailRangeLimits: (head: UInt64, tail: UInt64) {
         switch self {
         case .small:
-            (1_536 * 1_024, 512 * 1_024)
+            (512 * 1_024, 128 * 1_024)
         case .medium:
-            (3 * 1_024 * 1_024, 1 * 1_024 * 1_024)
+            (768 * 1_024, 256 * 1_024)
         case .large:
-            (6 * 1_024 * 1_024, 2 * 1_024 * 1_024)
+            (1_024 * 1_024, 512 * 1_024)
         }
     }
 
     var maximumVideoThumbnailDimensions: CGSize {
         switch self {
         case .small:
-            CGSize(width: 320, height: 320)
+            CGSize(width: 192, height: 192)
         case .medium:
-            CGSize(width: 720, height: 720)
+            CGSize(width: 384, height: 384)
         case .large:
-            CGSize(width: 1_280, height: 1_280)
+            CGSize(width: 720, height: 720)
         }
     }
 }

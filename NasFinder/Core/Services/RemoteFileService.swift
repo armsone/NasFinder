@@ -61,6 +61,9 @@ typealias RemoteDownloadProgressHandler = @Sendable (RemoteDownloadProgress) asy
 protocol RemoteFileService: Sendable {
     var connection: RemoteConnection { get }
     var capabilities: RemoteFileServiceCapabilities { get }
+    /// Whether a missing optimized preview may fall back to downloading an
+    /// entire video. Remote NAS backends should normally keep this disabled.
+    var permitsFullDownloadForVideoThumbnail: Bool { get }
 
     func list(directory path: String?) async throws -> [RemoteFileItem]
     func download(_ item: RemoteFileItem) async throws -> URL
@@ -124,6 +127,7 @@ protocol RemoteFileService: Sendable {
 extension RemoteFileService {
     var capabilities: RemoteFileServiceCapabilities { [] }
     var supportsRangeStreaming: Bool { false }
+    var permitsFullDownloadForVideoThumbnail: Bool { true }
 
     func download(
         _ item: RemoteFileItem,

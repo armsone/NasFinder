@@ -3,7 +3,7 @@ import XCTest
 
 final class SFTPVideoThumbnailRangePlanTests: XCTestCase {
     func testSmallVideoReadsTheCompleteFileWithoutOverlap() throws {
-        let fileSize: UInt64 = 3 * 1_024 * 1_024
+        let fileSize: UInt64 = 700 * 1_024
         let plan = try SFTPVideoThumbnailRangePlan(
             fileSize: fileSize,
             thumbnailSize: .medium
@@ -16,14 +16,14 @@ final class SFTPVideoThumbnailRangePlanTests: XCTestCase {
     }
 
     func testMediumVideoUsesTwoContiguousRangesToReadTheCompleteFile() throws {
-        let fileSize: UInt64 = 3_500 * 1_024
+        let fileSize: UInt64 = 900 * 1_024
         let plan = try SFTPVideoThumbnailRangePlan(
             fileSize: fileSize,
             thumbnailSize: .medium
         )
 
         XCTAssertEqual(plan.segments.count, 2)
-        XCTAssertEqual(plan.segments[0].length, 3 * 1_024 * 1_024)
+        XCTAssertEqual(plan.segments[0].length, 768 * 1_024)
         XCTAssertEqual(plan.segments[1].offset, plan.segments[0].length)
         XCTAssertEqual(
             plan.segments.reduce(UInt64(0)) { $0 + $1.length },
@@ -39,12 +39,12 @@ final class SFTPVideoThumbnailRangePlanTests: XCTestCase {
         )
 
         XCTAssertEqual(plan.segments.count, 2)
-        XCTAssertEqual(plan.segments[0], .init(offset: 0, length: 6 * 1_024 * 1_024))
+        XCTAssertEqual(plan.segments[0], .init(offset: 0, length: 1_024 * 1_024))
         XCTAssertEqual(
             plan.segments[1],
             .init(
-                offset: fileSize - (2 * 1_024 * 1_024),
-                length: 2 * 1_024 * 1_024
+                offset: fileSize - (512 * 1_024),
+                length: 512 * 1_024
             )
         )
         XCTAssertEqual(
@@ -53,7 +53,7 @@ final class SFTPVideoThumbnailRangePlanTests: XCTestCase {
         )
     }
 
-    func testSmallThumbnailUsesTwoMiBAtMost() throws {
+    func testSmallThumbnailUses640KiBAtMost() throws {
         let fileSize: UInt64 = 500 * 1_024 * 1_024
         let plan = try SFTPVideoThumbnailRangePlan(
             fileSize: fileSize,
@@ -63,16 +63,16 @@ final class SFTPVideoThumbnailRangePlanTests: XCTestCase {
         XCTAssertEqual(
             plan.segments,
             [
-                .init(offset: 0, length: 1_536 * 1_024),
+                .init(offset: 0, length: 512 * 1_024),
                 .init(
-                    offset: fileSize - (512 * 1_024),
-                    length: 512 * 1_024
+                    offset: fileSize - (128 * 1_024),
+                    length: 128 * 1_024
                 )
             ]
         )
         XCTAssertEqual(
             plan.segments.reduce(UInt64(0)) { $0 + $1.length },
-            2 * 1_024 * 1_024
+            640 * 1_024
         )
     }
 

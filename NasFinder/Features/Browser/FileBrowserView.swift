@@ -39,6 +39,7 @@ struct FileBrowserView: View {
     }
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("fileBrowserLayoutStyle") private var storedLayoutStyle = LayoutStyle.smallThumbnails.rawValue
     @AppStorage("fileBrowserSortField") private var storedSortField = FileBrowserSortField.name.rawValue
     @AppStorage("fileBrowserSortDirection") private var storedSortDirection = FileBrowserSortDirection.ascending.rawValue
@@ -47,6 +48,8 @@ struct FileBrowserView: View {
     @StateObject private var viewModel: FileBrowserViewModel
     @StateObject private var shareCoordinator = RemoteFileShareCoordinator()
     @StateObject private var operationCoordinator: FileOperationCoordinator
+    @StateObject private var thumbnailPreheater = ThumbnailPreheater()
+    @ObservedObject private var thumbnailActivity = RemoteThumbnailActivityTracker.shared
     @State private var previewItem: RemoteFileItem?
     @State private var isSelecting = false
     @State private var selectedItemIDs: Set<RemoteFileItem.ID> = []
@@ -79,35 +82,8 @@ struct FileBrowserView: View {
     var body: some View {
         VStack(spacing: 0) {
             currentPathBar
-            Divider()
-
-            Group {
-                if viewModel.isLoading && viewModel.items.isEmpty {
-                    ProgressView("불러오는 중…")
-                } else if let error = viewModel.errorMessage, viewModel.items.isEmpty {
-                    ContentUnavailableView {
-                        Label("폴더를 열 수 없습니다", systemImage: "wifi.exclamationmark")
-                    } description: {
-                        Text(error)
-                    } actions: {
-                        Button("다시 시도") {
-                            Task { await viewModel.load() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                } else if viewModel.items.isEmpty {
-                    ContentUnavailableView("빈 폴더", systemImage: "folder")
-                } else if displayedItems.isEmpty {
-                    ContentUnavailableView.search(text: searchText)
-                } else {
-                    switch layoutStyle {
-                    case .list:
-                        list
-                    case .smallThumbnails, .largeThumbnails:
-                        thumbnailGrid(for: layoutStyle)
-                    }
-                }
-            }
+            thumbnailProgressLine
+            browserContent
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
@@ -206,6 +182,15 @@ struct FileBrowserView: View {
                         onDismiss: operationCoordinator.dismissStatus
                     )
                 }
+
+                if thumbnailPreheater.isRunning {
+                    ThumbnailPreheatProgressBanner(preheater: thumbnailPreheater)
+                } else if let status = thumbnailPreheater.statusMessage {
+                    FileOperationStatusBanner(
+                        message: status,
+                        onDismiss: thumbnailPreheater.dismissStatus
+                    )
+                }
             }
             .padding()
             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -221,11 +206,13 @@ struct FileBrowserView: View {
                 viewModel.errorMessage = nil
                 shareCoordinator.errorMessage = nil
                 operationCoordinator.dismissError()
+                thumbnailPreheater.errorMessage = nil
             }
         } message: {
             Text(
                 shareCoordinator.errorMessage
                     ?? operationCoordinator.errorMessage
+                    ?? thumbnailPreheater.errorMessage
                     ?? viewModel.errorMessage
                     ?? ""
             )
@@ -292,6 +279,10 @@ struct FileBrowserView: View {
         }
         .onDisappear {
             shareCoordinator.cancelPreparation()
+            thumbnailPreheater.cancel()
+        }
+        .onChange(of: scenePhase, initial: true) { _, phase in
+            thumbnailPreheater.updateAppIsActive(phase == .active)
         }
         .onChange(of: viewModel.items.map(\.id)) { _, visibleIDs in
             selectedItemIDs.formIntersection(visibleIDs)
@@ -306,8 +297,46 @@ struct FileBrowserView: View {
         }
     }
 
+    @ViewBuilder
+    private var browserContent: some View {
+        if viewModel.isLoading && viewModel.items.isEmpty {
+            ProgressView("불러오는 중…")
+        } else if let error = viewModel.errorMessage, viewModel.items.isEmpty {
+            ContentUnavailableView {
+                Label("폴더를 열 수 없습니다", systemImage: "wifi.exclamationmark")
+            } description: {
+                Text(error)
+            } actions: {
+                Button("다시 시도") {
+                    Task { await viewModel.load() }
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        } else if viewModel.items.isEmpty {
+            ContentUnavailableView("빈 폴더", systemImage: "folder")
+        } else if displayedItems.isEmpty {
+            ContentUnavailableView.search(text: searchText)
+        } else {
+            switch layoutStyle {
+            case .list:
+                list
+            case .smallThumbnails, .largeThumbnails:
+                thumbnailGrid(for: layoutStyle)
+            }
+        }
+    }
+
     private var layoutStyle: LayoutStyle {
         LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
+    }
+
+    private func startThumbnailPreheating(recursively: Bool) {
+        thumbnailPreheater.start(
+            rootItems: viewModel.items,
+            rootPath: viewModel.path,
+            recursively: recursively,
+            service: viewModel.service
+        )
     }
 
     private var sortOptions: FileBrowserSortOptions {
@@ -399,6 +428,37 @@ struct FileBrowserView: View {
                 }
 
                 Divider().padding(.vertical, 6)
+
+                MorePanelSectionTitle("썸네일 미리 생성")
+
+                if thumbnailPreheater.isRunning {
+                    Button {
+                        thumbnailPreheater.cancel()
+                        isShowingMorePanel = false
+                    } label: {
+                        MorePanelRow(title: "미리 생성 중지", systemImage: "stop.circle")
+                    }
+                } else {
+                    Button {
+                        performMorePanelAction {
+                            startThumbnailPreheating(recursively: false)
+                        }
+                    } label: {
+                        MorePanelRow(title: "현재 폴더", systemImage: "photo.stack")
+                    }
+                    .disabled(operationCoordinator.isBusy)
+
+                    Button {
+                        performMorePanelAction {
+                            startThumbnailPreheating(recursively: true)
+                        }
+                    } label: {
+                        MorePanelRow(title: "하위 폴더까지", systemImage: "folder.badge.gearshape")
+                    }
+                    .disabled(operationCoordinator.isBusy)
+                }
+
+                Divider().padding(.vertical, 6)
                 MorePanelSectionTitle("보기 설정")
 
                 Menu {
@@ -483,7 +543,7 @@ struct FileBrowserView: View {
             .padding(.vertical, 10)
         }
         .scrollIndicators(.visible)
-        .frame(width: 340, height: 380)
+        .frame(width: 340, height: 460)
         .presentationCompactAdaptation(.popover)
         .buttonStyle(.plain)
         .accessibilityLabel("파일 작업과 보기 설정")
@@ -541,6 +601,35 @@ struct FileBrowserView: View {
         .accessibilityLabel(
             "\(viewModel.connection.name), 현재 경로 \(viewModel.path), \(itemCountLabel)"
         )
+    }
+
+    private var thumbnailProgressLine: some View {
+        GeometryReader { geometry in
+            ZStack(alignment: .leading) {
+                Color.white
+
+                if thumbnailActivity.isActive {
+                    Color.black
+                        .frame(
+                            width: geometry.size.width
+                                * thumbnailActivity.fractionCompleted
+                        )
+                        .animation(
+                            .easeOut(duration: 0.18),
+                            value: thumbnailActivity.fractionCompleted
+                        )
+                }
+            }
+        }
+        .frame(height: 2)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("썸네일 만드는 중")
+        .accessibilityValue(
+            thumbnailActivity.isActive
+                ? "\(Int((thumbnailActivity.fractionCompleted * 100).rounded()))퍼센트"
+                : "대기 중"
+        )
+        .accessibilityHidden(!thumbnailActivity.isActive)
     }
 
     private var itemCountLabel: String {
@@ -969,6 +1058,7 @@ struct FileBrowserView: View {
                     viewModel.errorMessage = nil
                     shareCoordinator.errorMessage = nil
                     operationCoordinator.dismissError()
+                    thumbnailPreheater.errorMessage = nil
                 }
             }
         )
@@ -981,6 +1071,9 @@ struct FileBrowserView: View {
         if operationCoordinator.errorMessage != nil {
             return "파일 작업을 완료하지 못했습니다"
         }
+        if thumbnailPreheater.errorMessage != nil {
+            return "썸네일을 미리 만들 수 없습니다"
+        }
         return "오류"
     }
 
@@ -990,6 +1083,7 @@ struct FileBrowserView: View {
     private var canBeginUserPresentation: Bool {
         !shareCoordinator.isPreparing
             && !operationCoordinator.isBusy
+            && !thumbnailPreheater.isRunning
             && !hasBlockingPresentation
             && !hasPendingError
     }
@@ -1010,6 +1104,7 @@ struct FileBrowserView: View {
     private var hasPendingError: Bool {
         shareCoordinator.errorMessage != nil
             || operationCoordinator.errorMessage != nil
+            || thumbnailPreheater.errorMessage != nil
             || (viewModel.errorMessage != nil && !viewModel.items.isEmpty)
     }
 
@@ -1488,6 +1583,111 @@ private enum RemoteFileShareError: LocalizedError {
 
     var errorDescription: String? {
         "내려받은 파일을 찾을 수 없습니다. 다시 시도해 주세요."
+    }
+}
+
+private struct ThumbnailPreheatProgressBanner: View {
+    @ObservedObject var preheater: ThumbnailPreheater
+
+    var body: some View {
+        HStack(spacing: 12) {
+            if let fraction = preheater.fractionCompleted {
+                ProgressView(value: fraction)
+                    .frame(width: 54)
+            } else {
+                ProgressView()
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(preheater.totalCount == 0 ? "미디어 폴더 검색 중…" : "썸네일 미리 만드는 중…")
+                    .font(.subheadline.weight(.semibold))
+                Text(progressDescription)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 8)
+
+            Button("중지", role: .cancel) {
+                preheater.cancel()
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(14)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(.separator.opacity(0.25), lineWidth: 0.5)
+        }
+        .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var progressDescription: String {
+        var parts: [String] = []
+        if preheater.totalCount > 0 {
+            parts.append("\(preheater.completedCount) / \(preheater.totalCount)")
+        }
+        if preheater.transferredBytes > 0 {
+            parts.append(Self.byteFormatter.string(fromByteCount: preheater.transferredBytes))
+        }
+        if let currentItemName = preheater.currentItemName {
+            parts.append(currentItemName)
+        }
+        return parts.isEmpty ? "준비 중" : parts.joined(separator: " • ")
+    }
+
+    private static let byteFormatter: ByteCountFormatter = {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB]
+        formatter.countStyle = .file
+        return formatter
+    }()
+}
+
+private struct MorePanelSectionTitle: View {
+    let title: String
+
+    init(_ title: String) {
+        self.title = title
+    }
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+    }
+}
+
+private struct MorePanelRow: View {
+    let title: String
+    let systemImage: String
+    var showsDisclosure = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: systemImage)
+                .frame(width: 22)
+                .foregroundStyle(.tint)
+
+            Text(title)
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 8)
+
+            if showsDisclosure {
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+        }
+        .contentShape(Rectangle())
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
     }
 }
 

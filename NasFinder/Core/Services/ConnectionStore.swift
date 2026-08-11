@@ -36,7 +36,6 @@ final class ConnectionStore: ObservableObject {
     func add(_ connection: RemoteConnection, password: String) async throws {
         try credentialStore.save(RemoteCredential(password: password), for: connection.id)
         connections.append(connection)
-        connections.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         if preferredConnectionID == nil {
             setPreferredConnection(connection)
         }
@@ -70,7 +69,6 @@ final class ConnectionStore: ObservableObject {
 
         try credentialStore.save(RemoteCredential(password: password), for: connection.id)
         connections[index] = connection
-        connections.sort { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         persist()
 
         // A File Provider extension can keep the old connection snapshot for
@@ -119,6 +117,23 @@ final class ConnectionStore: ObservableObject {
         if !failures.isEmpty {
             lastErrorMessage = failures.joined(separator: "\n")
         }
+    }
+
+    func move(from offsets: IndexSet, to destination: Int) {
+        let validOffsets = offsets.filter { connections.indices.contains($0) }.sorted()
+        guard !validOffsets.isEmpty else { return }
+
+        let movingConnections = validOffsets.map { connections[$0] }
+        for index in validOffsets.reversed() {
+            connections.remove(at: index)
+        }
+        let removedBeforeDestination = validOffsets.filter { $0 < destination }.count
+        let insertionIndex = min(
+            max(destination - removedBeforeDestination, 0),
+            connections.count
+        )
+        connections.insert(contentsOf: movingConnections, at: insertionIndex)
+        persist()
     }
 
     private func restoreMissingFileProviderDomains() async {

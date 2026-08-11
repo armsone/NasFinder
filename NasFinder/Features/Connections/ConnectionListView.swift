@@ -49,6 +49,9 @@ struct ConnectionListView: View {
                                 requestDeletion: { connectionPendingDeletion = connection }
                             )
                         }
+                        .onMove { offsets, destination in
+                            store.move(from: offsets, to: destination)
+                        }
                     }
 
                     Button("네트워크 위치 추가", systemImage: "plus") {
@@ -113,6 +116,11 @@ struct ConnectionListView: View {
             .background(SkyBreezeBackground())
             .navigationTitle("NasFinder")
             .navigationBarTitleDisplayMode(.large)
+            .toolbar {
+                if store.connections.count > 1 {
+                    EditButton()
+                }
+            }
             .sheet(isPresented: $isAddingConnection) {
                 AddConnectionView()
                     .environmentObject(store)

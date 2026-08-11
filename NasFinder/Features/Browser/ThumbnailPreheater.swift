@@ -1,0 +1,304 @@
+import Foundation
+import Network
+import UIKit
+
+final class ThumbnailNetworkMonitor: @unchecked Sendable {
+    static let shared = ThumbnailNetworkMonitor()
+
+    private let monitor = NWPathMonitor()
+    private let queue = DispatchQueue(label: "com.armsone.nasfinder.thumbnail-network")
+    private let lock = NSLock()
+    private var currentPath: NWPath?
+
+    private init() {
+        monitor.pathUpdateHandler = { [weak self] path in
+            self?.lock.lock()
+            self?.currentPath = path
+            self?.lock.unlock()
+        }
+        monitor.start(queue: queue)
+    }
+
+    var isUnmeteredWiFi: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let currentPath else { return false }
+        return currentPath.status == .satisfied
+            && currentPath.usesInterfaceType(.wifi)
+            && !currentPath.isExpensive
+    }
+}
+
+@MainActor
+final class ThumbnailPreheater: ObservableObject {
+    static let maximumDataBytes: Int64 = 100 * 1_024 * 1_024
+
+    @Published private(set) var isRunning = false
+    @Published private(set) var completedCount = 0
+    @Published private(set) var totalCount = 0
+    @Published private(set) var generatedCount = 0
+    @Published private(set) var cachedCount = 0
+    @Published private(set) var failedCount = 0
+    @Published private(set) var transferredBytes: Int64 = 0
+    @Published private(set) var currentItemName: String?
+    @Published var statusMessage: String?
+    @Published var errorMessage: String?
+
+    private var task: Task<Void, Never>?
+    private var appIsActive = true
+
+    init() {
+        _ = ThumbnailNetworkMonitor.shared
+        UIDevice.current.isBatteryMonitoringEnabled = true
+    }
+
+    var fractionCompleted: Double? {
+        guard totalCount > 0 else { return nil }
+        return min(Double(completedCount) / Double(totalCount), 1)
+    }
+
+    func updateAppIsActive(_ isActive: Bool) {
+        appIsActive = isActive
+        if !isActive, isRunning {
+            cancel()
+        }
+    }
+
+    func start(
+        rootItems: [RemoteFileItem],
+        rootPath: String,
+        recursively: Bool,
+        service: any RemoteFileService
+    ) {
+        guard !isRunning else { return }
+        do {
+            try validateRuntimeConditions()
+        } catch {
+            errorMessage = error.localizedDescription
+            return
+        }
+
+        resetProgress()
+        isRunning = true
+        task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.run(
+                rootItems: rootItems,
+                rootPath: rootPath,
+                recursively: recursively,
+                service: service
+            )
+        }
+    }
+
+    func cancel() {
+        task?.cancel()
+    }
+
+    func dismissStatus() {
+        statusMessage = nil
+    }
+
+    private func run(
+        rootItems: [RemoteFileItem],
+        rootPath: String,
+        recursively: Bool,
+        service: any RemoteFileService
+    ) async {
+        defer {
+            isRunning = false
+            currentItemName = nil
+            task = nil
+        }
+
+        do {
+            let candidates = try await collectCandidates(
+                rootItems: rootItems,
+                rootPath: rootPath,
+                recursively: recursively,
+                service: service
+            )
+            totalCount = candidates.count
+
+            var reachedDataLimit = false
+            for item in candidates {
+                try Task.checkCancellation()
+                try validateRuntimeConditions()
+                currentItemName = item.name
+
+                let cacheKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
+                if await RemoteThumbnailDiskCache.shared.containsData(forKey: cacheKey) {
+                    cachedCount += 1
+                    completedCount += 1
+                    continue
+                }
+
+                let estimatedBytes = estimatedTransferBytes(for: item, service: service)
+                if let estimatedBytes,
+                   transferredBytes + estimatedBytes > Self.maximumDataBytes {
+                    reachedDataLimit = true
+                    break
+                }
+
+                let activityID = UUID()
+                RemoteThumbnailActivityTracker.shared.begin(activityID)
+                defer { RemoteThumbnailActivityTracker.shared.finish(activityID) }
+
+                do {
+                    if let data = try await thumbnailData(
+                        for: item,
+                        service: service
+                    ) {
+                        _ = try await RemoteThumbnailImageDecoder.downsample(
+                            data: data,
+                            maximumPixelSize: 192
+                        )
+                        await RemoteThumbnailDiskCache.shared.store(data, forKey: cacheKey)
+                        generatedCount += 1
+                        transferredBytes += estimatedBytes ?? Int64(data.count)
+                        if transferredBytes >= Self.maximumDataBytes {
+                            reachedDataLimit = true
+                        }
+                    } else {
+                        failedCount += 1
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    failedCount += 1
+                }
+                completedCount += 1
+
+                if reachedDataLimit { break }
+            }
+
+            let suffix = reachedDataLimit ? " · 100MB 제한에서 중지" : ""
+            statusMessage = "썸네일 \(generatedCount)개 생성, \(cachedCount)개 건너뜀"
+                + (failedCount > 0 ? ", \(failedCount)개 실패" : "")
+                + suffix
+        } catch is CancellationError {
+            statusMessage = "썸네일 미리 생성을 중지했습니다."
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    private func collectCandidates(
+        rootItems: [RemoteFileItem],
+        rootPath: String,
+        recursively: Bool,
+        service: any RemoteFileService
+    ) async throws -> [RemoteFileItem] {
+        var candidates = eligibleItems(in: rootItems, service: service)
+        guard recursively else { return candidates }
+
+        var pendingDirectories = rootItems.filter(\.isDirectory)
+        var visitedPaths: Set<String> = [rootPath]
+        while !pendingDirectories.isEmpty {
+            try Task.checkCancellation()
+            try validateRuntimeConditions()
+            let directory = pendingDirectories.removeFirst()
+            guard visitedPaths.insert(directory.path).inserted else { continue }
+            currentItemName = "\(directory.name) 폴더 검색 중"
+
+            let children = try await service.list(directory: directory.path)
+                .filter { RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name) }
+            candidates.append(contentsOf: eligibleItems(in: children, service: service))
+            pendingDirectories.append(contentsOf: children.filter(\.isDirectory))
+        }
+        return candidates
+    }
+
+    private func eligibleItems(
+        in items: [RemoteFileItem],
+        service: any RemoteFileService
+    ) -> [RemoteFileItem] {
+        switch service.connection.kind {
+        case .synology:
+            return items.filter { !$0.isDirectory && ($0.isImage || $0.isVideo) }
+        case .sftp:
+            // SFTP photos would require their complete originals. Only bounded
+            // video range reads are eligible for unattended preheating.
+            return items.filter { !$0.isDirectory && $0.isVideo }
+        }
+    }
+
+    private func thumbnailData(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) async throws -> Data? {
+        let attempts = service.connection.kind == .synology ? 3 : 1
+        var lastError: Error?
+        for attempt in 0..<attempts {
+            do {
+                if let data = try await service.thumbnailData(for: item, size: .small),
+                   !data.isEmpty {
+                    return data
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                lastError = error
+            }
+            if attempt + 1 < attempts {
+                try await Task.sleep(for: .milliseconds(650))
+            }
+        }
+        if let lastError { throw lastError }
+        return nil
+    }
+
+    private func estimatedTransferBytes(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) -> Int64? {
+        guard service.connection.kind == .sftp else { return nil }
+        let upperBound: Int64 = 640 * 1_024
+        guard let size = item.size, size > 0 else { return upperBound }
+        return min(size, upperBound)
+    }
+
+    private func validateRuntimeConditions() throws {
+        guard appIsActive else { throw ThumbnailPreheatError.appInactive }
+        guard ThumbnailNetworkMonitor.shared.isUnmeteredWiFi else {
+            throw ThumbnailPreheatError.wifiRequired
+        }
+        switch UIDevice.current.batteryState {
+        case .charging, .full:
+            return
+        case .unknown, .unplugged:
+            throw ThumbnailPreheatError.powerRequired
+        @unknown default:
+            throw ThumbnailPreheatError.powerRequired
+        }
+    }
+
+    private func resetProgress() {
+        completedCount = 0
+        totalCount = 0
+        generatedCount = 0
+        cachedCount = 0
+        failedCount = 0
+        transferredBytes = 0
+        currentItemName = nil
+        statusMessage = nil
+        errorMessage = nil
+    }
+}
+
+private enum ThumbnailPreheatError: LocalizedError {
+    case wifiRequired
+    case powerRequired
+    case appInactive
+
+    var errorDescription: String? {
+        switch self {
+        case .wifiRequired:
+            "데이터 사용을 막기 위해 요금이 부과되지 않는 Wi‑Fi에 연결해 주세요."
+        case .powerRequired:
+            "충전기를 연결한 상태에서 썸네일 미리 생성을 시작해 주세요."
+        case .appInactive:
+            "NasFinder가 화면에 열려 있을 때만 썸네일을 미리 만들 수 있습니다."
+        }
+    }
+}
