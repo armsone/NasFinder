@@ -2,6 +2,14 @@ import Foundation
 import SwiftUI
 import UIKit
 
+private struct BrowserDestination: Identifiable, Hashable {
+    let connection: RemoteConnection
+    let path: String
+    let title: String
+
+    var id: String { "\(connection.id.uuidString):\(path)" }
+}
+
 struct ConnectionListView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -13,10 +21,11 @@ struct ConnectionListView: View {
     @State private var isAddingConnection: Bool
     @State private var connectionPendingDeletion: RemoteConnection?
     @State private var editingConnection: RemoteConnection?
-    @State private var automaticallyOpenedConnection: RemoteConnection?
+    @State private var browserDestination: BrowserDestination?
     @State private var selectedFavorite: FavoriteItem?
     @State private var didAttemptAutomaticOpen = false
     @State private var deviceStorage = DeviceStorageSnapshot.current()
+    @State private var navigationIdentity = UUID()
 
     init() {
         #if DEBUG
@@ -31,130 +40,7 @@ struct ConnectionListView: View {
     var body: some View {
         NavigationStack {
             List {
-                Section {
-                    if !store.connections.isEmpty {
-                        ForEach(store.connections) { connection in
-                            NetworkLocationCard(
-                                connection: connection,
-                                isPreferred: store.preferredConnection?.id == connection.id,
-                                requestOpening: {
-                                    automaticallyOpenedConnection = connection
-                                },
-                                requestPreferred: {
-                                    store.setPreferredConnection(connection)
-                                },
-                                requestClearPreferred: {
-                                    store.clearPreferredConnection()
-                                },
-                                canMoveEarlier: store.connections.first?.id != connection.id,
-                                canMoveLater: store.connections.last?.id != connection.id,
-                                requestMoveEarlier: { move(connection, by: -1) },
-                                requestMoveLater: { move(connection, by: 1) },
-                                requestEditing: { editingConnection = connection },
-                                requestDeletion: { connectionPendingDeletion = connection }
-                            )
-                        }
-                        .onMove { offsets, destination in
-                            store.move(from: offsets, to: destination)
-                        }
-                    }
-
-                    NavigationLink {
-                        WebBrowserView()
-                    } label: {
-                        WebNetworkLocationRow()
-                    }
-                    .buttonStyle(.plain)
-                    .navigationLinkIndicatorVisibility(.hidden)
-
-                    Button(
-                        store.connections.isEmpty
-                            ? "네트워크를 추가해 주세요"
-                            : "네트워크 추가",
-                        systemImage: "plus"
-                    ) {
-                        isAddingConnection = true
-                    }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                } header: {
-                    sectionHeader("네트워크", systemImage: "network")
-                } footer: {
-                    Group {
-                        if let preferred = store.preferredConnection {
-                            Text("기본 위치 ‘\(preferred.name)’ · 앱 실행 시 자동으로 열림")
-                        } else if store.connections.isEmpty {
-                            Text("NAS 또는 SFTP 서버를 연결하면 파일을 탐색할 수 있습니다.")
-                        } else {
-                            Text("기본 위치 없음 · 앱 실행 시 연결 목록에서 시작")
-                        }
-                    }
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-                }
-
-                Section {
-                    NavigationLink {
-                        ReceivedFilesView()
-                    } label: {
-                        LabeledContent {
-                            Text(
-                                inboxStore.records.isEmpty
-                                    ? "0개"
-                                    : "\(inboxStore.records.count)개 · \(formattedByteCount(inboxByteCount))"
-                            )
-                                .foregroundStyle(.secondary)
-                        } label: {
-                            Label("받은 파일", systemImage: "tray.and.arrow.down")
-                        }
-                    }
-
-                    ThumbnailCacheSettingsLink()
-
-                    FavoriteShelfView { favorite in
-                        selectedFavorite = favorite
-                    }
-                } header: {
-                    sectionHeader("내 파일", systemImage: "folder")
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-                Section {
-                    LabeledContent("iPhone 저장공간") {
-                        Text(
-                            deviceStorage.hasCapacity
-                                ? "전체 \(formattedByteCount(deviceStorage.totalBytes)) · "
-                                    + "사용 가능 \(formattedByteCount(deviceStorage.availableBytes))"
-                                : "확인 불가"
-                        )
-                    }
-                    if deviceStorage.hasCapacity {
-                        ProgressView(value: deviceStorage.usedFraction) {
-                            Text("저장공간")
-                        } currentValueLabel: {
-                            Text(
-                                deviceStorage.usedFraction,
-                                format: .percent.precision(.fractionLength(0))
-                            )
-                        }
-                    }
-                } header: {
-                    sectionHeader("저장공간", systemImage: "internaldrive")
-                }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-
-                Section {
-                    NavigationLink {
-                        AppSettingsView(connectionCount: store.connections.count)
-                    } label: {
-                        Label("설정", systemImage: "gearshape")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                dashboardSections
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
@@ -175,8 +61,12 @@ struct ConnectionListView: View {
             .navigationDestination(isPresented: $inboxStore.shouldPresentInbox) {
                 ReceivedFilesView()
             }
-            .navigationDestination(item: $automaticallyOpenedConnection) { connection in
-                FileBrowserContainerView(connection: connection)
+            .navigationDestination(item: $browserDestination) { destination in
+                FileBrowserContainerView(
+                    connection: destination.connection,
+                    path: destination.path,
+                    title: destination.title
+                )
             }
             .navigationDestination(item: $selectedFavorite) { favorite in
                 FavoriteDestinationView(favorite: favorite)
@@ -218,6 +108,128 @@ struct ConnectionListView: View {
                 deviceStorage = DeviceStorageSnapshot.current()
                 openPreferredConnectionIfNeeded()
             }
+            .environment(\.returnToDashboard) {
+                browserDestination = nil
+                selectedFavorite = nil
+                navigationIdentity = UUID()
+            }
+        }
+        .id(navigationIdentity)
+    }
+
+    @ViewBuilder
+    private var dashboardSections: some View {
+        networkSection
+        myFilesSection
+        storageSection
+        settingsSection
+    }
+
+    private var networkSection: some View {
+        Section {
+            if !store.connections.isEmpty {
+                ForEach(store.connections) { connection in
+                    NetworkLocationCard(
+                        connection: connection,
+                        isPreferred: store.preferredConnection?.id == connection.id,
+                        requestOpening: { open(connection) },
+                        requestPreferred: { store.setPreferredConnection(connection) },
+                        requestClearPreferred: { store.clearPreferredConnection() },
+                        canMoveEarlier: store.connections.first?.id != connection.id,
+                        canMoveLater: store.connections.last?.id != connection.id,
+                        requestMoveEarlier: { move(connection, by: -1) },
+                        requestMoveLater: { move(connection, by: 1) },
+                        requestEditing: { editingConnection = connection },
+                        requestDeletion: { connectionPendingDeletion = connection }
+                    )
+                }
+                .onMove { offsets, destination in
+                    store.move(from: offsets, to: destination)
+                }
+            }
+
+            NavigationLink {
+                WebBrowserView()
+            } label: {
+                WebNetworkLocationRow()
+            }
+            .buttonStyle(.plain)
+            .navigationLinkIndicatorVisibility(.hidden)
+
+            Button(
+                store.connections.isEmpty ? "네트워크를 추가해 주세요" : "네트워크 추가",
+                systemImage: "plus"
+            ) {
+                isAddingConnection = true
+            }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        } header: {
+            sectionHeader("네트워크", systemImage: "network")
+        } footer: {
+            Text(networkFooterText)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+    }
+
+    private var myFilesSection: some View {
+        Section {
+            NavigationLink {
+                ReceivedFilesView()
+            } label: {
+                LabeledContent {
+                    Text(inboxSummary)
+                        .foregroundStyle(.secondary)
+                } label: {
+                    Label("받은 파일", systemImage: "tray.and.arrow.down")
+                }
+            }
+
+            ThumbnailCacheSettingsLink()
+
+            FavoriteShelfView { favorite in
+                selectedFavorite = favorite
+            }
+        } header: {
+            sectionHeader("내 파일", systemImage: "folder")
+        }
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+    }
+
+    private var storageSection: some View {
+        Section {
+            LabeledContent("iPhone 저장공간") {
+                Text(deviceStorageSummary)
+            }
+            if deviceStorage.hasCapacity {
+                ProgressView(value: deviceStorage.usedFraction) {
+                    Text("저장공간")
+                } currentValueLabel: {
+                    Text(
+                        deviceStorage.usedFraction,
+                        format: .percent.precision(.fractionLength(0))
+                    )
+                }
+            }
+        } header: {
+            sectionHeader("저장공간", systemImage: "internaldrive")
+        }
+        .font(.subheadline)
+        .foregroundStyle(.secondary)
+    }
+
+    private var settingsSection: some View {
+        Section {
+            NavigationLink {
+                AppSettingsView(connectionCount: store.connections.count)
+            } label: {
+                Label("설정", systemImage: "gearshape")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
         }
     }
 
@@ -242,7 +254,9 @@ struct ConnectionListView: View {
         guard !inboxStore.shouldPresentInbox,
               !isAddingConnection,
               editingConnection == nil else { return }
-        automaticallyOpenedConnection = store.preferredConnection
+        if let connection = store.preferredConnection {
+            open(connection)
+        }
     }
 
     private var quickLocationsSection: some View {
@@ -255,7 +269,7 @@ struct ConnectionListView: View {
                         title: "받은 파일",
                         subtitle: inboxStore.records.isEmpty
                             ? "다른 앱에서 파일 가져오기"
-                            : "\(inboxStore.records.count)개 · \(formattedByteCount(inboxByteCount))",
+                            : inboxSummary,
                         systemImage: "tray.and.arrow.down.fill",
                         tint: .blue
                     )
@@ -308,7 +322,7 @@ struct ConnectionListView: View {
                         connection: connection,
                         isPreferred: store.preferredConnection?.id == connection.id,
                         requestOpening: {
-                            automaticallyOpenedConnection = connection
+                            open(connection)
                         },
                         requestPreferred: {
                             store.setPreferredConnection(connection)
@@ -348,6 +362,23 @@ struct ConnectionListView: View {
         )
     }
 
+    private var inboxSummary: String {
+        guard !inboxStore.records.isEmpty else { return "0개" }
+        let count = inboxStore.records.count
+        let size = formattedByteCount(inboxByteCount)
+        return "\(count)개 · \(size)"
+    }
+
+    private var networkFooterText: String {
+        if let preferred = store.preferredConnection {
+            return "기본 위치 ‘\(preferred.name)’ · 앱 실행 시 자동으로 열림"
+        }
+        if store.connections.isEmpty {
+            return "NAS 또는 SFTP 서버를 연결하면 파일을 탐색할 수 있습니다."
+        }
+        return "기본 위치 없음 · 앱 실행 시 연결 목록에서 시작"
+    }
+
     private var overviewColumns: Int {
         if dynamicTypeSize.isAccessibilitySize { return 1 }
         return horizontalSizeClass == .regular ? 3 : 2
@@ -371,6 +402,12 @@ struct ConnectionListView: View {
         }
     }
 
+    private var deviceStorageSummary: String {
+        guard deviceStorage.hasCapacity else { return "확인 불가" }
+        return "전체 \(formattedByteCount(deviceStorage.totalBytes)) · "
+            + "사용 가능 \(formattedByteCount(deviceStorage.availableBytes))"
+    }
+
     private var currentLogoAssetName: String {
         AppIconChoice.current(
             alternateIconName: UIApplication.shared.alternateIconName
@@ -378,25 +415,51 @@ struct ConnectionListView: View {
     }
 
     private var dashboardLogo: some View {
-        HStack(spacing: 7) {
-            Image(currentLogoAssetName)
-                .resizable()
-                .scaledToFill()
-                .frame(width: 36, height: 36)
-                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(.primary.opacity(0.08), lineWidth: 0.5)
-                }
+        Button(action: openRememberedLocation) {
+            HStack(spacing: 7) {
+                Image(currentLogoAssetName)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 36, height: 36)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(.primary.opacity(0.08), lineWidth: 0.5)
+                    }
 
-            Text("NasFinder")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.primary.opacity(0.82))
-                .fixedSize(horizontal: true, vertical: false)
+                Text("NasFinder")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary.opacity(0.82))
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .fixedSize(horizontal: true, vertical: false)
+        .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("NasFinder")
+        .accessibilityHint("마지막으로 보던 네트워크 폴더를 엽니다.")
+    }
+
+    private func open(_ connection: RemoteConnection) {
+        browserDestination = BrowserDestination(
+            connection: connection,
+            path: connection.normalizedRootPath,
+            title: connection.name
+        )
+    }
+
+    private func openRememberedLocation() {
+        guard let location = store.resumableBrowserLocation,
+              let connection = store.connections.first(where: {
+                  $0.id == location.connectionID
+              }) else {
+            return
+        }
+        browserDestination = BrowserDestination(
+            connection: connection,
+            path: location.path,
+            title: location.title
+        )
     }
 
     @ToolbarContentBuilder

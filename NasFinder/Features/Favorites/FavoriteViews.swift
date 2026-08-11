@@ -286,7 +286,9 @@ private struct FavoriteShelfTile: View {
                 y: 3
             )
             .opacity(isBeingReordered ? 0 : 1)
-            .gesture(interactionGesture)
+            // Keep the shelf's native horizontal pan recognizer active. The tile
+            // gesture only takes over after the long press has completed.
+            .simultaneousGesture(interactionGesture)
             .popover(
                 isPresented: $isRemovalPresented,
                 attachmentAnchor: .rect(.bounds),

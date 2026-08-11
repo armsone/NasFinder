@@ -3,15 +3,23 @@ import SwiftUI
 struct FileBrowserContainerView: View {
     @EnvironmentObject private var store: ConnectionStore
     let connection: RemoteConnection
+    let path: String
+    let title: String
+
+    init(connection: RemoteConnection, path: String? = nil, title: String? = nil) {
+        self.connection = connection
+        self.path = path ?? connection.normalizedRootPath
+        self.title = title ?? connection.name
+    }
 
     var body: some View {
         Group {
             if let service {
                 FileBrowserView(
                     connection: connection,
-                    path: connection.normalizedRootPath,
+                    path: path,
                     service: service,
-                    title: connection.name
+                    title: title
                 )
             } else {
                 ContentUnavailableView(

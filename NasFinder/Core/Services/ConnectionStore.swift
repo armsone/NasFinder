@@ -1,16 +1,24 @@
 import FileProvider
 import Foundation
 
+struct RememberedBrowserLocation: Codable, Equatable {
+    let connectionID: UUID
+    let path: String
+    let title: String
+}
+
 @MainActor
 final class ConnectionStore: ObservableObject {
     @Published private(set) var connections: [RemoteConnection] = []
     @Published private(set) var preferredConnectionID: UUID?
+    @Published private(set) var rememberedBrowserLocation: RememberedBrowserLocation?
     @Published var lastErrorMessage: String?
 
     private let defaults: UserDefaults
     private let credentialStore: KeychainCredentialStore
     private let storageKey = "connections.v1"
     private let preferredConnectionKey = "preferredConnection.v1"
+    private let rememberedBrowserLocationKey = "browser.lastLocation.v1"
     private let writableFileProviderMigrationKey = "fileProvider.sftpWritable.v1"
 
     init(
@@ -67,6 +75,49 @@ final class ConnectionStore: ObservableObject {
         defaults.removeObject(forKey: preferredConnectionKey)
     }
 
+    var resumableBrowserLocation: RememberedBrowserLocation? {
+        guard let rememberedBrowserLocation,
+              let connection = connections.first(where: {
+                  $0.id == rememberedBrowserLocation.connectionID
+              }) else {
+            return nil
+        }
+
+        let root = connection.normalizedRootPath
+        let path = RemotePath.isInside(rememberedBrowserLocation.path, rootPath: root)
+            ? rememberedBrowserLocation.path
+            : root
+        let title = path == rememberedBrowserLocation.path
+            ? rememberedBrowserLocation.title
+            : connection.name
+        return RememberedBrowserLocation(
+            connectionID: connection.id,
+            path: path,
+            title: title
+        )
+    }
+
+    func rememberBrowserLocation(
+        connection: RemoteConnection,
+        path: String,
+        title: String
+    ) {
+        guard connections.contains(where: { $0.id == connection.id }),
+              RemotePath.isInside(path, rootPath: connection.normalizedRootPath) else {
+            return
+        }
+        let location = RememberedBrowserLocation(
+            connectionID: connection.id,
+            path: path,
+            title: title
+        )
+        guard rememberedBrowserLocation != location else { return }
+        rememberedBrowserLocation = location
+        if let data = try? JSONEncoder().encode(location) {
+            defaults.set(data, forKey: rememberedBrowserLocationKey)
+        }
+    }
+
     func update(_ connection: RemoteConnection, password: String) async throws {
         guard let index = connections.firstIndex(where: { $0.id == connection.id }) else {
             throw NasFinderError.invalidResponse
@@ -100,6 +151,11 @@ final class ConnectionStore: ObservableObject {
         if let preferredConnectionID, removedIDs.contains(preferredConnectionID) {
             self.preferredConnectionID = nil
             defaults.removeObject(forKey: preferredConnectionKey)
+        }
+        if let rememberedBrowserLocation,
+           removedIDs.contains(rememberedBrowserLocation.connectionID) {
+            self.rememberedBrowserLocation = nil
+            defaults.removeObject(forKey: rememberedBrowserLocationKey)
         }
         persist()
 
@@ -178,6 +234,17 @@ final class ConnectionStore: ObservableObject {
             } else {
                 preferredConnectionID = nil
                 defaults.removeObject(forKey: preferredConnectionKey)
+            }
+            if let locationData = defaults.data(forKey: rememberedBrowserLocationKey),
+               let location = try? JSONDecoder().decode(
+                   RememberedBrowserLocation.self,
+                   from: locationData
+               ),
+               connections.contains(where: { $0.id == location.connectionID }) {
+                rememberedBrowserLocation = location
+            } else {
+                rememberedBrowserLocation = nil
+                defaults.removeObject(forKey: rememberedBrowserLocationKey)
             }
         } catch {
             lastErrorMessage = "저장된 연결 목록을 읽지 못했습니다."

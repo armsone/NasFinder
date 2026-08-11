@@ -2,6 +2,19 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+typealias ReturnToDashboardAction = @MainActor @Sendable () -> Void
+
+private struct ReturnToDashboardKey: EnvironmentKey {
+    static let defaultValue: ReturnToDashboardAction = {}
+}
+
+extension EnvironmentValues {
+    var returnToDashboard: ReturnToDashboardAction {
+        get { self[ReturnToDashboardKey.self] }
+        set { self[ReturnToDashboardKey.self] = newValue }
+    }
+}
+
 struct FileBrowserPathComponent: Identifiable, Equatable {
     let path: String
     let title: String
@@ -129,7 +142,9 @@ struct FileBrowserView: View {
     }
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.returnToDashboard) private var returnToDashboard
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var favoriteStore: FavoriteStore
     @AppStorage("fileBrowserLayoutStyle") private var storedLayoutStyle = LayoutStyle.smallThumbnails.rawValue
     @AppStorage("fileBrowserSortField") private var storedSortField = FileBrowserSortField.name.rawValue
@@ -203,7 +218,11 @@ struct FileBrowserView: View {
         )
         .toolbar {
             ToolbarItem(placement: .principal) {
-                FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
+                Button(action: returnToDashboard) {
+                    FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(title), 첫 화면으로 이동")
             }
 
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -286,6 +305,11 @@ struct FileBrowserView: View {
         }
         .onAppear {
             trafficTracker.reset()
+            connectionStore.rememberBrowserLocation(
+                connection: viewModel.connection,
+                path: viewModel.path,
+                title: title
+            )
         }
         .task { await viewModel.load() }
         .overlay(alignment: .bottom) {
@@ -497,10 +521,6 @@ struct FileBrowserView: View {
         )
     }
 
-    private var sortMenuTitle: String {
-        "\(sortOptions.field.title) · \(sortOptions.direction.title)"
-    }
-
     @ViewBuilder
     private func interactionPanel(_ panel: FileBrowserInteractionCoordinator.Panel) -> some View {
         switch panel {
@@ -565,60 +585,56 @@ struct FileBrowserView: View {
                 Divider().padding(.vertical, 6)
                 MorePanelSectionTitle("정렬")
 
-                Menu {
-                    Section("기준") {
+                CompactPanelOptionRow(title: "기준") {
+                    HStack(spacing: 4) {
                         ForEach(FileBrowserSortField.allCases) { field in
-                            Button {
+                            CompactPanelOptionButton(
+                                title: field.title,
+                                isSelected: sortOptions.field == field
+                            ) {
                                 storedSortField = field.rawValue
-                            } label: {
-                                Label(
-                                    field.title,
-                                    systemImage: sortOptions.field == field
-                                        ? "checkmark"
-                                        : sortSystemImage(for: field)
-                                )
                             }
                         }
                     }
+                }
 
-                    Section("순서") {
+                CompactPanelOptionRow(title: "순서") {
+                    HStack(spacing: 4) {
                         ForEach(FileBrowserSortDirection.allCases) { direction in
-                            Button {
+                            CompactPanelOptionButton(
+                                title: direction.title,
+                                isSelected: sortOptions.direction == direction
+                            ) {
                                 storedSortDirection = direction.rawValue
-                            } label: {
-                                Label(
-                                    direction.title,
-                                    systemImage: sortOptions.direction == direction
-                                        ? "checkmark"
-                                        : direction == .ascending ? "arrow.up" : "arrow.down"
-                                )
                             }
                         }
                     }
+                }
 
-                    if sortOptions.field == .name {
-                        Section("이름 우선") {
-                            ForEach(FileBrowserNamePriority.allCases) { priority in
-                                Button {
-                                    storedNamePriority = priority.rawValue
-                                } label: {
-                                    if sortOptions.namePriority == priority {
-                                        Label(priority.title, systemImage: "checkmark")
-                                    } else {
-                                        Text(priority.title)
-                                    }
-                                }
+                CompactPanelOptionRow(title: "이름 우선") {
+                    HStack(spacing: 4) {
+                        ForEach(FileBrowserNamePriority.allCases) { priority in
+                            CompactPanelOptionButton(
+                                title: priority.title,
+                                isSelected: sortOptions.namePriority == priority
+                            ) {
+                                storedNamePriority = priority.rawValue
                             }
                         }
                     }
+                    .opacity(sortOptions.field == .name ? 1 : 0.38)
+                    .disabled(sortOptions.field != .name)
+                }
 
-                    Toggle("폴더 먼저", isOn: $foldersFirst)
-                } label: {
-                    MorePanelRow(
-                        title: sortMenuTitle,
-                        systemImage: "arrow.up.arrow.down",
-                        showsDisclosure: true
-                    )
+                CompactPanelOptionRow(title: "폴더 먼저") {
+                    HStack(spacing: 4) {
+                        CompactPanelOptionButton(title: "끔", isSelected: !foldersFirst) {
+                            foldersFirst = false
+                        }
+                        CompactPanelOptionButton(title: "켬", isSelected: foldersFirst) {
+                            foldersFirst = true
+                        }
+                    }
                 }
             }
             .padding(.horizontal, 12)
@@ -826,15 +842,6 @@ struct FileBrowserView: View {
                 alignment: .top
             )
         ]
-    }
-
-    private func sortSystemImage(for field: FileBrowserSortField) -> String {
-        switch field {
-        case .name: "textformat"
-        case .modifiedDate: "calendar"
-        case .size: "internaldrive"
-        case .kind: "doc.on.doc"
-        }
     }
 
     private var list: some View {
@@ -1909,6 +1916,68 @@ private struct CompactPanelButton: View {
             .contentShape(Rectangle())
         }
         .accessibilityLabel(title)
+    }
+}
+
+private struct CompactPanelOptionRow<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    init(title: String, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 2)
+
+            content
+                .frame(maxWidth: .infinity)
+        }
+        .padding(.vertical, 5)
+    }
+}
+
+private struct CompactPanelOptionButton: View {
+    let title: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .foregroundStyle(
+                    isSelected
+                        ? Color(uiColor: .label).opacity(0.82)
+                        : Color(uiColor: .secondaryLabel)
+                )
+                .frame(maxWidth: .infinity)
+                .frame(minHeight: 44)
+                .background(
+                    isSelected
+                        ? SkyBreezeTheme.accent.opacity(0.1)
+                        : Color(uiColor: .tertiarySystemFill),
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(
+                            isSelected
+                                ? SkyBreezeTheme.accent.opacity(0.24)
+                                : Color(uiColor: .separator).opacity(0.08),
+                            lineWidth: 0.75
+                        )
+                }
+                .contentShape(Rectangle())
+        }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 

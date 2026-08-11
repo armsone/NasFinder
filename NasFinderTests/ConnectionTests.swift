@@ -37,6 +37,51 @@ final class ConnectionTests: XCTestCase {
         XCTAssertNil(reloadedStore.preferredConnection)
     }
 
+    @MainActor
+    func testLastBrowserLocationPersistsAndFallsBackInsideRoot() throws {
+        let suiteName = "ConnectionTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let connection = RemoteConnection(
+            name: "NAS",
+            kind: .synology,
+            host: "nas.example.com",
+            username: "tester",
+            rootPath: "/video"
+        )
+        defaults.set(try JSONEncoder().encode([connection]), forKey: "connections.v1")
+
+        let store = ConnectionStore(
+            defaults: defaults,
+            performsFileProviderMaintenance: false
+        )
+        store.rememberBrowserLocation(
+            connection: connection,
+            path: "/video/family",
+            title: "family"
+        )
+
+        let reloaded = ConnectionStore(
+            defaults: defaults,
+            performsFileProviderMaintenance: false
+        )
+        XCTAssertEqual(
+            reloaded.resumableBrowserLocation,
+            RememberedBrowserLocation(
+                connectionID: connection.id,
+                path: "/video/family",
+                title: "family"
+            )
+        )
+
+        reloaded.rememberBrowserLocation(
+            connection: connection,
+            path: "/outside",
+            title: "outside"
+        )
+        XCTAssertEqual(reloaded.resumableBrowserLocation?.path, "/video/family")
+    }
+
     func testSynologyRootPathIsNormalized() {
         let connection = RemoteConnection(
             name: "NAS",
