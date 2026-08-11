@@ -680,16 +680,14 @@ struct FileBrowserView: View {
                     isLarge: style == .largeThumbnails
                 )
             }
-            .onLongPressGesture {
-                guard !isSelecting else { return }
-                contextPanelItem = item
-            }
 
             if isSelecting {
                 selectionIndicator(isSelected: selectedItemIDs.contains(item.id))
                     .padding(style == .largeThumbnails ? 8 : 4)
             }
         }
+        .contentShape(Rectangle())
+        .simultaneousGesture(itemLongPressGesture(for: item))
     }
 
     private func listItem(_ item: RemoteFileItem) -> some View {
@@ -698,15 +696,21 @@ struct FileBrowserView: View {
                 RemoteFileListRow(item: item, service: viewModel.service)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .onLongPressGesture {
-                guard !isSelecting else { return }
-                contextPanelItem = item
-            }
 
             if isSelecting {
                 selectionIndicator(isSelected: selectedItemIDs.contains(item.id))
             }
         }
+        .contentShape(Rectangle())
+        .simultaneousGesture(itemLongPressGesture(for: item))
+    }
+
+    private func itemLongPressGesture(for item: RemoteFileItem) -> some Gesture {
+        LongPressGesture(minimumDuration: 0.45, maximumDistance: 20)
+            .onEnded { _ in
+                guard !isSelecting else { return }
+                contextPanelItem = item
+            }
     }
 
     private func selectionIndicator(isSelected: Bool) -> some View {
