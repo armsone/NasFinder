@@ -92,12 +92,12 @@ struct SharedVideoProgressBar: View {
                 .frame(width: 42, alignment: .leading)
         }
         .font(.system(size: 11, weight: .semibold, design: .monospaced))
-        .foregroundStyle(.white)
+        .foregroundStyle(.white.opacity(0.9))
         .padding(.horizontal, 14)
         .frame(height: 44)
-        .background(.ultraThinMaterial, in: Capsule())
+        .background(Color.black.opacity(0.28), in: Capsule())
         .overlay {
-            Capsule().stroke(Color.white.opacity(0.28), lineWidth: 1)
+            Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1)
         }
         .onAppear(perform: startObserving)
         .onDisappear(perform: stopObserving)
@@ -207,16 +207,15 @@ struct SharedPlayerCircleLabel: View {
     var body: some View {
         Image(systemName: systemImage)
             .font(.system(size: 16, weight: .bold))
-            .foregroundStyle(.white.opacity(0.96))
+            .foregroundStyle(.white.opacity(0.9))
             .frame(width: 44, height: 44)
             .background(
-                isActive ? Color.white.opacity(0.18) : Color.clear,
+                isActive ? Color.white.opacity(0.16) : Color.black.opacity(0.28),
                 in: Circle()
             )
-            .background(.ultraThinMaterial, in: Circle())
             .overlay {
                 Circle().stroke(
-                    Color.white.opacity(isActive ? 0.48 : 0.28),
+                    Color.white.opacity(isActive ? 0.38 : 0.18),
                     lineWidth: 1
                 )
             }

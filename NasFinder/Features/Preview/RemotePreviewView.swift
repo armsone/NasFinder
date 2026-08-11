@@ -360,18 +360,25 @@ struct RemotePreviewView: View {
 
     private func bottomControls(isLandscape: Bool) -> some View {
         VStack(spacing: 10) {
-            if viewModel.currentItem.isVideo, let player = viewModel.player {
-                SharedVideoProgressBar(player: player)
-            }
-
             if isLandscape {
                 HStack(spacing: 12) {
                     transportControls
-                    Spacer(minLength: 32)
+
+                    if viewModel.currentItem.isVideo, let player = viewModel.player {
+                        SharedVideoProgressBar(player: player)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Spacer(minLength: 32)
+                    }
+
                     playbackStatusControls
                 }
                 .frame(maxWidth: .infinity)
             } else {
+                if viewModel.currentItem.isVideo, let player = viewModel.player {
+                    SharedVideoProgressBar(player: player)
+                }
+
                 HStack(spacing: 12) {
                     transportControls
                     Spacer(minLength: 8)
