@@ -1,10 +1,40 @@
 import SwiftUI
 
+private struct FavoriteShelfTileFramesKey: PreferenceKey {
+    static let defaultValue: [FavoriteItem.ID: CGRect] = [:]
+
+    static func reduce(
+        value: inout [FavoriteItem.ID: CGRect],
+        nextValue: () -> [FavoriteItem.ID: CGRect]
+    ) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+
+private struct FavoriteShelfWidthKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct FavoriteShelfDragState {
+    let favorite: FavoriteItem
+    let centerOffset: CGSize
+    var location: CGPoint
+}
+
 struct FavoriteShelfView: View {
-    private static let tileStride: CGFloat = 65
+    private static let dragActivationDistance: CGFloat = 12
+    private static let edgeScrollInset: CGFloat = 34
 
     @EnvironmentObject private var favoriteStore: FavoriteStore
     @State private var favoritePendingRemovalID: FavoriteItem.ID?
+    @State private var tileFrames: [FavoriteItem.ID: CGRect] = [:]
+    @State private var shelfWidth: CGFloat = 0
+    @State private var dragState: FavoriteShelfDragState?
+    @State private var autoScrollDirection = 0
 
     let openFavorite: (FavoriteItem) -> Void
 
@@ -17,84 +47,245 @@ struct FavoriteShelfView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 8)
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    LazyHStack(alignment: .top, spacing: 9) {
-                        ForEach(favoriteStore.items) { favorite in
-                            FavoriteShelfTile(
-                                favorite: favorite,
-                                open: { openFavorite(favorite) },
-                                requestRemoval: {
-                                    favoritePendingRemovalID = favorite.id
-                                },
-                                isRemovalPresented: Binding(
-                                    get: { favoritePendingRemovalID == favorite.id },
-                                    set: { isPresented in
-                                        if !isPresented, favoritePendingRemovalID == favorite.id {
+                ScrollViewReader { scrollProxy in
+                    ZStack(alignment: .topLeading) {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            LazyHStack(alignment: .top, spacing: 9) {
+                                ForEach(favoriteStore.items) { favorite in
+                                    FavoriteShelfTile(
+                                        favorite: favorite,
+                                        open: { openFavorite(favorite) },
+                                        isBeingReordered: dragState?.favorite.id == favorite.id,
+                                        isRemovalPresented: Binding(
+                                            get: { favoritePendingRemovalID == favorite.id },
+                                            set: { isPresented in
+                                                if !isPresented,
+                                                   favoritePendingRemovalID == favorite.id {
+                                                    favoritePendingRemovalID = nil
+                                                }
+                                            }
+                                        ),
+                                        remove: {
+                                            favoriteStore.remove(id: favorite.id)
                                             favoritePendingRemovalID = nil
+                                        },
+                                        dragChanged: { value in
+                                            updateDrag(favorite: favorite, value: value)
+                                        },
+                                        interactionEnded: { translation in
+                                            finishInteraction(
+                                                favoriteID: favorite.id,
+                                                translation: translation
+                                            )
+                                        }
+                                    )
+                                    .id(favorite.id)
+                                    .background {
+                                        GeometryReader { geometry in
+                                            Color.clear.preference(
+                                                key: FavoriteShelfTileFramesKey.self,
+                                                value: [
+                                                    favorite.id: geometry.frame(
+                                                        in: .named("favoriteShelf")
+                                                    )
+                                                ]
+                                            )
                                         }
                                     }
-                                ),
-                                remove: {
-                                    favoriteStore.remove(id: favorite.id)
-                                    favoritePendingRemovalID = nil
-                                },
-                                reorder: { horizontalTranslation in
-                                    reorder(
-                                        favoriteID: favorite.id,
-                                        horizontalTranslation: horizontalTranslation
-                                    )
                                 }
-                            )
-                            .id(favorite.id)
+                            }
+                        }
+                        .scrollClipDisabled()
+
+                        if let dragState {
+                            FavoriteCell(favorite: dragState.favorite, side: 52)
+                                .frame(width: 56)
+                                .shadow(color: .black.opacity(0.2), radius: 6, y: 3)
+                                .position(
+                                    x: dragState.location.x + dragState.centerOffset.width,
+                                    y: dragState.location.y + dragState.centerOffset.height
+                                )
+                                .allowsHitTesting(false)
+                                .zIndex(2)
                         }
                     }
+                    .coordinateSpace(name: "favoriteShelf")
+                    .background {
+                        GeometryReader { geometry in
+                            Color.clear.preference(
+                                key: FavoriteShelfWidthKey.self,
+                                value: geometry.size.width
+                            )
+                        }
+                    }
+                    .onPreferenceChange(FavoriteShelfTileFramesKey.self) { tileFrames = $0 }
+                    .onPreferenceChange(FavoriteShelfWidthKey.self) { shelfWidth = $0 }
+                    .task(id: autoScrollDirection) {
+                        await autoScroll(
+                            using: scrollProxy,
+                            direction: autoScrollDirection
+                        )
+                    }
+                    .onDisappear {
+                        dragState = nil
+                        autoScrollDirection = 0
+                    }
                 }
-                .scrollClipDisabled()
             }
         }
         .padding(.vertical, 4)
     }
 
-    private func reorder(
-        favoriteID: FavoriteItem.ID,
-        horizontalTranslation: CGFloat
-    ) {
-        guard let source = favoriteStore.items.firstIndex(where: { $0.id == favoriteID }) else {
+    private func updateDrag(favorite: FavoriteItem, value: DragGesture.Value) {
+        if dragState == nil {
+            guard abs(value.translation.width) >= Self.dragActivationDistance,
+                  abs(value.translation.width) > abs(value.translation.height),
+                  let frame = tileFrames[favorite.id] else {
+                return
+            }
+            favoritePendingRemovalID = nil
+            dragState = FavoriteShelfDragState(
+                favorite: favorite,
+                centerOffset: CGSize(
+                    width: frame.midX - value.startLocation.x,
+                    height: frame.midY - value.startLocation.y
+                ),
+                location: value.location
+            )
+        } else {
+            guard dragState?.favorite.id == favorite.id else { return }
+            dragState?.location = value.location
+        }
+
+        updateAutoScrollDirection(at: value.location.x)
+        moveDraggedFavoriteToward(locationX: value.location.x)
+    }
+
+    private func moveDraggedFavoriteToward(locationX: CGFloat) {
+        guard let draggedID = dragState?.favorite.id,
+              let destinationID = tileFrames
+                .filter({ $0.key != draggedID })
+                .min(by: {
+                    abs($0.value.midX - locationX) < abs($1.value.midX - locationX)
+                })?
+                .key,
+              let source = favoriteStore.items.firstIndex(where: { $0.id == draggedID }),
+              let destination = favoriteStore.items.firstIndex(where: {
+                  $0.id == destinationID
+              }),
+              source != destination else {
             return
         }
 
-        let indexOffset = Int((horizontalTranslation / Self.tileStride).rounded())
-        guard indexOffset != 0 else { return }
-        let destination = min(max(source + indexOffset, 0), favoriteStore.items.count - 1)
-        favoriteStore.move(id: favoriteID, to: destination)
+        let sourceFrame = tileFrames[draggedID]
+        let destinationFrame = tileFrames[destinationID]
+        guard crossedDestinationCenter(
+            locationX: locationX,
+            source: source,
+            destination: destination,
+            sourceFrame: sourceFrame,
+            destinationFrame: destinationFrame
+        ) else {
+            return
+        }
+
+        withAnimation(.easeOut(duration: 0.12)) {
+            favoriteStore.move(id: draggedID, to: destination)
+        }
+    }
+
+    private func crossedDestinationCenter(
+        locationX: CGFloat,
+        source: Int,
+        destination: Int,
+        sourceFrame: CGRect?,
+        destinationFrame: CGRect?
+    ) -> Bool {
+        guard let destinationFrame else { return false }
+        if destination > source {
+            return locationX >= destinationFrame.midX
+        }
+        if destination < source {
+            return locationX <= destinationFrame.midX
+        }
+        return sourceFrame == nil
+    }
+
+    private func updateAutoScrollDirection(at locationX: CGFloat) {
+        guard shelfWidth > 0 else {
+            autoScrollDirection = 0
+            return
+        }
+        if locationX <= Self.edgeScrollInset {
+            autoScrollDirection = -1
+        } else if locationX >= shelfWidth - Self.edgeScrollInset {
+            autoScrollDirection = 1
+        } else {
+            autoScrollDirection = 0
+        }
+    }
+
+    @MainActor
+    private func autoScroll(using proxy: ScrollViewProxy, direction: Int) async {
+        guard direction != 0 else { return }
+        while !Task.isCancelled,
+              autoScrollDirection == direction,
+              let draggedID = dragState?.favorite.id {
+            do {
+                try await Task.sleep(nanoseconds: 160_000_000)
+            } catch {
+                return
+            }
+
+            guard let source = favoriteStore.items.firstIndex(where: { $0.id == draggedID }) else {
+                return
+            }
+            let destination = source + direction
+            guard favoriteStore.items.indices.contains(destination) else { continue }
+
+            withAnimation(.easeOut(duration: 0.14)) {
+                favoriteStore.move(id: draggedID, to: destination)
+                proxy.scrollTo(
+                    draggedID,
+                    anchor: direction > 0 ? .trailing : .leading
+                )
+            }
+        }
+    }
+
+    private func finishInteraction(
+        favoriteID: FavoriteItem.ID,
+        translation: CGSize
+    ) {
+        let wasReordering = dragState?.favorite.id == favoriteID
+        dragState = nil
+        autoScrollDirection = 0
+
+        if !wasReordering, hypot(translation.width, translation.height) < 12 {
+            favoritePendingRemovalID = favoriteID
+        }
     }
 }
 
 private struct FavoriteShelfTile: View {
     let favorite: FavoriteItem
     let open: () -> Void
-    let requestRemoval: () -> Void
+    let isBeingReordered: Bool
     @Binding var isRemovalPresented: Bool
     let remove: () -> Void
-    let reorder: (CGFloat) -> Void
-
-    @GestureState private var dragTranslation: CGSize = .zero
-
-    private var isReordering: Bool {
-        abs(dragTranslation.width) >= 12
-    }
+    let dragChanged: (DragGesture.Value) -> Void
+    let interactionEnded: (CGSize) -> Void
 
     var body: some View {
         FavoriteCell(favorite: favorite, side: 52)
             .frame(width: 56)
             .contentShape(Rectangle())
             .shadow(
-                color: isRemovalPresented || isReordering ? .black.opacity(0.18) : .clear,
+                color: isRemovalPresented ? .black.opacity(0.18) : .clear,
                 radius: 5,
                 y: 3
             )
-            .offset(x: dragTranslation.width)
-            .zIndex(isReordering ? 1 : 0)
+            .opacity(isBeingReordered ? 0 : 1)
             .gesture(interactionGesture)
             .popover(
                 isPresented: $isRemovalPresented,
@@ -114,41 +305,36 @@ private struct FavoriteShelfTile: View {
                 open()
             }
             .accessibilityAction(named: Text("즐겨찾기에서 제거")) {
-                requestRemoval()
+                interactionEnded(.zero)
             }
     }
 
     private var interactionGesture: some Gesture {
         let pressAndDrag = LongPressGesture(minimumDuration: 0.55, maximumDistance: 18)
-            .sequenced(before: DragGesture(minimumDistance: 0))
-            .updating($dragTranslation) { value, state, _ in
+            .sequenced(
+                before: DragGesture(
+                    minimumDistance: 0,
+                    coordinateSpace: .named("favoriteShelf")
+                )
+            )
+            .onChanged { value in
                 guard case let .second(true, drag?) = value else { return }
-                state = CGSize(width: drag.translation.width, height: 0)
+                dragChanged(drag)
             }
 
         return ExclusiveGesture(pressAndDrag, TapGesture())
             .onEnded { result in
                 switch result {
                 case let .first(.second(true, drag?)):
-                    finishLongPress(with: drag.translation)
+                    interactionEnded(drag.translation)
                 case .first(.first(true)):
-                    requestRemoval()
+                    interactionEnded(.zero)
                 case .second:
                     open()
                 default:
                     break
                 }
             }
-    }
-
-    private func finishLongPress(with translation: CGSize) {
-        let distance = hypot(translation.width, translation.height)
-        if distance < 12 {
-            requestRemoval()
-        } else if abs(translation.width) >= 24,
-                  abs(translation.width) > abs(translation.height) {
-            reorder(translation.width)
-        }
     }
 }
 
@@ -158,34 +344,51 @@ private struct FavoriteRemovalPopover: View {
     let remove: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(favoriteName)
-                .font(.caption.weight(.medium))
-                .foregroundStyle(.primary.opacity(0.82))
-                .lineLimit(2)
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: "star.slash")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.primary.opacity(0.72))
+                    .frame(width: 30, height: 30)
+                    .background(.primary.opacity(0.07), in: Circle())
+                    .accessibilityHidden(true)
 
-            Text("즐겨찾기에서 제거할까요?")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("즐겨찾기에서 제거")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.primary.opacity(0.88))
 
-            HStack(spacing: 7) {
-                Button("취소", role: .cancel, action: cancel)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .buttonStyle(.plain)
+                    Text(favoriteName)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+            }
 
-                Divider()
-                    .frame(height: 14)
+            Divider()
+                .opacity(0.45)
+
+            HStack(spacing: 8) {
+                Button("유지", role: .cancel, action: cancel)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.primary.opacity(0.68))
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(.primary.opacity(0.06), in: Capsule())
 
                 Button("제거", role: .destructive, action: remove)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.red)
-                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 8)
+                    .background(.red.opacity(0.11), in: Capsule())
             }
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .buttonStyle(.plain)
         }
-        .padding(12)
-        .frame(width: 190)
+        .padding(14)
+        .frame(width: 224)
+        .presentationBackground(.ultraThinMaterial)
+        .presentationCornerRadius(20)
     }
 }
 
