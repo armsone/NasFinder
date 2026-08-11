@@ -41,6 +41,18 @@ enum FileBrowserPathNavigation {
         return result
     }
 
+    static func parent(
+        currentPath: String,
+        rootPath: String
+    ) -> FileBrowserPathComponent? {
+        let pathComponents = components(
+            currentPath: currentPath,
+            rootPath: rootPath
+        )
+        guard pathComponents.count > 1 else { return nil }
+        return pathComponents.dropLast().last
+    }
+
     private static func normalized(_ path: String) -> String {
         var value = path.trimmingCharacters(in: .whitespacesAndNewlines)
         while value.count > 1, value.hasSuffix("/") { value.removeLast() }
@@ -245,9 +257,24 @@ struct FileBrowserView: View {
                     Button {
                         interactionCoordinator.showBrowserPanel()
                     } label: {
-                        Label("더 보기", systemImage: "ellipsis.circle")
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 15, weight: .bold))
+                            .foregroundStyle(SkyBreezeTheme.accent)
+                            .frame(width: 32, height: 32)
+                            .background(
+                                SkyBreezeTheme.accent.opacity(0.16),
+                                in: Circle()
+                            )
+                            .overlay {
+                                Circle()
+                                    .stroke(
+                                        SkyBreezeTheme.accent.opacity(0.48),
+                                        lineWidth: 1
+                                    )
+                            }
                     }
                     .disabled(operationCoordinator.isBusy)
+                    .accessibilityLabel("더 보기")
                     .accessibilityHint("파일 작업, 새로 고침과 보기 설정 메뉴를 엽니다.")
                     .popover(
                         item: $interactionCoordinator.panel,
@@ -714,6 +741,27 @@ struct FileBrowserView: View {
 
     private var currentPathBar: some View {
         HStack(spacing: 8) {
+            if let parentPathComponent {
+                NavigationLink {
+                    pathDestination(
+                        path: parentPathComponent.path,
+                        title: parentPathTitle(parentPathComponent)
+                    )
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(SkyBreezeTheme.accent)
+                        .frame(width: 28, height: 24)
+                        .background(
+                            SkyBreezeTheme.accent.opacity(0.12),
+                            in: RoundedRectangle(cornerRadius: 7)
+                        )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("상위 폴더")
+                .accessibilityHint("\(parentPathComponent.title) 폴더로 이동합니다.")
+            }
+
             Image(systemName: "externaldrive.fill")
                 .foregroundStyle(.tint)
 
@@ -777,6 +825,19 @@ struct FileBrowserView: View {
             currentPath: viewModel.path,
             rootPath: viewModel.connection.normalizedRootPath
         )
+    }
+
+    private var parentPathComponent: FileBrowserPathComponent? {
+        FileBrowserPathNavigation.parent(
+            currentPath: viewModel.path,
+            rootPath: viewModel.connection.normalizedRootPath
+        )
+    }
+
+    private func parentPathTitle(_ component: FileBrowserPathComponent) -> String {
+        component.path == viewModel.connection.normalizedRootPath
+            ? viewModel.connection.name
+            : component.title
     }
 
     private func pathDestination(path: String, title: String) -> some View {

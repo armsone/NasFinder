@@ -21,6 +21,35 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         )
     }
 
+    func testParentFolderStaysWithinConfiguredRoot() {
+        XCTAssertEqual(
+            FileBrowserPathNavigation.parent(
+                currentPath: "/home/media/movies",
+                rootPath: "/home"
+            ),
+            FileBrowserPathComponent(path: "/home/media", title: "media")
+        )
+        XCTAssertEqual(
+            FileBrowserPathNavigation.parent(
+                currentPath: "./media/movies",
+                rootPath: "."
+            ),
+            FileBrowserPathComponent(path: "./media", title: "media")
+        )
+        XCTAssertNil(
+            FileBrowserPathNavigation.parent(
+                currentPath: "/home",
+                rootPath: "/home"
+            )
+        )
+        XCTAssertNil(
+            FileBrowserPathNavigation.parent(
+                currentPath: "/outside",
+                rootPath: "/home"
+            )
+        )
+    }
+
     func testSingleFileThumbnailDoesNotRequireExternalPower() {
         let file = item(name: "movie.mp4", size: 1_024)
         let folder = item(name: "folder", isDirectory: true)
