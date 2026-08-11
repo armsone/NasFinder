@@ -751,7 +751,7 @@ final class RemotePreviewViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isPreparingVideo = false
     @Published private(set) var downloadProgress: RemoteDownloadProgress?
-    @Published private(set) var isPlaying = false
+    @Published private(set) var isPlaying = true
     @Published private(set) var playbackMode: PreviewPlaybackMode = .repeatAll
     @Published private(set) var photoAdvanceInterval: PhotoAdvanceInterval
     @Published private(set) var seekHUDText: String?

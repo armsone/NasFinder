@@ -5,6 +5,20 @@ import XCTest
 
 @MainActor
 final class RemotePreviewStateTests: XCTestCase {
+    func testPreviewStartsWithAutomaticPlaybackEnabled() {
+        let recorder = StallingPreviewRecorder()
+        let service = StallingPreviewService(recorder: recorder)
+        let item = previewVideoItem(connectionID: service.connection.id)
+
+        let viewModel = RemotePreviewViewModel(
+            items: [item],
+            initialItemID: item.id,
+            service: service
+        )
+
+        XCTAssertTrue(viewModel.isPlaying)
+    }
+
     func testStreamingPlayerIsPresentedWithoutLocalFileURL() {
         let kind = RemotePreviewContentKind.resolve(
             isImage: false,
