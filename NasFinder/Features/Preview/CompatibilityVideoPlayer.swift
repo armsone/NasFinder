@@ -780,23 +780,94 @@ private final class CompatibilityVideoThumbnailOperation:
         let timeoutTask = timeoutTask
         self.timeoutTask = nil
         player?.delegate = nil
-        if result.requiresRemoteReadCancellation {
-            stream?.close()
-            player?.stop()
-        } else {
-            player?.stop()
-            stream?.close()
-        }
         player?.drawable = nil
-        player = nil
+        let player = player
+        let stream = stream
+        let snapshotURL = snapshotURL
+        self.player = nil
         drawable = nil
+        self.stream = nil
+        self.snapshotURL = nil
+        timeoutTask?.cancel()
+
+        guard let player else {
+            if let snapshotURL {
+                try? FileManager.default.removeItem(at: snapshotURL)
+            }
+            continuation?.resume(with: result)
+            return
+        }
+        CompatibilityVideoThumbnailCleanupExecutor.dispose(
+            player: player,
+            stream: stream,
+            snapshotURL: snapshotURL,
+            closeStreamFirst: result.requiresRemoteReadCancellation
+        ) {
+            continuation?.resume(with: result)
+        }
+    }
+}
+
+private enum CompatibilityVideoThumbnailCleanupExecutor {
+    private static let queue = DispatchQueue(
+        label: CompatibilityVideoThumbnailPlaybackPolicy.cleanupQueueLabel,
+        qos: .utility
+    )
+
+    static func dispose(
+        player: VLCMediaPlayer,
+        stream: CompatibilityRemoteInputStream?,
+        snapshotURL: URL?,
+        closeStreamFirst: Bool,
+        completion: @escaping @MainActor () -> Void
+    ) {
+        let resources = CompatibilityVideoThumbnailCleanupResources(
+            player: player,
+            stream: stream,
+            snapshotURL: snapshotURL
+        )
+        let completion = CompatibilityVideoThumbnailCleanupCompletion(completion)
+        queue.async {
+            resources.dispose(closeStreamFirst: closeStreamFirst)
+            Task { @MainActor in
+                completion.action()
+            }
+        }
+    }
+}
+
+private final class CompatibilityVideoThumbnailCleanupResources: @unchecked Sendable {
+    private var player: VLCMediaPlayer?
+    private var stream: CompatibilityRemoteInputStream?
+    private let snapshotURL: URL?
+
+    init(
+        player: VLCMediaPlayer,
+        stream: CompatibilityRemoteInputStream?,
+        snapshotURL: URL?
+    ) {
+        self.player = player
+        self.stream = stream
+        self.snapshotURL = snapshotURL
+    }
+
+    func dispose(closeStreamFirst: Bool) {
+        if closeStreamFirst { stream?.close() }
+        player?.stop()
+        if !closeStreamFirst { stream?.close() }
+        player = nil
         stream = nil
         if let snapshotURL {
             try? FileManager.default.removeItem(at: snapshotURL)
         }
-        snapshotURL = nil
-        timeoutTask?.cancel()
-        continuation?.resume(with: result)
+    }
+}
+
+private final class CompatibilityVideoThumbnailCleanupCompletion: @unchecked Sendable {
+    let action: @MainActor () -> Void
+
+    init(_ action: @escaping @MainActor () -> Void) {
+        self.action = action
     }
 }
 
@@ -815,6 +886,7 @@ private extension Result where Success == CGImage, Failure == Error {
 enum CompatibilityVideoThumbnailPlaybackPolicy {
     static let noAudioOption = ":no-audio"
     static let maximumConcurrentOperations = 1
+    static let cleanupQueueLabel = "com.armsone.nasfinder.vlc-thumbnail-cleanup"
 }
 
 private actor CompatibilityVideoThumbnailExecutionLimiter {

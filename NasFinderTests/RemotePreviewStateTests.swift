@@ -51,6 +51,10 @@ final class RemotePreviewStateTests: XCTestCase {
             1
         )
         XCTAssertEqual(
+            CompatibilityVideoThumbnailPlaybackPolicy.cleanupQueueLabel,
+            "com.armsone.nasfinder.vlc-thumbnail-cleanup"
+        )
+        XCTAssertEqual(
             RemoteVideoThumbnailTrafficBudget.defaultMaximumFolderBytes,
             64 * 1_024 * 1_024
         )
