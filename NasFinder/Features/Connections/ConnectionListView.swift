@@ -69,9 +69,7 @@ struct ConnectionListView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 } header: {
-                    Text("네트워크")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
+                    sectionHeader("네트워크", systemImage: "network")
                 } footer: {
                     Group {
                         if let preferred = store.preferredConnection {
@@ -87,7 +85,7 @@ struct ConnectionListView: View {
                     .lineLimit(1)
                 }
 
-                Section("내 파일") {
+                Section {
                     NavigationLink {
                         ReceivedFilesView()
                     } label: {
@@ -100,11 +98,13 @@ struct ConnectionListView: View {
                     }
 
                     FavoriteShelfView()
+                } header: {
+                    sectionHeader("내 파일", systemImage: "folder")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
 
-                Section("iPhone 저장공간") {
+                Section {
                     LabeledContent("받은 파일") {
                         Text("\(inboxStore.records.count)개 · \(formattedByteCount(inboxByteCount))")
                     }
@@ -125,6 +125,8 @@ struct ConnectionListView: View {
                             )
                         }
                     }
+                } header: {
+                    sectionHeader("iPhone 저장공간", systemImage: "internaldrive")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -145,7 +147,7 @@ struct ConnectionListView: View {
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .principal) {
                     HStack(spacing: 7) {
                         Image(currentLogoAssetName)
                             .resizable()
@@ -344,6 +346,12 @@ struct ConnectionListView: View {
         AppIconChoice.current(
             alternateIconName: UIApplication.shared.alternateIconName
         ).previewAssetName
+    }
+
+    private func sectionHeader(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.footnote.weight(.medium))
+            .foregroundStyle(.secondary)
     }
 
     private var errorBinding: Binding<Bool> {
