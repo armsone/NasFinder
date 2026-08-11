@@ -289,6 +289,7 @@ private struct FavoriteShelfTile: View {
             // Keep the shelf's native horizontal pan recognizer active. The tile
             // gesture only takes over after the long press has completed.
             .simultaneousGesture(interactionGesture)
+            .onTapGesture(perform: open)
             .popover(
                 isPresented: $isRemovalPresented,
                 attachmentAnchor: .rect(.bounds),
@@ -324,15 +325,13 @@ private struct FavoriteShelfTile: View {
                 dragChanged(drag)
             }
 
-        return ExclusiveGesture(pressAndDrag, TapGesture())
+        return pressAndDrag
             .onEnded { result in
                 switch result {
-                case let .first(.second(true, drag?)):
+                case let .second(true, drag?):
                     interactionEnded(drag.translation)
-                case .first(.first(true)):
+                case .first(true):
                     interactionEnded(.zero)
-                case .second:
-                    open()
                 default:
                     break
                 }
