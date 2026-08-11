@@ -23,6 +23,18 @@ struct FavoriteShelfView: View {
                                 open: { openFavorite(favorite) },
                                 requestRemoval: {
                                     favoritePendingRemovalID = favorite.id
+                                },
+                                isRemovalPresented: Binding(
+                                    get: { favoritePendingRemovalID == favorite.id },
+                                    set: { isPresented in
+                                        if !isPresented, favoritePendingRemovalID == favorite.id {
+                                            favoritePendingRemovalID = nil
+                                        }
+                                    }
+                                ),
+                                remove: {
+                                    favoriteStore.remove(id: favorite.id)
+                                    favoritePendingRemovalID = nil
                                 }
                             )
                             .id(favorite.id)
@@ -32,34 +44,6 @@ struct FavoriteShelfView: View {
             }
         }
         .padding(.vertical, 4)
-        .confirmationDialog(
-            "즐겨찾기에서 제거할까요?",
-            isPresented: removalConfirmationBinding,
-            titleVisibility: .visible,
-            presenting: favoritePendingRemoval
-        ) { favorite in
-            Button("제거", role: .destructive) {
-                favoriteStore.remove(id: favorite.id)
-                favoritePendingRemovalID = nil
-            }
-            Button("취소", role: .cancel) {
-                favoritePendingRemovalID = nil
-            }
-        } message: { favorite in
-            Text("‘\(favorite.name)’ 항목을 즐겨찾기에서 제거합니다.")
-        }
-    }
-
-    private var favoritePendingRemoval: FavoriteItem? {
-        guard let favoritePendingRemovalID else { return nil }
-        return favoriteStore.items.first { $0.id == favoritePendingRemovalID }
-    }
-
-    private var removalConfirmationBinding: Binding<Bool> {
-        Binding(
-            get: { favoritePendingRemovalID != nil },
-            set: { if !$0 { favoritePendingRemovalID = nil } }
-        )
     }
 }
 
@@ -67,11 +51,27 @@ private struct FavoriteShelfTile: View {
     let favorite: FavoriteItem
     let open: () -> Void
     let requestRemoval: () -> Void
+    @Binding var isRemovalPresented: Bool
+    let remove: () -> Void
 
     var body: some View {
         FavoriteCell(favorite: favorite, side: 52)
             .frame(width: 56)
             .contentShape(Rectangle())
+            .background {
+                if isRemovalPresented {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .fill(Color.red.opacity(0.08))
+                        .padding(-4)
+                }
+            }
+            .overlay {
+                if isRemovalPresented {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(Color.red.opacity(0.68), lineWidth: 2)
+                        .padding(-4)
+                }
+            }
             .gesture(
                 ExclusiveGesture(
                     LongPressGesture(minimumDuration: 0.55),
@@ -88,6 +88,19 @@ private struct FavoriteShelfTile: View {
                     }
                 }
             )
+            .popover(
+                isPresented: $isRemovalPresented,
+                attachmentAnchor: .rect(.bounds),
+                arrowEdge: .bottom
+            ) {
+                FavoriteRemovalPopover(
+                    favoriteName: favorite.name,
+                    cancel: { isRemovalPresented = false },
+                    remove: remove
+                )
+                .presentationCompactAdaptation(.popover)
+            }
+            .animation(.easeOut(duration: 0.16), value: isRemovalPresented)
             .accessibilityAddTraits(.isButton)
             .accessibilityAction {
                 open()
@@ -95,6 +108,36 @@ private struct FavoriteShelfTile: View {
             .accessibilityAction(named: Text("즐겨찾기에서 제거")) {
                 requestRemoval()
             }
+    }
+}
+
+private struct FavoriteRemovalPopover: View {
+    let favoriteName: String
+    let cancel: () -> Void
+    let remove: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("즐겨찾기에서 제거할까요?")
+                .font(.subheadline.weight(.semibold))
+
+            Text(favoriteName)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            HStack(spacing: 8) {
+                Button("취소", role: .cancel, action: cancel)
+                    .buttonStyle(.bordered)
+
+                Button("제거", role: .destructive, action: remove)
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(16)
+        .frame(width: 240)
     }
 }
 
