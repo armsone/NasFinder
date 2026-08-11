@@ -2,6 +2,35 @@ import XCTest
 @testable import NasFinder
 
 final class RemoteThumbnailDiskCacheTests: XCTestCase {
+    @MainActor
+    func testStoreNotificationIsDeliveredOnMainThread() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        let defaultsName = "RemoteThumbnailDiskCacheTests.\(UUID().uuidString)"
+        let notificationExpectation = expectation(description: "thumbnail stored notification")
+        let observer = NotificationCenter.default.addObserver(
+            forName: .remoteThumbnailDiskCacheDidStore,
+            object: nil,
+            queue: nil
+        ) { _ in
+            XCTAssertTrue(Thread.isMainThread)
+            notificationExpectation.fulfill()
+        }
+        defer {
+            NotificationCenter.default.removeObserver(observer)
+            try? FileManager.default.removeItem(at: cacheURL)
+            UserDefaults(suiteName: defaultsName)?
+                .removePersistentDomain(forName: defaultsName)
+        }
+        let cache = RemoteThumbnailDiskCache(
+            directoryURL: cacheURL,
+            userDefaultsSuiteName: defaultsName
+        )
+
+        await cache.store(Data([0xA1]), forKey: "main-thread-notification")
+        await fulfillment(of: [notificationExpectation], timeout: 1)
+    }
+
     func testStatisticsAndRemovalOnlyAffectThumbnailDirectory() async throws {
         let parentURL = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .isDirectory)

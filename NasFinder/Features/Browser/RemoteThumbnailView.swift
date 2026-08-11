@@ -604,7 +604,7 @@ actor RemoteThumbnailDiskCache {
         forKey key: String,
         expectedGeneration: UInt64? = nil,
         notifyObservers: Bool = true
-    ) {
+    ) async {
         guard !data.isEmpty else { return }
         if let expectedGeneration, expectedGeneration != generation { return }
         do {
@@ -615,10 +615,12 @@ actor RemoteThumbnailDiskCache {
             try data.write(to: fileURL(forKey: key), options: .atomic)
             pruneIfNeeded()
             if notifyObservers {
-                NotificationCenter.default.post(
-                    name: .remoteThumbnailDiskCacheDidStore,
-                    object: key
-                )
+                await MainActor.run {
+                    NotificationCenter.default.post(
+                        name: .remoteThumbnailDiskCacheDidStore,
+                        object: key
+                    )
+                }
             }
         } catch {
             // Disk caching is an optimization. The in-memory thumbnail remains
@@ -724,7 +726,7 @@ private struct RemoteThumbnailCacheEntry {
     let byteCount: Int64
 }
 
-private extension Notification.Name {
+extension Notification.Name {
     static let remoteThumbnailDiskCacheDidStore = Notification.Name(
         "RemoteThumbnailDiskCacheDidStore"
     )

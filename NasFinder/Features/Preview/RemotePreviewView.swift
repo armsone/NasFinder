@@ -593,11 +593,12 @@ struct RemotePreviewView: View {
                         && abs(value.translation.height) > abs(value.translation.width)
                     if isDownwardDominant && value.translation.height >= 120 {
                         viewModel.pauseForLifecycle()
-                        withAnimation(.easeOut(duration: 0.16)) {
+                        withAnimation(
+                            .easeOut(duration: 0.16),
+                            completionCriteria: .logicallyComplete
+                        ) {
                             videoVerticalOffset = size.height
-                        }
-                        Task { @MainActor in
-                            try? await Task.sleep(for: .milliseconds(160))
+                        } completion: {
                             var transaction = Transaction(animation: nil)
                             transaction.disablesAnimations = true
                             withTransaction(transaction) {

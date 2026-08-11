@@ -57,47 +57,50 @@ struct AppIconPickerSection: View {
     var body: some View {
         Group {
             Section {
-                HStack(alignment: .top, spacing: 16) {
-                    ForEach(AppIconChoice.allCases) { icon in
-                        VStack(spacing: 10) {
-                            Image(icon.previewAssetName)
-                                .resizable()
-                                .scaledToFit()
-                                .frame(width: iconSide, height: iconSide)
-                                .clipShape(RoundedRectangle(cornerRadius: iconCornerRadius, style: .continuous))
-                                .overlay {
-                                    RoundedRectangle(cornerRadius: iconCornerRadius, style: .continuous)
-                                        .stroke(.primary.opacity(0.08), lineWidth: 1)
-                                }
-                                .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
-
-                            Button {
-                                select(icon)
-                            } label: {
-                                Group {
-                                    if pendingIcon == icon {
-                                        ProgressView()
-                                    } else {
-                                        Text(selectedIcon == icon ? "선택됨" : "선택")
+                VStack(spacing: 10) {
+                    HStack(alignment: .top, spacing: 16) {
+                        ForEach(AppIconChoice.allCases) { icon in
+                            VStack(spacing: 10) {
+                                Image(icon.previewAssetName)
+                                    .resizable()
+                                    .scaledToFit()
+                                    .frame(width: iconSide, height: iconSide)
+                                    .clipShape(RoundedRectangle(cornerRadius: iconCornerRadius, style: .continuous))
+                                    .overlay {
+                                        RoundedRectangle(cornerRadius: iconCornerRadius, style: .continuous)
+                                            .stroke(.primary.opacity(0.08), lineWidth: 1)
                                     }
+                                    .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+
+                                Button {
+                                    select(icon)
+                                } label: {
+                                    Group {
+                                        if pendingIcon == icon {
+                                            ProgressView()
+                                        } else {
+                                            Text(selectedIcon == icon ? "선택됨" : "선택")
+                                        }
+                                    }
+                                    .font(.caption.weight(.medium))
+                                    .frame(maxWidth: .infinity)
                                 }
-                                .font(.caption.weight(.medium))
-                                .frame(maxWidth: .infinity)
+                                .buttonStyle(.bordered)
+                                .disabled(isChangingIcon || selectedIcon == icon)
                             }
-                            .buttonStyle(.bordered)
-                            .disabled(isChangingIcon || selectedIcon == icon)
+                            .frame(maxWidth: .infinity)
+                            .accessibilityElement(children: .contain)
+                            .accessibilityLabel("\(icon.title) 아이콘")
+                            .accessibilityValue(selectedIcon == icon ? "선택됨" : "선택되지 않음")
                         }
-                        .frame(maxWidth: .infinity)
-                        .accessibilityElement(children: .contain)
-                        .accessibilityLabel("\(icon.title) 아이콘")
-                        .accessibilityValue(selectedIcon == icon ? "선택됨" : "선택되지 않음")
                     }
+
+                    Divider()
+                    SettingsPanelDescription("선택한 아이콘은 홈 화면과 앱 보관함에 적용됩니다.")
                 }
                 .padding(.vertical, 6)
             } header: {
                 SettingsSectionHeader(title: "앱 아이콘", systemImage: "app.badge")
-            } footer: {
-                Text("선택한 아이콘은 홈 화면과 앱 보관함에 적용됩니다.")
             }
         }
         .task {
@@ -161,5 +164,20 @@ struct SettingsSectionHeader: View {
         .font(.footnote.weight(.medium))
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+}
+
+struct SettingsPanelDescription: View {
+    let text: String
+
+    init(_ text: String) {
+        self.text = text
+    }
+
+    var body: some View {
+        Text(text)
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

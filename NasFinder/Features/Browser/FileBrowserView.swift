@@ -50,8 +50,10 @@ struct FileBrowserView: View {
     @StateObject private var shareCoordinator = RemoteFileShareCoordinator()
     @StateObject private var operationCoordinator: FileOperationCoordinator
     @StateObject private var thumbnailPreheater = ThumbnailPreheater()
+    @StateObject private var interactionCoordinator = FileBrowserInteractionCoordinator()
     @ObservedObject private var thumbnailActivity = RemoteThumbnailActivityTracker.shared
     @State private var previewItem: RemoteFileItem?
+    @State private var navigatedFolder: RemoteFileItem?
     @State private var isSelecting = false
     @State private var selectedItemIDs: Set<RemoteFileItem.ID> = []
     @State private var pendingDeleteItems: [RemoteFileItem] = []
@@ -60,8 +62,6 @@ struct FileBrowserView: View {
     @State private var isCreatingFolder = false
     @State private var newFolderName = ""
     @State private var isImportingFiles = false
-    @State private var isShowingMorePanel = false
-    @State private var contextPanelItem: RemoteFileItem?
     @State private var searchText = ""
     @State private var thumbnailReloadVersion = 0
 
@@ -106,21 +106,33 @@ struct FileBrowserView: View {
                     .disabled(shareCoordinator.isPreparing)
                 } else {
                     Button {
-                        isShowingMorePanel = true
+                        interactionCoordinator.showBrowserPanel()
                     } label: {
                         Label("더 보기", systemImage: "ellipsis.circle")
                     }
                     .disabled(operationCoordinator.isBusy)
                     .accessibilityHint("파일 작업, 새로 고침과 보기 설정 메뉴를 엽니다.")
                     .popover(
-                        isPresented: $isShowingMorePanel,
+                        item: $interactionCoordinator.panel,
                         attachmentAnchor: .rect(.bounds),
                         arrowEdge: .top
-                    ) {
-                        browserMorePanel
+                    ) { panel in
+                        interactionPanel(panel)
+                            .onDisappear {
+                                interactionCoordinator.panelDidDisappear()
+                            }
                     }
                 }
             }
+        }
+        .navigationDestination(item: $navigatedFolder) { item in
+            FileBrowserView(
+                connection: viewModel.connection,
+                path: item.path,
+                service: viewModel.service,
+                title: item.name,
+                operationCoordinator: operationCoordinator
+            )
         }
         .refreshable {
             guard !operationCoordinator.isBusy else { return }
@@ -375,6 +387,16 @@ struct FileBrowserView: View {
         "\(sortOptions.field.title) · \(sortOptions.direction.title)"
     }
 
+    @ViewBuilder
+    private func interactionPanel(_ panel: FileBrowserInteractionCoordinator.Panel) -> some View {
+        switch panel {
+        case .browser:
+            browserMorePanel
+        case .item(let item):
+            contextActionPopover(for: item)
+        }
+    }
+
     private var browserMorePanel: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
@@ -419,8 +441,9 @@ struct FileBrowserView: View {
                             systemImage: style.systemImage,
                             isSelected: layoutStyle == style
                         ) {
-                            storedLayoutStyle = style.rawValue
-                            isShowingMorePanel = false
+                            performMorePanelAction {
+                                storedLayoutStyle = style.rawValue
+                            }
                         }
                     }
                 }
@@ -497,11 +520,7 @@ struct FileBrowserView: View {
     private func performMorePanelAction(
         _ action: @escaping @MainActor () -> Void
     ) {
-        isShowingMorePanel = false
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(160))
-            action()
-        }
+        interactionCoordinator.dismissPanel(then: action)
     }
 
     private var canPerformPasteAction: Bool {
@@ -671,14 +690,12 @@ struct FileBrowserView: View {
 
     private func gridItem(_ item: RemoteFileItem, style: LayoutStyle) -> some View {
         ZStack(alignment: .topTrailing) {
-            destination(for: item) {
-                RemoteFileGridCell(
-                    item: item,
-                    service: viewModel.service,
-                    isLarge: style == .largeThumbnails,
-                    thumbnailReloadVersion: thumbnailReloadVersion
-                )
-            }
+            RemoteFileGridCell(
+                item: item,
+                service: viewModel.service,
+                isLarge: style == .largeThumbnails,
+                thumbnailReloadVersion: thumbnailReloadVersion
+            )
 
             if isSelecting {
                 selectionIndicator(isSelected: selectedItemIDs.contains(item.id))
@@ -686,25 +703,19 @@ struct FileBrowserView: View {
             }
         }
         .contentShape(Rectangle())
-        .simultaneousGesture(itemLongPressGesture(for: item))
-        .popover(
-            isPresented: contextPanelBinding(for: item),
-            attachmentAnchor: .rect(.bounds),
-            arrowEdge: .top
-        ) {
-            contextActionPopover(for: item)
-        }
+        .gesture(itemInteractionGesture(for: item))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { activate(item) }
+        .accessibilityAction(named: "작업 보기") { showItemPanel(for: item) }
     }
 
     private func listItem(_ item: RemoteFileItem) -> some View {
         HStack(spacing: 8) {
-            destination(for: item) {
-                RemoteFileListRow(
-                    item: item,
-                    service: viewModel.service,
-                    thumbnailReloadVersion: thumbnailReloadVersion
-                )
-            }
+            RemoteFileListRow(
+                item: item,
+                service: viewModel.service,
+                thumbnailReloadVersion: thumbnailReloadVersion
+            )
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if isSelecting {
@@ -712,33 +723,44 @@ struct FileBrowserView: View {
             }
         }
         .contentShape(Rectangle())
-        .simultaneousGesture(itemLongPressGesture(for: item))
-        .popover(
-            isPresented: contextPanelBinding(for: item),
-            attachmentAnchor: .rect(.bounds),
-            arrowEdge: .top
-        ) {
-            contextActionPopover(for: item)
-        }
+        .gesture(itemInteractionGesture(for: item))
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { activate(item) }
+        .accessibilityAction(named: "작업 보기") { showItemPanel(for: item) }
     }
 
-    private func itemLongPressGesture(for item: RemoteFileItem) -> some Gesture {
+    private func itemInteractionGesture(for item: RemoteFileItem) -> some Gesture {
         LongPressGesture(minimumDuration: 0.45, maximumDistance: 20)
-            .onEnded { _ in
-                guard !isSelecting else { return }
-                contextPanelItem = item
-            }
-    }
-
-    private func contextPanelBinding(for item: RemoteFileItem) -> Binding<Bool> {
-        Binding(
-            get: { contextPanelItem?.id == item.id },
-            set: { isPresented in
-                if !isPresented, contextPanelItem?.id == item.id {
-                    contextPanelItem = nil
+            .exclusively(before: TapGesture())
+            .onEnded { result in
+                switch result {
+                case .first:
+                    showItemPanel(for: item)
+                case .second:
+                    activate(item)
                 }
             }
-        )
+    }
+
+    private func showItemPanel(for item: RemoteFileItem) {
+        guard !isSelecting else { return }
+        interactionCoordinator.showItemPanel(item)
+    }
+
+    private func activate(_ item: RemoteFileItem) {
+        switch FileBrowserInteractionCoordinator.activation(
+            for: item,
+            isSelecting: isSelecting
+        ) {
+        case .toggleSelection:
+            guard !shareCoordinator.isPreparing else { return }
+            toggleSelection(for: item)
+        case .openFolder:
+            navigatedFolder = item
+        case .preview:
+            guard canBeginUserPresentation else { return }
+            previewItem = item
+        }
     }
 
     private func contextActionPopover(for item: RemoteFileItem) -> some View {
@@ -823,8 +845,9 @@ struct FileBrowserView: View {
                     title: favoriteStore.contains(item) ? "별 해제" : "즐겨찾기",
                     systemImage: favoriteStore.contains(item) ? "star.slash" : "star"
                 ) {
-                    favoriteStore.toggle(item)
-                    contextPanelItem = nil
+                    performContextPanelAction {
+                        favoriteStore.toggle(item)
+                    }
                 }
 
                 if !item.isDirectory {
@@ -839,8 +862,9 @@ struct FileBrowserView: View {
 
                 if thumbnailPreheater.isRunning {
                     CompactPanelButton(title: "생성 중지", systemImage: "stop.circle", tint: .red) {
-                        thumbnailPreheater.cancel()
-                        contextPanelItem = nil
+                        performContextPanelAction {
+                            thumbnailPreheater.cancel()
+                        }
                     }
                 } else if item.isDirectory {
                     CompactPanelButton(title: "현재 폴더 썸네일", systemImage: "photo.stack") {
@@ -892,51 +916,7 @@ struct FileBrowserView: View {
     private func performContextPanelAction(
         _ action: @escaping @MainActor () -> Void
     ) {
-        contextPanelItem = nil
-        Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(180))
-            action()
-        }
-    }
-
-    @ViewBuilder
-    private func destination<Label: View>(
-        for item: RemoteFileItem,
-        @ViewBuilder label: () -> Label
-    ) -> some View {
-        if isSelecting {
-            Button {
-                toggleSelection(for: item)
-            } label: {
-                label()
-            }
-            .buttonStyle(.plain)
-            .disabled(shareCoordinator.isPreparing)
-            .accessibilityLabel(
-                "\(item.name), \(selectedItemIDs.contains(item.id) ? "선택됨" : "선택하지 않음")"
-            )
-        } else if item.isDirectory {
-            NavigationLink {
-                FileBrowserView(
-                    connection: viewModel.connection,
-                    path: item.path,
-                    service: viewModel.service,
-                    title: item.name,
-                    operationCoordinator: operationCoordinator
-                )
-            } label: {
-                label()
-            }
-        } else {
-            Button {
-                guard canBeginUserPresentation else { return }
-                previewItem = item
-            } label: {
-                label()
-            }
-            .buttonStyle(.plain)
-            .disabled(!canBeginUserPresentation)
-        }
+        interactionCoordinator.dismissPanel(then: action)
     }
 
     private var selectedItems: [RemoteFileItem] {

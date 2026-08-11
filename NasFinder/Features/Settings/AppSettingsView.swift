@@ -92,11 +92,15 @@ struct AppSettingsView: View {
                     .padding(.vertical, 7)
                     .accessibilityElement(children: .combine)
                 }
+
+                Divider()
+                SettingsPanelDescription(
+                    "표시 색은 iPhone의 라이트·다크 모드에 맞춰 자동으로 바뀝니다."
+                )
+                .padding(.top, 8)
             }
         } header: {
             SettingsSectionHeader(title: "테마 색 구성", systemImage: "paintpalette")
-        } footer: {
-            Text("표시 색은 iPhone의 라이트·다크 모드에 맞춰 자동으로 바뀝니다.")
         }
     }
 
@@ -114,10 +118,12 @@ struct AppSettingsView: View {
             SettingsIntegrationStep(number: 2, text: "오른쪽 위의 더 보기(…)에서 ‘편집’을 선택합니다.")
             SettingsIntegrationStep(number: 3, text: "‘위치’에서 NasFinder의 서버 이름을 켭니다.")
             SettingsIntegrationStep(number: 4, text: "서버 이름을 선택해 원격 파일을 엽니다.")
+
+            SettingsPanelDescription(
+                "SFTP는 파일 작업을 지원하며, Synology 위치는 열기와 내려받기를 지원합니다."
+            )
         } header: {
             SettingsSectionHeader(title: "Apple 파일 앱 연동", systemImage: "folder")
-        } footer: {
-            Text("SFTP는 파일 작업을 지원하며, Synology 위치는 열기와 내려받기를 지원합니다.")
         }
     }
 

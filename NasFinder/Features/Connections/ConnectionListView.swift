@@ -208,16 +208,18 @@ struct ConnectionListView: View {
             }
             .task {
                 deviceStorage = DeviceStorageSnapshot.current()
-                guard !didAttemptAutomaticOpen else { return }
-                didAttemptAutomaticOpen = true
-                try? await Task.sleep(for: .milliseconds(450))
-                guard !Task.isCancelled,
-                      !inboxStore.shouldPresentInbox,
-                      !isAddingConnection,
-                      editingConnection == nil else { return }
-                automaticallyOpenedConnection = store.preferredConnection
+                openPreferredConnectionIfNeeded()
             }
         }
+    }
+
+    private func openPreferredConnectionIfNeeded() {
+        guard !didAttemptAutomaticOpen else { return }
+        didAttemptAutomaticOpen = true
+        guard !inboxStore.shouldPresentInbox,
+              !isAddingConnection,
+              editingConnection == nil else { return }
+        automaticallyOpenedConnection = store.preferredConnection
     }
 
     private var quickLocationsSection: some View {
