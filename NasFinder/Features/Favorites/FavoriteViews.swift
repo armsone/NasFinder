@@ -179,6 +179,12 @@ private struct FavoriteCell: View {
                     .stroke(SkyBreezeTheme.thumbnailBorder, lineWidth: 1)
             }
             .clipShape(RoundedRectangle(cornerRadius: 11))
+            .overlay(alignment: .topTrailing) {
+                if let connectionKind {
+                    FavoriteConnectionBadge(kind: connectionKind, side: side)
+                        .padding(4)
+                }
+            }
 
             Text(favorite.name)
                 .font(.caption2)
@@ -188,16 +194,65 @@ private struct FavoriteCell: View {
                 .frame(width: max(side, 56))
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(favorite.name)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var connection: RemoteConnection? {
+        connectionStore.connections.first { $0.id == favorite.connectionID }
+    }
+
+    private var connectionKind: ConnectionKind? {
+        connection?.kind
+    }
+
+    private var accessibilityLabel: String {
+        guard let connectionKind else { return favorite.name }
+        return "\(favorite.name), \(connectionKind.dashboardSourceName)"
     }
 
     private var service: (any RemoteFileService)? {
-        guard let connection = connectionStore.connections.first(where: {
-            $0.id == favorite.connectionID
-        }), let credential = try? connectionStore.credential(for: connection) else {
+        guard let connection,
+              let credential = try? connectionStore.credential(for: connection) else {
             return nil
         }
         return RemoteFileServiceFactory.make(connection: connection, credential: credential)
+    }
+}
+
+private struct FavoriteConnectionBadge: View {
+    let kind: ConnectionKind
+    let side: CGFloat
+
+    var body: some View {
+        Text(kind.favoriteBadgeLetter)
+            .font(.system(size: max(8, side * 0.15), weight: .bold, design: .rounded))
+            .foregroundStyle(.white)
+            .frame(width: max(15, side * 0.25), height: max(15, side * 0.25))
+            .background(kind.favoriteBadgeColor.opacity(0.88), in: Circle())
+            .accessibilityHidden(true)
+    }
+}
+
+private extension ConnectionKind {
+    var favoriteBadgeLetter: String {
+        switch self {
+        case .synology: "N"
+        case .sftp: "S"
+        }
+    }
+
+    var favoriteBadgeColor: Color {
+        switch self {
+        case .synology: SkyBreezeTheme.nasBlue
+        case .sftp: SkyBreezeTheme.sftpGreen
+        }
+    }
+
+    var dashboardSourceName: String {
+        switch self {
+        case .synology: "NAS"
+        case .sftp: "SFTP"
+        }
     }
 }
 

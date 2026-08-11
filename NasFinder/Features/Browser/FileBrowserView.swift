@@ -2,6 +2,93 @@ import SwiftUI
 import UIKit
 import UniformTypeIdentifiers
 
+struct FileBrowserPathComponent: Identifiable, Equatable {
+    let path: String
+    let title: String
+
+    var id: String { path }
+}
+
+enum FileBrowserPathNavigation {
+    static func components(currentPath: String, rootPath: String) -> [FileBrowserPathComponent] {
+        let root = normalized(rootPath)
+        let current = normalized(currentPath)
+        guard current == root || current.hasPrefix(root == "/" ? "/" : root + "/") else {
+            return [FileBrowserPathComponent(path: current, title: current)]
+        }
+
+        var result = [FileBrowserPathComponent(path: root, title: root)]
+        guard current != root else { return result }
+        let remainder = String(current.dropFirst(root == "/" ? 1 : root.count + 1))
+        var accumulated = root
+        for name in remainder.split(separator: "/").map(String.init) {
+            accumulated = accumulated == "/" ? "/\(name)" : "\(accumulated)/\(name)"
+            result.append(FileBrowserPathComponent(path: accumulated, title: name))
+        }
+        return result
+    }
+
+    private static func normalized(_ path: String) -> String {
+        var value = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        while value.count > 1, value.hasSuffix("/") { value.removeLast() }
+        return value.isEmpty ? "/" : value
+    }
+}
+
+private struct FileBrowserPageTitle: View {
+    let title: String
+    @ObservedObject var trafficTracker: PageNetworkTrafficTracker
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text(title)
+                .font(.headline)
+                .lineLimit(1)
+
+            HStack(spacing: 7) {
+                trafficValue(
+                    symbol: "arrow.up",
+                    value: trafficTracker.uploadedByteCount,
+                    accessibilityLabel: "올림"
+                )
+                trafficValue(
+                    symbol: "arrow.down",
+                    value: trafficTracker.downloadedByteCount,
+                    accessibilityLabel: "내림"
+                )
+                trafficValue(
+                    symbol: "sum",
+                    value: trafficTracker.totalByteCount,
+                    accessibilityLabel: "합계"
+                )
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .monospacedDigit()
+        }
+        .frame(maxWidth: 230)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func trafficValue(
+        symbol: String,
+        value: Int64,
+        accessibilityLabel: String
+    ) -> some View {
+        Label {
+            Text(PageNetworkTrafficTracker.formatted(value))
+        } icon: {
+            Image(systemName: symbol)
+                .font(.caption2)
+                .imageScale(.small)
+        }
+        .labelStyle(.titleAndIcon)
+        .accessibilityLabel(
+            "\(accessibilityLabel) \(PageNetworkTrafficTracker.formatted(value))"
+        )
+    }
+}
+
 struct FileBrowserView: View {
     private struct DisplayRequest: Equatable {
         let query: String
@@ -47,6 +134,7 @@ struct FileBrowserView: View {
     @AppStorage("fileBrowserNamePriority") private var storedNamePriority = FileBrowserNamePriority.numbersFirst.rawValue
     @AppStorage("fileBrowserFoldersFirst") private var foldersFirst = true
     @StateObject private var viewModel: FileBrowserViewModel
+    @StateObject private var trafficTracker: PageNetworkTrafficTracker
     @StateObject private var shareCoordinator = RemoteFileShareCoordinator()
     @StateObject private var operationCoordinator: FileOperationCoordinator
     @StateObject private var thumbnailPreheater = ThumbnailPreheater()
@@ -71,11 +159,24 @@ struct FileBrowserView: View {
         path: String,
         service: any RemoteFileService,
         title: String,
-        operationCoordinator: FileOperationCoordinator = FileOperationCoordinator()
+        operationCoordinator: FileOperationCoordinator = FileOperationCoordinator(),
+        trafficTracker: PageNetworkTrafficTracker? = nil
     ) {
+        let tracker = trafficTracker ?? PageNetworkTrafficTracker()
+        let measuredService: any RemoteFileService
+        if service is TrafficMeasuringRemoteFileService {
+            measuredService = service
+        } else {
+            measuredService = TrafficMeasuringRemoteFileService(base: service, tracker: tracker)
+        }
         _viewModel = StateObject(
-            wrappedValue: FileBrowserViewModel(connection: connection, path: path, service: service)
+            wrappedValue: FileBrowserViewModel(
+                connection: connection,
+                path: path,
+                service: measuredService
+            )
         )
+        _trafficTracker = StateObject(wrappedValue: tracker)
         _operationCoordinator = StateObject(wrappedValue: operationCoordinator)
         self.title = title
     }
@@ -90,7 +191,7 @@ struct FileBrowserView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
-        .navigationTitle(title)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .searchable(
             text: $searchText,
@@ -98,6 +199,10 @@ struct FileBrowserView: View {
             prompt: "현재 폴더 검색"
         )
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
+            }
+
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if isSelecting {
                     Button("완료") {
@@ -131,13 +236,15 @@ struct FileBrowserView: View {
                 path: item.path,
                 service: viewModel.service,
                 title: item.name,
-                operationCoordinator: operationCoordinator
+                operationCoordinator: operationCoordinator,
+                trafficTracker: trafficTracker
             )
         }
         .refreshable {
             guard !operationCoordinator.isBusy else { return }
             await viewModel.reloadAfterCurrentLoad()
             await RemoteVideoThumbnailTrafficBudget.shared.reset()
+            await RemoteVideoThumbnailTrafficBudget.sftpShared.reset()
             thumbnailReloadVersion &+= 1
         }
         .fileImporter(
@@ -173,6 +280,9 @@ struct FileBrowserView: View {
                 matching: request.query,
                 options: request.sortOptions
             )
+        }
+        .onAppear {
+            trafficTracker.reset()
         }
         .task { await viewModel.load() }
         .overlay(alignment: .bottom) {
@@ -357,6 +467,7 @@ struct FileBrowserView: View {
                         rootItems: children,
                         rootPath: item.path,
                         recursively: recursively,
+                        requiresExternalPower: true,
                         service: viewModel.service
                     )
                 } catch {
@@ -561,19 +672,43 @@ struct FileBrowserView: View {
             Image(systemName: "externaldrive.fill")
                 .foregroundStyle(.tint)
 
-            Text(viewModel.connection.name)
-                .fontWeight(.semibold)
-                .lineLimit(1)
+            NavigationLink {
+                pathDestination(
+                    path: viewModel.connection.normalizedRootPath,
+                    title: viewModel.connection.name
+                )
+            } label: {
+                Text(viewModel.connection.name)
+                    .fontWeight(.semibold)
+                    .lineLimit(1)
+            }
+            .buttonStyle(.plain)
+            .disabled(viewModel.path == viewModel.connection.normalizedRootPath)
 
             Image(systemName: "chevron.right")
                 .font(.caption2.weight(.bold))
                 .foregroundStyle(.tertiary)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(viewModel.path)
-                    .fontDesign(.monospaced)
-                    .lineLimit(1)
-                    .textSelection(.enabled)
+                HStack(spacing: 5) {
+                    ForEach(Array(pathComponents.enumerated()), id: \.element.id) { index, component in
+                        if index > 0 {
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 8, weight: .bold))
+                                .foregroundStyle(.tertiary)
+                        }
+                        NavigationLink {
+                            pathDestination(path: component.path, title: component.title)
+                        } label: {
+                            Text(component.title)
+                        }
+                        .buttonStyle(.plain)
+                        .fontDesign(.monospaced)
+                        .foregroundStyle(component.path == viewModel.path ? .primary : .secondary)
+                        .disabled(component.path == viewModel.path)
+                    }
+                }
+                .lineLimit(1)
             }
 
             Spacer(minLength: 4)
@@ -589,6 +724,24 @@ struct FileBrowserView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             "\(viewModel.connection.name), 현재 경로 \(viewModel.path), \(itemCountLabel)"
+        )
+    }
+
+    private var pathComponents: [FileBrowserPathComponent] {
+        FileBrowserPathNavigation.components(
+            currentPath: viewModel.path,
+            rootPath: viewModel.connection.normalizedRootPath
+        )
+    }
+
+    private func pathDestination(path: String, title: String) -> some View {
+        FileBrowserView(
+            connection: viewModel.connection,
+            path: path,
+            service: viewModel.service,
+            title: title,
+            operationCoordinator: operationCoordinator,
+            trafficTracker: trafficTracker
         )
     }
 
@@ -877,7 +1030,11 @@ struct FileBrowserView: View {
                             startThumbnailPreheating(for: item, recursively: true)
                         }
                     }
-                } else if item.supportsQuickLookThumbnail {
+                } else if ThumbnailPreheatPolicy.canGenerate(
+                    item: item,
+                    connectionKind: viewModel.service.connection.kind,
+                    supportsRangeStreaming: viewModel.service.supportsRangeStreaming
+                ) {
                     CompactPanelButton(title: "이 파일 썸네일", systemImage: "photo.stack") {
                         performContextPanelAction {
                             startThumbnailPreheating(for: item, recursively: false)

@@ -58,9 +58,34 @@
 	<true/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
+		<key>NSAllowsArbitraryLoadsInWebContent</key>
+		<true/>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>UTImportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.json</string>
+				<string>public.content</string>
+			</array>
+			<key>UTTypeDescription</key>
+			<string>브라우저 즐겨찾기</string>
+			<key>UTTypeIdentifier</key>
+			<string>com.intosharp.hanclip.browser-favorites</string>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>hanclipfavorites</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/vnd.hanclip.browser-favorites+json</string>
+			</dict>
+		</dict>
+	</array>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>NasFinder가 같은 네트워크의 NAS 또는 SFTP 서버에 연결하려면 로컬 네트워크 접근이 필요합니다.</string>
 	<key>NasFinderKeychainAccessGroup</key>

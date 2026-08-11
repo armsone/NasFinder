@@ -8,6 +8,7 @@ struct ConnectionListView: View {
     @EnvironmentObject private var store: ConnectionStore
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @EnvironmentObject private var favoriteStore: FavoriteStore
+    @EnvironmentObject private var browserFavoritesStore: BrowserFavoritesStore
 
     @State private var isAddingConnection: Bool
     @State private var connectionPendingDeletion: RemoteConnection?
@@ -30,13 +31,7 @@ struct ConnectionListView: View {
         NavigationStack {
             List {
                 Section {
-                    if store.connections.isEmpty {
-                        Label(
-                            "연결된 NAS가 없습니다",
-                            systemImage: "externaldrive.badge.plus"
-                        )
-                        .foregroundStyle(.secondary)
-                    } else {
+                    if !store.connections.isEmpty {
                         ForEach(store.connections) { connection in
                             NetworkLocationCard(
                                 connection: connection,
@@ -63,7 +58,19 @@ struct ConnectionListView: View {
                         }
                     }
 
-                    Button("네트워크 추가", systemImage: "plus") {
+                    NavigationLink {
+                        WebBrowserView()
+                    } label: {
+                        WebNetworkLocationRow()
+                    }
+                    .buttonStyle(.plain)
+
+                    Button(
+                        store.connections.isEmpty
+                            ? "네트워크를 추가해 주세요"
+                            : "네트워크 추가",
+                        systemImage: "plus"
+                    ) {
                         isAddingConnection = true
                     }
                     .font(.subheadline)
@@ -206,11 +213,38 @@ struct ConnectionListView: View {
             } message: { connection in
                 Text("\(connection.name)의 저장된 로그인 정보와 파일 앱 위치가 이 iPhone에서 제거됩니다. 서버의 파일은 삭제되지 않습니다.")
             }
+            .alert("브라우저 즐겨찾기", isPresented: browserFavoritesMessageBinding) {
+                Button("확인", role: .cancel) {
+                    browserFavoritesStore.noticeMessage = nil
+                    browserFavoritesStore.errorMessage = nil
+                }
+            } message: {
+                Text(
+                    browserFavoritesStore.errorMessage
+                        ?? browserFavoritesStore.noticeMessage
+                        ?? ""
+                )
+            }
             .task {
                 deviceStorage = DeviceStorageSnapshot.current()
                 openPreferredConnectionIfNeeded()
             }
         }
+    }
+
+    private var browserFavoritesMessageBinding: Binding<Bool> {
+        Binding(
+            get: {
+                browserFavoritesStore.noticeMessage != nil
+                    || browserFavoritesStore.errorMessage != nil
+            },
+            set: {
+                if !$0 {
+                    browserFavoritesStore.noticeMessage = nil
+                    browserFavoritesStore.errorMessage = nil
+                }
+            }
+        )
     }
 
     private func openPreferredConnectionIfNeeded() {
@@ -399,6 +433,39 @@ struct ConnectionListView: View {
         guard store.connections.indices.contains(targetIndex) else { return }
         let destination = offset < 0 ? targetIndex : targetIndex + 1
         store.move(from: IndexSet(integer: index), to: destination)
+    }
+}
+
+private struct WebNetworkLocationRow: View {
+    var body: some View {
+        HStack(spacing: 13) {
+            Image(systemName: "globe")
+                .font(.title3)
+                .foregroundStyle(SkyBreezeTheme.browserOrange)
+                .frame(width: 32, height: 32)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Text("Browser")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+
+                    Text("WWW")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(SkyBreezeTheme.browserOrange)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(SkyBreezeTheme.browserOrange.opacity(0.1), in: Capsule())
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, 6)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Browser, WWW")
+        .accessibilityHint("웹 브라우저를 엽니다.")
     }
 }
 
@@ -913,8 +980,8 @@ private struct DeviceStorageSnapshot: Equatable {
 private extension ConnectionKind {
     var dashboardTint: Color {
         switch self {
-        case .synology: .blue
-        case .sftp: .teal
+        case .synology: SkyBreezeTheme.nasBlue
+        case .sftp: SkyBreezeTheme.sftpGreen
         }
     }
 

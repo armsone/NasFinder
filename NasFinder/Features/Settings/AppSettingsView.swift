@@ -2,10 +2,12 @@ import SwiftUI
 
 struct AppSettingsView: View {
     let connectionCount: Int
+    @ObservedObject private var screenAwakeController = ScreenAwakeController.shared
 
     var body: some View {
         List {
             AppIconPickerSection(compact: true)
+            screenAwakeSection
             themePaletteSection
             filesAppIntegrationSection
         }
@@ -14,6 +16,21 @@ struct AppSettingsView: View {
         .background(SkyBreezeBackground())
         .navigationTitle("설정")
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var screenAwakeSection: some View {
+        Section {
+            Picker("화면 동작", selection: $screenAwakeController.mode) {
+                ForEach(ScreenAwakeMode.allCases) { mode in
+                    Text(mode.title).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            SettingsPanelDescription(screenAwakeController.mode.description)
+        } header: {
+            SettingsSectionHeader(title: "화면 꺼짐 방지", systemImage: "sun.max")
+        }
     }
 
     private let colors: [ThemeColorRole] = [
@@ -40,6 +57,24 @@ struct AppSettingsView: View {
             description: "Apple 시스템 파란색",
             lightColor: Color(red: 0.00, green: 0.48, blue: 1.00),
             darkColor: Color(red: 0.04, green: 0.52, blue: 1.00)
+        ),
+        ThemeColorRole(
+            name: "NAS",
+            description: "Synology 네트워크 위치",
+            lightColor: Color(red: 0.00, green: 0.48, blue: 1.00),
+            darkColor: Color(red: 0.04, green: 0.52, blue: 1.00)
+        ),
+        ThemeColorRole(
+            name: "SFTP",
+            description: "SFTP 네트워크 위치",
+            lightColor: Color(red: 0.20, green: 0.68, blue: 0.31),
+            darkColor: Color(red: 0.19, green: 0.82, blue: 0.35)
+        ),
+        ThemeColorRole(
+            name: "Browser",
+            description: "WWW 네트워크 위치",
+            lightColor: Color(red: 1.00, green: 0.58, blue: 0.00),
+            darkColor: Color(red: 1.00, green: 0.62, blue: 0.04)
         ),
         ThemeColorRole(
             name: "삭제",

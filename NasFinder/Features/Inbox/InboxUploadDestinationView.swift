@@ -9,6 +9,15 @@ struct InboxUploadDestinationView: View {
     @StateObject private var operationCoordinator = FileOperationCoordinator()
 
     let sources: [LocalUploadSource]
+    let onUploadCompleted: (() -> Void)?
+
+    init(
+        sources: [LocalUploadSource],
+        onUploadCompleted: (() -> Void)? = nil
+    ) {
+        self.sources = sources
+        self.onUploadCompleted = onUploadCompleted
+    }
 
     var body: some View {
         NavigationStack {
@@ -25,7 +34,8 @@ struct InboxUploadDestinationView: View {
                             InboxUploadConnectionView(
                                 connection: connection,
                                 sources: sources,
-                                operationCoordinator: operationCoordinator
+                                operationCoordinator: operationCoordinator,
+                                onUploadCompleted: completeUpload
                             )
                         } label: {
                             connectionRow(connection)
@@ -47,6 +57,11 @@ struct InboxUploadDestinationView: View {
             }
         }
         .interactiveDismissDisabled(operationCoordinator.isWorking)
+    }
+
+    private func completeUpload() {
+        onUploadCompleted?()
+        dismiss()
     }
 
     private func connectionRow(_ connection: RemoteConnection) -> some View {
@@ -86,6 +101,7 @@ private struct InboxUploadConnectionView: View {
     let connection: RemoteConnection
     let sources: [LocalUploadSource]
     @ObservedObject var operationCoordinator: FileOperationCoordinator
+    let onUploadCompleted: () -> Void
 
     var body: some View {
         Group {
@@ -97,7 +113,8 @@ private struct InboxUploadConnectionView: View {
                     path: connection.normalizedRootPath,
                     service: service,
                     sources: sources,
-                    operationCoordinator: operationCoordinator
+                    operationCoordinator: operationCoordinator,
+                    onUploadCompleted: onUploadCompleted
                 )
             } else {
                 ContentUnavailableView {
@@ -137,6 +154,7 @@ private struct InboxUploadFolderView: View {
     private let service: any RemoteFileService
     private let sources: [LocalUploadSource]
     @ObservedObject private var operationCoordinator: FileOperationCoordinator
+    private let onUploadCompleted: () -> Void
 
     @MainActor
     init(
@@ -144,11 +162,13 @@ private struct InboxUploadFolderView: View {
         path: String,
         service: any RemoteFileService,
         sources: [LocalUploadSource],
-        operationCoordinator: FileOperationCoordinator
+        operationCoordinator: FileOperationCoordinator,
+        onUploadCompleted: @escaping () -> Void
     ) {
         self.connection = connection
         self.service = service
         self.sources = sources
+        self.onUploadCompleted = onUploadCompleted
         _operationCoordinator = ObservedObject(wrappedValue: operationCoordinator)
         _viewModel = StateObject(
             wrappedValue: FileBrowserViewModel(
@@ -190,7 +210,8 @@ private struct InboxUploadFolderView: View {
                             path: folder.path,
                             service: service,
                             sources: sources,
-                            operationCoordinator: operationCoordinator
+                            operationCoordinator: operationCoordinator,
+                            onUploadCompleted: onUploadCompleted
                         )
                     } label: {
                         Label {
@@ -298,6 +319,7 @@ private struct InboxUploadFolderView: View {
             conflictPolicy: .keepBoth
         ) {
             await viewModel.reloadAfterCurrentLoad()
+            onUploadCompleted()
         }
     }
 }

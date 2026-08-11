@@ -4,6 +4,12 @@ import QuickLook
 import SwiftUI
 import UIKit
 
+enum RemotePreviewInteractionPolicy {
+    static func shouldTogglePlaybackOnSingleTap(controlsAreVisible: Bool) -> Bool {
+        controlsAreVisible
+    }
+}
+
 struct RemotePreviewView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -21,6 +27,7 @@ struct RemotePreviewView: View {
     @State private var videoDragVolume: Float?
     @State private var volumeDragStart: Float?
     @State private var systemVolumeSlider: UISlider?
+    @State private var screenAwakeActivityID = UUID()
 
     init(
         item: RemoteFileItem,
@@ -76,6 +83,7 @@ struct RemotePreviewView: View {
         .toolbar(.hidden, for: .navigationBar)
         .onAppear {
             revealControls()
+            updateScreenAwakeActivity()
         }
         .task(id: viewModel.currentItem.id) {
             await viewModel.loadCurrentItem()
@@ -86,6 +94,7 @@ struct RemotePreviewView: View {
             }
         }
         .onChange(of: viewModel.isPlaying) { _, isPlaying in
+            updateScreenAwakeActivity()
             if isPlaying {
                 revealControls()
             } else {
@@ -98,6 +107,7 @@ struct RemotePreviewView: View {
         .onChange(of: viewModel.currentItem.id) { _, _ in
             resetVideoTransform()
             revealControls()
+            updateScreenAwakeActivity()
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -117,6 +127,7 @@ struct RemotePreviewView: View {
         }
         .onDisappear {
             controlsHideTask?.cancel()
+            ScreenAwakeController.shared.finishActivity(screenAwakeActivityID)
             viewModel.tearDown()
             shareCoordinator.cancelAndCleanUp()
         }
@@ -132,6 +143,15 @@ struct RemotePreviewView: View {
             }
         } message: {
             Text(shareCoordinator.errorMessage ?? "")
+        }
+    }
+
+    private func updateScreenAwakeActivity() {
+        if viewModel.isPlaying
+            && (viewModel.currentItem.isImage || viewModel.currentItem.isVideo) {
+            ScreenAwakeController.shared.beginActivity(screenAwakeActivityID)
+        } else {
+            ScreenAwakeController.shared.finishActivity(screenAwakeActivityID)
         }
     }
 
@@ -201,7 +221,7 @@ struct RemotePreviewView: View {
                         .simultaneousGesture(videoTapGesture)
                         .accessibilityLabel("공용 동영상 플레이어")
                         .accessibilityHint(
-                            "한 번 탭하면 재생하거나 일시 정지하고, 두 번 탭하면 화면 크기를 초기화합니다."
+                            "컨트롤이 숨겨졌을 때 한 번 탭하면 컨트롤을 표시하고, 표시된 상태에서는 재생하거나 일시 정지합니다. 두 번 탭하면 화면 크기를 초기화합니다."
                         )
 
                     if !areControlsVisible {
@@ -399,7 +419,7 @@ struct RemotePreviewView: View {
     private var transportControls: some View {
         HStack(spacing: 12) {
             Button {
-                viewModel.navigate(by: -1)
+                viewModel.navigate(by: -1, autoplay: true)
                 revealControls()
             } label: {
                 SharedPlayerCircleLabel(systemImage: "backward.end.fill")
@@ -408,7 +428,7 @@ struct RemotePreviewView: View {
             .accessibilityLabel("이전 미디어")
 
             Button {
-                viewModel.navigate(by: 1)
+                viewModel.navigate(by: 1, autoplay: true)
                 revealControls()
             } label: {
                 SharedPlayerCircleLabel(systemImage: "forward.end.fill")
@@ -654,7 +674,11 @@ struct RemotePreviewView: View {
                     }
                     revealControls()
                 case .second:
-                    viewModel.togglePlayback()
+                    if RemotePreviewInteractionPolicy.shouldTogglePlaybackOnSingleTap(
+                        controlsAreVisible: areControlsVisible
+                    ) {
+                        viewModel.togglePlayback()
+                    }
                     revealControls()
                 }
             }
@@ -979,8 +1003,12 @@ final class RemotePreviewViewModel: ObservableObject {
         await loadCurrentItem()
     }
 
-    func navigate(by offset: Int) {
+    func navigate(by offset: Int, autoplay: Bool = false) {
         guard items.count > 1, offset != 0 else { return }
+
+        if autoplay {
+            isPlaying = true
+        }
 
         let count = items.count
         let nextIndex = (currentIndex + offset % count + count) % count

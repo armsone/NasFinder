@@ -15,6 +15,7 @@ final class RemoteThumbnailActivityTracker: ObservableObject {
     private var completedCount = 0
     private var totalCount = 0
     private var hideTask: Task<Void, Never>?
+    private let screenAwakeActivityID = UUID()
 
     private init() {}
 
@@ -30,6 +31,7 @@ final class RemoteThumbnailActivityTracker: ObservableObject {
         }
         totalCount += 1
         isActive = true
+        ScreenAwakeController.shared.beginActivity(screenAwakeActivityID)
         updateFraction()
     }
 
@@ -39,6 +41,7 @@ final class RemoteThumbnailActivityTracker: ObservableObject {
         updateFraction()
 
         guard activeOperationIDs.isEmpty else { return }
+        ScreenAwakeController.shared.finishActivity(screenAwakeActivityID)
         fractionCompleted = 1
         hideTask = Task { @MainActor [weak self] in
             try? await Task.sleep(nanoseconds: 350_000_000)
@@ -652,6 +655,7 @@ actor RemoteThumbnailDiskCache {
         generation &+= 1
         try? fileManager.removeItem(at: directoryURL)
         await RemoteVideoThumbnailTrafficBudget.shared.reset()
+        await RemoteVideoThumbnailTrafficBudget.sftpShared.reset()
         await RemoteThumbnailLoader.clearInMemoryCaches()
     }
 

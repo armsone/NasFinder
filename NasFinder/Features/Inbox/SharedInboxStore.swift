@@ -76,6 +76,30 @@ final class SharedInboxStore: ObservableObject {
         }
     }
 
+    @discardableResult
+    func importDownloadedFile(
+        at url: URL,
+        originalFilename: String,
+        contentTypeIdentifier: String?
+    ) async throws -> SharedInboxRecord {
+        let record = try await Task.detached(priority: .userInitiated) {
+            let record = try SharedInbox.importTemporaryFile(
+                at: url,
+                originalFilename: originalFilename,
+                contentTypeIdentifier: contentTypeIdentifier
+            )
+            do {
+                try SharedInbox.append(records: [record])
+                return record
+            } catch {
+                try? SharedInbox.delete(record)
+                throw error
+            }
+        }.value
+        reload()
+        return record
+    }
+
     func consumePendingPreviewRecordID() -> UUID? {
         defer { pendingPreviewRecordID = nil }
         return pendingPreviewRecordID

@@ -313,9 +313,16 @@ enum RemoteVideoThumbnailQuality {
             return partial + difference * difference
         } / Double(values.count)
         let standardDeviation = variance.squareRoot()
+        let minimum = values.min() ?? mean
+        let maximum = values.max() ?? mean
+        let luminanceRange = maximum - minimum
 
-        if mean > 0.97, standardDeviation < 0.03 { return false }
-        if mean < 0.03, standardDeviation < 0.03 { return false }
+        if mean > 0.97,
+           standardDeviation < 0.03,
+           luminanceRange < 0.08 { return false }
+        if mean < 0.03,
+           standardDeviation < 0.03,
+           luminanceRange < 0.08 { return false }
         return true
     }
 }
@@ -365,6 +372,11 @@ actor RemoteVideoThumbnailTrafficBudget {
     }
 
     static let shared = RemoteVideoThumbnailTrafficBudget()
+    static let sftpShared = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 18_000_000,
+        maximumItemBytes: defaultMaximumItemBytes,
+        minimumLeaseBytes: defaultMinimumLeaseBytes
+    )
 
     static let defaultMaximumFolderBytes = 20 * 1_024 * 1_024
     static let defaultMaximumItemBytes = 4 * 1_024 * 1_024

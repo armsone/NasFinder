@@ -263,6 +263,12 @@ final class RemoteVideoStreamingByteBudget: @unchecked Sendable {
         defer { lock.unlock() }
         return receivedBytes + reservedBytes
     }
+
+    var remainingByteCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return max(maximumBytes - receivedBytes - reservedBytes, 0)
+    }
 }
 
 /// Registers a range-read task atomically with respect to whole-loader

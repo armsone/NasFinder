@@ -2,6 +2,31 @@ import Foundation
 import Network
 import UIKit
 
+enum ThumbnailPreheatPolicy {
+    static func canGenerate(
+        item: RemoteFileItem,
+        connectionKind: ConnectionKind,
+        supportsRangeStreaming: Bool
+    ) -> Bool {
+        guard !item.isDirectory else { return false }
+        switch connectionKind {
+        case .synology:
+            return item.isImage || item.isVideo
+        case .sftp:
+            return item.isVideo
+                && supportsRangeStreaming
+                && item.size.map { $0 > 0 } == true
+        }
+    }
+
+    static func requiresExternalPower(
+        rootItems: [RemoteFileItem],
+        recursively: Bool
+    ) -> Bool {
+        recursively || rootItems.count != 1 || rootItems.first?.isDirectory != false
+    }
+}
+
 final class ThumbnailNetworkMonitor: @unchecked Sendable {
     static let shared = ThumbnailNetworkMonitor()
 
@@ -32,7 +57,7 @@ final class ThumbnailNetworkMonitor: @unchecked Sendable {
 @MainActor
 final class ThumbnailPreheater: ObservableObject {
     static let maximumSynologyDataBytes: Int64 = 20 * 1_024 * 1_024
-    static let maximumSFTPDataBytes: Int64 = 100 * 1_024 * 1_024
+    static let maximumSFTPDataBytes: Int64 = 18_000_000
 
     @Published private(set) var isRunning = false
     @Published private(set) var completedCount = 0
@@ -47,6 +72,7 @@ final class ThumbnailPreheater: ObservableObject {
 
     private var task: Task<Void, Never>?
     private var appIsActive = true
+    private let screenAwakeActivityID = UUID()
 
     init() {
         _ = ThumbnailNetworkMonitor.shared
@@ -69,11 +95,17 @@ final class ThumbnailPreheater: ObservableObject {
         rootItems: [RemoteFileItem],
         rootPath: String,
         recursively: Bool,
+        requiresExternalPower powerOverride: Bool? = nil,
         service: any RemoteFileService
     ) {
         guard !isRunning else { return }
+        let requiresExternalPower = powerOverride
+            ?? ThumbnailPreheatPolicy.requiresExternalPower(
+                rootItems: rootItems,
+                recursively: recursively
+            )
         do {
-            try validateRuntimeConditions()
+            try validateRuntimeConditions(requiresExternalPower: requiresExternalPower)
         } catch {
             errorMessage = error.localizedDescription
             return
@@ -81,12 +113,14 @@ final class ThumbnailPreheater: ObservableObject {
 
         resetProgress()
         isRunning = true
+        ScreenAwakeController.shared.beginActivity(screenAwakeActivityID)
         task = Task { @MainActor [weak self] in
             guard let self else { return }
             await self.run(
                 rootItems: rootItems,
                 rootPath: rootPath,
                 recursively: recursively,
+                requiresExternalPower: requiresExternalPower,
                 service: service
             )
         }
@@ -104,9 +138,11 @@ final class ThumbnailPreheater: ObservableObject {
         rootItems: [RemoteFileItem],
         rootPath: String,
         recursively: Bool,
+        requiresExternalPower: Bool,
         service: any RemoteFileService
     ) async {
         defer {
+            ScreenAwakeController.shared.finishActivity(screenAwakeActivityID)
             isRunning = false
             currentItemName = nil
             task = nil
@@ -126,7 +162,7 @@ final class ThumbnailPreheater: ObservableObject {
             var reachedPreviouslyUsedDataLimit = false
             for item in candidates {
                 try Task.checkCancellation()
-                try validateRuntimeConditions()
+                try validateRuntimeConditions(requiresExternalPower: requiresExternalPower)
                 currentItemName = item.name
 
                 let cacheKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
@@ -164,7 +200,13 @@ final class ThumbnailPreheater: ObservableObject {
                             expectedGeneration: diskCacheGeneration
                         )
                         generatedCount += 1
-                        transferredBytes += Int64(payload.transferredBytes)
+                        if service.connection.kind == .sftp {
+                            let usedBytes = await RemoteVideoThumbnailTrafficBudget
+                                .sftpShared.transferredBytes(for: item)
+                            transferredBytes = Int64(usedBytes)
+                        } else {
+                            transferredBytes += Int64(payload.transferredBytes)
+                        }
                         if transferredBytes >= maximumDataBytes {
                             reachedDataLimit = true
                         }
@@ -176,8 +218,10 @@ final class ThumbnailPreheater: ObservableObject {
                 } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
                     reachedDataLimit = true
                     reachedPreviouslyUsedDataLimit = true
-                    let usedBytes = await RemoteVideoThumbnailTrafficBudget.shared
-                        .transferredBytes(for: item)
+                    let trafficBudget = service.connection.kind == .sftp
+                        ? RemoteVideoThumbnailTrafficBudget.sftpShared
+                        : RemoteVideoThumbnailTrafficBudget.shared
+                    let usedBytes = await trafficBudget.transferredBytes(for: item)
                     transferredBytes = max(transferredBytes, Int64(usedBytes))
                 } catch {
                     failedCount += 1
@@ -187,7 +231,9 @@ final class ThumbnailPreheater: ObservableObject {
                 if reachedDataLimit { break }
             }
 
-            let limitText = "\(maximumDataBytes / (1_024 * 1_024)) MB"
+            let limitText = service.connection.kind == .sftp
+                ? "\(maximumDataBytes / 1_000_000) MB"
+                : "\(maximumDataBytes / (1_024 * 1_024)) MB"
             let suffix: String
             if reachedPreviouslyUsedDataLimit {
                 suffix = " · 이 폴더의 \(limitText) 한도가 이미 소진됨"
@@ -224,7 +270,7 @@ final class ThumbnailPreheater: ObservableObject {
         var visitedPaths: Set<String> = [rootPath]
         while !pendingDirectories.isEmpty {
             try Task.checkCancellation()
-            try validateRuntimeConditions()
+            try validateRuntimeConditions(requiresExternalPower: true)
             let directory = pendingDirectories.removeFirst()
             guard visitedPaths.insert(directory.path).inserted else { continue }
             currentItemName = "\(directory.name) 폴더 검색 중"
@@ -303,7 +349,7 @@ final class ThumbnailPreheater: ObservableObject {
         service: any RemoteFileService
     ) -> Int64? {
         guard service.connection.kind == .sftp else { return nil }
-        let upperBound: Int64 = 640 * 1_024
+        let upperBound: Int64 = 320 * 1_024
         guard let size = item.size, size > 0 else { return upperBound }
         return min(size, upperBound)
     }
@@ -314,11 +360,12 @@ final class ThumbnailPreheater: ObservableObject {
             : Self.maximumSFTPDataBytes
     }
 
-    private func validateRuntimeConditions() throws {
+    private func validateRuntimeConditions(requiresExternalPower: Bool) throws {
         guard appIsActive else { throw ThumbnailPreheatError.appInactive }
         guard ThumbnailNetworkMonitor.shared.isUnmeteredWiFi else {
             throw ThumbnailPreheatError.wifiRequired
         }
+        guard requiresExternalPower else { return }
         switch UIDevice.current.batteryState {
         case .charging, .full:
             return

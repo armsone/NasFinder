@@ -44,6 +44,7 @@ final class FileOperationCoordinator: ObservableObject {
 
     private var activeTask: Task<Void, Never>?
     private var activeRefreshID: UUID?
+    private let screenAwakeActivityID = UUID()
 
     var isBusy: Bool { isWorking || isRefreshing }
 
@@ -396,8 +397,13 @@ final class FileOperationCoordinator: ObservableObject {
         progress = nil
         errorMessage = nil
         statusMessage = nil
+        ScreenAwakeController.shared.beginActivity(screenAwakeActivityID)
+        let activityID = screenAwakeActivityID
 
         activeTask = Task { [weak self] in
+            defer {
+                ScreenAwakeController.shared.finishActivity(activityID)
+            }
             await operation()
             guard let self else { return }
             self.activeTask = nil

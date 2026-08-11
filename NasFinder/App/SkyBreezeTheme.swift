@@ -8,6 +8,19 @@ enum SkyBreezeTheme {
     /// iOS 기본 강조색. 시스템이 라이트·다크 모드에 맞춰 자동 조정한다.
     static let accent = Color(uiColor: .systemBlue)
 
+    static let nasBlue = adaptiveColor(
+        light: (0.00, 0.48, 1.00),
+        dark: (0.04, 0.52, 1.00)
+    )
+    static let sftpGreen = adaptiveColor(
+        light: (0.20, 0.68, 0.31),
+        dark: (0.19, 0.82, 0.35)
+    )
+    static let browserOrange = adaptiveColor(
+        light: (1.00, 0.58, 0.00),
+        dark: (1.00, 0.62, 0.04)
+    )
+
     static let folderBlue = Color(
         uiColor: UIColor { traits in
             traits.userInterfaceStyle == .dark
@@ -61,6 +74,23 @@ enum SkyBreezeTheme {
             colors: colors,
             startPoint: .topLeading,
             endPoint: .bottomTrailing
+        )
+    }
+
+    private static func adaptiveColor(
+        light: (CGFloat, CGFloat, CGFloat),
+        dark: (CGFloat, CGFloat, CGFloat)
+    ) -> Color {
+        Color(
+            uiColor: UIColor { traits in
+                let components = traits.userInterfaceStyle == .dark ? dark : light
+                return UIColor(
+                    red: components.0,
+                    green: components.1,
+                    blue: components.2,
+                    alpha: 1
+                )
+            }
         )
     }
 }

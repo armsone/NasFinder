@@ -5,6 +5,19 @@ import XCTest
 
 @MainActor
 final class RemotePreviewStateTests: XCTestCase {
+    func testSingleTapOnlyTogglesPlaybackWhenControlsAreVisible() {
+        XCTAssertFalse(
+            RemotePreviewInteractionPolicy.shouldTogglePlaybackOnSingleTap(
+                controlsAreVisible: false
+            )
+        )
+        XCTAssertTrue(
+            RemotePreviewInteractionPolicy.shouldTogglePlaybackOnSingleTap(
+                controlsAreVisible: true
+            )
+        )
+    }
+
     func testPreviewStartsWithAutomaticPlaybackEnabled() {
         let recorder = StallingPreviewRecorder()
         let service = StallingPreviewService(recorder: recorder)
@@ -251,6 +264,48 @@ final class RemotePreviewStateTests: XCTestCase {
         XCTAssertFalse(RemoteVideoThumbnailQuality.isUsable(image))
     }
 
+    func testRemoteThumbnailQualityRejectsFlatBlackFrame() throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil,
+                width: 32,
+                height: 32,
+                bitsPerComponent: 8,
+                bytesPerRow: 32 * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        context.setFillColor(CGColor(gray: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        let image = try XCTUnwrap(context.makeImage())
+
+        XCTAssertFalse(RemoteVideoThumbnailQuality.isUsable(image))
+    }
+
+    func testRemoteThumbnailQualityAcceptsDarkFrameWithSmallBrightPoint() throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil,
+                width: 32,
+                height: 32,
+                bitsPerComponent: 8,
+                bytesPerRow: 32 * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        context.setFillColor(CGColor(gray: 0.005, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        context.setFillColor(CGColor(gray: 0.8, alpha: 1))
+        context.fill(CGRect(x: 15, y: 15, width: 1, height: 1))
+        let image = try XCTUnwrap(context.makeImage())
+
+        XCTAssertTrue(RemoteVideoThumbnailQuality.isUsable(image))
+    }
+
     func testRemoteThumbnailQualityAcceptsDetailedBrightFrame() throws {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let context = try XCTUnwrap(
@@ -436,6 +491,37 @@ final class RemotePreviewStateTests: XCTestCase {
         viewModel.setPhotoAdvanceInterval(.tenSeconds)
         XCTAssertEqual(viewModel.playbackMode, .shuffle)
         XCTAssertEqual(viewModel.photoAdvanceInterval, .tenSeconds)
+    }
+
+    func testManualNavigationAutoplaysWhileAutomaticNavigationPreservesPause() {
+        let recorder = StallingPreviewRecorder()
+        let service = StallingPreviewService(recorder: recorder)
+        let first = previewVideoItem(connectionID: service.connection.id)
+        let second = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/share/second.mov",
+            name: "second.mov",
+            kind: .file,
+            size: 2_048,
+            modifiedAt: nil,
+            contentTypeIdentifier: "com.apple.quicktime-movie"
+        )
+        let viewModel = RemotePreviewViewModel(
+            items: [first, second],
+            initialItemID: first.id,
+            service: service
+        )
+
+        viewModel.togglePlayback()
+        XCTAssertFalse(viewModel.isPlaying)
+
+        viewModel.navigate(by: 1)
+        XCTAssertEqual(viewModel.currentItem.id, second.id)
+        XCTAssertFalse(viewModel.isPlaying)
+
+        viewModel.navigate(by: -1, autoplay: true)
+        XCTAssertEqual(viewModel.currentItem.id, first.id)
+        XCTAssertTrue(viewModel.isPlaying)
     }
 
     private func previewVideoItem(connectionID: UUID) -> RemoteFileItem {

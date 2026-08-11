@@ -220,30 +220,157 @@ actor SFTPFileService: RemoteFileService {
         }
         defer { try? FileManager.default.removeItem(at: temporaryURL) }
 
+        guard let trafficLease = await RemoteVideoThumbnailTrafficBudget.sftpShared
+            .lease(for: item) else {
+            throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
+        }
+        let byteBudget = RemoteVideoStreamingByteBudget(
+            maximumBytes: trafficLease.maximumBytes
+        )
         do {
-            try await writeSparseVideoPreview(
+            let data = try await writeAdaptiveSparseVideoPreview(
                 for: item,
                 size: size,
-                to: temporaryURL
+                to: temporaryURL,
+                byteBudget: byteBudget
             )
+            await RemoteVideoThumbnailTrafficBudget.sftpShared.finish(
+                trafficLease,
+                transferredBytes: byteBudget.accountedByteCount
+            )
+            return data
         } catch is CancellationError {
+            await RemoteVideoThumbnailTrafficBudget.sftpShared.finish(
+                trafficLease,
+                transferredBytes: byteBudget.accountedByteCount
+            )
             throw CancellationError()
-        } catch is SFTPVideoThumbnailPreparationError {
+        } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
+            await RemoteVideoThumbnailTrafficBudget.sftpShared.finish(
+                trafficLease,
+                transferredBytes: byteBudget.accountedByteCount
+            )
+            throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
+        } catch {
+            await RemoteVideoThumbnailTrafficBudget.sftpShared.finish(
+                trafficLease,
+                transferredBytes: byteBudget.accountedByteCount
+            )
             throw RemoteThumbnailError.optimizedPreviewUnavailable
         }
+    }
 
-        do {
+    private func writeAdaptiveSparseVideoPreview(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        to temporaryURL: URL,
+        byteBudget: RemoteVideoStreamingByteBudget
+    ) async throws -> Data {
+        let listedSize = item.size.flatMap { size -> UInt64? in
+            guard size > 0 else { return nil }
+            return UInt64(exactly: size)
+        }
+
+        return try await withSFTP(closeTransportOnCancellation: true) { sftp in
+            let fileSize: UInt64
+            if let listedSize {
+                fileSize = listedSize
+            } else {
+                let attributes = try await sftp.getAttributes(at: item.path)
+                guard let attributeSize = attributes.size, attributeSize > 0 else {
+                    throw SFTPVideoThumbnailPreparationError.missingFileSize
+                }
+                fileSize = attributeSize
+            }
+
+            let localFile = try FileHandle(forWritingTo: temporaryURL)
+            defer { try? localFile.close() }
+            try localFile.truncate(atOffset: fileSize)
+
+            return try await sftp.withFile(filePath: item.path, flags: .read) { remoteFile in
+                var plan = try SFTPAdaptiveVideoThumbnailRangePlan(
+                    fileSize: fileSize,
+                    maximumTotalBytes: UInt64(byteBudget.remainingByteCount)
+                )
+
+                var lastGenerationError: Error?
+                while let segments = plan.nextStage() {
+                    try Task.checkCancellation()
+                    for segment in segments {
+                        try await Self.copyThumbnailSegment(
+                            segment,
+                            remoteFile: remoteFile,
+                            localFile: localFile,
+                            byteBudget: byteBudget
+                        )
+                    }
+                    try localFile.synchronize()
+
+                    do {
+                        return try await Self.generateVideoThumbnail(
+                            from: temporaryURL,
+                            size: size
+                        )
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        lastGenerationError = error
+                    }
+                }
+                throw lastGenerationError
+                    ?? SFTPVideoThumbnailPreparationError.imageGenerationFailed
+            }
+        }
+    }
+
+    private static func copyThumbnailSegment(
+        _ segment: SFTPAdaptiveVideoThumbnailRangePlan.Segment,
+        remoteFile: SFTPFile,
+        localFile: FileHandle,
+        byteBudget: RemoteVideoStreamingByteBudget
+    ) async throws {
+        try localFile.seek(toOffset: segment.offset)
+        var remoteOffset = segment.offset
+        var remaining = segment.length
+        while remaining > 0 {
             try Task.checkCancellation()
-            return try await Self.generateVideoThumbnail(
-                from: temporaryURL,
-                size: size
+            let preferredLength = Int(
+                min(remaining, UInt64(thumbnailReadChunkSize))
             )
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            // Some containers need media bytes outside the bounded head/tail
-            // window. Tell the caller not to fall back to the full download.
-            throw RemoteThumbnailError.optimizedPreviewUnavailable
+            let reservedLength = byteBudget.reserve(upTo: preferredLength)
+            guard reservedLength > 0 else {
+                throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
+            }
+
+            var completedReservation = false
+            do {
+                var buffer = try await remoteFile.read(
+                    from: remoteOffset,
+                    length: UInt32(reservedLength)
+                )
+                let count = buffer.readableBytes
+                byteBudget.complete(
+                    reservedBytes: reservedLength,
+                    receivedBytes: count
+                )
+                completedReservation = true
+                guard count > 0,
+                      UInt64(count) <= remaining,
+                      let bytes = buffer.readBytes(length: count) else {
+                    throw SFTPVideoThumbnailPreparationError.incompleteRange
+                }
+                try localFile.write(contentsOf: Data(bytes))
+                remoteOffset += UInt64(count)
+                remaining -= UInt64(count)
+            } catch {
+                if !completedReservation {
+                    byteBudget.complete(
+                        reservedBytes: reservedLength,
+                        receivedBytes: 0
+                    )
+                }
+                throw error
+            }
         }
     }
 
@@ -321,17 +448,21 @@ actor SFTPFileService: RemoteFileService {
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = size.maximumVideoThumbnailDimensions
-        generator.requestedTimeToleranceBefore = .positiveInfinity
-        generator.requestedTimeToleranceAfter = .positiveInfinity
+        let timeTolerance = CMTime(seconds: 1.5, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = timeTolerance
+        generator.requestedTimeToleranceAfter = timeTolerance
 
         return try await withTaskCancellationHandler {
             var generationError: Error?
-            for seconds in [0.5, 0, 1] {
+            for seconds in [0.5, 1.5, 3, 0] {
                 do {
                     try Task.checkCancellation()
                     let result = try await generator.image(
                         at: CMTime(seconds: seconds, preferredTimescale: 600)
                     )
+                    guard RemoteVideoThumbnailQuality.isUsable(result.image) else {
+                        continue
+                    }
                     return try jpegData(from: result.image)
                 } catch is CancellationError {
                     throw CancellationError()
@@ -2656,6 +2787,69 @@ private struct SFTPAtomicCommitError: LocalizedError, Sendable {
     let message: String
 
     var errorDescription: String? { message }
+}
+
+struct SFTPAdaptiveVideoThumbnailRangePlan: Equatable, Sendable {
+    struct Segment: Equatable, Sendable {
+        let offset: UInt64
+        let length: UInt64
+    }
+
+    static let headIncrementBytes: UInt64 = 256 * 1_024
+    static let tailIncrementBytes: UInt64 = 64 * 1_024
+
+    let fileSize: UInt64
+    let maximumTotalBytes: UInt64
+    private(set) var plannedTotalBytes: UInt64 = 0
+    private var plannedHeadBytes: UInt64 = 0
+    private var plannedTailBytes: UInt64 = 0
+
+    init(fileSize: UInt64, maximumTotalBytes: UInt64) throws {
+        guard fileSize > 0,
+              fileSize <= UInt64(Int64.max),
+              maximumTotalBytes > 0 else {
+            throw SFTPVideoThumbnailPreparationError.invalidFileSize
+        }
+        self.fileSize = fileSize
+        self.maximumTotalBytes = min(fileSize, maximumTotalBytes)
+    }
+
+    mutating func nextStage() -> [Segment]? {
+        let unplannedFileBytes = fileSize - plannedHeadBytes - plannedTailBytes
+        let remainingBudget = maximumTotalBytes - plannedTotalBytes
+        guard unplannedFileBytes > 0, remainingBudget > 0 else { return nil }
+
+        let headLength = min(
+            Self.headIncrementBytes,
+            min(unplannedFileBytes, remainingBudget)
+        )
+        var segments: [Segment] = []
+        if headLength > 0 {
+            segments.append(
+                Segment(offset: plannedHeadBytes, length: headLength)
+            )
+            plannedHeadBytes += headLength
+            plannedTotalBytes += headLength
+        }
+
+        let fileBytesAfterHead = fileSize - plannedHeadBytes - plannedTailBytes
+        let budgetAfterHead = maximumTotalBytes - plannedTotalBytes
+        let tailLength = min(
+            Self.tailIncrementBytes,
+            min(fileBytesAfterHead, budgetAfterHead)
+        )
+        if tailLength > 0 {
+            plannedTailBytes += tailLength
+            plannedTotalBytes += tailLength
+            segments.append(
+                Segment(
+                    offset: fileSize - plannedTailBytes,
+                    length: tailLength
+                )
+            )
+        }
+        return segments.isEmpty ? nil : segments
+    }
 }
 
 struct SFTPVideoThumbnailRangePlan: Equatable, Sendable {

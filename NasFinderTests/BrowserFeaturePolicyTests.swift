@@ -1,0 +1,117 @@
+import XCTest
+@testable import NasFinder
+
+@MainActor
+final class BrowserFeaturePolicyTests: XCTestCase {
+    func testPathComponentsStayWithinConfiguredRoot() {
+        XCTAssertEqual(
+            FileBrowserPathNavigation.components(
+                currentPath: "/home/media/movies",
+                rootPath: "/home"
+            ),
+            [
+                FileBrowserPathComponent(path: "/home", title: "/home"),
+                FileBrowserPathComponent(path: "/home/media", title: "media"),
+                FileBrowserPathComponent(path: "/home/media/movies", title: "movies")
+            ]
+        )
+        XCTAssertEqual(
+            FileBrowserPathNavigation.components(currentPath: "/outside", rootPath: "/home"),
+            [FileBrowserPathComponent(path: "/outside", title: "/outside")]
+        )
+    }
+
+    func testSingleFileThumbnailDoesNotRequireExternalPower() {
+        let file = item(name: "movie.mp4", size: 1_024)
+        let folder = item(name: "folder", isDirectory: true)
+
+        XCTAssertFalse(
+            ThumbnailPreheatPolicy.requiresExternalPower(
+                rootItems: [file],
+                recursively: false
+            )
+        )
+        XCTAssertTrue(
+            ThumbnailPreheatPolicy.requiresExternalPower(
+                rootItems: [folder],
+                recursively: false
+            )
+        )
+        XCTAssertTrue(
+            ThumbnailPreheatPolicy.requiresExternalPower(
+                rootItems: [file],
+                recursively: true
+            )
+        )
+    }
+
+    func testThumbnailCommandOnlyAppearsForGeneratableFiles() {
+        let video = item(name: "movie.mp4", size: 2_048)
+        let unknownSizeVideo = item(name: "unknown.mp4", size: nil)
+        let document = item(name: "notes.txt", size: 20)
+
+        XCTAssertTrue(
+            ThumbnailPreheatPolicy.canGenerate(
+                item: video,
+                connectionKind: .sftp,
+                supportsRangeStreaming: true
+            )
+        )
+        XCTAssertFalse(
+            ThumbnailPreheatPolicy.canGenerate(
+                item: unknownSizeVideo,
+                connectionKind: .sftp,
+                supportsRangeStreaming: true
+            )
+        )
+        XCTAssertFalse(
+            ThumbnailPreheatPolicy.canGenerate(
+                item: document,
+                connectionKind: .synology,
+                supportsRangeStreaming: true
+            )
+        )
+    }
+
+    func testFavoriteImportSkipsCanonicalDuplicatesAndAppendsNewAddresses() throws {
+        let suiteName = "BrowserFeaturePolicyTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set("https://Example.com/path/", forKey: BrowserFavoritesStore.storageKey)
+        let store = BrowserFavoritesStore(defaults: defaults)
+        let data = try JSONEncoder().encode(
+            BrowserFavoritesArchive(
+                favorites: [
+                    "https://example.com/path#section",
+                    "https://new.example/files"
+                ]
+            )
+        )
+
+        let result = try store.importArchiveData(data)
+
+        XCTAssertEqual(result, BrowserFavoritesImportResult(addedCount: 1, skippedCount: 1))
+        XCTAssertEqual(store.favorites.count, 2)
+        XCTAssertEqual(store.favorites.last, "https://new.example/files")
+    }
+
+    func testBrowserSessionRetentionIsThirtyMinutes() {
+        XCTAssertEqual(NasFinderBrowserSessionStore.retentionInterval, 1_800)
+    }
+
+    private func item(
+        name: String,
+        size: Int64? = nil,
+        isDirectory: Bool = false
+    ) -> RemoteFileItem {
+        RemoteFileItem(
+            connectionID: UUID(),
+            path: "/\(name)",
+            name: name,
+            kind: isDirectory ? .folder : .file,
+            size: size,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+    }
+}
