@@ -97,4 +97,31 @@ final class FavoriteStoreTests: XCTestCase {
         XCTAssertTrue(store.contains(first))
         XCTAssertFalse(store.contains(second))
     }
+
+    func testMovingFavoriteUsesExactIDAndPersistsOrder() throws {
+        let suiteName = "FavoriteStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let connectionID = UUID()
+        let items = ["first", "second", "third"].map { name in
+            RemoteFileItem(
+                connectionID: connectionID,
+                path: "/share/\(name).mp4",
+                name: "\(name).mp4",
+                kind: .file,
+                size: 1,
+                modifiedAt: nil,
+                contentTypeIdentifier: "public.mpeg-4"
+            )
+        }
+
+        let store = FavoriteStore(defaults: defaults)
+        items.forEach(store.toggle)
+        store.move(id: items[2].id, to: 0)
+
+        let expectedIDs = [items[2].id, items[0].id, items[1].id]
+        XCTAssertEqual(store.items.map(\.id), expectedIDs)
+        XCTAssertEqual(FavoriteStore(defaults: defaults).items.map(\.id), expectedIDs)
+    }
 }

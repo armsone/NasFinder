@@ -31,6 +31,18 @@ final class FavoriteStore: ObservableObject {
         persist()
     }
 
+    func move(id: FavoriteItem.ID, to destination: Int) {
+        guard let source = items.firstIndex(where: { $0.id == id }),
+              items.indices.contains(destination),
+              source != destination else {
+            return
+        }
+
+        let item = items.remove(at: source)
+        items.insert(item, at: destination)
+        persist()
+    }
+
     private func load() {
         guard let data = defaults.data(forKey: storageKey),
               let savedItems = try? JSONDecoder().decode([FavoriteItem].self, from: data) else {

@@ -65,6 +65,7 @@ struct ConnectionListView: View {
                         WebNetworkLocationRow()
                     }
                     .buttonStyle(.plain)
+                    .navigationLinkIndicatorVisibility(.hidden)
 
                     Button(
                         store.connections.isEmpty
@@ -462,31 +463,41 @@ struct ConnectionListView: View {
 
 private struct WebNetworkLocationRow: View {
     var body: some View {
-        HStack(spacing: 13) {
-            Image(systemName: "globe")
-                .font(.title3)
-                .foregroundStyle(SkyBreezeTheme.browserOrange)
-                .frame(width: 32, height: 32)
-                .accessibilityHidden(true)
+        HStack(spacing: 4) {
+            HStack(spacing: 13) {
+                Image(systemName: "globe")
+                    .font(.title3)
+                    .foregroundStyle(SkyBreezeTheme.browserOrange)
+                    .frame(width: 32, height: 32)
+                    .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text("Browser")
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        Text("Browser")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(.secondary)
 
-                    Text("WWW")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(SkyBreezeTheme.browserOrange)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(SkyBreezeTheme.browserOrange.opacity(0.1), in: Capsule())
+                        Text("WWW")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(SkyBreezeTheme.browserOrange)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(SkyBreezeTheme.browserOrange.opacity(0.1), in: Capsule())
+                    }
                 }
-            }
 
-            Spacer(minLength: 0)
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Image(systemName: "arrow.right")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 54)
+                .contentShape(Rectangle())
+                .accessibilityHidden(true)
         }
-        .padding(.vertical, 6)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Browser, WWW")
         .accessibilityHint("웹 브라우저를 엽니다.")

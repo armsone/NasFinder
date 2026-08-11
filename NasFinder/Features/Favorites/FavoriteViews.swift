@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct FavoriteShelfView: View {
+    private static let tileStride: CGFloat = 65
+
     @EnvironmentObject private var favoriteStore: FavoriteStore
     @State private var favoritePendingRemovalID: FavoriteItem.ID?
 
@@ -35,15 +37,36 @@ struct FavoriteShelfView: View {
                                 remove: {
                                     favoriteStore.remove(id: favorite.id)
                                     favoritePendingRemovalID = nil
+                                },
+                                reorder: { horizontalTranslation in
+                                    reorder(
+                                        favoriteID: favorite.id,
+                                        horizontalTranslation: horizontalTranslation
+                                    )
                                 }
                             )
                             .id(favorite.id)
                         }
                     }
                 }
+                .scrollClipDisabled()
             }
         }
         .padding(.vertical, 4)
+    }
+
+    private func reorder(
+        favoriteID: FavoriteItem.ID,
+        horizontalTranslation: CGFloat
+    ) {
+        guard let source = favoriteStore.items.firstIndex(where: { $0.id == favoriteID }) else {
+            return
+        }
+
+        let indexOffset = Int((horizontalTranslation / Self.tileStride).rounded())
+        guard indexOffset != 0 else { return }
+        let destination = min(max(source + indexOffset, 0), favoriteStore.items.count - 1)
+        favoriteStore.move(id: favoriteID, to: destination)
     }
 }
 
@@ -53,41 +76,26 @@ private struct FavoriteShelfTile: View {
     let requestRemoval: () -> Void
     @Binding var isRemovalPresented: Bool
     let remove: () -> Void
+    let reorder: (CGFloat) -> Void
+
+    @GestureState private var dragTranslation: CGSize = .zero
+
+    private var isReordering: Bool {
+        abs(dragTranslation.width) >= 12
+    }
 
     var body: some View {
         FavoriteCell(favorite: favorite, side: 52)
             .frame(width: 56)
             .contentShape(Rectangle())
-            .background {
-                if isRemovalPresented {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(SkyBreezeTheme.accent.opacity(0.07))
-                        .padding(-2)
-                }
-            }
-            .overlay {
-                if isRemovalPresented {
-                    RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(SkyBreezeTheme.accent.opacity(0.48), lineWidth: 1.5)
-                        .padding(-2)
-                }
-            }
-            .gesture(
-                ExclusiveGesture(
-                    LongPressGesture(minimumDuration: 0.55),
-                    TapGesture()
-                )
-                .onEnded { result in
-                    switch result {
-                    case .first(true):
-                        requestRemoval()
-                    case .second:
-                        open()
-                    default:
-                        break
-                    }
-                }
+            .shadow(
+                color: isRemovalPresented || isReordering ? .black.opacity(0.18) : .clear,
+                radius: 5,
+                y: 3
             )
+            .offset(x: dragTranslation.width)
+            .zIndex(isReordering ? 1 : 0)
+            .gesture(interactionGesture)
             .popover(
                 isPresented: $isRemovalPresented,
                 attachmentAnchor: .rect(.bounds),
@@ -108,6 +116,39 @@ private struct FavoriteShelfTile: View {
             .accessibilityAction(named: Text("즐겨찾기에서 제거")) {
                 requestRemoval()
             }
+    }
+
+    private var interactionGesture: some Gesture {
+        let pressAndDrag = LongPressGesture(minimumDuration: 0.55, maximumDistance: 18)
+            .sequenced(before: DragGesture(minimumDistance: 0))
+            .updating($dragTranslation) { value, state, _ in
+                guard case let .second(true, drag?) = value else { return }
+                state = CGSize(width: drag.translation.width, height: 0)
+            }
+
+        return ExclusiveGesture(pressAndDrag, TapGesture())
+            .onEnded { result in
+                switch result {
+                case let .first(.second(true, drag?)):
+                    finishLongPress(with: drag.translation)
+                case .first(.first(true)):
+                    requestRemoval()
+                case .second:
+                    open()
+                default:
+                    break
+                }
+            }
+    }
+
+    private func finishLongPress(with translation: CGSize) {
+        let distance = hypot(translation.width, translation.height)
+        if distance < 12 {
+            requestRemoval()
+        } else if abs(translation.width) >= 24,
+                  abs(translation.width) > abs(translation.height) {
+            reorder(translation.width)
+        }
     }
 }
 
