@@ -392,7 +392,7 @@ actor RemoteVideoThumbnailTrafficBudget {
     )
 
     static let defaultMaximumFolderBytes = 256 * 1_024 * 1_024
-    static let defaultMaximumItemBytes = 8 * 1_024 * 1_024
+    static let defaultMaximumItemBytes = 16 * 1_024 * 1_024
     static let defaultMinimumLeaseBytes = 128 * 1_024
 
     private struct FolderState {
