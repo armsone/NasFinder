@@ -3,6 +3,40 @@ import Citadel
 @testable import NasFinder
 
 final class ConnectionTests: XCTestCase {
+    @MainActor
+    func testPreferredConnectionCanBeClearedAndStaysCleared() throws {
+        let suiteName = "ConnectionTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let connection = RemoteConnection(
+            name: "NAS",
+            kind: .synology,
+            host: "nas.example.com",
+            username: "tester"
+        )
+        defaults.set(
+            try JSONEncoder().encode([connection]),
+            forKey: "connections.v1"
+        )
+
+        let store = ConnectionStore(
+            defaults: defaults,
+            performsFileProviderMaintenance: false
+        )
+        XCTAssertNil(store.preferredConnection)
+
+        store.setPreferredConnection(connection)
+        XCTAssertEqual(store.preferredConnection?.id, connection.id)
+        store.clearPreferredConnection()
+        XCTAssertNil(store.preferredConnection)
+
+        let reloadedStore = ConnectionStore(
+            defaults: defaults,
+            performsFileProviderMaintenance: false
+        )
+        XCTAssertNil(reloadedStore.preferredConnection)
+    }
+
     func testSynologyRootPathIsNormalized() {
         let connection = RemoteConnection(
             name: "NAS",

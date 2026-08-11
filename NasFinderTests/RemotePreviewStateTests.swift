@@ -44,27 +44,32 @@ final class RemotePreviewStateTests: XCTestCase {
         XCTAssertEqual(kind, .error)
     }
 
-    func testSmallVideoUsesSingleDownloadAndLargeVideoUsesRangeStreaming() {
-        let threshold = RemoteVideoLoadStrategy.rangeStreamingMinimumByteCount
-
+    func testEverySizedVideoUsesRangeStreamingWhenBackendSupportsIt() {
         XCTAssertEqual(
             RemoteVideoLoadStrategy.resolve(
                 supportsRangeStreaming: true,
-                fileSize: threshold - 1
+                fileSize: 1
             ),
-            .fullDownload
+            .rangeStreaming
         )
         XCTAssertEqual(
             RemoteVideoLoadStrategy.resolve(
                 supportsRangeStreaming: true,
-                fileSize: threshold
+                fileSize: 2 * 1_024 * 1_024 * 1_024
             ),
             .rangeStreaming
         )
         XCTAssertEqual(
             RemoteVideoLoadStrategy.resolve(
                 supportsRangeStreaming: false,
-                fileSize: threshold * 2
+                fileSize: 2 * 1_024 * 1_024 * 1_024
+            ),
+            .fullDownload
+        )
+        XCTAssertEqual(
+            RemoteVideoLoadStrategy.resolve(
+                supportsRangeStreaming: true,
+                fileSize: nil
             ),
             .fullDownload
         )
@@ -101,7 +106,7 @@ final class RemotePreviewStateTests: XCTestCase {
             downloadInactivityPollInterval: .milliseconds(20)
         )
 
-        let loadTask = Task { await viewModel.loadCurrentItem() }
+        let loadTask = Task { await viewModel.loadCurrentItem(forceFullDownload: true) }
         do {
             try await gate.waitUntilMiddleProgress()
         } catch {
@@ -594,7 +599,7 @@ private struct StallingPreviewService: RemoteFileService {
         host: "preview.invalid",
         username: "tester"
     )
-    let supportsRangeStreaming = true
+    let supportsRangeStreaming = false
     let recorder: StallingPreviewRecorder
     var behavior: StallingPreviewBehavior = .noProgress
 

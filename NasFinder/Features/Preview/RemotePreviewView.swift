@@ -687,15 +687,13 @@ enum RemoteVideoLoadStrategy: Equatable {
     case fullDownload
     case rangeStreaming
 
-    static let rangeStreamingMinimumByteCount: Int64 = 64 * 1_024 * 1_024
-
     static func resolve(
         supportsRangeStreaming: Bool,
         fileSize: Int64?
     ) -> Self {
         guard supportsRangeStreaming,
               let fileSize,
-              fileSize >= rangeStreamingMinimumByteCount else {
+              fileSize > 0 else {
             return .fullDownload
         }
         return .rangeStreaming
@@ -808,7 +806,7 @@ final class RemotePreviewViewModel: ObservableObject {
         ) ?? .repeatAll
     }
 
-    func loadCurrentItem() async {
+    func loadCurrentItem(forceFullDownload: Bool = false) async {
         let requestedItem = currentItem
         guard !isLoading else { return }
         let generation = UUID()
@@ -844,6 +842,7 @@ final class RemotePreviewViewModel: ObservableObject {
 
         do {
             if requestedItem.isVideo,
+               !forceFullDownload,
                RemoteVideoLoadStrategy.resolve(
                     supportsRangeStreaming: service.supportsRangeStreaming,
                     fileSize: requestedItem.size
@@ -1159,7 +1158,7 @@ final class RemotePreviewViewModel: ObservableObject {
                 case .failed:
                     let message = playerItem.error?.localizedDescription
                         ?? "지원하지 않는 영상 형식이거나 원격 데이터를 읽지 못했습니다."
-                    self.failVideoPreparation(message, itemID: itemID)
+                    self.handleVideoPreparationFailure(message, itemID: itemID)
                 case .unknown:
                     self.isPreparingVideo = true
                 @unknown default:
@@ -1175,10 +1174,40 @@ final class RemotePreviewViewModel: ObservableObject {
                   self.player === newPlayer,
                   self.currentItem.id == itemID,
                   self.isPreparingVideo else { return }
-            self.failVideoPreparation(
+            self.handleVideoPreparationFailure(
                 "원격 영상 준비 시간이 너무 오래 걸립니다. 네트워크 상태를 확인한 뒤 다시 시도해 주세요.",
                 itemID: itemID
             )
+        }
+    }
+
+    private func handleVideoPreparationFailure(
+        _ message: String,
+        itemID: RemoteFileItem.ID
+    ) {
+        guard currentItem.id == itemID else { return }
+        guard streamingLoader != nil else {
+            failVideoPreparation(message, itemID: itemID)
+            return
+        }
+
+        videoPreparationTimeoutTask?.cancel()
+        videoPreparationTimeoutTask = nil
+        playerItemStatusObservation?.invalidate()
+        playerItemStatusObservation = nil
+        player?.pause()
+        player = nil
+        streamingLoader?.cancel()
+        streamingLoader = nil
+        isPreparingVideo = false
+        activeLoadGeneration = nil
+        isLoading = false
+        errorMessage = nil
+
+        Task { [weak self] in
+            await Task.yield()
+            guard let self, self.currentItem.id == itemID else { return }
+            await self.loadCurrentItem(forceFullDownload: true)
         }
     }
 

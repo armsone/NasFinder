@@ -4,6 +4,7 @@ actor SynologyFileService: RemoteFileService {
     nonisolated let connection: RemoteConnection
     nonisolated let capabilities: RemoteFileServiceCapabilities = .all
     nonisolated let permitsFullDownloadForVideoThumbnail = false
+    nonisolated let supportsRangeStreaming = true
 
     private let credential: RemoteCredential
     private let session: URLSession
@@ -155,6 +156,46 @@ actor SynologyFileService: RemoteFileService {
                 )
             )
             return cachedURL
+        }
+    }
+
+    func readRange(
+        of item: RemoteFileItem,
+        offset: Int64,
+        length: Int
+    ) async throws -> Data {
+        guard offset >= 0, length > 0 else {
+            throw NasFinderError.invalidResponse
+        }
+        let requestedEnd = offset.addingReportingOverflow(Int64(length - 1))
+        guard !requestedEnd.overflow else {
+            throw NasFinderError.invalidResponse
+        }
+
+        return try await authenticatedRequest { sid in
+            let parameters = self.commonParameters(
+                api: "SYNO.FileStation.Download",
+                version: "2",
+                method: "download",
+                sid: sid
+            ).merging([
+                "path": item.path,
+                "mode": "download"
+            ]) { _, new in new }
+            var request = try self.request(script: "entry.cgi", parameters: parameters)
+            request.setValue(
+                "bytes=\(offset)-\(requestedEnd.partialValue)",
+                forHTTPHeaderField: "Range"
+            )
+            let (data, response) = try await self.session.data(for: request)
+            try self.validateHTTP(response)
+            guard let http = response as? HTTPURLResponse,
+                  http.statusCode == 206,
+                  !data.isEmpty,
+                  data.count <= length else {
+                throw NasFinderError.invalidResponse
+            }
+            return data
         }
     }
 

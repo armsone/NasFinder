@@ -46,6 +46,9 @@ struct ConnectionListView: View {
                                 requestPreferred: {
                                     store.setPreferredConnection(connection)
                                 },
+                                requestClearPreferred: {
+                                    store.clearPreferredConnection()
+                                },
                                 requestEditing: { editingConnection = connection },
                                 requestDeletion: { connectionPendingDeletion = connection }
                             )
@@ -55,16 +58,22 @@ struct ConnectionListView: View {
                         }
                     }
 
-                    Button("네트워크 위치 추가", systemImage: "plus") {
+                    Button("네트워크 추가", systemImage: "plus") {
                         isAddingConnection = true
                     }
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                 } header: {
-                    Text("네트워크 위치")
+                    Text("네트워크")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
                 } footer: {
                     if let preferred = store.preferredConnection {
                         Text("기본 위치 ‘\(preferred.name)’은 NasFinder를 실행하면 자동으로 열립니다.")
-                    } else {
+                    } else if store.connections.isEmpty {
                         Text("NAS 또는 SFTP 서버를 연결하면 파일을 바로 탐색할 수 있습니다.")
+                    } else {
+                        Text("기본 위치가 없습니다. 앱을 실행하면 이 연결 목록에서 시작합니다.")
                     }
                 }
 
@@ -82,6 +91,8 @@ struct ConnectionListView: View {
 
                     FavoriteShelfView()
                 }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
 
                 Section("iPhone 저장공간") {
                     LabeledContent("받은 파일") {
@@ -105,12 +116,16 @@ struct ConnectionListView: View {
                         }
                     }
                 }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
 
                 Section {
                     NavigationLink {
                         AppSettingsView(connectionCount: store.connections.count)
                     } label: {
                         Label("설정", systemImage: "gearshape")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -118,7 +133,7 @@ struct ConnectionListView: View {
             .scrollContentBackground(.hidden)
             .background(SkyBreezeBackground())
             .navigationTitle("NasFinder")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 if store.connections.count > 1 {
                     EditButton()
@@ -224,7 +239,7 @@ struct ConnectionListView: View {
 
     private var networkLocationsSection: some View {
         DashboardSection(
-            title: "네트워크 위치",
+            title: "네트워크",
             subtitle: store.connections.isEmpty
                 ? "NAS나 SFTP 서버를 추가해 원격 파일을 관리하세요."
                 : "저장된 NAS와 SFTP 서버를 선택해 파일을 엽니다.",
@@ -240,6 +255,9 @@ struct ConnectionListView: View {
                         },
                         requestPreferred: {
                             store.setPreferredConnection(connection)
+                        },
+                        requestClearPreferred: {
+                            store.clearPreferredConnection()
                         },
                         requestEditing: {
                             editingConnection = connection
@@ -533,6 +551,7 @@ private struct NetworkLocationCard: View {
     let isPreferred: Bool
     let requestOpening: () -> Void
     let requestPreferred: () -> Void
+    let requestClearPreferred: () -> Void
     let requestEditing: () -> Void
     let requestDeletion: () -> Void
 
@@ -549,8 +568,8 @@ private struct NetworkLocationCard: View {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(spacing: 6) {
                             Text(connection.name)
-                                .font(.headline)
-                                .foregroundStyle(.primary)
+                                .font(.subheadline.weight(.medium))
+                                .foregroundStyle(.secondary)
                                 .lineLimit(2)
 
                             if isPreferred {
@@ -572,8 +591,8 @@ private struct NetworkLocationCard: View {
                         }
 
                         Text(connection.host)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
                             .lineLimit(1)
                     }
 
@@ -590,7 +609,11 @@ private struct NetworkLocationCard: View {
             .accessibilityHint("파일 목록을 엽니다.")
 
             Menu {
-                if !isPreferred {
+                if isPreferred {
+                    Button("기본 위치 해제", systemImage: "star.slash") {
+                        requestClearPreferred()
+                    }
+                } else {
                     Button("기본 위치로 설정", systemImage: "star") {
                         requestPreferred()
                     }
@@ -626,7 +649,7 @@ private struct AddNetworkLocationCard: View {
                     .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("네트워크 위치 추가")
+                    Text("네트워크 추가")
                         .font(.headline)
                         .foregroundStyle(.primary)
                     Text("Synology File Station 또는 SFTP 서버")

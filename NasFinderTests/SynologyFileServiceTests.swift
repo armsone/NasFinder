@@ -113,6 +113,48 @@ final class SynologyFileServiceTests: XCTestCase {
         XCTAssertEqual(progress.values.last?.fractionCompleted, 1)
     }
 
+    func testVideoRangeReadUsesHTTPRangeWithoutDownloadingWholeFile() async throws {
+        let fixture = SynologyAPIFixture()
+        let observedRange = LockedBox<String?>(nil)
+        let payload = Data([0x10, 0x11, 0x12, 0x13])
+        let service = fixture.makeService { request in
+            let fields = request.formFields
+            switch (fields["api"], fields["method"]) {
+            case ("SYNO.API.Auth", "login"):
+                return .json(#"{"success":true,"data":{"sid":"test-sid"}}"#)
+            case ("SYNO.FileStation.Download", "download"):
+                observedRange.withLock {
+                    $0 = request.headers.first(where: {
+                        $0.key.caseInsensitiveCompare("Range") == .orderedSame
+                    })?.value
+                }
+                return SynologyStubResponse(
+                    statusCode: 206,
+                    headers: [
+                        "Content-Type": "video/mp4",
+                        "Content-Range": "bytes 128-131/1000"
+                    ],
+                    data: payload
+                )
+            default:
+                throw SynologyMockError.unexpectedRequest(fields)
+            }
+        }
+        defer { fixture.unregister() }
+        let item = fixture.item(
+            path: "/share/clip.mp4",
+            name: "clip.mp4",
+            kind: .file,
+            size: 1_000
+        )
+
+        let data = try await service.readRange(of: item, offset: 128, length: 4)
+
+        XCTAssertTrue(service.supportsRangeStreaming)
+        XCTAssertEqual(observedRange.values, "bytes=128-131")
+        XCTAssertEqual(data, payload)
+    }
+
     func testDownloadFinishesAtActualSizeWhenListingMetadataIsStale() async throws {
         let fixture = SynologyAPIFixture()
         let payload = Data(repeating: 0x33, count: 96 * 1_024)

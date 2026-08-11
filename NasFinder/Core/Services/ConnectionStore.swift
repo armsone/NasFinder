@@ -15,14 +15,17 @@ final class ConnectionStore: ObservableObject {
 
     init(
         defaults: UserDefaults? = UserDefaults(suiteName: "group.com.armsone.nasfinder"),
-        credentialStore: KeychainCredentialStore = .init()
+        credentialStore: KeychainCredentialStore = .init(),
+        performsFileProviderMaintenance: Bool = true
     ) {
         self.defaults = defaults ?? .standard
         self.credentialStore = credentialStore
         load()
-        Task { [weak self] in
-            await self?.restoreMissingFileProviderDomains()
-            await self?.refreshFileProviderDomainsForWritableCapabilitiesIfNeeded()
+        if performsFileProviderMaintenance {
+            Task { [weak self] in
+                await self?.restoreMissingFileProviderDomains()
+                await self?.refreshFileProviderDomainsForWritableCapabilitiesIfNeeded()
+            }
         }
     }
 
@@ -36,9 +39,6 @@ final class ConnectionStore: ObservableObject {
     func add(_ connection: RemoteConnection, password: String) async throws {
         try credentialStore.save(RemoteCredential(password: password), for: connection.id)
         connections.append(connection)
-        if preferredConnectionID == nil {
-            setPreferredConnection(connection)
-        }
         persist()
 
         do {
@@ -53,13 +53,18 @@ final class ConnectionStore: ObservableObject {
            let connection = connections.first(where: { $0.id == preferredConnectionID }) {
             return connection
         }
-        return connections.first(where: { $0.kind == .synology }) ?? connections.first
+        return nil
     }
 
     func setPreferredConnection(_ connection: RemoteConnection) {
         guard connections.contains(where: { $0.id == connection.id }) else { return }
         preferredConnectionID = connection.id
         defaults.set(connection.id.uuidString, forKey: preferredConnectionKey)
+    }
+
+    func clearPreferredConnection() {
+        preferredConnectionID = nil
+        defaults.removeObject(forKey: preferredConnectionKey)
     }
 
     func update(_ connection: RemoteConnection, password: String) async throws {
@@ -95,9 +100,6 @@ final class ConnectionStore: ObservableObject {
         if let preferredConnectionID, removedIDs.contains(preferredConnectionID) {
             self.preferredConnectionID = nil
             defaults.removeObject(forKey: preferredConnectionKey)
-            if let fallback = connections.first(where: { $0.kind == .synology }) ?? connections.first {
-                setPreferredConnection(fallback)
-            }
         }
         persist()
 
@@ -173,10 +175,9 @@ final class ConnectionStore: ObservableObject {
                let preferredID = UUID(uuidString: rawPreferredID),
                connections.contains(where: { $0.id == preferredID }) {
                 preferredConnectionID = preferredID
-            } else if let fallback = connections.first(where: { $0.kind == .synology })
-                        ?? connections.first {
-                preferredConnectionID = fallback.id
-                defaults.set(fallback.id.uuidString, forKey: preferredConnectionKey)
+            } else {
+                preferredConnectionID = nil
+                defaults.removeObject(forKey: preferredConnectionKey)
             }
         } catch {
             lastErrorMessage = "저장된 연결 목록을 읽지 못했습니다."

@@ -5,21 +5,6 @@ struct FavoriteShelfView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("즐겨찾기", systemImage: "star.fill")
-                    .font(.headline)
-                    .foregroundStyle(.primary)
-
-                Spacer()
-
-                NavigationLink {
-                    FavoriteListView()
-                } label: {
-                    Text("더 보기")
-                        .font(.subheadline.weight(.semibold))
-                }
-            }
-
             if favoriteStore.items.isEmpty {
                 Text("파일이나 폴더를 길게 눌러 즐겨찾기에 추가하세요.")
                     .font(.caption)
@@ -180,7 +165,7 @@ private struct FavoriteDestinationView: View {
                 ContentUnavailableView(
                     "연결을 찾을 수 없습니다",
                     systemImage: "externaldrive.badge.xmark",
-                    description: Text("이 항목의 네트워크 위치가 삭제되었거나 로그인 정보가 없습니다.")
+                    description: Text("이 항목의 네트워크 연결이 삭제되었거나 로그인 정보가 없습니다.")
                 )
             }
         }
