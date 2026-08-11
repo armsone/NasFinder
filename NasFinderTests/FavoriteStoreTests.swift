@@ -62,4 +62,39 @@ final class FavoriteStoreTests: XCTestCase {
         XCTAssertEqual(store.items.map(\.name), ["folder", "file.txt"])
         XCTAssertTrue(store.items[0].remoteItem.isDirectory)
     }
+
+    func testRemovingFavoriteUsesExactIDWhenNamesMatch() throws {
+        let suiteName = "FavoriteStoreTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+
+        let connectionID = UUID()
+        let first = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/share/first/clip.mp4",
+            name: "clip.mp4",
+            kind: .file,
+            size: 1,
+            modifiedAt: nil,
+            contentTypeIdentifier: "public.mpeg-4"
+        )
+        let second = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/share/second/clip.mp4",
+            name: "clip.mp4",
+            kind: .file,
+            size: 2,
+            modifiedAt: nil,
+            contentTypeIdentifier: "public.mpeg-4"
+        )
+
+        let store = FavoriteStore(defaults: defaults)
+        store.toggle(first)
+        store.toggle(second)
+        store.remove(id: second.id)
+
+        XCTAssertEqual(store.items.map(\.id), [first.id])
+        XCTAssertTrue(store.contains(first))
+        XCTAssertFalse(store.contains(second))
+    }
 }

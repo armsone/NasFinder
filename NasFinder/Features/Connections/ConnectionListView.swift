@@ -14,6 +14,7 @@ struct ConnectionListView: View {
     @State private var connectionPendingDeletion: RemoteConnection?
     @State private var editingConnection: RemoteConnection?
     @State private var automaticallyOpenedConnection: RemoteConnection?
+    @State private var selectedFavorite: FavoriteItem?
     @State private var didAttemptAutomaticOpen = false
     @State private var deviceStorage = DeviceStorageSnapshot.current()
 
@@ -110,7 +111,9 @@ struct ConnectionListView: View {
 
                     ThumbnailCacheSettingsLink()
 
-                    FavoriteShelfView()
+                    FavoriteShelfView { favorite in
+                        selectedFavorite = favorite
+                    }
                 } header: {
                     sectionHeader("내 파일", systemImage: "folder")
                 }
@@ -158,22 +161,24 @@ struct ConnectionListView: View {
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    HStack(spacing: 7) {
+                ToolbarItem(placement: .topBarLeading) {
+                    HStack(spacing: 10) {
                         Image(currentLogoAssetName)
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 24, height: 24)
-                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .frame(width: 48, height: 48)
+                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                             .overlay {
-                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                RoundedRectangle(cornerRadius: 10, style: .continuous)
                                     .stroke(.primary.opacity(0.08), lineWidth: 0.5)
                             }
 
                         Text("NasFinder")
-                            .font(.subheadline.weight(.semibold))
+                            .font(.title3.weight(.semibold))
                             .foregroundStyle(.primary.opacity(0.82))
                     }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 4)
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("NasFinder")
                 }
@@ -191,6 +196,9 @@ struct ConnectionListView: View {
             }
             .navigationDestination(item: $automaticallyOpenedConnection) { connection in
                 FileBrowserContainerView(connection: connection)
+            }
+            .navigationDestination(item: $selectedFavorite) { favorite in
+                FavoriteDestinationView(favorite: favorite)
             }
             .alert("알림", isPresented: errorBinding) {
                 Button("확인", role: .cancel) {

@@ -8,12 +8,13 @@ final class PageNetworkTrafficTrackerTests: XCTestCase {
         XCTAssertEqual(PageNetworkTrafficTracker.formatted(-1), "0 kb")
     }
 
-    func testTrafficUsesCompactIntegerUnits() {
+    func testTrafficUsesCompactSingleDecimalUnits() {
         XCTAssertEqual(PageNetworkTrafficTracker.formatted(999), "999 b")
-        XCTAssertEqual(PageNetworkTrafficTracker.formatted(1_499), "1 kb")
-        XCTAssertEqual(PageNetworkTrafficTracker.formatted(1_500), "2 kb")
-        XCTAssertEqual(PageNetworkTrafficTracker.formatted(3_700_000), "4 mb")
-        XCTAssertEqual(PageNetworkTrafficTracker.formatted(2_600_000_000), "3 gb")
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(1_000), "1.0 kb")
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(1_499), "1.5 kb")
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(1_500), "1.5 kb")
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(3_700_000), "3.7 mb")
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(2_600_000_000), "2.6 gb")
     }
 
     func testTrackerAccumulatesAndResetsTraffic() {

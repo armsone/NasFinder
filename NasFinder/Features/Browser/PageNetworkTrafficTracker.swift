@@ -37,7 +37,12 @@ final class PageNetworkTrafficTracker: ObservableObject {
         guard let unit = units.first(where: { value >= $0.divisor }) else {
             return "\(byteCount) b"
         }
-        return "\(Int64((value / unit.divisor).rounded())) \(unit.symbol)"
+        let formattedValue = String(
+            format: "%.1f",
+            locale: Locale(identifier: "en_US_POSIX"),
+            value / unit.divisor
+        )
+        return "\(formattedValue) \(unit.symbol)"
     }
 }
 

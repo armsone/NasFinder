@@ -2,7 +2,12 @@ import SwiftUI
 
 struct FavoriteShelfView: View {
     @EnvironmentObject private var favoriteStore: FavoriteStore
-    @State private var favoritePendingRemoval: FavoriteItem?
+    @State private var favoritePendingRemovalID: FavoriteItem.ID?
+    @State private var leadingFavoriteID: FavoriteItem.ID?
+
+    let openFavorite: (FavoriteItem) -> Void
+
+    private let pageSize = 5
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -13,48 +18,57 @@ struct FavoriteShelfView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 8)
             } else {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(alignment: .top, spacing: 9) {
-                        ForEach(visibleFavorites) { favorite in
-                            NavigationLink {
-                                FavoriteDestinationView(favorite: favorite)
-                            } label: {
-                                FavoriteCell(favorite: favorite, side: 52)
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(alignment: .top, spacing: 9) {
+                            ForEach(favoriteStore.items) { favorite in
+                                FavoriteShelfTile(
+                                    favorite: favorite,
+                                    open: { openFavorite(favorite) },
+                                    requestRemoval: {
+                                        favoritePendingRemovalID = favorite.id
+                                    }
+                                )
+                                .id(favorite.id)
                             }
-                            .buttonStyle(.plain)
-                            .contextMenu {
-                                Button(
-                                    "즐겨찾기에서 제거…",
-                                    systemImage: "star.slash",
-                                    role: .destructive
+                        }
+                        .scrollTargetLayout()
+                    }
+                    .scrollPosition(id: $leadingFavoriteID, anchor: .leading)
+                    .scrollTargetBehavior(.viewAligned)
+                    .overlay {
+                        if favoriteStore.items.count > pageSize {
+                            HStack {
+                                shelfScrollButton(
+                                    systemImage: "chevron.left",
+                                    enabled: canScrollBackward
                                 ) {
-                                    favoritePendingRemoval = favorite
+                                    scrollPage(by: -pageSize, proxy: proxy)
+                                }
+                                Spacer()
+                                shelfScrollButton(
+                                    systemImage: "chevron.right",
+                                    enabled: canScrollForward
+                                ) {
+                                    scrollPage(by: pageSize, proxy: proxy)
                                 }
                             }
+                            .allowsHitTesting(true)
                         }
-
-                        if favoriteStore.items.count > 5 {
-                            NavigationLink {
-                                FavoriteListView()
-                            } label: {
-                                VStack(spacing: 6) {
-                                    Image(systemName: "ellipsis")
-                                        .font(.headline)
-                                        .frame(width: 52, height: 52)
-                                        .background(.quaternary, in: RoundedRectangle(cornerRadius: 11))
-                                    Text("더 보기")
-                                        .font(.caption2)
-                                        .lineLimit(1)
-                                }
-                                .frame(width: 56)
-                            }
-                            .buttonStyle(.plain)
-                        }
+                    }
+                    .onAppear {
+                        leadingFavoriteID = leadingFavoriteID ?? favoriteStore.items.first?.id
                     }
                 }
             }
         }
         .padding(.vertical, 4)
+        .onChange(of: favoriteStore.items.map(\.id)) { _, ids in
+            guard let leadingFavoriteID, ids.contains(leadingFavoriteID) else {
+                self.leadingFavoriteID = ids.first
+                return
+            }
+        }
         .confirmationDialog(
             "즐겨찾기에서 제거할까요?",
             isPresented: removalConfirmationBinding,
@@ -63,25 +77,96 @@ struct FavoriteShelfView: View {
         ) { favorite in
             Button("제거", role: .destructive) {
                 favoriteStore.remove(id: favorite.id)
-                favoritePendingRemoval = nil
+                favoritePendingRemovalID = nil
             }
             Button("취소", role: .cancel) {
-                favoritePendingRemoval = nil
+                favoritePendingRemovalID = nil
             }
         } message: { favorite in
             Text("‘\(favorite.name)’ 항목을 즐겨찾기에서 제거합니다.")
         }
     }
 
-    private var visibleFavorites: ArraySlice<FavoriteItem> {
-        favoriteStore.items.prefix(favoriteStore.items.count > 5 ? 4 : 5)
+    private var favoritePendingRemoval: FavoriteItem? {
+        guard let favoritePendingRemovalID else { return nil }
+        return favoriteStore.items.first { $0.id == favoritePendingRemovalID }
+    }
+
+    private var leadingFavoriteIndex: Int {
+        guard let leadingFavoriteID,
+              let index = favoriteStore.items.firstIndex(where: { $0.id == leadingFavoriteID }) else {
+            return 0
+        }
+        return index
+    }
+
+    private var canScrollBackward: Bool {
+        leadingFavoriteIndex > 0
+    }
+
+    private var canScrollForward: Bool {
+        leadingFavoriteIndex < max(0, favoriteStore.items.count - pageSize)
     }
 
     private var removalConfirmationBinding: Binding<Bool> {
         Binding(
-            get: { favoritePendingRemoval != nil },
-            set: { if !$0 { favoritePendingRemoval = nil } }
+            get: { favoritePendingRemovalID != nil },
+            set: { if !$0 { favoritePendingRemovalID = nil } }
         )
+    }
+
+    private func scrollPage(by offset: Int, proxy: ScrollViewProxy) {
+        let finalLeadingIndex = max(0, favoriteStore.items.count - pageSize)
+        let targetIndex = min(max(leadingFavoriteIndex + offset, 0), finalLeadingIndex)
+        guard favoriteStore.items.indices.contains(targetIndex) else { return }
+        let targetID = favoriteStore.items[targetIndex].id
+        withAnimation(.snappy) {
+            leadingFavoriteID = targetID
+            proxy.scrollTo(targetID, anchor: .leading)
+        }
+    }
+
+    private func shelfScrollButton(
+        systemImage: String,
+        enabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.caption.weight(.bold))
+                .foregroundStyle(.primary.opacity(enabled ? 0.72 : 0.18))
+                .frame(width: 26, height: 52)
+                .background(.ultraThinMaterial, in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .accessibilityLabel(systemImage == "chevron.left" ? "이전 즐겨찾기" : "다음 즐겨찾기")
+    }
+}
+
+private struct FavoriteShelfTile: View {
+    let favorite: FavoriteItem
+    let open: () -> Void
+    let requestRemoval: () -> Void
+
+    var body: some View {
+        Button(action: open) {
+            FavoriteCell(favorite: favorite, side: 52)
+                .frame(width: 56)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .contextMenu {
+            Button(
+                "즐겨찾기에서 제거…",
+                systemImage: "star.slash",
+                role: .destructive,
+                action: requestRemoval
+            )
+        } preview: {
+            FavoriteCell(favorite: favorite, side: 72)
+                .padding(12)
+        }
     }
 }
 
@@ -256,7 +341,7 @@ private extension ConnectionKind {
     }
 }
 
-private struct FavoriteDestinationView: View {
+struct FavoriteDestinationView: View {
     @EnvironmentObject private var connectionStore: ConnectionStore
     let favorite: FavoriteItem
 
