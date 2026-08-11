@@ -161,7 +161,7 @@ struct RemotePreviewView: View {
             isImage: viewModel.currentItem.isImage,
             isVideo: viewModel.currentItem.isVideo,
             hasImage: viewModel.image != nil,
-            hasPlayer: viewModel.player != nil,
+            hasPlayer: viewModel.hasVideoPlayer,
             hasLocalURL: viewModel.localURL != nil,
             hasError: viewModel.errorMessage != nil
         ) {
@@ -197,7 +197,7 @@ struct RemotePreviewView: View {
                 remoteLoadingView
             }
         case .video:
-            if let player = viewModel.player {
+            if viewModel.hasVideoPlayer {
                 ZStack {
                     SharedSystemVolumeView { slider in
                         systemVolumeSlider = slider
@@ -206,10 +206,7 @@ struct RemotePreviewView: View {
                     .opacity(0.001)
                     .allowsHitTesting(false)
 
-                    SharedVideoPlayerSurface(
-                        player: player,
-                        videoGravity: .resizeAspect
-                    )
+                    videoPlayerSurface
                         .background(Color.black)
                         .scaleEffect(videoZoomScale)
                         .offset(videoZoomOffset)
@@ -225,7 +222,7 @@ struct RemotePreviewView: View {
                         )
 
                     if !areControlsVisible {
-                        SharedVideoMiniProgressLine(player: player)
+                        videoMiniProgressLine
                             .frame(height: 2)
                             .frame(maxHeight: .infinity, alignment: .bottom)
                             .allowsHitTesting(false)
@@ -247,6 +244,27 @@ struct RemotePreviewView: View {
             }
         case .loading:
             remoteLoadingView
+        }
+    }
+
+    @ViewBuilder
+    private var videoPlayerSurface: some View {
+        if let compatibilityPlayer = viewModel.compatibilityPlayer {
+            CompatibilityVideoPlayerSurface(player: compatibilityPlayer)
+        } else if let player = viewModel.player {
+            SharedVideoPlayerSurface(
+                player: player,
+                videoGravity: .resizeAspect
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var videoMiniProgressLine: some View {
+        if let compatibilityPlayer = viewModel.compatibilityPlayer {
+            CompatibilityVideoMiniProgressLine(player: compatibilityPlayer)
+        } else if let player = viewModel.player {
+            SharedVideoMiniProgressLine(player: player)
         }
     }
 
@@ -387,8 +405,8 @@ struct RemotePreviewView: View {
                 HStack(spacing: 12) {
                     transportControls
 
-                    if viewModel.currentItem.isVideo, let player = viewModel.player {
-                        SharedVideoProgressBar(player: player)
+                    if viewModel.currentItem.isVideo, viewModel.hasVideoPlayer {
+                        videoProgressBar(compact: false)
                             .frame(maxWidth: .infinity)
                     } else {
                         Spacer(minLength: 32)
@@ -401,8 +419,8 @@ struct RemotePreviewView: View {
                 HStack(spacing: 8) {
                     transportControls
 
-                    if viewModel.currentItem.isVideo, let player = viewModel.player {
-                        SharedVideoProgressBar(player: player, compact: true)
+                    if viewModel.currentItem.isVideo, viewModel.hasVideoPlayer {
+                        videoProgressBar(compact: true)
                             .frame(maxWidth: .infinity)
                     } else {
                         Spacer(minLength: 8)
@@ -414,6 +432,18 @@ struct RemotePreviewView: View {
         }
         .foregroundStyle(.white)
         .shadow(color: .black.opacity(0.38), radius: 10, y: 4)
+    }
+
+    @ViewBuilder
+    private func videoProgressBar(compact: Bool) -> some View {
+        if let compatibilityPlayer = viewModel.compatibilityPlayer {
+            CompatibilityVideoProgressBar(
+                player: compatibilityPlayer,
+                compact: compact
+            )
+        } else if let player = viewModel.player {
+            SharedVideoProgressBar(player: player, compact: compact)
+        }
     }
 
     private var transportControls: some View {
@@ -800,6 +830,7 @@ final class RemotePreviewViewModel: ObservableObject {
     @Published private(set) var localURL: URL?
     @Published private(set) var image: UIImage?
     @Published private(set) var player: AVPlayer?
+    @Published private(set) var compatibilityPlayer: CompatibilityVideoPlayer?
     @Published private(set) var isLoading = false
     @Published private(set) var isPreparingVideo = false
     @Published private(set) var downloadProgress: RemoteDownloadProgress?
@@ -835,6 +866,7 @@ final class RemotePreviewViewModel: ObservableObject {
 
     var currentItem: RemoteFileItem { items[currentIndex] }
     var itemsCount: Int { items.count }
+    var hasVideoPlayer: Bool { player != nil || compatibilityPlayer != nil }
 
     init(
         items: [RemoteFileItem],
@@ -858,7 +890,10 @@ final class RemotePreviewViewModel: ObservableObject {
         ) ?? .repeatAll
     }
 
-    func loadCurrentItem(forceFullDownload: Bool = false) async {
+    func loadCurrentItem(
+        forceFullDownload: Bool = false,
+        forceCompatibilityPlayer: Bool = false
+    ) async {
         let requestedItem = currentItem
         guard !isLoading else { return }
         let generation = UUID()
@@ -868,6 +903,8 @@ final class RemotePreviewViewModel: ObservableObject {
         errorMessage = nil
         player?.pause()
         player = nil
+        compatibilityPlayer?.stop()
+        compatibilityPlayer = nil
         playerItemStatusObservation?.invalidate()
         playerItemStatusObservation = nil
         videoPreparationTimeoutTask?.cancel()
@@ -893,7 +930,33 @@ final class RemotePreviewViewModel: ObservableObject {
         }
 
         do {
+            let shouldUseCompatibilityPlayer = forceCompatibilityPlayer
+                || CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(
+                    for: requestedItem
+                )
             if requestedItem.isVideo,
+               shouldUseCompatibilityPlayer,
+               !forceFullDownload,
+               RemoteVideoLoadStrategy.resolve(
+                    supportsRangeStreaming: service.supportsRangeStreaming,
+                    fileSize: requestedItem.size
+               ) == .rangeStreaming {
+                let newPlayer = try CompatibilityVideoPlayer(
+                    item: requestedItem,
+                    service: service
+                )
+                guard isCurrentLoad(generation, itemID: requestedItem.id) else {
+                    newPlayer.stop()
+                    return
+                }
+                installCompatibilityPlayer(newPlayer, for: requestedItem.id)
+                downloadProgress = nil
+                if isPlaying { newPlayer.play() }
+                return
+            }
+
+            if requestedItem.isVideo,
+               !shouldUseCompatibilityPlayer,
                !forceFullDownload,
                RemoteVideoLoadStrategy.resolve(
                     supportsRangeStreaming: service.supportsRangeStreaming,
@@ -968,26 +1031,32 @@ final class RemotePreviewViewModel: ObservableObject {
                 downloadProgress = nil
                 schedulePhotoAdvance()
             } else if requestedItem.isVideo {
-                let asset = AVURLAsset(url: url)
                 guard isCurrentLoad(generation, itemID: requestedItem.id) else { return }
-
-                let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: asset))
-                installPlayer(newPlayer, for: requestedItem.id)
-                downloadProgress = nil
-                if isPlaying {
-                    SharedMediaAudioSession.activatePlayback()
-                    newPlayer.play()
-                }
-                videoMetadataTask = Task { [weak self, weak newPlayer] in
-                    let duration = try? await asset.load(.duration)
-                    guard !Task.isCancelled,
-                          let self,
-                          let newPlayer,
-                          self.player === newPlayer,
-                          self.currentItem.id == requestedItem.id,
-                          let duration,
-                          duration.seconds.isFinite else { return }
-                    self.loadedVideoDurationSeconds = duration.seconds
+                if shouldUseCompatibilityPlayer {
+                    let newPlayer = try CompatibilityVideoPlayer(localURL: url)
+                    installCompatibilityPlayer(newPlayer, for: requestedItem.id)
+                    downloadProgress = nil
+                    if isPlaying { newPlayer.play() }
+                } else {
+                    let asset = AVURLAsset(url: url)
+                    let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+                    installPlayer(newPlayer, for: requestedItem.id)
+                    downloadProgress = nil
+                    if isPlaying {
+                        SharedMediaAudioSession.activatePlayback()
+                        newPlayer.play()
+                    }
+                    videoMetadataTask = Task { [weak self, weak newPlayer] in
+                        let duration = try? await asset.load(.duration)
+                        guard !Task.isCancelled,
+                              let self,
+                              let newPlayer,
+                              self.player === newPlayer,
+                              self.currentItem.id == requestedItem.id,
+                              let duration,
+                              duration.seconds.isFinite else { return }
+                        self.loadedVideoDurationSeconds = duration.seconds
+                    }
                 }
             }
         } catch is CancellationError {
@@ -1021,9 +1090,14 @@ final class RemotePreviewViewModel: ObservableObject {
         if currentItem.isVideo {
             if isPlaying {
                 SharedMediaAudioSession.activatePlayback()
-                player?.play()
+                if let compatibilityPlayer {
+                    compatibilityPlayer.play()
+                } else {
+                    player?.play()
+                }
             } else {
                 player?.pause()
+                compatibilityPlayer?.pause()
             }
         } else if currentItem.isImage {
             if isPlaying {
@@ -1076,24 +1150,35 @@ final class RemotePreviewViewModel: ObservableObject {
     }
 
     func beginVideoScrub() {
-        guard currentItem.isVideo,
-              let player,
-              let currentSeconds = finiteSeconds(player.currentTime()) else { return }
+        guard currentItem.isVideo else { return }
+        let currentSeconds: Double?
+        if let compatibilityPlayer {
+            currentSeconds = compatibilityPlayer.currentSeconds
+        } else if let player {
+            currentSeconds = finiteSeconds(player.currentTime())
+        } else {
+            currentSeconds = nil
+        }
+        guard let currentSeconds else { return }
 
         scrubStartSeconds = currentSeconds
         seekHUDDismissTask?.cancel()
-        player.pause()
+        player?.pause()
+        compatibilityPlayer?.pause()
     }
 
     func updateVideoScrub(horizontalTranslation: CGFloat, viewWidth: CGFloat) {
-        guard let player,
-              let startSeconds = scrubStartSeconds,
+        guard let startSeconds = scrubStartSeconds,
               let durationSeconds = videoDurationSeconds else { return }
 
         let delta = Double(horizontalTranslation / viewWidth) * durationSeconds
         let targetSeconds = min(max(startSeconds + delta, 0), durationSeconds)
-        let targetTime = CMTime(seconds: targetSeconds, preferredTimescale: 600)
-        player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
+        if let compatibilityPlayer {
+            compatibilityPlayer.seek(to: targetSeconds)
+        } else if let player {
+            let targetTime = CMTime(seconds: targetSeconds, preferredTimescale: 600)
+            player.seek(to: targetTime, toleranceBefore: .zero, toleranceAfter: .zero)
+        }
         seekHUDText = "\(formatTime(targetSeconds)) / \(formatTime(durationSeconds))"
     }
 
@@ -1103,7 +1188,11 @@ final class RemotePreviewViewModel: ObservableObject {
 
         if isPlaying {
             SharedMediaAudioSession.activatePlayback()
-            player?.play()
+            if let compatibilityPlayer {
+                compatibilityPlayer.play()
+            } else {
+                player?.play()
+            }
         }
 
         seekHUDDismissTask?.cancel()
@@ -1123,12 +1212,15 @@ final class RemotePreviewViewModel: ObservableObject {
         seekHUDText = nil
         scrubStartSeconds = nil
         player?.pause()
+        compatibilityPlayer?.pause()
     }
 
     func tearDown() {
         pauseForLifecycle()
         streamingLoader?.cancel()
         streamingLoader = nil
+        compatibilityPlayer?.stop()
+        compatibilityPlayer = nil
         playerItemStatusObservation?.invalidate()
         playerItemStatusObservation = nil
         videoPreparationTimeoutTask?.cancel()
@@ -1153,6 +1245,8 @@ final class RemotePreviewViewModel: ObservableObject {
 
         player?.pause()
         player = nil
+        compatibilityPlayer?.stop()
+        compatibilityPlayer = nil
         playerItemStatusObservation?.invalidate()
         playerItemStatusObservation = nil
         videoPreparationTimeoutTask?.cancel()
@@ -1237,15 +1331,60 @@ final class RemotePreviewViewModel: ObservableObject {
         }
     }
 
+    private func installCompatibilityPlayer(
+        _ newPlayer: CompatibilityVideoPlayer,
+        for itemID: RemoteFileItem.ID
+    ) {
+        playerItemStatusObservation?.invalidate()
+        playerItemStatusObservation = nil
+        videoPreparationTimeoutTask?.cancel()
+        player = nil
+        compatibilityPlayer = newPlayer
+        isPreparingVideo = true
+        newPlayer.onReady = { [weak self, weak newPlayer] in
+            guard let self,
+                  let newPlayer,
+                  self.currentItem.id == itemID,
+                  self.compatibilityPlayer === newPlayer else { return }
+            self.isPreparingVideo = false
+            self.videoPreparationTimeoutTask?.cancel()
+            self.videoPreparationTimeoutTask = nil
+        }
+        newPlayer.onPlaybackEnded = { [weak self, weak newPlayer] in
+            guard let self,
+                  let newPlayer,
+                  self.currentItem.id == itemID,
+                  self.compatibilityPlayer === newPlayer else { return }
+            self.videoDidFinish()
+        }
+        newPlayer.onFailure = { [weak self, weak newPlayer] message in
+            guard let self,
+                  let newPlayer,
+                  self.currentItem.id == itemID,
+                  self.compatibilityPlayer === newPlayer else { return }
+            self.failCompatibilityVideoPreparation(message, itemID: itemID)
+        }
+        videoPreparationTimeoutTask = Task { [weak self, weak newPlayer] in
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled,
+                  let self,
+                  let newPlayer,
+                  self.compatibilityPlayer === newPlayer,
+                  self.currentItem.id == itemID,
+                  self.isPreparingVideo else { return }
+            self.failCompatibilityVideoPreparation(
+                "호환 영상 준비 시간이 너무 오래 걸립니다. 네트워크 상태를 확인한 뒤 다시 시도해 주세요.",
+                itemID: itemID
+            )
+        }
+    }
+
     private func handleVideoPreparationFailure(
         _ message: String,
         itemID: RemoteFileItem.ID
     ) {
         guard currentItem.id == itemID else { return }
-        guard streamingLoader != nil else {
-            failVideoPreparation(message, itemID: itemID)
-            return
-        }
+        let wasRangeStreaming = streamingLoader != nil
 
         videoPreparationTimeoutTask?.cancel()
         videoPreparationTimeoutTask = nil
@@ -1263,8 +1402,25 @@ final class RemotePreviewViewModel: ObservableObject {
         Task { [weak self] in
             await Task.yield()
             guard let self, self.currentItem.id == itemID else { return }
-            await self.loadCurrentItem(forceFullDownload: true)
+            await self.loadCurrentItem(
+                forceFullDownload: !wasRangeStreaming,
+                forceCompatibilityPlayer: true
+            )
         }
+    }
+
+    private func failCompatibilityVideoPreparation(
+        _ message: String,
+        itemID: RemoteFileItem.ID
+    ) {
+        guard currentItem.id == itemID else { return }
+        videoPreparationTimeoutTask?.cancel()
+        videoPreparationTimeoutTask = nil
+        isPreparingVideo = false
+        compatibilityPlayer?.stop()
+        compatibilityPlayer = nil
+        errorMessage = "영상을 재생하지 못했습니다: \(message)"
+        downloadProgress = nil
     }
 
     private func failVideoPreparation(_ message: String, itemID: RemoteFileItem.ID) {
@@ -1381,6 +1537,11 @@ final class RemotePreviewViewModel: ObservableObject {
     }
 
     private func replayCurrentVideo() {
+        if let compatibilityPlayer {
+            compatibilityPlayer.seek(to: 0)
+            if isPlaying { compatibilityPlayer.play() }
+            return
+        }
         guard let player else { return }
         player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero)
         if isPlaying {
@@ -1390,6 +1551,10 @@ final class RemotePreviewViewModel: ObservableObject {
     }
 
     private var videoDurationSeconds: Double? {
+        if let compatibilityPlayer,
+           compatibilityPlayer.durationSeconds > 0 {
+            return compatibilityPlayer.durationSeconds
+        }
         if let loadedVideoDurationSeconds, loadedVideoDurationSeconds > 0 {
             return loadedVideoDurationSeconds
         }

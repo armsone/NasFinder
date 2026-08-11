@@ -77,6 +77,15 @@ enum RemoteVideoThumbnailGenerator {
               item.size.map({ $0 > 0 }) == true else {
             throw RemoteVideoThumbnailGenerationError.unsupportedSource
         }
+        if CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item) {
+            return try await CompatibilityRemoteVideoThumbnailGenerator.generate(
+                for: item,
+                service: service,
+                size: size,
+                trafficBudget: trafficBudget,
+                timeout: timeout
+            )
+        }
         guard let lease = await trafficBudget.lease(for: item) else {
             throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
         }

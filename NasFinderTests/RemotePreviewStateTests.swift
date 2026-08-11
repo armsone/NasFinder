@@ -5,6 +5,177 @@ import XCTest
 
 @MainActor
 final class RemotePreviewStateTests: XCTestCase {
+    func testCompatibilityFormatPolicyKeepsMP4AndMOVOnAVPlayer() {
+        let connectionID = UUID()
+        for filename in ["movie.mp4", "clip.mov", "recording.m4v"] {
+            let item = RemoteFileItem(
+                connectionID: connectionID,
+                path: "/share/\(filename)",
+                name: filename,
+                kind: .file,
+                size: 1_024,
+                modifiedAt: nil,
+                contentTypeIdentifier: nil
+            )
+            XCTAssertFalse(
+                CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item)
+            )
+        }
+    }
+
+    func testCompatibilityFormatPolicyRoutesLegacyContainersToVLCKit() {
+        let connectionID = UUID()
+        for filename in ["movie.AVI", "clip.asf", "archive.wmv", "video.mkv"] {
+            let item = RemoteFileItem(
+                connectionID: connectionID,
+                path: "/share/\(filename)",
+                name: filename,
+                kind: .file,
+                size: 1_024,
+                modifiedAt: nil,
+                contentTypeIdentifier: nil
+            )
+            XCTAssertTrue(
+                CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item)
+            )
+        }
+    }
+
+    func testCompatibilityRemoteStreamSupportsBoundedReadsAndSeeking() async throws {
+        let movieURL = try await makeTinyMOV()
+        defer { try? FileManager.default.removeItem(at: movieURL) }
+        let byteCount = Int64(
+            try movieURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        )
+        let service = RangeReadingTinyVideoService(movieURL: movieURL)
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/tiny.avi",
+            name: "tiny.avi",
+            kind: .file,
+            size: byteCount,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let stream = try CompatibilityRemoteInputStream(
+            item: item,
+            service: service,
+            maximumTransferredBytes: CompatibilityRemoteInputStream.maximumReadChunkBytes * 2
+        )
+        stream.open()
+        defer { stream.close() }
+
+        var firstBytes = [UInt8](repeating: 0, count: 32)
+        let firstCount = stream.read(&firstBytes, maxLength: firstBytes.count)
+        XCTAssertEqual(firstCount, firstBytes.count)
+        XCTAssertEqual(
+            stream.property(forKey: .fileCurrentOffsetKey) as? NSNumber,
+            NSNumber(value: firstBytes.count)
+        )
+
+        XCTAssertTrue(
+            stream.setProperty(4, forKey: .fileCurrentOffsetKey)
+        )
+        var soughtBytes = [UInt8](repeating: 0, count: 16)
+        let soughtCount = stream.read(&soughtBytes, maxLength: soughtBytes.count)
+        XCTAssertEqual(soughtCount, soughtBytes.count)
+        XCTAssertGreaterThan(stream.accountedByteCount, 0)
+        XCTAssertLessThanOrEqual(
+            stream.accountedByteCount,
+            CompatibilityRemoteInputStream.maximumReadChunkBytes * 2
+        )
+    }
+
+    func testOfficialAVIAndASFSamplesPlaySeekRotateAndCreateThumbnails() async throws {
+        guard ProcessInfo.processInfo.environment["NASFINDER_VLC_INTEGRATION_TESTS"] == "1" else {
+            throw XCTSkip("실제 VideoLAN 미디어 검증은 명시적으로 활성화할 때만 실행합니다.")
+        }
+
+        let samples = [
+            (
+                filename: "2-audio-streams.avi",
+                url: URL(string: "https://streams.videolan.org/samples/avi/2-audio-streams.avi")!
+            ),
+            (
+                filename: "IMAG0002.ASF",
+                url: URL(string: "https://streams.videolan.org/samples/asf-wmv/IMAG0002.ASF")!
+            ),
+        ]
+
+        for sample in samples {
+            let (data, response) = try await URLSession.shared.data(from: sample.url)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            XCTAssertFalse(data.isEmpty)
+            let localURL = FileManager.default.temporaryDirectory
+                .appending(path: UUID().uuidString, directoryHint: .notDirectory)
+                .appendingPathExtension((sample.filename as NSString).pathExtension)
+            try data.write(to: localURL, options: .atomic)
+            defer { try? FileManager.default.removeItem(at: localURL) }
+
+            let service = RangeReadingTinyVideoService(movieURL: localURL)
+            let item = RemoteFileItem(
+                connectionID: service.connection.id,
+                path: "/integration/\(sample.filename)",
+                name: sample.filename,
+                kind: .file,
+                size: Int64(data.count),
+                modifiedAt: nil,
+                contentTypeIdentifier: nil
+            )
+            let viewModel = RemotePreviewViewModel(
+                items: [item],
+                initialItemID: item.id,
+                service: service
+            )
+            await viewModel.loadCurrentItem()
+            let player = try XCTUnwrap(viewModel.compatibilityPlayer)
+            let drawable = UIView(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+            player.attach(drawable: drawable)
+            player.play()
+
+            try await waitUntil(timeout: .seconds(20)) {
+                !viewModel.isPreparingVideo || viewModel.errorMessage != nil
+            }
+            XCTAssertNil(viewModel.errorMessage, sample.filename)
+            try await waitUntil(timeout: .seconds(10)) {
+                player.currentSeconds > 0.1
+            }
+            XCTAssertFalse(player.mediaPlayer.audioTracks.isEmpty, sample.filename)
+            XCTAssertFalse(player.mediaPlayer.videoTracks.isEmpty, sample.filename)
+            XCTAssertGreaterThan(player.mediaPlayer.videoSize.width, 0, sample.filename)
+            XCTAssertGreaterThan(player.mediaPlayer.videoSize.height, 0, sample.filename)
+
+            let seekTarget = min(max(player.durationSeconds * 0.5, 0.2), 2)
+            player.seek(to: seekTarget)
+            player.play()
+            try await waitUntil(timeout: .seconds(10)) {
+                player.currentSeconds >= seekTarget
+            }
+
+            drawable.frame = CGRect(x: 0, y: 0, width: 844, height: 390)
+            drawable.setNeedsLayout()
+            drawable.layoutIfNeeded()
+            XCTAssertTrue(player.mediaPlayer.drawable as? UIView === drawable)
+
+            let maximumBytes = min(max(data.count, 1), 4 * 1_024 * 1_024)
+            let budget = RemoteVideoThumbnailTrafficBudget(
+                maximumFolderBytes: maximumBytes,
+                maximumItemBytes: maximumBytes,
+                minimumLeaseBytes: 1
+            )
+            let thumbnail = try await RemoteVideoThumbnailGenerator.generate(
+                for: item,
+                service: service,
+                size: .small,
+                trafficBudget: budget,
+                timeout: .seconds(20)
+            )
+            XCTAssertFalse(thumbnail.data.isEmpty, sample.filename)
+            XCTAssertLessThanOrEqual(thumbnail.transferredBytes, maximumBytes)
+            viewModel.tearDown()
+        }
+    }
+
     func testSingleTapOnlyTogglesPlaybackWhenControlsAreVisible() {
         XCTAssertFalse(
             RemotePreviewInteractionPolicy.shouldTogglePlaybackOnSingleTap(

@@ -10,6 +10,7 @@ struct AppSettingsView: View {
             screenAwakeSection
             themePaletteSection
             filesAppIntegrationSection
+            openSourceSection
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -159,6 +160,29 @@ struct AppSettingsView: View {
             )
         } header: {
             SettingsSectionHeader(title: "Apple 파일 앱 연동", systemImage: "folder")
+        }
+    }
+
+    private var openSourceSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("VLCKit 4.0.0a23")
+                    .font(.subheadline)
+                Text("일부 호환 영상 재생에 VideoLAN의 VLCKit을 사용합니다. VLCKit은 GNU LGPL 2.1 이상으로 제공됩니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Link(
+                "라이선스 보기",
+                destination: URL(string: "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html")!
+            )
+            Link(
+                "VLCKit 소스 코드",
+                destination: URL(string: "https://github.com/videolan/vlckit/tree/4.0.0-a23")!
+            )
+        } header: {
+            SettingsSectionHeader(title: "오픈 소스", systemImage: "chevron.left.forwardslash.chevron.right")
         }
     }
 
