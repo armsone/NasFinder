@@ -3,6 +3,24 @@ import XCTest
 
 @MainActor
 final class FavoriteStoreTests: XCTestCase {
+    func testFavoriteShelfOnlyBeginsReorderingForLongHorizontalMovement() {
+        XCTAssertFalse(
+            FavoriteShelfInteractionPolicy.shouldBeginReordering(
+                translation: CGSize(width: 11, height: 0)
+            )
+        )
+        XCTAssertFalse(
+            FavoriteShelfInteractionPolicy.shouldBeginReordering(
+                translation: CGSize(width: 20, height: 21)
+            )
+        )
+        XCTAssertTrue(
+            FavoriteShelfInteractionPolicy.shouldBeginReordering(
+                translation: CGSize(width: -12, height: 3)
+            )
+        )
+    }
+
     func testFavoritePersistsAndCanBeRemoved() throws {
         let suiteName = "FavoriteStoreTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

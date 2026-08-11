@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 private struct FavoriteShelfTileFramesKey: PreferenceKey {
     static let defaultValue: [FavoriteItem.ID: CGRect] = [:]
@@ -25,8 +26,21 @@ private struct FavoriteShelfDragState {
     var location: CGPoint
 }
 
+struct FavoriteShelfLongPressValue: Equatable {
+    let location: CGPoint
+    let translation: CGSize
+}
+
+enum FavoriteShelfInteractionPolicy {
+    static let reorderActivationDistance: CGFloat = 12
+
+    static func shouldBeginReordering(translation: CGSize) -> Bool {
+        abs(translation.width) >= reorderActivationDistance
+            && abs(translation.width) > abs(translation.height)
+    }
+}
+
 struct FavoriteShelfView: View {
-    private static let dragActivationDistance: CGFloat = 12
     private static let edgeScrollInset: CGFloat = 34
 
     @EnvironmentObject private var favoriteStore: FavoriteStore
@@ -69,8 +83,8 @@ struct FavoriteShelfView: View {
                                             favoriteStore.remove(id: favorite.id)
                                             favoritePendingRemovalID = nil
                                         },
-                                        dragChanged: { value in
-                                            updateDrag(favorite: favorite, value: value)
+                                        longPressChanged: { value in
+                                            updateLongPress(favorite: favorite, value: value)
                                         },
                                         interactionEnded: { translation in
                                             finishInteraction(
@@ -136,29 +150,38 @@ struct FavoriteShelfView: View {
         .padding(.vertical, 4)
     }
 
-    private func updateDrag(favorite: FavoriteItem, value: DragGesture.Value) {
+    private func updateLongPress(
+        favorite: FavoriteItem,
+        value: FavoriteShelfLongPressValue
+    ) {
+        guard let frame = tileFrames[favorite.id] else { return }
+        let location = CGPoint(
+            x: frame.minX + value.location.x,
+            y: frame.minY + value.location.y
+        )
+
         if dragState == nil {
-            guard abs(value.translation.width) >= Self.dragActivationDistance,
-                  abs(value.translation.width) > abs(value.translation.height),
-                  let frame = tileFrames[favorite.id] else {
+            guard FavoriteShelfInteractionPolicy.shouldBeginReordering(
+                translation: value.translation
+            ) else {
                 return
             }
             favoritePendingRemovalID = nil
             dragState = FavoriteShelfDragState(
                 favorite: favorite,
                 centerOffset: CGSize(
-                    width: frame.midX - value.startLocation.x,
-                    height: frame.midY - value.startLocation.y
+                    width: frame.width / 2 - value.location.x + value.translation.width,
+                    height: frame.height / 2 - value.location.y + value.translation.height
                 ),
-                location: value.location
+                location: location
             )
         } else {
             guard dragState?.favorite.id == favorite.id else { return }
-            dragState?.location = value.location
+            dragState?.location = location
         }
 
-        updateAutoScrollDirection(at: value.location.x)
-        moveDraggedFavoriteToward(locationX: value.location.x)
+        updateAutoScrollDirection(at: location.x)
+        moveDraggedFavoriteToward(locationX: location.x)
     }
 
     private func moveDraggedFavoriteToward(locationX: CGFloat) {
@@ -273,8 +296,9 @@ private struct FavoriteShelfTile: View {
     let isBeingReordered: Bool
     @Binding var isRemovalPresented: Bool
     let remove: () -> Void
-    let dragChanged: (DragGesture.Value) -> Void
+    let longPressChanged: (FavoriteShelfLongPressValue) -> Void
     let interactionEnded: (CGSize) -> Void
+    @State private var suppressNextOpen = false
 
     var body: some View {
         FavoriteCell(favorite: favorite, side: 52)
@@ -286,10 +310,25 @@ private struct FavoriteShelfTile: View {
                 y: 3
             )
             .opacity(isBeingReordered ? 0 : 1)
-            // Keep the shelf's native horizontal pan recognizer active. The tile
-            // gesture only takes over after the long press has completed.
-            .simultaneousGesture(interactionGesture)
-            .onTapGesture(perform: open)
+            .background {
+                FavoriteShelfLongPressRecognizer(
+                    changed: { value in
+                        suppressNextOpen = true
+                        longPressChanged(value)
+                    },
+                    ended: { value, completed in
+                        if completed {
+                            interactionEnded(value.translation)
+                        }
+                        releaseOpenSuppression()
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            .onTapGesture {
+                guard !suppressNextOpen else { return }
+                open()
+            }
             .popover(
                 isPresented: $isRemovalPresented,
                 attachmentAnchor: .rect(.bounds),
@@ -312,30 +351,135 @@ private struct FavoriteShelfTile: View {
             }
     }
 
-    private var interactionGesture: some Gesture {
-        let pressAndDrag = LongPressGesture(minimumDuration: 0.55, maximumDistance: 18)
-            .sequenced(
-                before: DragGesture(
-                    minimumDistance: 0,
-                    coordinateSpace: .named("favoriteShelf")
+    private func releaseOpenSuppression() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(250))
+            suppressNextOpen = false
+        }
+    }
+}
+
+private struct FavoriteShelfLongPressRecognizer: UIViewRepresentable {
+    let changed: (FavoriteShelfLongPressValue) -> Void
+    let ended: (FavoriteShelfLongPressValue, Bool) -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(changed: changed, ended: ended)
+    }
+
+    func makeUIView(context: Context) -> AttachmentView {
+        let view = AttachmentView()
+        view.isUserInteractionEnabled = false
+        view.coordinator = context.coordinator
+        context.coordinator.attachmentView = view
+        return view
+    }
+
+    func updateUIView(_ uiView: AttachmentView, context: Context) {
+        context.coordinator.changed = changed
+        context.coordinator.ended = ended
+        context.coordinator.attachIfNeeded()
+    }
+
+    static func dismantleUIView(_ uiView: AttachmentView, coordinator: Coordinator) {
+        coordinator.detach()
+    }
+
+    final class AttachmentView: UIView {
+        weak var coordinator: Coordinator?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            coordinator?.attachIfNeeded()
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var changed: (FavoriteShelfLongPressValue) -> Void
+        var ended: (FavoriteShelfLongPressValue, Bool) -> Void
+        weak var attachmentView: UIView?
+        weak var attachedWindow: UIWindow?
+        private var initialLocation = CGPoint.zero
+
+        private lazy var recognizer: UILongPressGestureRecognizer = {
+            let recognizer = UILongPressGestureRecognizer(
+                target: self,
+                action: #selector(handleLongPress(_:))
+            )
+            recognizer.minimumPressDuration = 0.55
+            recognizer.allowableMovement = 18
+            recognizer.cancelsTouchesInView = false
+            recognizer.delaysTouchesBegan = false
+            recognizer.delegate = self
+            return recognizer
+        }()
+
+        init(
+            changed: @escaping (FavoriteShelfLongPressValue) -> Void,
+            ended: @escaping (FavoriteShelfLongPressValue, Bool) -> Void
+        ) {
+            self.changed = changed
+            self.ended = ended
+        }
+
+        func attachIfNeeded() {
+            guard let window = attachmentView?.window else {
+                detach()
+                return
+            }
+            guard attachedWindow !== window else { return }
+            detach()
+            window.addGestureRecognizer(recognizer)
+            attachedWindow = window
+        }
+
+        func detach() {
+            attachedWindow?.removeGestureRecognizer(recognizer)
+            attachedWindow = nil
+        }
+
+        @objc private func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+            guard let attachmentView else { return }
+            let location = recognizer.location(in: attachmentView)
+
+            switch recognizer.state {
+            case .began:
+                initialLocation = location
+                changed(value(at: location))
+            case .changed:
+                changed(value(at: location))
+            case .ended:
+                ended(value(at: location), true)
+            case .cancelled, .failed:
+                ended(value(at: location), false)
+            default:
+                break
+            }
+        }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let attachmentView else { return false }
+            return attachmentView.bounds.contains(gestureRecognizer.location(in: attachmentView))
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldReceive touch: UITouch
+        ) -> Bool {
+            guard let attachmentView else { return false }
+            return attachmentView.bounds.contains(touch.location(in: attachmentView))
+        }
+
+        private func value(at location: CGPoint) -> FavoriteShelfLongPressValue {
+            FavoriteShelfLongPressValue(
+                location: location,
+                translation: CGSize(
+                    width: location.x - initialLocation.x,
+                    height: location.y - initialLocation.y
                 )
             )
-            .onChanged { value in
-                guard case let .second(true, drag?) = value else { return }
-                dragChanged(drag)
-            }
-
-        return pressAndDrag
-            .onEnded { result in
-                switch result {
-                case let .second(true, drag?):
-                    interactionEnded(drag.translation)
-                case .first(true):
-                    interactionEnded(.zero)
-                default:
-                    break
-                }
-            }
+        }
     }
 }
 

@@ -65,7 +65,10 @@ struct ConnectionListView: View {
                 FileBrowserContainerView(
                     connection: destination.connection,
                     path: destination.path,
-                    title: destination.title
+                    title: destination.title,
+                    returnToDashboardAction: {
+                        returnToDashboard()
+                    }
                 )
             }
             .navigationDestination(item: $selectedFavorite) { favorite in
@@ -109,9 +112,7 @@ struct ConnectionListView: View {
                 openPreferredConnectionIfNeeded()
             }
             .environment(\.returnToDashboard) {
-                browserDestination = nil
-                selectedFavorite = nil
-                navigationIdentity = UUID()
+                returnToDashboard()
             }
         }
         .id(navigationIdentity)
@@ -256,6 +257,15 @@ struct ConnectionListView: View {
               editingConnection == nil else { return }
         if let connection = store.preferredConnection {
             open(connection)
+        }
+    }
+
+    private func returnToDashboard() {
+        browserDestination = nil
+        selectedFavorite = nil
+        Task { @MainActor in
+            await Task.yield()
+            navigationIdentity = UUID()
         }
     }
 

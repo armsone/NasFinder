@@ -79,7 +79,8 @@ private struct FileBrowserPageTitle: View {
             .foregroundStyle(.secondary)
             .monospacedDigit()
         }
-        .frame(maxWidth: 230)
+        .frame(maxWidth: 230, minHeight: 44)
+        .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
 
@@ -178,7 +179,8 @@ struct FileBrowserView: View {
         service: any RemoteFileService,
         title: String,
         operationCoordinator: FileOperationCoordinator = FileOperationCoordinator(),
-        trafficTracker: PageNetworkTrafficTracker? = nil
+        trafficTracker: PageNetworkTrafficTracker? = nil,
+        returnToDashboardAction: ReturnToDashboardAction? = nil
     ) {
         let tracker = trafficTracker ?? PageNetworkTrafficTracker()
         let measuredService: any RemoteFileService
@@ -197,9 +199,15 @@ struct FileBrowserView: View {
         _trafficTracker = StateObject(wrappedValue: tracker)
         _operationCoordinator = StateObject(wrappedValue: operationCoordinator)
         self.title = title
+        self.explicitReturnToDashboardAction = returnToDashboardAction
     }
 
     private let title: String
+    private let explicitReturnToDashboardAction: ReturnToDashboardAction?
+
+    private var dashboardAction: ReturnToDashboardAction {
+        explicitReturnToDashboardAction ?? returnToDashboard
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -218,11 +226,13 @@ struct FileBrowserView: View {
         )
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Button(action: returnToDashboard) {
+                Button(action: dashboardAction) {
                     FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
                 }
                 .buttonStyle(.plain)
+                .contentShape(Rectangle())
                 .accessibilityLabel("\(title), 첫 화면으로 이동")
+                .accessibilityHint("NasFinder 첫 화면으로 돌아갑니다.")
             }
 
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -259,7 +269,8 @@ struct FileBrowserView: View {
                 service: viewModel.service,
                 title: item.name,
                 operationCoordinator: operationCoordinator,
-                trafficTracker: trafficTracker
+                trafficTracker: trafficTracker,
+                returnToDashboardAction: dashboardAction
             )
         }
         .refreshable {
@@ -760,7 +771,8 @@ struct FileBrowserView: View {
             service: viewModel.service,
             title: title,
             operationCoordinator: operationCoordinator,
-            trafficTracker: trafficTracker
+            trafficTracker: trafficTracker,
+            returnToDashboardAction: dashboardAction
         )
     }
 

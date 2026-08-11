@@ -5,11 +5,18 @@ struct FileBrowserContainerView: View {
     let connection: RemoteConnection
     let path: String
     let title: String
+    let returnToDashboardAction: ReturnToDashboardAction
 
-    init(connection: RemoteConnection, path: String? = nil, title: String? = nil) {
+    init(
+        connection: RemoteConnection,
+        path: String? = nil,
+        title: String? = nil,
+        returnToDashboardAction: @escaping ReturnToDashboardAction
+    ) {
         self.connection = connection
         self.path = path ?? connection.normalizedRootPath
         self.title = title ?? connection.name
+        self.returnToDashboardAction = returnToDashboardAction
     }
 
     var body: some View {
@@ -19,7 +26,8 @@ struct FileBrowserContainerView: View {
                     connection: connection,
                     path: path,
                     service: service,
-                    title: title
+                    title: title,
+                    returnToDashboardAction: returnToDashboardAction
                 )
             } else {
                 ContentUnavailableView(
