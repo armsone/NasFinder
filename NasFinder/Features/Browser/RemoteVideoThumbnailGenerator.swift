@@ -35,7 +35,7 @@ enum RemoteVideoThumbnailGenerationError: LocalizedError, Sendable {
 }
 
 /// Creates a thumbnail from an AVFoundation asset backed by the service's
-/// byte-range API. The folder lease makes the 64 MiB ceiling shared by every
+/// byte-range API. The folder lease makes the folder ceiling shared by every
 /// visible cell and preheating request in the current app process.
 enum RemoteVideoThumbnailGenerator {
     private static let logger = Logger(
@@ -392,7 +392,7 @@ actor RemoteVideoThumbnailTrafficBudget {
     )
 
     static let defaultMaximumFolderBytes = 256 * 1_024 * 1_024
-    static let defaultMaximumItemBytes = 4 * 1_024 * 1_024
+    static let defaultMaximumItemBytes = 8 * 1_024 * 1_024
     static let defaultMinimumLeaseBytes = 128 * 1_024
 
     private struct FolderState {

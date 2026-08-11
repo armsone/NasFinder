@@ -58,6 +58,10 @@ final class RemotePreviewStateTests: XCTestCase {
             256 * 1_024 * 1_024
         )
         XCTAssertEqual(
+            RemoteVideoThumbnailTrafficBudget.defaultMaximumItemBytes,
+            8 * 1_024 * 1_024
+        )
+        XCTAssertEqual(
             ThumbnailPreheater.maximumSynologyDataBytes,
             256 * 1_024 * 1_024
         )

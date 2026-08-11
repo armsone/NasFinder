@@ -234,6 +234,11 @@ final class ThumbnailPreheater: ObservableObject {
                     transferredBytes = max(transferredBytes, Int64(usedBytes))
                 } catch {
                     failedCount += 1
+                    let trafficBudget = service.connection.kind == .sftp
+                        ? RemoteVideoThumbnailTrafficBudget.sftpShared
+                        : RemoteVideoThumbnailTrafficBudget.shared
+                    let usedBytes = await trafficBudget.transferredBytes(for: item)
+                    transferredBytes = max(transferredBytes, Int64(usedBytes))
                 }
                 completedCount += 1
 
