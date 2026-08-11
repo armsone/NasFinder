@@ -369,8 +369,8 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
         isStopping = true
         mediaPlayer.delegate = nil
         mediaPlayer.stop()
-        mediaPlayer.drawable = nil
         inputStream?.close()
+        mediaPlayer.drawable = nil
     }
 
     nonisolated func mediaPlayerStateChanged(_ newState: VLCMediaPlayerState) {
@@ -507,6 +507,8 @@ struct CompatibilityVideoMiniProgressLine: View {
 
 @MainActor
 enum CompatibilityRemoteVideoThumbnailGenerator {
+    private static var activeOperation: CompatibilityVideoThumbnailOperation?
+
     static func generate(
         for item: RemoteFileItem,
         service: any RemoteFileService,
@@ -557,7 +559,12 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                 throw CompatibilityVideoPlayerError.cannotCreateMedia
             }
             let dimensions = maximumDimensions(for: size)
-            let image = try await CompatibilityVideoThumbnailOperation().generate(
+            let operation = CompatibilityVideoThumbnailOperation()
+            activeOperation = operation
+            defer {
+                if activeOperation === operation { activeOperation = nil }
+            }
+            let image = try await operation.generate(
                 media: media,
                 stream: stream,
                 dimensions: dimensions,
@@ -575,6 +582,14 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
             let transferredBytes = stream.accountedByteCount
             await trafficBudget.finish(lease, transferredBytes: transferredBytes)
             throw error
+        }
+    }
+
+    static func cancelAll() async {
+        await CompatibilityVideoThumbnailExecutionLimiter.shared.cancelWaitingOperations()
+        activeOperation?.cancel()
+        while activeOperation != nil {
+            await Task.yield()
         }
     }
 
@@ -753,6 +768,10 @@ private final class CompatibilityVideoThumbnailOperation:
         finish(.failure(error))
     }
 
+    func cancel() {
+        cancel(with: CancellationError())
+    }
+
     private func finish(_ result: Result<CGImage, Error>) {
         guard !isFinished else { return }
         isFinished = true
@@ -761,11 +780,16 @@ private final class CompatibilityVideoThumbnailOperation:
         let timeoutTask = timeoutTask
         self.timeoutTask = nil
         player?.delegate = nil
-        player?.stop()
+        if result.requiresRemoteReadCancellation {
+            stream?.close()
+            player?.stop()
+        } else {
+            player?.stop()
+            stream?.close()
+        }
         player?.drawable = nil
         player = nil
         drawable = nil
-        stream?.close()
         stream = nil
         if let snapshotURL {
             try? FileManager.default.removeItem(at: snapshotURL)
@@ -773,6 +797,18 @@ private final class CompatibilityVideoThumbnailOperation:
         snapshotURL = nil
         timeoutTask?.cancel()
         continuation?.resume(with: result)
+    }
+}
+
+private extension Result where Success == CGImage, Failure == Error {
+    var requiresRemoteReadCancellation: Bool {
+        guard case let .failure(error) = self else { return false }
+        if error is CancellationError { return true }
+        guard let generationError = error as? RemoteVideoThumbnailGenerationError else {
+            return false
+        }
+        if case .timedOut = generationError { return true }
+        return false
     }
 }
 
@@ -841,5 +877,13 @@ private actor CompatibilityVideoThumbnailExecutionLimiter {
         waiters.remove(at: index).continuation.resume(
             throwing: CancellationError()
         )
+    }
+
+    func cancelWaitingOperations() {
+        let waiting = waiters
+        waiters.removeAll()
+        waiting.forEach {
+            $0.continuation.resume(throwing: CancellationError())
+        }
     }
 }

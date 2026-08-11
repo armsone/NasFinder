@@ -10,6 +10,7 @@ final class RemoteThumbnailActivityTracker: ObservableObject {
 
     @Published private(set) var isActive = false
     @Published private(set) var fractionCompleted: Double = 0
+    @Published private(set) var limitMessage: String?
 
     private var activeOperationIDs: Set<UUID> = []
     private var completedCount = 0
@@ -18,6 +19,18 @@ final class RemoteThumbnailActivityTracker: ObservableObject {
     private let screenAwakeActivityID = UUID()
 
     private init() {}
+
+    func beginNewSession() {
+        limitMessage = nil
+    }
+
+    func reachedTrafficLimit(maximumBytes: Int) {
+        let formatted = ByteCountFormatter.string(
+            fromByteCount: Int64(maximumBytes),
+            countStyle: .file
+        )
+        limitMessage = "썸네일 네트워크 한도 \(formatted)에서 일시 중지됨"
+    }
 
     func begin(_ operationID: UUID) {
         guard activeOperationIDs.insert(operationID).inserted else { return }
@@ -412,6 +425,13 @@ private final class RemoteThumbnailLoader: ObservableObject {
                 if operationID == currentOperationID {
                     loadedCacheKey = nil
                 }
+                return
+            } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
+                RemoteThumbnailActivityTracker.shared.reachedTrafficLimit(
+                    maximumBytes:
+                        RemoteVideoThumbnailTrafficBudget.defaultMaximumFolderBytes
+                )
+                cacheNegative(cacheKey, for: 30)
                 return
             } catch {
                 if RemoteRequestCancellation.isCancellation(error) {

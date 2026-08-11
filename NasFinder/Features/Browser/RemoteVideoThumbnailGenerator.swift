@@ -35,7 +35,7 @@ enum RemoteVideoThumbnailGenerationError: LocalizedError, Sendable {
 }
 
 /// Creates a thumbnail from an AVFoundation asset backed by the service's
-/// byte-range API. The folder lease makes the 20 MiB ceiling shared by every
+/// byte-range API. The folder lease makes the 64 MiB ceiling shared by every
 /// visible cell and preheating request in the current app process.
 enum RemoteVideoThumbnailGenerator {
     private static let logger = Logger(
@@ -52,6 +52,19 @@ enum RemoteVideoThumbnailGenerator {
         trafficBudget: RemoteVideoThumbnailTrafficBudget = .shared,
         timeout: Duration = defaultGenerationTimeout
     ) async throws -> RemoteVideoThumbnailGenerationResult {
+        if CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item) {
+            // Keep VLCKit work structured under the cell task. The shared
+            // coordinator intentionally outlives individual waiters, which is
+            // useful for AVFoundation but retained cancelled VLC players when
+            // pull-to-refresh replaced a grid generation.
+            return try await CompatibilityRemoteVideoThumbnailGenerator.generate(
+                for: item,
+                service: service,
+                size: size,
+                trafficBudget: trafficBudget,
+                timeout: timeout
+            )
+        }
         let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
         let key = "\(item.id)|\(version)|\(item.size ?? -1)|\(size.rawValue)"
         return try await coordinator.value(for: key) {
@@ -76,15 +89,6 @@ enum RemoteVideoThumbnailGenerator {
               service.supportsRangeStreaming,
               item.size.map({ $0 > 0 }) == true else {
             throw RemoteVideoThumbnailGenerationError.unsupportedSource
-        }
-        if CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item) {
-            return try await CompatibilityRemoteVideoThumbnailGenerator.generate(
-                for: item,
-                service: service,
-                size: size,
-                trafficBudget: trafficBudget,
-                timeout: timeout
-            )
         }
         guard let lease = await trafficBudget.lease(for: item) else {
             throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
@@ -387,7 +391,7 @@ actor RemoteVideoThumbnailTrafficBudget {
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
 
-    static let defaultMaximumFolderBytes = 20 * 1_024 * 1_024
+    static let defaultMaximumFolderBytes = 64 * 1_024 * 1_024
     static let defaultMaximumItemBytes = 4 * 1_024 * 1_024
     static let defaultMinimumLeaseBytes = 128 * 1_024
 

@@ -50,6 +50,14 @@ final class RemotePreviewStateTests: XCTestCase {
             CompatibilityVideoThumbnailPlaybackPolicy.maximumConcurrentOperations,
             1
         )
+        XCTAssertEqual(
+            RemoteVideoThumbnailTrafficBudget.defaultMaximumFolderBytes,
+            64 * 1_024 * 1_024
+        )
+        XCTAssertEqual(
+            ThumbnailPreheater.maximumSynologyDataBytes,
+            64 * 1_024 * 1_024
+        )
     }
 
     func testCompatibilityRemoteStreamSupportsBoundedReadsAndSeeking() async throws {
@@ -423,6 +431,67 @@ final class RemotePreviewStateTests: XCTestCase {
             XCTAssertLessThan(startedAt.duration(to: clock.now), .seconds(2))
         } catch {
             XCTFail("예상하지 못한 오류: \(error)")
+        }
+    }
+
+    func testCancelledCompatibilityThumbnailDoesNotBlockNextGeneration() async throws {
+        let service = StallingRangeVideoService()
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/stalled.avi",
+            name: "stalled.avi",
+            kind: .file,
+            size: 8 * 1_024 * 1_024,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let trafficBudget = RemoteVideoThumbnailTrafficBudget(
+            maximumFolderBytes: 8 * 1_024 * 1_024,
+            maximumItemBytes: 4 * 1_024 * 1_024,
+            minimumLeaseBytes: 1
+        )
+        let first = Task {
+            try await RemoteVideoThumbnailGenerator.generate(
+                for: item,
+                service: service,
+                size: .small,
+                trafficBudget: trafficBudget,
+                timeout: .seconds(30)
+            )
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        let clock = ContinuousClock()
+        let cancellationStartedAt = clock.now
+        first.cancel()
+        await CompatibilityRemoteVideoThumbnailGenerator.cancelAll()
+        do {
+            _ = try await first.value
+            XCTFail("취소된 호환 썸네일이 성공하면 안 됩니다.")
+        } catch is CancellationError {
+            XCTAssertLessThan(
+                cancellationStartedAt.duration(to: clock.now),
+                .seconds(2)
+            )
+        } catch {
+            XCTFail("취소는 CancellationError여야 합니다: \(error)")
+        }
+
+        do {
+            _ = try await RemoteVideoThumbnailGenerator.generate(
+                for: item,
+                service: service,
+                size: .small,
+                trafficBudget: trafficBudget,
+                timeout: .milliseconds(100)
+            )
+            XCTFail("다음 멈춘 작업은 제한 시간 오류여야 합니다.")
+        } catch RemoteVideoThumbnailGenerationError.timedOut {
+            XCTAssertLessThan(
+                cancellationStartedAt.duration(to: clock.now),
+                .seconds(3)
+            )
+        } catch {
+            XCTFail("다음 작업이 이전 대기열에 막혔습니다: \(error)")
         }
     }
 

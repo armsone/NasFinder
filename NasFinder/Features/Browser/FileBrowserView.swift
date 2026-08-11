@@ -275,6 +275,8 @@ struct FileBrowserView: View {
         }
         .refreshable {
             guard !operationCoordinator.isBusy else { return }
+            await CompatibilityRemoteVideoThumbnailGenerator.cancelAll()
+            thumbnailActivity.beginNewSession()
             await viewModel.reloadAfterCurrentLoad()
             await RemoteVideoThumbnailTrafficBudget.shared.reset()
             await RemoteVideoThumbnailTrafficBudget.sftpShared.reset()
@@ -316,6 +318,7 @@ struct FileBrowserView: View {
         }
         .onAppear {
             trafficTracker.reset()
+            thumbnailActivity.beginNewSession()
             connectionStore.rememberBrowserLocation(
                 connection: viewModel.connection,
                 path: viewModel.path,
@@ -777,32 +780,48 @@ struct FileBrowserView: View {
     }
 
     private var thumbnailProgressLine: some View {
-        GeometryReader { geometry in
-            ZStack(alignment: .leading) {
-                Color.white
+        VStack(spacing: 0) {
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Color.white
 
-                if thumbnailActivity.isActive {
-                    Color.black
-                        .frame(
-                            width: geometry.size.width
-                                * thumbnailActivity.fractionCompleted
-                        )
-                        .animation(
-                            .easeOut(duration: 0.18),
-                            value: thumbnailActivity.fractionCompleted
-                        )
+                    if thumbnailActivity.isActive {
+                        Color.black
+                            .frame(
+                                width: geometry.size.width
+                                    * thumbnailActivity.fractionCompleted
+                            )
+                            .animation(
+                                .easeOut(duration: 0.18),
+                                value: thumbnailActivity.fractionCompleted
+                            )
+                    }
                 }
             }
+            .frame(height: 2)
+
+            if let limitMessage = thumbnailActivity.limitMessage {
+                Text(limitMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 4)
+                    .background(.thinMaterial)
+            }
         }
-        .frame(height: 2)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("썸네일 만드는 중")
+        .accessibilityLabel(
+            thumbnailActivity.limitMessage ?? "현재 화면 썸네일 만드는 중"
+        )
         .accessibilityValue(
             thumbnailActivity.isActive
                 ? "\(Int((thumbnailActivity.fractionCompleted * 100).rounded()))퍼센트"
                 : "대기 중"
         )
-        .accessibilityHidden(!thumbnailActivity.isActive)
+        .accessibilityHidden(
+            !thumbnailActivity.isActive && thumbnailActivity.limitMessage == nil
+        )
     }
 
     private var itemCountLabel: String {
