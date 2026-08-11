@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import UIKit
 
 struct ConnectionListView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -49,6 +50,10 @@ struct ConnectionListView: View {
                                 requestClearPreferred: {
                                     store.clearPreferredConnection()
                                 },
+                                canMoveEarlier: store.connections.first?.id != connection.id,
+                                canMoveLater: store.connections.last?.id != connection.id,
+                                requestMoveEarlier: { move(connection, by: -1) },
+                                requestMoveLater: { move(connection, by: 1) },
                                 requestEditing: { editingConnection = connection },
                                 requestDeletion: { connectionPendingDeletion = connection }
                             )
@@ -68,13 +73,18 @@ struct ConnectionListView: View {
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
                 } footer: {
-                    if let preferred = store.preferredConnection {
-                        Text("기본 위치 ‘\(preferred.name)’은 NasFinder를 실행하면 자동으로 열립니다.")
-                    } else if store.connections.isEmpty {
-                        Text("NAS 또는 SFTP 서버를 연결하면 파일을 바로 탐색할 수 있습니다.")
-                    } else {
-                        Text("기본 위치가 없습니다. 앱을 실행하면 이 연결 목록에서 시작합니다.")
+                    Group {
+                        if let preferred = store.preferredConnection {
+                            Text("기본 위치 ‘\(preferred.name)’ · 앱 실행 시 자동으로 열림")
+                        } else if store.connections.isEmpty {
+                            Text("NAS 또는 SFTP 서버를 연결하면 파일을 탐색할 수 있습니다.")
+                        } else {
+                            Text("기본 위치 없음 · 앱 실행 시 연결 목록에서 시작")
+                        }
                     }
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(1)
                 }
 
                 Section("내 파일") {
@@ -132,11 +142,27 @@ struct ConnectionListView: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(SkyBreezeBackground())
-            .navigationTitle("NasFinder")
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                if store.connections.count > 1 {
-                    EditButton()
+                ToolbarItem(placement: .topBarLeading) {
+                    HStack(spacing: 7) {
+                        Image(currentLogoAssetName)
+                            .resizable()
+                            .scaledToFit()
+                            .frame(width: 24, height: 24)
+                            .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .stroke(.primary.opacity(0.08), lineWidth: 0.5)
+                            }
+
+                        Text("NasFinder")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.primary.opacity(0.82))
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("NasFinder")
                 }
             }
             .sheet(isPresented: $isAddingConnection) {
@@ -259,6 +285,10 @@ struct ConnectionListView: View {
                         requestClearPreferred: {
                             store.clearPreferredConnection()
                         },
+                        canMoveEarlier: store.connections.first?.id != connection.id,
+                        canMoveLater: store.connections.last?.id != connection.id,
+                        requestMoveEarlier: { move(connection, by: -1) },
+                        requestMoveLater: { move(connection, by: 1) },
                         requestEditing: {
                             editingConnection = connection
                         },
@@ -310,6 +340,12 @@ struct ConnectionListView: View {
         }
     }
 
+    private var currentLogoAssetName: String {
+        AppIconChoice.current(
+            alternateIconName: UIApplication.shared.alternateIconName
+        ).previewAssetName
+    }
+
     private var errorBinding: Binding<Bool> {
         Binding(
             get: { store.lastErrorMessage != nil },
@@ -334,6 +370,16 @@ struct ConnectionListView: View {
         Task {
             await store.remove(at: IndexSet(integer: index))
         }
+    }
+
+    private func move(_ connection: RemoteConnection, by offset: Int) {
+        guard let index = store.connections.firstIndex(where: { $0.id == connection.id }) else {
+            return
+        }
+        let targetIndex = index + offset
+        guard store.connections.indices.contains(targetIndex) else { return }
+        let destination = offset < 0 ? targetIndex : targetIndex + 1
+        store.move(from: IndexSet(integer: index), to: destination)
     }
 }
 
@@ -552,6 +598,10 @@ private struct NetworkLocationCard: View {
     let requestOpening: () -> Void
     let requestPreferred: () -> Void
     let requestClearPreferred: () -> Void
+    let canMoveEarlier: Bool
+    let canMoveLater: Bool
+    let requestMoveEarlier: () -> Void
+    let requestMoveLater: () -> Void
     let requestEditing: () -> Void
     let requestDeletion: () -> Void
 
@@ -620,6 +670,18 @@ private struct NetworkLocationCard: View {
                 }
                 Button("연결 수정", systemImage: "pencil") {
                     requestEditing()
+                }
+                if canMoveEarlier || canMoveLater {
+                    Section("순서") {
+                        Button("위로 이동", systemImage: "arrow.up") {
+                            requestMoveEarlier()
+                        }
+                        .disabled(!canMoveEarlier)
+                        Button("아래로 이동", systemImage: "arrow.down") {
+                            requestMoveLater()
+                        }
+                        .disabled(!canMoveLater)
+                    }
                 }
                 Button("연결 삭제", systemImage: "trash", role: .destructive) {
                     requestDeletion()
