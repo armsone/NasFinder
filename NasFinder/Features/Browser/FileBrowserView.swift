@@ -741,49 +741,50 @@ struct FileBrowserView: View {
 
     private var currentPathBar: some View {
         HStack(spacing: 8) {
-            if let parentPathComponent {
-                NavigationLink {
-                    pathDestination(
-                        path: parentPathComponent.path,
-                        title: parentPathTitle(parentPathComponent)
-                    )
-                } label: {
-                    Image(systemName: "arrow.up")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(SkyBreezeTheme.accent)
-                        .frame(width: 28, height: 24)
-                        .background(
-                            SkyBreezeTheme.accent.opacity(0.12),
-                            in: RoundedRectangle(cornerRadius: 7)
-                        )
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("상위 폴더")
-                .accessibilityHint("\(parentPathComponent.title) 폴더로 이동합니다.")
-            }
-
-            Image(systemName: "externaldrive.fill")
-                .foregroundStyle(.tint)
-
-            NavigationLink {
-                pathDestination(
-                    path: viewModel.connection.normalizedRootPath,
-                    title: viewModel.connection.name
-                )
-            } label: {
-                Text(viewModel.connection.name)
-                    .fontWeight(.semibold)
-                    .lineLimit(1)
-            }
-            .buttonStyle(.plain)
-            .disabled(viewModel.path == viewModel.connection.normalizedRootPath)
-
-            Image(systemName: "chevron.right")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.tertiary)
-
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 5) {
+                    if let parentPathComponent {
+                        NavigationLink {
+                            pathDestination(
+                                path: parentPathComponent.path,
+                                title: parentPathTitle(parentPathComponent)
+                            )
+                        } label: {
+                            Image(systemName: "arrow.up")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(SkyBreezeTheme.accent)
+                                .frame(width: 36, height: 28)
+                                .background(
+                                    SkyBreezeTheme.accent.opacity(0.12),
+                                    in: RoundedRectangle(cornerRadius: 7)
+                                )
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("상위 폴더")
+                        .accessibilityHint("\(parentPathComponent.title) 폴더로 이동합니다.")
+                    }
+
+                    Image(systemName: "externaldrive.fill")
+                        .foregroundStyle(.tint)
+
+                    NavigationLink {
+                        pathDestination(
+                            path: viewModel.connection.normalizedRootPath,
+                            title: viewModel.connection.name
+                        )
+                    } label: {
+                        Text(viewModel.connection.name)
+                            .fontWeight(.semibold)
+                            .lineLimit(1)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(viewModel.path == viewModel.connection.normalizedRootPath)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.tertiary)
+
                     ForEach(Array(pathComponents.enumerated()), id: \.element.id) { index, component in
                         if index > 0 {
                             Image(systemName: "chevron.right")
@@ -803,8 +804,7 @@ struct FileBrowserView: View {
                 }
                 .lineLimit(1)
             }
-
-            Spacer(minLength: 4)
+            .contentShape(Rectangle())
 
             Text(itemCountLabel)
                 .monospacedDigit()
