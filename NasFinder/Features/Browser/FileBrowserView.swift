@@ -77,12 +77,15 @@ private struct FileBrowserPageTitle: View {
     ) -> some View {
         Label {
             Text(PageNetworkTrafficTracker.formatted(value))
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         } icon: {
             Image(systemName: symbol)
                 .font(.caption2)
                 .imageScale(.small)
         }
         .labelStyle(.titleAndIcon)
+        .layoutPriority(1)
         .accessibilityLabel(
             "\(accessibilityLabel) \(PageNetworkTrafficTracker.formatted(value))"
         )

@@ -4,8 +4,16 @@ import XCTest
 @MainActor
 final class PageNetworkTrafficTrackerTests: XCTestCase {
     func testZeroTrafficUsesNumericZero() {
-        XCTAssertEqual(PageNetworkTrafficTracker.formatted(0), "0 KB")
-        XCTAssertEqual(PageNetworkTrafficTracker.formatted(-1), "0 KB")
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(0), "0 kb")
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(-1), "0 kb")
+    }
+
+    func testTrafficUsesCompactIntegerUnits() {
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(999), "999 b")
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(1_499), "1 kb")
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(1_500), "2 kb")
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(3_700_000), "4 mb")
+        XCTAssertEqual(PageNetworkTrafficTracker.formatted(2_600_000_000), "3 gb")
     }
 
     func testTrackerAccumulatesAndResetsTraffic() {

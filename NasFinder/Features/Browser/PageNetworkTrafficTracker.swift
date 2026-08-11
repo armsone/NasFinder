@@ -24,11 +24,20 @@ final class PageNetworkTrafficTracker: ObservableObject {
     }
 
     static func formatted(_ byteCount: Int64) -> String {
-        guard byteCount > 0 else { return "0 KB" }
-        return ByteCountFormatter.string(
-            fromByteCount: byteCount,
-            countStyle: .file
-        )
+        guard byteCount > 0 else { return "0 kb" }
+        let units: [(divisor: Double, symbol: String)] = [
+            (1_000_000_000_000_000_000, "eb"),
+            (1_000_000_000_000_000, "pb"),
+            (1_000_000_000_000, "tb"),
+            (1_000_000_000, "gb"),
+            (1_000_000, "mb"),
+            (1_000, "kb"),
+        ]
+        let value = Double(byteCount)
+        guard let unit = units.first(where: { value >= $0.divisor }) else {
+            return "\(byteCount) b"
+        }
+        return "\(Int64((value / unit.divisor).rounded())) \(unit.symbol)"
     }
 }
 
