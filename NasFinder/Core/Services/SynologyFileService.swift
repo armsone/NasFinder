@@ -1242,12 +1242,18 @@ actor SynologyFileService: RemoteFileService {
     private func authenticatedRequest<T>(
         _ operation: (String) async throws -> T
     ) async throws -> T {
-        let sid = try await validSessionID()
         do {
+            let sid = try await validSessionID()
             return try await operation(sid)
         } catch let error as SynologyAPIError where error.isAuthenticationError {
             sessionID = nil
-            return try await operation(validSessionID())
+            do {
+                return try await operation(validSessionID())
+            } catch {
+                throw RemoteRequestCancellation.normalized(error)
+            }
+        } catch {
+            throw RemoteRequestCancellation.normalized(error)
         }
     }
 

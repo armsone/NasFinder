@@ -69,7 +69,7 @@ enum SynologyConnectionDiagnostics {
         let reference = diagnosticReference(for: underlying)
         let nsError = underlying as NSError
 
-        if underlying is CancellationError {
+        if RemoteRequestCancellation.isCancellation(underlying) {
             return .init(
                 stage: .cancelled,
                 message: "연결 시도가 취소됐습니다.",

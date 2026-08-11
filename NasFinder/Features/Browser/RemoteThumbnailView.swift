@@ -270,6 +270,12 @@ private final class RemoteThumbnailLoader: ObservableObject {
                 }
                 return
             } catch {
+                if RemoteRequestCancellation.isCancellation(error) {
+                    if operationID == currentOperationID {
+                        loadedCacheKey = nil
+                    }
+                    return
+                }
                 // A malformed server thumbnail may still have a valid original,
                 // except when doing so would require a complete remote movie.
                 if item.isVideo, !service.permitsFullDownloadForVideoThumbnail {
@@ -316,6 +322,12 @@ private final class RemoteThumbnailLoader: ObservableObject {
             }
             return
         } catch {
+            if RemoteRequestCancellation.isCancellation(error) {
+                if operationID == currentOperationID {
+                    loadedCacheKey = nil
+                }
+                return
+            }
             // A file icon remains visible when a thumbnail cannot be generated.
             if operationID == currentOperationID {
                 cacheNegative(cacheKey, for: 60)
@@ -344,7 +356,17 @@ private final class RemoteThumbnailLoader: ObservableObject {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
-                lastError = error
+                if RemoteRequestCancellation.isCancellation(error) {
+                    // URLSession can report -999 even while the surrounding
+                    // Swift task remains active. Retry that transient request,
+                    // but never retry after the view task itself was cancelled.
+                    try Task.checkCancellation()
+                    if attempt + 1 >= attemptCount {
+                        throw CancellationError()
+                    }
+                } else {
+                    lastError = error
+                }
             }
 
             if attempt + 1 < attemptCount {

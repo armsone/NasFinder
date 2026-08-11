@@ -349,6 +349,53 @@ final class ConnectionTests: XCTestCase {
         )
     }
 
+    func testURLSessionCancellationIsNormalizedAcrossSynologyDiagnostics() {
+        let connection = RemoteConnection(
+            name: "NAS",
+            kind: .synology,
+            host: "nas.local",
+            username: "tester"
+        )
+        let cancelled = NSError(
+            domain: NSURLErrorDomain,
+            code: NSURLErrorCancelled
+        )
+        let wrapped = SynologyConnectionTestFailure(
+            stage: .rootPath,
+            underlying: cancelled
+        )
+
+        XCTAssertTrue(RemoteRequestCancellation.isCancellation(cancelled))
+        XCTAssertTrue(RemoteRequestCancellation.normalized(cancelled) is CancellationError)
+        XCTAssertEqual(
+            SynologyConnectionDiagnostics.diagnostic(
+                for: wrapped,
+                connection: connection
+            ).stage,
+            .cancelled
+        )
+    }
+
+    @MainActor
+    func testFileBrowserDoesNotPresentAnErrorForCancelledListing() async {
+        let connection = RemoteConnection(
+            name: "NAS",
+            kind: .synology,
+            host: "nas.local",
+            username: "tester"
+        )
+        let viewModel = FileBrowserViewModel(
+            connection: connection,
+            path: "/home",
+            service: CancelledListService(connection: connection)
+        )
+
+        await viewModel.load()
+
+        XCTAssertNil(viewModel.errorMessage)
+        XCTAssertFalse(viewModel.isLoading)
+    }
+
     func testSynologyDiagnosticsPreserveVerifiedTestStage() {
         let connection = RemoteConnection(
             name: "NAS",
@@ -397,5 +444,17 @@ final class ConnectionTests: XCTestCase {
         XCTAssertFalse(diagnostic.reference.contains("/private/family"))
         XCTAssertFalse(diagnostic.userMessage.contains("do-not-log"))
         XCTAssertFalse(diagnostic.userMessage.contains("/private/family"))
+    }
+}
+
+private struct CancelledListService: RemoteFileService {
+    let connection: RemoteConnection
+
+    func list(directory path: String?) async throws -> [RemoteFileItem] {
+        throw NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)
+    }
+
+    func download(_ item: RemoteFileItem) async throws -> URL {
+        throw CancellationError()
     }
 }

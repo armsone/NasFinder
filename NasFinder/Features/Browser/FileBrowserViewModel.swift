@@ -307,6 +307,7 @@ final class FileBrowserViewModel: ObservableObject {
             rebuildDisplayedItems()
             errorMessage = nil
         } catch {
+            guard !RemoteRequestCancellation.isCancellation(error) else { return }
             if connection.kind == .sftp {
                 let diagnostic = SFTPConnectionDiagnostics.diagnostic(
                     for: error,

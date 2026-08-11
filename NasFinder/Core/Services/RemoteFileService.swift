@@ -13,6 +13,19 @@ enum RemoteThumbnailError: Error, Sendable {
     case optimizedPreviewUnavailable
 }
 
+enum RemoteRequestCancellation {
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain
+            && nsError.code == NSURLErrorCancelled
+    }
+
+    static func normalized(_ error: Error) -> Error {
+        isCancellation(error) ? CancellationError() : error
+    }
+}
+
 struct RemoteDownloadProgress: Sendable, Hashable {
     let completedByteCount: Int64
     let totalByteCount: Int64?

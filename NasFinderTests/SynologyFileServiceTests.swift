@@ -4,6 +4,42 @@ import XCTest
 
 @MainActor
 final class SynologyFileServiceTests: XCTestCase {
+    func testThumbnailURLCancellationIsNormalized() async throws {
+        let fixture = SynologyAPIFixture()
+        let service = fixture.makeService { request in
+            let fields = request.formFields
+            switch (fields["api"], fields["method"]) {
+            case ("SYNO.API.Auth", "login"):
+                return .json(#"{"success":true,"data":{"sid":"test-sid"}}"#)
+            case ("SYNO.FileStation.Thumb", "get"):
+                throw NSError(
+                    domain: NSURLErrorDomain,
+                    code: NSURLErrorCancelled
+                )
+            default:
+                throw SynologyMockError.unexpectedRequest(fields)
+            }
+        }
+        defer { fixture.unregister() }
+
+        let item = fixture.item(
+            path: "/share/clip.mp4",
+            name: "clip.mp4",
+            kind: .file,
+            size: 10_000
+        )
+
+        do {
+            _ = try await service.thumbnailData(for: item, size: .small)
+            XCTFail("취소된 썸네일 요청이 성공으로 반환됐습니다.")
+        } catch is CancellationError {
+            // Expected: callers must never mistake URLSession -999 for a
+            // permanent server thumbnail failure.
+        } catch {
+            XCTFail("CancellationError가 필요하지만 \(error)가 발생했습니다.")
+        }
+    }
+
     func testDownloadReportsByteProgressAndPreservesPayload() async throws {
         let fixture = SynologyAPIFixture()
         let payload = Data(repeating: 0x5A, count: 384 * 1_024)
