@@ -56,7 +56,7 @@ final class ThumbnailNetworkMonitor: @unchecked Sendable {
 
 @MainActor
 final class ThumbnailPreheater: ObservableObject {
-    static let maximumSynologyDataBytes: Int64 = 64 * 1_024 * 1_024
+    static let maximumSynologyDataBytes: Int64 = 256 * 1_024 * 1_024
     static let maximumSFTPDataBytes: Int64 = 18_000_000
 
     @Published private(set) var isRunning = false
@@ -166,7 +166,16 @@ final class ThumbnailPreheater: ObservableObject {
                 currentItemName = item.name
 
                 let cacheKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
-                if await RemoteThumbnailDiskCache.shared.containsData(forKey: cacheKey) {
+                var hasCachedThumbnail = false
+                for candidateKey in RemoteThumbnailCacheKey.allRemoteDataKeys(for: item) {
+                    if await RemoteThumbnailDiskCache.shared.containsData(
+                        forKey: candidateKey
+                    ) {
+                        hasCachedThumbnail = true
+                        break
+                    }
+                }
+                if hasCachedThumbnail {
                     cachedCount += 1
                     completedCount += 1
                     continue

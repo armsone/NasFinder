@@ -274,13 +274,7 @@ struct FileBrowserView: View {
             )
         }
         .refreshable {
-            guard !operationCoordinator.isBusy else { return }
-            await CompatibilityRemoteVideoThumbnailGenerator.cancelAll()
-            thumbnailActivity.beginNewSession()
-            await viewModel.reloadAfterCurrentLoad()
-            await RemoteVideoThumbnailTrafficBudget.shared.reset()
-            await RemoteVideoThumbnailTrafficBudget.sftpShared.reset()
-            thumbnailReloadVersion &+= 1
+            await refreshCurrentPage()
         }
         .fileImporter(
             isPresented: $isImportingFiles,
@@ -574,7 +568,7 @@ struct FileBrowserView: View {
 
                     CompactPanelButton(title: "새로고침", systemImage: "arrow.clockwise") {
                         performMorePanelAction {
-                            Task { await viewModel.load() }
+                            Task { await refreshCurrentPage() }
                         }
                     }
                 }
@@ -665,6 +659,24 @@ struct FileBrowserView: View {
         _ action: @escaping @MainActor () -> Void
     ) {
         interactionCoordinator.dismissPanel(then: action)
+    }
+
+    private func refreshCurrentPage() async {
+        guard !operationCoordinator.isBusy else { return }
+        await CompatibilityRemoteVideoThumbnailGenerator.cancelAll()
+
+        await viewModel.reloadAfterCurrentLoad()
+        await RemoteVideoThumbnailTrafficBudget.shared.reset()
+        await RemoteVideoThumbnailTrafficBudget.sftpShared.reset()
+        thumbnailActivity.beginNewSession()
+        thumbnailReloadVersion &+= 1
+        thumbnailPreheater.start(
+            rootItems: viewModel.items,
+            rootPath: viewModel.path,
+            recursively: false,
+            requiresExternalPower: false,
+            service: viewModel.service
+        )
     }
 
     private var canPerformPasteAction: Bool {

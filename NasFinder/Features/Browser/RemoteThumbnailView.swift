@@ -98,6 +98,12 @@ enum RemoteThumbnailCacheKey {
         let pixelHeight = Int((displaySize.height * scale).rounded(.up))
         return "\(remoteData(for: item, size: size))|\(pixelWidth)x\(pixelHeight)" as NSString
     }
+
+    static func allRemoteDataKeys(for item: RemoteFileItem) -> Set<String> {
+        Set(RemoteThumbnailSize.allCases.map {
+            remoteData(for: item, size: $0)
+        })
+    }
 }
 
 struct RemoteThumbnailView: View {
@@ -179,9 +185,7 @@ struct RemoteThumbnailView: View {
     }
 
     private var thumbnailCacheKeys: Set<String> {
-        Set(RemoteThumbnailSize.allCases.map {
-            RemoteThumbnailCacheKey.remoteData(for: item, size: $0)
-        })
+        RemoteThumbnailCacheKey.allRemoteDataKeys(for: item)
     }
 }
 
@@ -238,6 +242,9 @@ private final class RemoteThumbnailLoader: ObservableObject {
             size: requestedRemoteSize
         )
         if reloadVersion != loadedReloadVersion {
+            Self.imageCache.removeObject(forKey: cacheKey)
+            Self.negativeCacheExpirations.removeValue(forKey: cacheKey)
+            image = nil
             if let loadedCacheKey {
                 Self.negativeCacheExpirations.removeValue(forKey: loadedCacheKey)
             }

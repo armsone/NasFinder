@@ -391,7 +391,7 @@ actor RemoteVideoThumbnailTrafficBudget {
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
 
-    static let defaultMaximumFolderBytes = 64 * 1_024 * 1_024
+    static let defaultMaximumFolderBytes = 256 * 1_024 * 1_024
     static let defaultMaximumItemBytes = 4 * 1_024 * 1_024
     static let defaultMinimumLeaseBytes = 128 * 1_024
 
