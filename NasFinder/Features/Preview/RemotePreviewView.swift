@@ -936,11 +936,13 @@ final class RemotePreviewViewModel: ObservableObject {
                 )
             if requestedItem.isVideo,
                shouldUseCompatibilityPlayer,
-               !forceFullDownload,
-               RemoteVideoLoadStrategy.resolve(
+                !forceFullDownload,
+                RemoteVideoLoadStrategy.resolve(
                     supportsRangeStreaming: service.supportsRangeStreaming,
                     fileSize: requestedItem.size
-               ) == .rangeStreaming {
+                ) == .rangeStreaming {
+                await CompatibilityRemoteVideoThumbnailGenerator.cancelAll()
+                try Task.checkCancellation()
                 let newPlayer = try CompatibilityVideoPlayer(
                     item: requestedItem,
                     service: service

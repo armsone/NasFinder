@@ -42,9 +42,8 @@ final class RemotePreviewStateTests: XCTestCase {
     }
 
     func testCompatibilityThumbnailPlaybackIsSilentAndSerialized() {
-        XCTAssertEqual(
-            CompatibilityVideoThumbnailPlaybackPolicy.noAudioOption,
-            ":no-audio"
+        XCTAssertTrue(
+            CompatibilityVideoThumbnailPlaybackPolicy.usesDedicatedThumbnailer
         )
         XCTAssertEqual(
             CompatibilityVideoThumbnailPlaybackPolicy.maximumConcurrentOperations,
@@ -179,23 +178,25 @@ final class RemotePreviewStateTests: XCTestCase {
             drawable.setNeedsLayout()
             drawable.layoutIfNeeded()
             XCTAssertTrue(player.mediaPlayer.drawable as? UIView === drawable)
+            viewModel.tearDown()
 
             let maximumBytes = min(max(data.count, 1), 4 * 1_024 * 1_024)
-            let budget = RemoteVideoThumbnailTrafficBudget(
-                maximumFolderBytes: maximumBytes,
-                maximumItemBytes: maximumBytes,
-                minimumLeaseBytes: 1
-            )
-            let thumbnail = try await RemoteVideoThumbnailGenerator.generate(
-                for: item,
-                service: service,
-                size: .small,
-                trafficBudget: budget,
-                timeout: .seconds(20)
-            )
-            XCTAssertFalse(thumbnail.data.isEmpty, sample.filename)
-            XCTAssertLessThanOrEqual(thumbnail.transferredBytes, maximumBytes)
-            viewModel.tearDown()
+            for _ in 0..<3 {
+                let budget = RemoteVideoThumbnailTrafficBudget(
+                    maximumFolderBytes: maximumBytes,
+                    maximumItemBytes: maximumBytes,
+                    minimumLeaseBytes: 1
+                )
+                let thumbnail = try await RemoteVideoThumbnailGenerator.generate(
+                    for: item,
+                    service: service,
+                    size: .small,
+                    trafficBudget: budget,
+                    timeout: .seconds(20)
+                )
+                XCTAssertFalse(thumbnail.data.isEmpty, sample.filename)
+                XCTAssertLessThanOrEqual(thumbnail.transferredBytes, maximumBytes)
+            }
         }
     }
 
