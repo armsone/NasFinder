@@ -514,6 +514,24 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
         trafficBudget: RemoteVideoThumbnailTrafficBudget,
         timeout: Duration
     ) async throws -> RemoteVideoThumbnailGenerationResult {
+        try await CompatibilityVideoThumbnailExecutionLimiter.shared.withPermit {
+            try await generateExclusively(
+                for: item,
+                service: service,
+                size: size,
+                trafficBudget: trafficBudget,
+                timeout: timeout
+            )
+        }
+    }
+
+    private static func generateExclusively(
+        for item: RemoteFileItem,
+        service: any RemoteFileService,
+        size: RemoteThumbnailSize,
+        trafficBudget: RemoteVideoThumbnailTrafficBudget,
+        timeout: Duration
+    ) async throws -> RemoteVideoThumbnailGenerationResult {
         guard service.supportsRangeStreaming,
               item.size.map({ $0 > 0 }) == true else {
             throw RemoteVideoThumbnailGenerationError.unsupportedSource
@@ -635,7 +653,9 @@ private final class CompatibilityVideoThumbnailOperation:
                     .appendingPathExtension("png")
                 player.delegate = self
                 player.drawable = drawable
+                media.addOption(CompatibilityVideoThumbnailPlaybackPolicy.noAudioOption)
                 player.media = media
+                player.audio?.isMuted = true
                 self.player = player
                 self.drawable = drawable
                 self.snapshotURL = snapshotURL
@@ -753,5 +773,73 @@ private final class CompatibilityVideoThumbnailOperation:
         snapshotURL = nil
         timeoutTask?.cancel()
         continuation?.resume(with: result)
+    }
+}
+
+enum CompatibilityVideoThumbnailPlaybackPolicy {
+    static let noAudioOption = ":no-audio"
+    static let maximumConcurrentOperations = 1
+}
+
+private actor CompatibilityVideoThumbnailExecutionLimiter {
+    static let shared = CompatibilityVideoThumbnailExecutionLimiter(
+        maximumConcurrentWork:
+            CompatibilityVideoThumbnailPlaybackPolicy.maximumConcurrentOperations
+    )
+
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, Error>
+    }
+
+    private let maximumConcurrentWork: Int
+    private var activeWorkCount = 0
+    private var waiters: [Waiter] = []
+
+    init(maximumConcurrentWork: Int) {
+        self.maximumConcurrentWork = max(maximumConcurrentWork, 1)
+    }
+
+    func withPermit<Value: Sendable>(
+        _ operation: @escaping @Sendable () async throws -> Value
+    ) async throws -> Value {
+        try await acquire()
+        defer { release() }
+        try Task.checkCancellation()
+        return try await operation()
+    }
+
+    private func acquire() async throws {
+        try Task.checkCancellation()
+        if activeWorkCount < maximumConcurrentWork {
+            activeWorkCount += 1
+            return
+        }
+
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                waiters.append(Waiter(id: waiterID, continuation: continuation))
+            }
+        } onCancel: {
+            Task { await self.cancel(waiterID: waiterID) }
+        }
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            activeWorkCount = max(activeWorkCount - 1, 0)
+        } else {
+            waiters.removeFirst().continuation.resume()
+        }
+    }
+
+    private func cancel(waiterID: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == waiterID }) else {
+            return
+        }
+        waiters.remove(at: index).continuation.resume(
+            throwing: CancellationError()
+        )
     }
 }

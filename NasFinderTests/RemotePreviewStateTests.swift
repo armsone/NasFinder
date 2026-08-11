@@ -41,6 +41,17 @@ final class RemotePreviewStateTests: XCTestCase {
         }
     }
 
+    func testCompatibilityThumbnailPlaybackIsSilentAndSerialized() {
+        XCTAssertEqual(
+            CompatibilityVideoThumbnailPlaybackPolicy.noAudioOption,
+            ":no-audio"
+        )
+        XCTAssertEqual(
+            CompatibilityVideoThumbnailPlaybackPolicy.maximumConcurrentOperations,
+            1
+        )
+    }
+
     func testCompatibilityRemoteStreamSupportsBoundedReadsAndSeeking() async throws {
         let movieURL = try await makeTinyMOV()
         defer { try? FileManager.default.removeItem(at: movieURL) }
