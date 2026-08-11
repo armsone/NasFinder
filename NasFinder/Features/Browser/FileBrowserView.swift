@@ -18,11 +18,11 @@ struct FileBrowserView: View {
         var title: String {
             switch self {
             case .list:
-                "\u{BAA9}\u{B85D} \u{BCF4}\u{AE30}"
+                "자세히"
             case .smallThumbnails:
-                "\u{C791}\u{C740} \u{C378}\u{B124}\u{C77C}"
+                "썸네일"
             case .largeThumbnails:
-                "\u{D070} \u{C378}\u{B124}\u{C77C}"
+                "미리보기"
             }
         }
 
@@ -61,6 +61,7 @@ struct FileBrowserView: View {
     @State private var newFolderName = ""
     @State private var isImportingFiles = false
     @State private var isShowingMorePanel = false
+    @State private var contextPanelItem: RemoteFileItem?
     @State private var searchText = ""
 
     @MainActor
@@ -231,6 +232,11 @@ struct FileBrowserView: View {
                 service: viewModel.service
             )
         }
+        .sheet(item: $contextPanelItem) { item in
+            itemActionPanel(for: item)
+                .presentationDetents([.height(item.isDirectory ? 410 : 350)])
+                .presentationDragIndicator(.visible)
+        }
         .confirmationDialog(
             deleteConfirmationTitle,
             isPresented: deleteConfirmationBinding,
@@ -250,7 +256,7 @@ struct FileBrowserView: View {
         } message: {
             Text("폴더를 선택한 경우 안의 파일도 함께 삭제됩니다. 이 작업은 되돌릴 수 없습니다.")
         }
-        .alert("이름 변경", isPresented: renameAlertBinding) {
+        .alert("이름 수정", isPresented: renameAlertBinding) {
             TextField("새 이름", text: $renameText)
             Button("취소", role: .cancel) {
                 renameItem = nil
@@ -331,11 +337,29 @@ struct FileBrowserView: View {
         LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
     }
 
-    private func startThumbnailPreheating(recursively: Bool) {
+    private func startThumbnailPreheating(for item: RemoteFileItem, recursively: Bool) {
+        if item.isDirectory {
+            Task {
+                do {
+                    let children = try await viewModel.service.list(directory: item.path)
+                        .filter { RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name) }
+                    thumbnailPreheater.start(
+                        rootItems: children,
+                        rootPath: item.path,
+                        recursively: recursively,
+                        service: viewModel.service
+                    )
+                } catch {
+                    thumbnailPreheater.errorMessage = error.localizedDescription
+                }
+            }
+            return
+        }
+
         thumbnailPreheater.start(
-            rootItems: viewModel.items,
+            rootItems: [item],
             rootPath: viewModel.path,
-            recursively: recursively,
+            recursively: false,
             service: viewModel.service
         )
     }
@@ -358,131 +382,53 @@ struct FileBrowserView: View {
             VStack(alignment: .leading, spacing: 0) {
                 MorePanelSectionTitle("파일 작업")
 
-                Button {
-                    performMorePanelAction { isSelecting = true }
-                } label: {
-                    MorePanelRow(title: "선택", systemImage: "checkmark.circle")
-                }
-
-                if viewModel.service.capabilities.contains(.upload) {
-                    Button {
-                        performMorePanelAction {
-                            guard canBeginUserPresentation else { return }
-                            isImportingFiles = true
-                        }
-                    } label: {
-                        MorePanelRow(title: "이 폴더에 업로드", systemImage: "arrow.up.doc")
+                HStack(spacing: 4) {
+                    CompactPanelButton(title: "선택", systemImage: "checkmark.circle") {
+                        performMorePanelAction { isSelecting = true }
                     }
-                    .disabled(!canBeginUserPresentation)
-                }
 
-                if viewModel.service.capabilities.contains(.createFolder) {
-                    Button {
+                    CompactPanelButton(title: "붙여넣기", systemImage: "doc.on.clipboard") {
+                        performMorePanelAction(performPasteAction)
+                    }
+                    .disabled(!canPerformPasteAction)
+
+                    CompactPanelButton(title: "새 폴더", systemImage: "folder.badge.plus") {
                         performMorePanelAction {
                             guard canBeginUserPresentation else { return }
                             newFolderName = ""
                             isCreatingFolder = true
                         }
-                    } label: {
-                        MorePanelRow(title: "새 폴더", systemImage: "folder.badge.plus")
-                    }
-                    .disabled(!canBeginUserPresentation)
-                }
-
-                if let clipboard = operationCoordinator.clipboard {
-                    Button {
-                        performMorePanelAction {
-                            operationCoordinator.paste(
-                                into: viewModel.path,
-                                using: viewModel.service
-                            ) {
-                                await viewModel.reloadAfterCurrentLoad()
-                            }
-                        }
-                    } label: {
-                        MorePanelRow(title: "붙여넣기", systemImage: "doc.on.clipboard")
                     }
                     .disabled(
-                        clipboard.connectionID != viewModel.connection.id
-                            || !viewModel.service.capabilities.supports(
-                                clipboard.mode == .copy ? .copy : .move
-                            )
+                        !viewModel.service.capabilities.contains(.createFolder)
+                            || !canBeginUserPresentation
                     )
 
-                    Button {
+                    CompactPanelButton(title: "새로고침", systemImage: "arrow.clockwise") {
                         performMorePanelAction {
-                            operationCoordinator.clearClipboard()
+                            Task { await viewModel.load() }
                         }
-                    } label: {
-                        MorePanelRow(title: "클립보드 비우기", systemImage: "xmark.bin")
                     }
                 }
 
                 Divider().padding(.vertical, 6)
+                MorePanelSectionTitle("보기")
 
-                Button {
-                    performMorePanelAction {
-                        Task { await viewModel.load() }
-                    }
-                } label: {
-                    MorePanelRow(title: "새로 고침", systemImage: "arrow.clockwise")
-                }
-
-                Divider().padding(.vertical, 6)
-
-                MorePanelSectionTitle("썸네일 미리 생성")
-
-                if thumbnailPreheater.isRunning {
-                    Button {
-                        thumbnailPreheater.cancel()
-                        isShowingMorePanel = false
-                    } label: {
-                        MorePanelRow(title: "미리 생성 중지", systemImage: "stop.circle")
-                    }
-                } else {
-                    Button {
-                        performMorePanelAction {
-                            startThumbnailPreheating(recursively: false)
-                        }
-                    } label: {
-                        MorePanelRow(title: "현재 폴더", systemImage: "photo.stack")
-                    }
-                    .disabled(operationCoordinator.isBusy)
-
-                    Button {
-                        performMorePanelAction {
-                            startThumbnailPreheating(recursively: true)
-                        }
-                    } label: {
-                        MorePanelRow(title: "하위 폴더까지", systemImage: "folder.badge.gearshape")
-                    }
-                    .disabled(operationCoordinator.isBusy)
-                }
-
-                Divider().padding(.vertical, 6)
-                MorePanelSectionTitle("보기 설정")
-
-                Menu {
+                HStack(spacing: 4) {
                     ForEach(LayoutStyle.allCases) { style in
-                        Button {
+                        CompactPanelButton(
+                            title: style.title,
+                            systemImage: style.systemImage,
+                            isSelected: layoutStyle == style
+                        ) {
                             storedLayoutStyle = style.rawValue
                             isShowingMorePanel = false
-                        } label: {
-                            Label(
-                                style.title,
-                                systemImage: layoutStyle == style
-                                    ? "checkmark"
-                                    : style.systemImage
-                            )
                         }
                     }
-                } label: {
-                    MorePanelRow(
-                        title: layoutStyle.title,
-                        systemImage: layoutStyle.systemImage,
-                        showsDisclosure: true
-                    )
                 }
+
+                Divider().padding(.vertical, 6)
+                MorePanelSectionTitle("정렬")
 
                 Menu {
                     Section("기준") {
@@ -557,6 +503,31 @@ struct FileBrowserView: View {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(160))
             action()
+        }
+    }
+
+    private var canPerformPasteAction: Bool {
+        if let clipboard = operationCoordinator.clipboard {
+            return clipboard.connectionID == viewModel.connection.id
+                && viewModel.service.capabilities.supports(
+                    clipboard.mode == .copy ? .copy : .move
+                )
+        }
+        return viewModel.service.capabilities.contains(.upload)
+            && canBeginUserPresentation
+    }
+
+    private func performPasteAction() {
+        if operationCoordinator.clipboard != nil {
+            operationCoordinator.paste(
+                into: viewModel.path,
+                using: viewModel.service
+            ) {
+                await viewModel.reloadAfterCurrentLoad()
+            }
+        } else if viewModel.service.capabilities.contains(.upload),
+                  canBeginUserPresentation {
+            isImportingFiles = true
         }
     }
 
@@ -709,10 +680,9 @@ struct FileBrowserView: View {
                     isLarge: style == .largeThumbnails
                 )
             }
-            .contextMenu {
-                if !isSelecting {
-                    itemContextMenu(for: item)
-                }
+            .onLongPressGesture {
+                guard !isSelecting else { return }
+                contextPanelItem = item
             }
 
             if isSelecting {
@@ -728,10 +698,9 @@ struct FileBrowserView: View {
                 RemoteFileListRow(item: item, service: viewModel.service)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .contextMenu {
-                if !isSelecting {
-                    itemContextMenu(for: item)
-                }
+            .onLongPressGesture {
+                guard !isSelecting else { return }
+                contextPanelItem = item
             }
 
             if isSelecting {
@@ -748,118 +717,147 @@ struct FileBrowserView: View {
             .accessibilityHidden(true)
     }
 
-    @ViewBuilder
-    private func itemContextMenu(for item: RemoteFileItem) -> some View {
-        Section("파일 작업") {
-            Button {
-                favoriteStore.toggle(item)
-            } label: {
-                Label(
-                    favoriteStore.contains(item) ? "즐겨찾기에서 제거" : "즐겨찾기에 추가",
-                    systemImage: favoriteStore.contains(item) ? "star.slash" : "star"
+    private func itemActionPanel(for item: RemoteFileItem) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(item.isDirectory ? "폴더 작업" : "파일 작업")
+                .font(.subheadline.weight(.semibold))
+
+            HStack(spacing: 4) {
+                CompactPanelButton(title: "선택", systemImage: "checkmark.circle") {
+                    performContextPanelAction { beginQuickSelection(with: item) }
+                }
+                .disabled(
+                    selectionInteractionsAreBlocked
+                        || hasBlockingPresentation
+                        || hasPendingError
+                )
+
+                CompactPanelButton(title: "복사", systemImage: "doc.on.doc") {
+                    performContextPanelAction {
+                        operationCoordinator.placeOnClipboard([item], mode: .copy)
+                    }
+                }
+                .disabled(
+                    !viewModel.service.capabilities.supports(.copy)
+                        || selectionInteractionsAreBlocked
+                )
+
+                CompactPanelButton(title: "이동", systemImage: "folder") {
+                    performContextPanelAction {
+                        operationCoordinator.placeOnClipboard([item], mode: .move)
+                    }
+                }
+                .disabled(
+                    !viewModel.service.capabilities.supports(.move)
+                        || selectionInteractionsAreBlocked
+                )
+
+                CompactPanelButton(title: "수정", systemImage: "pencil") {
+                    performContextPanelAction {
+                        guard canBeginUserPresentation else { return }
+                        renameText = item.name
+                        renameItem = item
+                    }
+                }
+                .disabled(
+                    !viewModel.service.capabilities.contains(.rename)
+                        || !canBeginUserPresentation
+                )
+
+                CompactPanelButton(
+                    title: "삭제",
+                    systemImage: "trash",
+                    tint: .red
+                ) {
+                    performContextPanelAction {
+                        guard canBeginUserPresentation else { return }
+                        pendingDeleteItems = [item]
+                    }
+                }
+                .disabled(
+                    !viewModel.service.capabilities.contains(.delete)
+                        || !canBeginUserPresentation
                 )
             }
 
-            Button {
-                beginQuickSelection(with: item)
-            } label: {
-                Label("선택", systemImage: "checkmark.circle")
-            }
-            .disabled(
-                selectionInteractionsAreBlocked
-                    || hasBlockingPresentation
-                    || hasPendingError
-            )
-
-            if viewModel.service.capabilities.supports(.copy) {
-                Button {
-                    operationCoordinator.placeOnClipboard([item], mode: .copy)
-                } label: {
-                    Label("복사", systemImage: "doc.on.doc")
+            HStack(spacing: 4) {
+                CompactPanelButton(
+                    title: favoriteStore.contains(item) ? "별 해제" : "즐겨찾기",
+                    systemImage: favoriteStore.contains(item) ? "star.slash" : "star"
+                ) {
+                    favoriteStore.toggle(item)
+                    contextPanelItem = nil
                 }
-                .disabled(selectionInteractionsAreBlocked)
-            }
 
-            if hasAdditionalItemActions(for: item) {
-                Menu {
-                    additionalItemActions(for: item)
-                } label: {
-                    Label("추가 작업", systemImage: "ellipsis")
+                if !item.isDirectory {
+                    CompactPanelButton(title: "공유", systemImage: "square.and.arrow.up") {
+                        performContextPanelAction {
+                            guard canBeginUserPresentation else { return }
+                            shareCoordinator.prepare(items: [item], using: viewModel.service)
+                        }
+                    }
+                    .disabled(!canBeginUserPresentation)
+                }
+
+                if thumbnailPreheater.isRunning {
+                    CompactPanelButton(title: "생성 중지", systemImage: "stop.circle", tint: .red) {
+                        thumbnailPreheater.cancel()
+                        contextPanelItem = nil
+                    }
+                } else if item.isDirectory {
+                    CompactPanelButton(title: "이 폴더", systemImage: "photo.stack") {
+                        performContextPanelAction {
+                            startThumbnailPreheating(for: item, recursively: false)
+                        }
+                    }
+                    CompactPanelButton(title: "하위까지", systemImage: "folder.badge.gearshape") {
+                        performContextPanelAction {
+                            startThumbnailPreheating(for: item, recursively: true)
+                        }
+                    }
+                } else if item.supportsQuickLookThumbnail {
+                    CompactPanelButton(title: "썸네일 생성", systemImage: "photo.stack") {
+                        performContextPanelAction {
+                            startThumbnailPreheating(for: item, recursively: false)
+                        }
+                    }
                 }
             }
+
+            itemInformationPanel(item)
         }
-
-        Section("정보") {
-            Label(item.name, systemImage: item.systemImage)
-
-            Label(
-                item.browserKindAndSizeLabel,
-                systemImage: item.isDirectory ? "folder" : "internaldrive"
-            )
-
-            if let modifiedAt = item.modifiedAt {
-                Label {
-                    Text(
-                        modifiedAt,
-                        format: .dateTime.year().month().day().hour().minute()
-                    )
-                } icon: {
-                    Image(systemName: "calendar")
-                }
-            } else {
-                Label("수정 시간 알 수 없음", systemImage: "calendar")
-            }
-        }
+        .padding(.horizontal, 16)
+        .padding(.top, 4)
+        .padding(.bottom, 16)
+        .buttonStyle(.plain)
     }
 
-    private func hasAdditionalItemActions(for item: RemoteFileItem) -> Bool {
-        viewModel.service.capabilities.supports(.move)
-            || viewModel.service.capabilities.contains(.rename)
-            || !item.isDirectory
-            || viewModel.service.capabilities.contains(.delete)
+    private func itemInformationPanel(_ item: RemoteFileItem) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            CompactInformationRow(title: "이름", value: item.name)
+            CompactInformationRow(title: "미디어", value: item.browserMediaLabel)
+            CompactInformationRow(title: "특징", value: item.browserFeatureLabel)
+            CompactInformationRow(title: "생성/수정", value: item.browserDateLabel)
+            CompactInformationRow(
+                title: "크기",
+                value: item.browserFormattedSize ?? (item.isDirectory ? "폴더" : "알 수 없음")
+            )
+        }
+        .padding(10)
+        .background(
+            Color(uiColor: .secondarySystemBackground),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+        )
+        .accessibilityElement(children: .contain)
     }
 
-    @ViewBuilder
-    private func additionalItemActions(for item: RemoteFileItem) -> some View {
-        if viewModel.service.capabilities.supports(.move) {
-            Button {
-                operationCoordinator.placeOnClipboard([item], mode: .move)
-            } label: {
-                Label("이동", systemImage: "folder")
-            }
-            .disabled(selectionInteractionsAreBlocked)
-        }
-
-        if viewModel.service.capabilities.contains(.rename) {
-            Button {
-                guard canBeginUserPresentation else { return }
-                renameText = item.name
-                renameItem = item
-            } label: {
-                Label("이름 변경", systemImage: "pencil")
-            }
-            .disabled(!canBeginUserPresentation)
-        }
-
-        if !item.isDirectory {
-            Button {
-                guard canBeginUserPresentation else { return }
-                shareCoordinator.prepare(items: [item], using: viewModel.service)
-            } label: {
-                Label("공유", systemImage: "square.and.arrow.up")
-            }
-            .disabled(!canBeginUserPresentation)
-        }
-
-        if viewModel.service.capabilities.contains(.delete) {
-            Divider()
-            Button(role: .destructive) {
-                guard canBeginUserPresentation else { return }
-                pendingDeleteItems = [item]
-            } label: {
-                Label("삭제", systemImage: "trash")
-            }
-            .disabled(!canBeginUserPresentation)
+    private func performContextPanelAction(
+        _ action: @escaping @MainActor () -> Void
+    ) {
+        contextPanelItem = nil
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(180))
+            action()
         }
     }
 
@@ -1288,6 +1286,27 @@ private struct RemoteFileMetadataView: View {
 }
 
 private extension RemoteFileItem {
+    var browserMediaLabel: String {
+        if isDirectory { return "폴더" }
+        if isImage { return "사진" }
+        if isVideo { return "비디오" }
+        if contentType.conforms(to: .audio) { return "오디오" }
+        return "파일"
+    }
+
+    var browserFeatureLabel: String {
+        if isDirectory { return "하위 항목을 담는 폴더" }
+        let filenameExtension = (name as NSString).pathExtension.uppercased()
+        let description = contentType.localizedDescription ?? "파일"
+        guard !filenameExtension.isEmpty else { return description }
+        return "\(filenameExtension) · \(description)"
+    }
+
+    var browserDateLabel: String {
+        guard let modifiedAt else { return "알 수 없음" }
+        return modifiedAt.formatted(date: .abbreviated, time: .shortened)
+    }
+
     var browserKindLabel: String {
         if isDirectory {
             return "\u{D3F4}\u{B354}"
@@ -1670,6 +1689,59 @@ private struct MorePanelSectionTitle: View {
             .textCase(.uppercase)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
+    }
+}
+
+private struct CompactPanelButton: View {
+    let title: String
+    let systemImage: String
+    var isSelected = false
+    var tint: Color = .accentColor
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 3) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 19, weight: .medium))
+                    .frame(width: 24, height: 24)
+
+                Text(title)
+                    .font(.system(size: 9, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.65)
+            }
+            .foregroundStyle(isSelected ? Color.white : tint)
+            .frame(maxWidth: .infinity)
+            .frame(height: 52)
+            .background(
+                isSelected ? tint : Color(uiColor: .tertiarySystemFill),
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .contentShape(Rectangle())
+        }
+        .accessibilityLabel(title)
+    }
+}
+
+private struct CompactInformationRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(title)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .frame(width: 54, alignment: .leading)
+
+            Text(value)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            Spacer(minLength: 0)
+        }
     }
 }
 

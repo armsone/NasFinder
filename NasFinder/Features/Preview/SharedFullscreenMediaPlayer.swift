@@ -65,15 +65,16 @@ final class SharedVideoPlayerSurfaceView: UIView {
 
 struct SharedVideoProgressBar: View {
     let player: AVPlayer
+    var compact = false
 
     @State private var currentSeconds = 0.0
     @State private var durationSeconds = 0.0
     @State private var timeObserver: Any?
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: compact ? 5 : 10) {
             Text(formattedTime(currentSeconds))
-                .frame(width: 42, alignment: .trailing)
+                .frame(width: compact ? 34 : 42, alignment: .trailing)
 
             Slider(
                 value: Binding(
@@ -89,11 +90,11 @@ struct SharedVideoProgressBar: View {
             )
 
             Text(formattedTime(durationSeconds))
-                .frame(width: 42, alignment: .leading)
+                .frame(width: compact ? 34 : 42, alignment: .leading)
         }
         .font(.system(size: 11, weight: .semibold, design: .monospaced))
         .foregroundStyle(.white.opacity(0.9))
-        .padding(.horizontal, 14)
+        .padding(.horizontal, compact ? 8 : 14)
         .frame(height: 44)
         .background(Color.black.opacity(0.28), in: Capsule())
         .overlay {

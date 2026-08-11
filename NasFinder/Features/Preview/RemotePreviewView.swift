@@ -74,6 +74,9 @@ struct RemotePreviewView: View {
         }
         .background(Color.black.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
+        .onAppear {
+            revealControls()
+        }
         .task(id: viewModel.currentItem.id) {
             await viewModel.loadCurrentItem()
         }
@@ -375,13 +378,16 @@ struct RemotePreviewView: View {
                 }
                 .frame(maxWidth: .infinity)
             } else {
-                if viewModel.currentItem.isVideo, let player = viewModel.player {
-                    SharedVideoProgressBar(player: player)
-                }
-
-                HStack(spacing: 12) {
+                HStack(spacing: 8) {
                     transportControls
-                    Spacer(minLength: 8)
+
+                    if viewModel.currentItem.isVideo, let player = viewModel.player {
+                        SharedVideoProgressBar(player: player, compact: true)
+                            .frame(maxWidth: .infinity)
+                    } else {
+                        Spacer(minLength: 8)
+                    }
+
                     playbackModeControl
                 }
             }
@@ -431,9 +437,13 @@ struct RemotePreviewView: View {
 
     private var positionLabel: some View {
         Text("\(viewModel.currentIndex + 1) / \(viewModel.itemsCount)")
-            .font(.caption.monospacedDigit())
-            .foregroundStyle(.white.opacity(0.72))
-            .frame(minWidth: 42)
+            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+            .foregroundStyle(.white.opacity(0.9))
+            .frame(width: 44, height: 44)
+            .background(Color.black.opacity(0.28), in: Circle())
+            .overlay {
+                Circle().stroke(Color.white.opacity(0.18), lineWidth: 1)
+            }
             .accessibilityLabel(
                 "전체 \(viewModel.itemsCount)개 중 \(viewModel.currentIndex + 1)번째"
             )
@@ -583,7 +593,17 @@ struct RemotePreviewView: View {
                         && abs(value.translation.height) > abs(value.translation.width)
                     if isDownwardDominant && value.translation.height >= 120 {
                         viewModel.pauseForLifecycle()
-                        dismiss()
+                        withAnimation(.easeOut(duration: 0.16)) {
+                            videoVerticalOffset = size.height
+                        }
+                        Task { @MainActor in
+                            try? await Task.sleep(for: .milliseconds(160))
+                            var transaction = Transaction(animation: nil)
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                dismiss()
+                            }
+                        }
                     } else {
                         withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
                             videoVerticalOffset = 0
@@ -660,7 +680,7 @@ struct RemotePreviewView: View {
         withAnimation(.easeInOut(duration: 0.2)) { areControlsVisible = true }
         guard viewModel.isPlaying else { return }
         controlsHideTask = Task { @MainActor in
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .milliseconds(1_500))
             guard !Task.isCancelled, viewModel.isPlaying else { return }
             withAnimation(.easeInOut(duration: 0.2)) { areControlsVisible = false }
         }
