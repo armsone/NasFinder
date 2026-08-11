@@ -13,8 +13,7 @@ final class RemoteVideoStreamingLoader: NSObject, AVAssetResourceLoaderDelegate,
         label: "com.armsone.nasfinder.video-resource-loader",
         qos: .userInitiated
     )
-    private let lock = NSLock()
-    private var tasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+    private let taskRegistry = RemoteVideoStreamingTaskRegistry()
 
     init(item: RemoteFileItem, service: any RemoteFileService) {
         self.item = item
@@ -54,7 +53,7 @@ final class RemoteVideoStreamingLoader: NSObject, AVAssetResourceLoaderDelegate,
         }
 
         let identifier = ObjectIdentifier(loadingRequest)
-        let task = Task(priority: .userInitiated) { [weak self, weak loadingRequest] in
+        let didStart = taskRegistry.start(for: identifier) { [weak self, weak loadingRequest] in
             guard let self, let loadingRequest else { return }
             do {
                 var offset = max(dataRequest.currentOffset, dataRequest.requestedOffset)
@@ -91,9 +90,11 @@ final class RemoteVideoStreamingLoader: NSObject, AVAssetResourceLoaderDelegate,
             } catch {
                 loadingRequest.finishLoading(with: error)
             }
-            self.removeTask(for: identifier)
         }
-        store(task, for: identifier)
+        guard didStart else {
+            loadingRequest.finishLoading(with: CancellationError())
+            return false
+        }
         return true
     }
 
@@ -101,35 +102,74 @@ final class RemoteVideoStreamingLoader: NSObject, AVAssetResourceLoaderDelegate,
         _ resourceLoader: AVAssetResourceLoader,
         didCancel loadingRequest: AVAssetResourceLoadingRequest
     ) {
-        removeAndCancelTask(for: ObjectIdentifier(loadingRequest))
+        taskRegistry.cancelTask(for: ObjectIdentifier(loadingRequest))
     }
 
     func cancel() {
-        lock.lock()
-        let activeTasks = Array(tasks.values)
-        tasks.removeAll()
-        lock.unlock()
-        activeTasks.forEach { $0.cancel() }
+        taskRegistry.cancelAll()
+    }
+}
+
+/// Registers a range-read task atomically with respect to whole-loader
+/// cancellation. `Task` begins executing immediately when it is created, so
+/// creating it before taking the registry lock leaves a window where
+/// `cancelAll()` cannot see it. Creating and publishing it under the same lock
+/// closes that window; a task that finishes immediately simply waits to remove
+/// itself until publication is complete.
+final class RemoteVideoStreamingTaskRegistry: @unchecked Sendable {
+    private struct Entry {
+        let token: UUID
+        let task: Task<Void, Never>
     }
 
-    private func store(_ task: Task<Void, Never>, for identifier: ObjectIdentifier) {
+    private let lock = NSLock()
+    private var tasks: [ObjectIdentifier: Entry] = [:]
+    private var isCancelled = false
+
+    @discardableResult
+    func start(
+        for identifier: ObjectIdentifier,
+        operation: @escaping @Sendable () async -> Void
+    ) -> Bool {
         lock.lock()
-        tasks[identifier]?.cancel()
-        tasks[identifier] = task
+        guard !isCancelled else {
+            lock.unlock()
+            return false
+        }
+        let previousTask = tasks.removeValue(forKey: identifier)
+        let token = UUID()
+        let task = Task(priority: .userInitiated) { [weak self] in
+            await operation()
+            self?.removeTask(for: identifier, token: token)
+        }
+        tasks[identifier] = Entry(token: token, task: task)
+        lock.unlock()
+        previousTask?.task.cancel()
+        return true
+    }
+
+    private func removeTask(for identifier: ObjectIdentifier, token: UUID) {
+        lock.lock()
+        if tasks[identifier]?.token == token {
+            tasks.removeValue(forKey: identifier)
+        }
         lock.unlock()
     }
 
-    private func removeTask(for identifier: ObjectIdentifier) {
-        lock.lock()
-        tasks.removeValue(forKey: identifier)
-        lock.unlock()
-    }
-
-    private func removeAndCancelTask(for identifier: ObjectIdentifier) {
+    func cancelTask(for identifier: ObjectIdentifier) {
         lock.lock()
         let task = tasks.removeValue(forKey: identifier)
         lock.unlock()
-        task?.cancel()
+        task?.task.cancel()
+    }
+
+    func cancelAll() {
+        lock.lock()
+        isCancelled = true
+        let activeTasks = tasks.values.map(\.task)
+        tasks.removeAll()
+        lock.unlock()
+        activeTasks.forEach { $0.cancel() }
     }
 }
 

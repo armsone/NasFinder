@@ -78,9 +78,32 @@ actor SynologyFileService: RemoteFileService {
     }
 
     func download(_ item: RemoteFileItem) async throws -> URL {
+        try await download(item) { _ in }
+    }
+
+    func download(
+        _ item: RemoteFileItem,
+        progress: @escaping RemoteDownloadProgressHandler
+    ) async throws -> URL {
         if let cached = await cache.cachedURL(for: item) {
+            let cachedSize = try? cached.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            let actualByteCount = cachedSize.map(Int64.init)
+            let completedByteCount = actualByteCount ?? item.size ?? 0
+            await progress(
+                RemoteDownloadProgress(
+                    completedByteCount: completedByteCount,
+                    totalByteCount: actualByteCount ?? item.size
+                )
+            )
             return cached
         }
+
+        await progress(
+            RemoteDownloadProgress(
+                completedByteCount: 0,
+                totalByteCount: item.size
+            )
+        )
 
         return try await authenticatedRequest { sid in
             let parameters = self.commonParameters(
@@ -93,10 +116,37 @@ actor SynologyFileService: RemoteFileService {
                 "mode": "download"
             ]) { _, new in new }
             let request = try self.request(script: "entry.cgi", parameters: parameters)
-            let (temporaryURL, response) = try await self.session.download(for: request)
-            try self.validateHTTP(response)
-            try self.validateDownload(at: temporaryURL, response: response)
-            return try await self.cache.store(downloadedURL: temporaryURL, for: item)
+            let downloader = URLSessionProgressDownloader(
+                configuration: self.session.configuration
+            ) { update in
+                await progress(
+                    RemoteDownloadProgress(
+                        completedByteCount: update.completedByteCount,
+                        totalByteCount: update.totalByteCount ?? item.size
+                    )
+                )
+            }
+            let download = try await downloader.download(request)
+            defer { try? FileManager.default.removeItem(at: download.temporaryURL) }
+            try self.validateHTTP(download.response)
+            try self.validateDownload(
+                at: download.temporaryURL,
+                response: download.response
+            )
+            let cachedURL = try await self.cache.store(
+                downloadedURL: download.temporaryURL,
+                for: item
+            )
+            let actualByteCount = (try? cachedURL.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+                .map(Int64.init)
+            let completedByteCount = actualByteCount ?? item.size ?? 0
+            await progress(
+                RemoteDownloadProgress(
+                    completedByteCount: completedByteCount,
+                    totalByteCount: actualByteCount ?? item.size
+                )
+            )
+            return cachedURL
         }
     }
 

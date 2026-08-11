@@ -3,6 +3,11 @@ import Foundation
 
 actor DownloadCache {
     static let shared = DownloadCache()
+    // Version 2 is written only after backend integrity validation. Bumping
+    // the key keeps incomplete files created by older builds from being
+    // mistaken for trusted cache entries after size validation moves to the
+    // download boundary.
+    private static let formatVersion = 2
 
     private let root: URL
     private let fileManager = FileManager.default
@@ -23,7 +28,10 @@ actor DownloadCache {
         let url = destinationURL(for: item)
         guard fileManager.fileExists(atPath: url.path) else { return nil }
 
-        let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+        let values = try? url.resourceValues(forKeys: [
+            .contentModificationDateKey,
+            .fileSizeKey,
+        ])
         if let modifiedAt = values?.contentModificationDate,
            Date().timeIntervalSince(modifiedAt) > maximumAge {
             try? fileManager.removeItem(at: url)
@@ -82,7 +90,7 @@ actor DownloadCache {
 
     private func destinationURL(for item: RemoteFileItem) -> URL {
         let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
-        let rawKey = "\(item.connectionID.uuidString)|\(item.path)|\(version)|\(item.size ?? -1)"
+        let rawKey = "v\(Self.formatVersion)|\(item.connectionID.uuidString)|\(item.path)|\(version)|\(item.size ?? -1)"
         let digest = SHA256.hash(data: Data(rawKey.utf8)).map { String(format: "%02x", $0) }.joined()
         let ext = (item.name as NSString).pathExtension
         let filename = ext.isEmpty ? digest : "\(digest).\(ext)"

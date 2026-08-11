@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 struct FileBrowserView: View {
     private struct DisplayRequest: Equatable {
@@ -41,12 +42,12 @@ struct FileBrowserView: View {
     @AppStorage("fileBrowserLayoutStyle") private var storedLayoutStyle = LayoutStyle.smallThumbnails.rawValue
     @AppStorage("fileBrowserSortField") private var storedSortField = FileBrowserSortField.name.rawValue
     @AppStorage("fileBrowserSortDirection") private var storedSortDirection = FileBrowserSortDirection.ascending.rawValue
+    @AppStorage("fileBrowserNamePriority") private var storedNamePriority = FileBrowserNamePriority.numbersFirst.rawValue
     @AppStorage("fileBrowserFoldersFirst") private var foldersFirst = true
     @StateObject private var viewModel: FileBrowserViewModel
     @StateObject private var shareCoordinator = RemoteFileShareCoordinator()
     @StateObject private var operationCoordinator: FileOperationCoordinator
     @State private var previewItem: RemoteFileItem?
-    @State private var infoItem: RemoteFileItem?
     @State private var isSelecting = false
     @State private var selectedItemIDs: Set<RemoteFileItem.ID> = []
     @State private var pendingDeleteItems: [RemoteFileItem] = []
@@ -54,6 +55,8 @@ struct FileBrowserView: View {
     @State private var renameText = ""
     @State private var isCreatingFolder = false
     @State private var newFolderName = ""
+    @State private var isImportingFiles = false
+    @State private var isShowingMorePanel = false
     @State private var searchText = ""
 
     @MainActor
@@ -106,6 +109,7 @@ struct FileBrowserView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
@@ -122,98 +126,55 @@ struct FileBrowserView: View {
                     }
                     .disabled(shareCoordinator.isPreparing)
                 } else {
-                    Menu {
-                        Section("보기 방식") {
-                            Picker(
-                                "보기 방식",
-                                selection: $storedLayoutStyle
-                            ) {
-                                ForEach(LayoutStyle.allCases) { style in
-                                    Label(style.title, systemImage: style.systemImage)
-                                        .tag(style.rawValue)
-                                }
-                            }
-                        }
-
-                        Section("정렬") {
-                            Picker("정렬 기준", selection: $storedSortField) {
-                                ForEach(FileBrowserSortField.allCases) { field in
-                                    Label(field.title, systemImage: sortSystemImage(for: field))
-                                        .tag(field.rawValue)
-                                }
-                            }
-
-                            Picker("정렬 순서", selection: $storedSortDirection) {
-                                ForEach(FileBrowserSortDirection.allCases) { direction in
-                                    Label(
-                                        direction.title,
-                                        systemImage: direction == .ascending
-                                            ? "arrow.up"
-                                            : "arrow.down"
-                                    )
-                                    .tag(direction.rawValue)
-                                }
-                            }
-
-                            Toggle("폴더 우선", isOn: $foldersFirst)
-                        }
+                    Button {
+                        isShowingMorePanel = true
                     } label: {
-                        Label(
-                            "보기 및 정렬: \(layoutStyle.title), \(sortSummary)",
-                            systemImage: layoutStyle.systemImage
-                        )
+                        Label("더 보기", systemImage: "ellipsis.circle")
                     }
-                    .accessibilityHint(
-                        "파일 보기 방식과 정렬 기준, 순서, 폴더 우선 여부를 설정합니다."
-                    )
-
-                    Button("선택", systemImage: "checkmark.circle") {
-                        isSelecting = true
-                    }
-                    .disabled(operationCoordinator.isWorking)
-
-                    Menu {
-                        if viewModel.service.capabilities.contains(.createFolder) {
-                            Button("새 폴더", systemImage: "folder.badge.plus") {
-                                guard canBeginUserPresentation else { return }
-                                newFolderName = ""
-                                isCreatingFolder = true
-                            }
-                            .disabled(!canBeginUserPresentation)
-                        }
-
-                        if let clipboard = operationCoordinator.clipboard {
-                            Button("붙여넣기", systemImage: "doc.on.clipboard") {
-                                operationCoordinator.paste(
-                                    into: viewModel.path,
-                                    using: viewModel.service
-                                ) {
-                                    await viewModel.load()
-                                }
-                            }
-                            .disabled(
-                                clipboard.connectionID != viewModel.connection.id
-                                    || !viewModel.service.capabilities.supports(
-                                        clipboard.mode == .copy ? .copy : .move
-                                    )
-                            )
-
-                            Button("클립보드 비우기", systemImage: "xmark.bin") {
-                                operationCoordinator.clearClipboard()
-                            }
-                        }
-                    } label: {
-                        Label("파일 작업", systemImage: "ellipsis.circle")
-                    }
-                    .disabled(operationCoordinator.isWorking)
-
-                    Button("새로 고침", systemImage: "arrow.clockwise") {
-                        Task { await viewModel.load() }
+                    .disabled(operationCoordinator.isBusy)
+                    .accessibilityHint("파일 작업, 새로 고침과 보기 설정 메뉴를 엽니다.")
+                    .popover(
+                        isPresented: $isShowingMorePanel,
+                        attachmentAnchor: .rect(.bounds),
+                        arrowEdge: .top
+                    ) {
+                        browserMorePanel
                     }
                 }
             }
         }
-        .refreshable { await viewModel.load() }
+        .refreshable {
+            guard !operationCoordinator.isBusy else { return }
+            await viewModel.load()
+        }
+        .fileImporter(
+            isPresented: $isImportingFiles,
+            allowedContentTypes: [.data, .content],
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard !urls.isEmpty else { return }
+                operationCoordinator.upload(
+                    urls,
+                    into: viewModel.path,
+                    using: viewModel.service,
+                    conflictPolicy: .keepBoth
+                ) {
+                    await viewModel.reloadAfterCurrentLoad()
+                }
+            case .failure(let error):
+                let cocoaError = error as NSError
+                guard !(error is CancellationError),
+                      !(cocoaError.domain == NSCocoaErrorDomain
+                        && cocoaError.code == CocoaError.Code.userCancelled.rawValue) else {
+                    return
+                }
+                operationCoordinator.errorMessage = error.localizedDescription
+            }
+        }
+        .fileDialogConfirmationLabel("업로드")
+        .fileDialogMessage("현재 폴더에 올릴 파일을 선택하세요.")
         .onChange(of: displayRequest, initial: true) { _, request in
             viewModel.configureDisplay(
                 matching: request.query,
@@ -275,9 +236,6 @@ struct FileBrowserView: View {
         ) { preparedShare in
             RemoteFileActivityView(fileURLs: preparedShare.fileURLs)
         }
-        .sheet(item: $infoItem) { item in
-            RemoteFileInfoView(item: item, connection: viewModel.connection)
-        }
         .fullScreenCover(item: $previewItem) { item in
             RemotePreviewView(
                 item: item,
@@ -294,7 +252,7 @@ struct FileBrowserView: View {
                 let items = pendingDeleteItems
                 pendingDeleteItems = []
                 operationCoordinator.delete(items, using: viewModel.service) {
-                    await viewModel.load()
+                    await viewModel.reloadAfterCurrentLoad()
                 }
                 endSelection()
             }
@@ -314,7 +272,7 @@ struct FileBrowserView: View {
                 let name = renameText
                 renameItem = nil
                 operationCoordinator.rename(item, to: name, using: viewModel.service) {
-                    await viewModel.load()
+                    await viewModel.reloadAfterCurrentLoad()
                 }
             }
         }
@@ -328,7 +286,7 @@ struct FileBrowserView: View {
                     in: viewModel.path,
                     using: viewModel.service
                 ) {
-                    await viewModel.load()
+                    await viewModel.reloadAfterCurrentLoad()
                 }
             }
         }
@@ -356,8 +314,189 @@ struct FileBrowserView: View {
         FileBrowserSortOptions(
             field: FileBrowserSortField(rawValue: storedSortField) ?? .name,
             direction: FileBrowserSortDirection(rawValue: storedSortDirection) ?? .ascending,
+            namePriority: FileBrowserNamePriority(rawValue: storedNamePriority) ?? .numbersFirst,
             foldersFirst: foldersFirst
         )
+    }
+
+    private var sortMenuTitle: String {
+        "\(sortOptions.field.title) · \(sortOptions.direction.title)"
+    }
+
+    private var browserMorePanel: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                MorePanelSectionTitle("파일 작업")
+
+                Button {
+                    performMorePanelAction { isSelecting = true }
+                } label: {
+                    MorePanelRow(title: "선택", systemImage: "checkmark.circle")
+                }
+
+                if viewModel.service.capabilities.contains(.upload) {
+                    Button {
+                        performMorePanelAction {
+                            guard canBeginUserPresentation else { return }
+                            isImportingFiles = true
+                        }
+                    } label: {
+                        MorePanelRow(title: "이 폴더에 업로드", systemImage: "arrow.up.doc")
+                    }
+                    .disabled(!canBeginUserPresentation)
+                }
+
+                if viewModel.service.capabilities.contains(.createFolder) {
+                    Button {
+                        performMorePanelAction {
+                            guard canBeginUserPresentation else { return }
+                            newFolderName = ""
+                            isCreatingFolder = true
+                        }
+                    } label: {
+                        MorePanelRow(title: "새 폴더", systemImage: "folder.badge.plus")
+                    }
+                    .disabled(!canBeginUserPresentation)
+                }
+
+                if let clipboard = operationCoordinator.clipboard {
+                    Button {
+                        performMorePanelAction {
+                            operationCoordinator.paste(
+                                into: viewModel.path,
+                                using: viewModel.service
+                            ) {
+                                await viewModel.reloadAfterCurrentLoad()
+                            }
+                        }
+                    } label: {
+                        MorePanelRow(title: "붙여넣기", systemImage: "doc.on.clipboard")
+                    }
+                    .disabled(
+                        clipboard.connectionID != viewModel.connection.id
+                            || !viewModel.service.capabilities.supports(
+                                clipboard.mode == .copy ? .copy : .move
+                            )
+                    )
+
+                    Button {
+                        performMorePanelAction {
+                            operationCoordinator.clearClipboard()
+                        }
+                    } label: {
+                        MorePanelRow(title: "클립보드 비우기", systemImage: "xmark.bin")
+                    }
+                }
+
+                Divider().padding(.vertical, 6)
+
+                Button {
+                    performMorePanelAction {
+                        Task { await viewModel.load() }
+                    }
+                } label: {
+                    MorePanelRow(title: "새로 고침", systemImage: "arrow.clockwise")
+                }
+
+                Divider().padding(.vertical, 6)
+                MorePanelSectionTitle("보기 설정")
+
+                Menu {
+                    ForEach(LayoutStyle.allCases) { style in
+                        Button {
+                            storedLayoutStyle = style.rawValue
+                            isShowingMorePanel = false
+                        } label: {
+                            Label(
+                                style.title,
+                                systemImage: layoutStyle == style
+                                    ? "checkmark"
+                                    : style.systemImage
+                            )
+                        }
+                    }
+                } label: {
+                    MorePanelRow(
+                        title: layoutStyle.title,
+                        systemImage: layoutStyle.systemImage,
+                        showsDisclosure: true
+                    )
+                }
+
+                Menu {
+                    Section("기준") {
+                        ForEach(FileBrowserSortField.allCases) { field in
+                            Button {
+                                storedSortField = field.rawValue
+                            } label: {
+                                Label(
+                                    field.title,
+                                    systemImage: sortOptions.field == field
+                                        ? "checkmark"
+                                        : sortSystemImage(for: field)
+                                )
+                            }
+                        }
+                    }
+
+                    Section("순서") {
+                        ForEach(FileBrowserSortDirection.allCases) { direction in
+                            Button {
+                                storedSortDirection = direction.rawValue
+                            } label: {
+                                Label(
+                                    direction.title,
+                                    systemImage: sortOptions.direction == direction
+                                        ? "checkmark"
+                                        : direction == .ascending ? "arrow.up" : "arrow.down"
+                                )
+                            }
+                        }
+                    }
+
+                    if sortOptions.field == .name {
+                        Section("이름 우선") {
+                            ForEach(FileBrowserNamePriority.allCases) { priority in
+                                Button {
+                                    storedNamePriority = priority.rawValue
+                                } label: {
+                                    if sortOptions.namePriority == priority {
+                                        Label(priority.title, systemImage: "checkmark")
+                                    } else {
+                                        Text(priority.title)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    Toggle("폴더 먼저", isOn: $foldersFirst)
+                } label: {
+                    MorePanelRow(
+                        title: sortMenuTitle,
+                        systemImage: "arrow.up.arrow.down",
+                        showsDisclosure: true
+                    )
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+        }
+        .scrollIndicators(.visible)
+        .frame(width: 340, height: 380)
+        .presentationCompactAdaptation(.popover)
+        .buttonStyle(.plain)
+        .accessibilityLabel("파일 작업과 보기 설정")
+    }
+
+    private func performMorePanelAction(
+        _ action: @escaping @MainActor () -> Void
+    ) {
+        isShowingMorePanel = false
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(160))
+            action()
+        }
     }
 
     private var displayedItems: [RemoteFileItem] {
@@ -366,11 +505,6 @@ struct FileBrowserView: View {
 
     private var displayRequest: DisplayRequest {
         DisplayRequest(query: searchText, sortOptions: sortOptions)
-    }
-
-    private var sortSummary: String {
-        "\(sortOptions.field.title) \(sortOptions.direction.title)"
-            + (sortOptions.foldersFirst ? ", 폴더 우선" : "")
     }
 
     private var currentPathBar: some View {
@@ -485,13 +619,14 @@ struct FileBrowserView: View {
                     isLarge: style == .largeThumbnails
                 )
             }
-            .highPriorityGesture(quickSelectionGesture(for: item))
+            .contextMenu {
+                if !isSelecting {
+                    itemContextMenu(for: item)
+                }
+            }
 
             if isSelecting {
                 selectionIndicator(isSelected: selectedItemIDs.contains(item.id))
-                    .padding(style == .largeThumbnails ? 8 : 4)
-            } else {
-                itemOptionsMenu(for: item)
                     .padding(style == .largeThumbnails ? 8 : 4)
             }
         }
@@ -503,12 +638,14 @@ struct FileBrowserView: View {
                 RemoteFileListRow(item: item, service: viewModel.service)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .highPriorityGesture(quickSelectionGesture(for: item))
+            .contextMenu {
+                if !isSelecting {
+                    itemContextMenu(for: item)
+                }
+            }
 
             if isSelecting {
                 selectionIndicator(isSelected: selectedItemIDs.contains(item.id))
-            } else {
-                itemOptionsMenu(for: item)
             }
         }
     }
@@ -521,44 +658,70 @@ struct FileBrowserView: View {
             .accessibilityHidden(true)
     }
 
-    private func itemOptionsMenu(for item: RemoteFileItem) -> some View {
-        Menu {
-            itemContextMenu(for: item)
-        } label: {
-            Image(systemName: "ellipsis")
-                .font(.caption.weight(.bold))
-                .frame(width: 28, height: 28)
-                .background(.regularMaterial, in: Circle())
-                .frame(width: 44, height: 44)
-                .contentShape(Rectangle())
+    @ViewBuilder
+    private func itemContextMenu(for item: RemoteFileItem) -> some View {
+        Section("파일 작업") {
+            Button {
+                beginQuickSelection(with: item)
+            } label: {
+                Label("선택", systemImage: "checkmark.circle")
+            }
+            .disabled(
+                selectionInteractionsAreBlocked
+                    || hasBlockingPresentation
+                    || hasPendingError
+            )
+
+            if viewModel.service.capabilities.supports(.copy) {
+                Button {
+                    operationCoordinator.placeOnClipboard([item], mode: .copy)
+                } label: {
+                    Label("복사", systemImage: "doc.on.doc")
+                }
+                .disabled(selectionInteractionsAreBlocked)
+            }
+
+            if hasAdditionalItemActions(for: item) {
+                Menu {
+                    additionalItemActions(for: item)
+                } label: {
+                    Label("추가 작업", systemImage: "ellipsis")
+                }
+            }
         }
-        .buttonStyle(.plain)
-        .disabled(selectionInteractionsAreBlocked || hasBlockingPresentation)
-        .accessibilityLabel("\(item.name) 추가 작업")
+
+        Section("정보") {
+            Label(item.name, systemImage: item.systemImage)
+
+            Label(
+                item.browserKindAndSizeLabel,
+                systemImage: item.isDirectory ? "folder" : "internaldrive"
+            )
+
+            if let modifiedAt = item.modifiedAt {
+                Label {
+                    Text(
+                        modifiedAt,
+                        format: .dateTime.year().month().day().hour().minute()
+                    )
+                } icon: {
+                    Image(systemName: "calendar")
+                }
+            } else {
+                Label("수정 시간 알 수 없음", systemImage: "calendar")
+            }
+        }
+    }
+
+    private func hasAdditionalItemActions(for item: RemoteFileItem) -> Bool {
+        viewModel.service.capabilities.supports(.move)
+            || viewModel.service.capabilities.contains(.rename)
+            || !item.isDirectory
+            || viewModel.service.capabilities.contains(.delete)
     }
 
     @ViewBuilder
-    private func itemContextMenu(for item: RemoteFileItem) -> some View {
-        Button {
-            beginQuickSelection(with: item)
-        } label: {
-            Label("선택", systemImage: "checkmark.circle")
-        }
-        .disabled(
-            selectionInteractionsAreBlocked
-                || hasBlockingPresentation
-                || hasPendingError
-        )
-
-        if viewModel.service.capabilities.supports(.copy) {
-            Button {
-                operationCoordinator.placeOnClipboard([item], mode: .copy)
-            } label: {
-                Label("복사", systemImage: "doc.on.doc")
-            }
-            .disabled(selectionInteractionsAreBlocked)
-        }
-
+    private func additionalItemActions(for item: RemoteFileItem) -> some View {
         if viewModel.service.capabilities.supports(.move) {
             Button {
                 operationCoordinator.placeOnClipboard([item], mode: .move)
@@ -588,14 +751,6 @@ struct FileBrowserView: View {
             }
             .disabled(!canBeginUserPresentation)
         }
-
-        Button {
-            guard canBeginUserPresentation else { return }
-            infoItem = item
-        } label: {
-            Label("정보", systemImage: "info.circle")
-        }
-        .disabled(!canBeginUserPresentation)
 
         if viewModel.service.capabilities.contains(.delete) {
             Divider()
@@ -769,11 +924,6 @@ struct FileBrowserView: View {
         }
     }
 
-    private func quickSelectionGesture(for item: RemoteFileItem) -> some Gesture {
-        LongPressGesture(minimumDuration: 0.35, maximumDistance: 18)
-            .onEnded { _ in beginQuickSelection(with: item) }
-    }
-
     private func toggleSelectAll() {
         let visibleIDs = Set(displayedItems.map(\.id))
         if allVisibleItemsAreSelected {
@@ -835,27 +985,26 @@ struct FileBrowserView: View {
     }
 
     /// All user-driven modal entry points use this gate. In particular, a
-    /// share preparation remains in selection mode until its sheet is ready,
-    /// so its asynchronous completion cannot race an info sheet, preview, or
-    /// edit confirmation.
+    /// Share preparation remains in selection mode until its sheet is ready,
+    /// so its asynchronous completion cannot race a preview or edit confirmation.
     private var canBeginUserPresentation: Bool {
         !shareCoordinator.isPreparing
-            && !operationCoordinator.isWorking
+            && !operationCoordinator.isBusy
             && !hasBlockingPresentation
             && !hasPendingError
     }
 
     private var selectionInteractionsAreBlocked: Bool {
-        shareCoordinator.isPreparing || operationCoordinator.isWorking
+        shareCoordinator.isPreparing || operationCoordinator.isBusy
     }
 
     private var hasBlockingPresentation: Bool {
         shareCoordinator.preparedShare != nil
-            || infoItem != nil
             || previewItem != nil
             || !pendingDeleteItems.isEmpty
             || renameItem != nil
             || isCreatingFolder
+            || isImportingFiles
     }
 
     private var hasPendingError: Bool {
@@ -909,7 +1058,10 @@ private struct RemoteFileGridCell: View {
                 .font(isLarge ? .headline : .caption)
                 .fontWeight(isLarge ? .semibold : .regular)
                 .foregroundStyle(SkyBreezeTheme.primaryText)
-                .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
+                .lineLimit(2)
+                .minimumScaleFactor(isLarge ? 0.85 : 0.72)
+                .allowsTightening(true)
+                .truncationMode(.tail)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity)
 
@@ -988,8 +1140,25 @@ private struct RemoteFileMetadataView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(item.browserKindAndSizeLabel)
-                .lineLimit(compact ? 1 : 2)
+            if !item.isDirectory {
+                if compact {
+                    HStack(spacing: 4) {
+                        Image(systemName: item.systemImage)
+                            .font(.system(size: 9, weight: .semibold))
+                            .accessibilityLabel(item.browserKindLabel)
+
+                        Text(item.browserFormattedSize ?? "크기 정보 없음")
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.68)
+                            .allowsTightening(true)
+                            .monospacedDigit()
+                            .layoutPriority(1)
+                    }
+                } else {
+                    Text(item.browserKindAndSizeLabel)
+                        .lineLimit(2)
+                }
+            }
 
             if showsModifiedDate, let modifiedAt = item.modifiedAt {
                 if includesTime {
@@ -1033,9 +1202,13 @@ private extension RemoteFileItem {
     }
 
     var browserKindAndSizeLabel: String {
-        guard !isDirectory, let size else { return browserKindLabel }
-        let formattedSize = ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
-        return "\(browserKindLabel) • \(formattedSize)"
+        guard !isDirectory, let browserFormattedSize else { return browserKindLabel }
+        return "\(browserKindLabel) • \(browserFormattedSize)"
+    }
+
+    var browserFormattedSize: String? {
+        guard !isDirectory, let size else { return nil }
+        return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
     }
 
     var browserAccessibilityLabel: String {
@@ -1359,7 +1532,7 @@ private struct SharePreparationBanner: View {
     }
 }
 
-private struct FileOperationProgressBanner: View {
+struct FileOperationProgressBanner: View {
     let title: String
     let progress: RemoteOperationProgress?
     let onCancel: () -> Void
@@ -1413,7 +1586,7 @@ private struct FileOperationProgressBanner: View {
     }
 }
 
-private struct FileOperationStatusBanner: View {
+struct FileOperationStatusBanner: View {
     let message: String
     let onDismiss: () -> Void
 

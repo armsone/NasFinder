@@ -11,6 +11,11 @@ struct RemoteFileItem: Identifiable, Hashable, Sendable {
         "3g2", "3gp", "asf", "avi", "flv", "m2ts", "m4v", "mkv", "mov", "mpe",
         "mpeg", "mpg", "mp4", "mts", "ogv", "qt", "ts", "vob", "webm", "wmv"
     ]
+    private static let quickLookThumbnailFilenameExtensions: Set<String> = [
+        "csv", "doc", "docx", "epub", "htm", "html", "key", "markdown", "md",
+        "numbers", "pages", "pdf", "ppt", "pptx", "rtf", "rtfd", "txt", "usdz",
+        "xls", "xlsx"
+    ]
 
     enum ItemKind: String, Sendable {
         case folder
@@ -52,6 +57,18 @@ struct RemoteFileItem: Identifiable, Hashable, Sendable {
                 || contentType.conforms(to: .video)
                 || Self.videoFilenameExtensions.contains(normalizedFilenameExtension)
         )
+    }
+
+    /// File types for which iOS Quick Look can commonly create a meaningful
+    /// preview after the remote file has been cached locally.
+    var supportsQuickLookThumbnail: Bool {
+        guard !isDirectory else { return false }
+        return isImage
+            || isVideo
+            || contentType.conforms(to: .pdf)
+            || contentType.conforms(to: .text)
+            || contentType.conforms(to: .audio)
+            || Self.quickLookThumbnailFilenameExtensions.contains(normalizedFilenameExtension)
     }
 
     var systemImage: String {

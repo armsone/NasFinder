@@ -83,7 +83,7 @@ struct RemotePreviewView: View {
             viewModel.videoDidFinish()
         }
         .onDisappear {
-            viewModel.pauseForLifecycle()
+            viewModel.tearDown()
             shareCoordinator.cancelAndCleanUp()
         }
         .sheet(
@@ -103,51 +103,112 @@ struct RemotePreviewView: View {
 
     @ViewBuilder
     private func previewContent(in geometry: GeometryProxy) -> some View {
-        if viewModel.isLoading || (
-            viewModel.localURL == nil && viewModel.errorMessage == nil
+        switch RemotePreviewContentKind.resolve(
+            isImage: viewModel.currentItem.isImage,
+            isVideo: viewModel.currentItem.isVideo,
+            hasImage: viewModel.image != nil,
+            hasPlayer: viewModel.player != nil,
+            hasLocalURL: viewModel.localURL != nil,
+            hasError: viewModel.errorMessage != nil
         ) {
-            VStack(spacing: 14) {
+        case .error:
+            if let errorMessage = viewModel.errorMessage {
+                ContentUnavailableView {
+                    Label(
+                        "미리보기를 열 수 없습니다",
+                        systemImage: "exclamationmark.triangle"
+                    )
+                } description: {
+                    Text(errorMessage)
+                } actions: {
+                    Button("다시 시도") {
+                        Task { await viewModel.retryCurrentItem() }
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                .foregroundStyle(.white)
+            } else {
+                remoteLoadingView
+            }
+        case .image:
+            if let image = viewModel.image {
+                ZoomableMediaImageView(
+                    image: image,
+                    onDismiss: { dismiss() },
+                    onNavigate: { offset in
+                        viewModel.navigate(by: offset)
+                    }
+                )
+            } else {
+                remoteLoadingView
+            }
+        case .video:
+            if let player = viewModel.player {
+                ZStack {
+                    VideoPlayer(player: player)
+                        .background(Color.black)
+                        .offset(y: videoVerticalOffset)
+                        .opacity(videoDismissOpacity)
+                        .contentShape(Rectangle())
+                        .simultaneousGesture(videoDragGesture(in: geometry.size.width))
+
+                    if viewModel.isPreparingVideo {
+                        remoteLoadingView
+                            .allowsHitTesting(false)
+                    }
+                }
+            } else {
+                remoteLoadingView
+            }
+        case .quickLook:
+            if let url = viewModel.localURL {
+                QuickLookPreview(url: url)
+            } else {
+                remoteLoadingView
+            }
+        case .loading:
+            remoteLoadingView
+        }
+    }
+
+    private var remoteLoadingView: some View {
+        VStack(spacing: 14) {
+            if let progress = viewModel.downloadProgress,
+               let fraction = progress.fractionCompleted {
+                ProgressView(value: fraction)
+                    .tint(.white)
+                    .frame(maxWidth: 260)
+                Text(downloadProgressDescription(progress))
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.72))
+            } else {
                 ProgressView()
                     .tint(.white)
-                Text("원격 파일을 내려받는 중…")
-                    .foregroundStyle(.white.opacity(0.7))
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let errorMessage = viewModel.errorMessage {
-            ContentUnavailableView {
-                Label(
-                    "미리보기를 열 수 없습니다",
-                    systemImage: "exclamationmark.triangle"
-                )
-            } description: {
-                Text(errorMessage)
-            } actions: {
-                Button("다시 시도") {
-                    Task { await viewModel.retryCurrentItem() }
-                }
-                .buttonStyle(.borderedProminent)
-            }
-            .foregroundStyle(.white)
-        } else if viewModel.currentItem.isImage,
-                  let image = viewModel.image {
-            ZoomableMediaImageView(
-                image: image,
-                onDismiss: { dismiss() },
-                onNavigate: { offset in
-                    viewModel.navigate(by: offset)
-                }
+
+            Text(
+                viewModel.currentItem.isVideo && viewModel.downloadProgress == nil
+                    ? "영상을 준비하는 중…"
+                    : "원격 파일을 내려받는 중…"
             )
-        } else if viewModel.currentItem.isVideo,
-                  let player = viewModel.player {
-            VideoPlayer(player: player)
-                .background(Color.black)
-                .offset(y: videoVerticalOffset)
-                .opacity(videoDismissOpacity)
-                .contentShape(Rectangle())
-                .simultaneousGesture(videoDragGesture(in: geometry.size.width))
-        } else if let url = viewModel.localURL {
-            QuickLookPreview(url: url)
+            .foregroundStyle(.white.opacity(0.7))
         }
+        .padding(.horizontal, 28)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityElement(children: .combine)
+    }
+
+    private func downloadProgressDescription(_ progress: RemoteDownloadProgress) -> String {
+        let completed = ByteCountFormatter.string(
+            fromByteCount: progress.completedByteCount,
+            countStyle: .file
+        )
+        guard let total = progress.totalByteCount, total > 0 else {
+            return "\(completed) 내려받음"
+        }
+        let totalText = ByteCountFormatter.string(fromByteCount: total, countStyle: .file)
+        let percent = progress.fractionCompleted.map { Int(($0 * 100).rounded()) } ?? 0
+        return "\(completed) / \(totalText) • \(percent)%"
     }
 
     private func previewChrome(safeAreaInsets: EdgeInsets) -> some View {
@@ -391,12 +452,54 @@ struct RemotePreviewView: View {
     }
 }
 
+enum RemotePreviewContentKind: Equatable {
+    case loading
+    case error
+    case image
+    case video
+    case quickLook
+
+    static func resolve(
+        isImage: Bool,
+        isVideo: Bool,
+        hasImage: Bool,
+        hasPlayer: Bool,
+        hasLocalURL: Bool,
+        hasError: Bool
+    ) -> Self {
+        if hasError { return .error }
+        if isImage, hasImage { return .image }
+        if isVideo, hasPlayer { return .video }
+        if !isImage, !isVideo, hasLocalURL { return .quickLook }
+        return .loading
+    }
+}
+
+enum RemoteVideoLoadStrategy: Equatable {
+    case fullDownload
+    case rangeStreaming
+
+    static let rangeStreamingMinimumByteCount: Int64 = 64 * 1_024 * 1_024
+
+    static func resolve(
+        supportsRangeStreaming: Bool,
+        fileSize: Int64?
+    ) -> Self {
+        guard supportsRangeStreaming,
+              let fileSize,
+              fileSize >= rangeStreamingMinimumByteCount else {
+            return .fullDownload
+        }
+        return .rangeStreaming
+    }
+}
+
 private enum PreviewDragAxis {
     case horizontal
     case vertical
 }
 
-private enum PreviewPlaybackMode: String, CaseIterable, Identifiable {
+enum PreviewPlaybackMode: String, CaseIterable, Identifiable {
     case repeatAll
     case shuffle
     case repeatOne
@@ -420,7 +523,7 @@ private enum PreviewPlaybackMode: String, CaseIterable, Identifiable {
     }
 }
 
-private enum PhotoAdvanceInterval: Int, CaseIterable, Identifiable {
+enum PhotoAdvanceInterval: Int, CaseIterable, Identifiable {
     case twoSeconds = 2
     case threeSeconds = 3
     case fiveSeconds = 5
@@ -433,12 +536,14 @@ private enum PhotoAdvanceInterval: Int, CaseIterable, Identifiable {
 }
 
 @MainActor
-private final class RemotePreviewViewModel: ObservableObject {
+final class RemotePreviewViewModel: ObservableObject {
     @Published private(set) var currentIndex: Int
     @Published private(set) var localURL: URL?
     @Published private(set) var image: UIImage?
     @Published private(set) var player: AVPlayer?
     @Published private(set) var isLoading = false
+    @Published private(set) var isPreparingVideo = false
+    @Published private(set) var downloadProgress: RemoteDownloadProgress?
     @Published private(set) var isPlaying = false
     @Published private(set) var playbackMode: PreviewPlaybackMode = .repeatAll
     @Published private(set) var photoAdvanceInterval: PhotoAdvanceInterval
@@ -455,6 +560,16 @@ private final class RemotePreviewViewModel: ObservableObject {
     private var loadedVideoDurationSeconds: Double?
     private var activeLoadGeneration: UUID?
     private var streamingLoader: RemoteVideoStreamingLoader?
+    private var playerItemStatusObservation: NSKeyValueObservation?
+    private var videoPreparationTimeoutTask: Task<Void, Never>?
+    private var videoMetadataTask: Task<Void, Never>?
+    private var activeDownloadTask: Task<URL, Error>?
+    private var activeDownloadGeneration: UUID?
+    private var downloadInactivityTask: Task<Void, Never>?
+    private var downloadInactivityGeneration: UUID?
+    private var lastDownloadActivity: ContinuousClock.Instant?
+    private let downloadInactivityTimeout: Duration
+    private let downloadInactivityPollInterval: Duration
 
     private static let photoAdvanceIntervalDefaultsKey = "previewPhotoAdvanceIntervalSeconds"
 
@@ -464,11 +579,15 @@ private final class RemotePreviewViewModel: ObservableObject {
     init(
         items: [RemoteFileItem],
         initialItemID: RemoteFileItem.ID,
-        service: any RemoteFileService
+        service: any RemoteFileService,
+        downloadInactivityTimeout: Duration = .seconds(20),
+        downloadInactivityPollInterval: Duration = .seconds(1)
     ) {
         precondition(!items.isEmpty)
         self.items = items
         self.service = service
+        self.downloadInactivityTimeout = downloadInactivityTimeout
+        self.downloadInactivityPollInterval = downloadInactivityPollInterval
         currentIndex = items.firstIndex(where: { $0.id == initialItemID }) ?? 0
         let savedInterval = UserDefaults.standard.integer(
             forKey: Self.photoAdvanceIntervalDefaultsKey
@@ -484,10 +603,26 @@ private final class RemotePreviewViewModel: ObservableObject {
 
         isLoading = true
         errorMessage = nil
+        player?.pause()
+        player = nil
+        playerItemStatusObservation?.invalidate()
+        playerItemStatusObservation = nil
+        videoPreparationTimeoutTask?.cancel()
+        videoPreparationTimeoutTask = nil
+        videoMetadataTask?.cancel()
+        videoMetadataTask = nil
+        cancelActiveDownload()
+        stopDownloadInactivityWatchdog()
+        isPreparingVideo = false
+        streamingLoader?.cancel()
+        streamingLoader = nil
         localURL = nil
         image = nil
+        downloadProgress = nil
         loadedVideoDurationSeconds = nil
         defer {
+            cancelActiveDownload(generation: generation)
+            stopDownloadInactivityWatchdog(generation: generation)
             if isCurrentLoad(generation, itemID: requestedItem.id) {
                 isLoading = false
                 activeLoadGeneration = nil
@@ -496,9 +631,10 @@ private final class RemotePreviewViewModel: ObservableObject {
 
         do {
             if requestedItem.isVideo,
-               service.supportsRangeStreaming,
-               let size = requestedItem.size,
-               size > 0 {
+               RemoteVideoLoadStrategy.resolve(
+                    supportsRangeStreaming: service.supportsRangeStreaming,
+                    fileSize: requestedItem.size
+               ) == .rangeStreaming {
                 streamingLoader?.cancel()
                 let loader = RemoteVideoStreamingLoader(
                     item: requestedItem,
@@ -512,7 +648,8 @@ private final class RemotePreviewViewModel: ObservableObject {
                     loader.cancel()
                     return
                 }
-                player = newPlayer
+                installPlayer(newPlayer, for: requestedItem.id)
+                downloadProgress = nil
                 if isPlaying {
                     newPlayer.play()
                 }
@@ -524,7 +661,32 @@ private final class RemotePreviewViewModel: ObservableObject {
                FileManager.default.fileExists(atPath: cachedURL.path) {
                 url = cachedURL
             } else {
-                url = try await service.download(requestedItem)
+                beginDownloadInactivityWatchdog(
+                    generation: generation,
+                    itemID: requestedItem.id
+                )
+                let service = service
+                let downloadTask = Task {
+                    try await service.download(requestedItem) { [weak self] progress in
+                        await self?.updateDownloadProgress(
+                            progress,
+                            generation: generation,
+                            itemID: requestedItem.id
+                        )
+                    }
+                }
+                activeDownloadTask = downloadTask
+                activeDownloadGeneration = generation
+                url = try await withTaskCancellationHandler {
+                    try await downloadTask.value
+                } onCancel: {
+                    downloadTask.cancel()
+                }
+                clearActiveDownload(generation: generation)
+                stopDownloadInactivityWatchdog(generation: generation)
+                guard isCurrentLoad(generation, itemID: requestedItem.id) else {
+                    throw CancellationError()
+                }
                 downloadedURLs[requestedItem.id] = url
             }
 
@@ -538,19 +700,28 @@ private final class RemotePreviewViewModel: ObservableObject {
                 )
                 guard isCurrentLoad(generation, itemID: requestedItem.id) else { return }
                 image = UIImage(cgImage: decodedImage.image)
+                downloadProgress = nil
                 schedulePhotoAdvance()
             } else if requestedItem.isVideo {
                 let asset = AVURLAsset(url: url)
-                let duration = try? await asset.load(.duration)
                 guard isCurrentLoad(generation, itemID: requestedItem.id) else { return }
 
                 let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: asset))
-                player = newPlayer
-                if let duration, duration.seconds.isFinite {
-                    loadedVideoDurationSeconds = duration.seconds
-                }
+                installPlayer(newPlayer, for: requestedItem.id)
+                downloadProgress = nil
                 if isPlaying {
                     newPlayer.play()
+                }
+                videoMetadataTask = Task { [weak self, weak newPlayer] in
+                    let duration = try? await asset.load(.duration)
+                    guard !Task.isCancelled,
+                          let self,
+                          let newPlayer,
+                          self.player === newPlayer,
+                          self.currentItem.id == requestedItem.id,
+                          let duration,
+                          duration.seconds.isFinite else { return }
+                    self.loadedVideoDurationSeconds = duration.seconds
                 }
             }
         } catch is CancellationError {
@@ -681,6 +852,24 @@ private final class RemotePreviewViewModel: ObservableObject {
         player?.pause()
     }
 
+    func tearDown() {
+        pauseForLifecycle()
+        streamingLoader?.cancel()
+        streamingLoader = nil
+        playerItemStatusObservation?.invalidate()
+        playerItemStatusObservation = nil
+        videoPreparationTimeoutTask?.cancel()
+        videoPreparationTimeoutTask = nil
+        videoMetadataTask?.cancel()
+        videoMetadataTask = nil
+        cancelActiveDownload()
+        stopDownloadInactivityWatchdog()
+        activeLoadGeneration = nil
+        isLoading = false
+        isPreparingVideo = false
+        downloadProgress = nil
+    }
+
     private func move(to index: Int) {
         guard items.indices.contains(index), index != currentIndex else {
             if currentItem.isImage, isPlaying {
@@ -691,6 +880,15 @@ private final class RemotePreviewViewModel: ObservableObject {
 
         player?.pause()
         player = nil
+        playerItemStatusObservation?.invalidate()
+        playerItemStatusObservation = nil
+        videoPreparationTimeoutTask?.cancel()
+        videoPreparationTimeoutTask = nil
+        videoMetadataTask?.cancel()
+        videoMetadataTask = nil
+        cancelActiveDownload()
+        stopDownloadInactivityWatchdog()
+        isPreparingVideo = false
         streamingLoader?.cancel()
         streamingLoader = nil
         photoAdvanceTask?.cancel()
@@ -703,9 +901,134 @@ private final class RemotePreviewViewModel: ObservableObject {
         activeLoadGeneration = nil
         localURL = nil
         image = nil
+        downloadProgress = nil
         errorMessage = nil
         isLoading = false
         currentIndex = index
+    }
+
+    private func updateDownloadProgress(
+        _ progress: RemoteDownloadProgress,
+        generation: UUID,
+        itemID: RemoteFileItem.ID
+    ) {
+        guard isCurrentLoad(generation, itemID: itemID) else { return }
+        downloadProgress = progress
+        lastDownloadActivity = ContinuousClock.now
+    }
+
+    private func installPlayer(
+        _ newPlayer: AVPlayer,
+        for itemID: RemoteFileItem.ID
+    ) {
+        playerItemStatusObservation?.invalidate()
+        videoPreparationTimeoutTask?.cancel()
+        player = newPlayer
+        isPreparingVideo = true
+        playerItemStatusObservation = newPlayer.currentItem?.observe(
+            \.status,
+            options: [.initial, .new]
+        ) { [weak self] playerItem, _ in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      self.currentItem.id == itemID,
+                      self.player?.currentItem === playerItem else { return }
+                switch playerItem.status {
+                case .readyToPlay:
+                    self.isPreparingVideo = false
+                    self.videoPreparationTimeoutTask?.cancel()
+                    self.videoPreparationTimeoutTask = nil
+                case .failed:
+                    let message = playerItem.error?.localizedDescription
+                        ?? "지원하지 않는 영상 형식이거나 원격 데이터를 읽지 못했습니다."
+                    self.failVideoPreparation(message, itemID: itemID)
+                case .unknown:
+                    self.isPreparingVideo = true
+                @unknown default:
+                    self.isPreparingVideo = true
+                }
+            }
+        }
+        videoPreparationTimeoutTask = Task { [weak self, weak newPlayer] in
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled,
+                  let self,
+                  let newPlayer,
+                  self.player === newPlayer,
+                  self.currentItem.id == itemID,
+                  self.isPreparingVideo else { return }
+            self.failVideoPreparation(
+                "원격 영상 준비 시간이 너무 오래 걸립니다. 네트워크 상태를 확인한 뒤 다시 시도해 주세요.",
+                itemID: itemID
+            )
+        }
+    }
+
+    private func failVideoPreparation(_ message: String, itemID: RemoteFileItem.ID) {
+        guard currentItem.id == itemID else { return }
+        videoPreparationTimeoutTask?.cancel()
+        videoPreparationTimeoutTask = nil
+        videoMetadataTask?.cancel()
+        videoMetadataTask = nil
+        isPreparingVideo = false
+        player?.pause()
+        streamingLoader?.cancel()
+        streamingLoader = nil
+        errorMessage = "영상을 재생하지 못했습니다: \(message)"
+        downloadProgress = nil
+    }
+
+    private func beginDownloadInactivityWatchdog(
+        generation: UUID,
+        itemID: RemoteFileItem.ID
+    ) {
+        stopDownloadInactivityWatchdog()
+        downloadInactivityGeneration = generation
+        lastDownloadActivity = ContinuousClock.now
+        let pollInterval = downloadInactivityPollInterval
+        let inactivityTimeout = downloadInactivityTimeout
+        downloadInactivityTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: pollInterval)
+                guard !Task.isCancelled, let self else { return }
+                guard self.isCurrentLoad(generation, itemID: itemID),
+                      self.downloadInactivityGeneration == generation,
+                      let lastActivity = self.lastDownloadActivity else { return }
+                if lastActivity.duration(to: ContinuousClock.now)
+                    >= inactivityTimeout {
+                    self.cancelActiveDownload(generation: generation)
+                    self.downloadInactivityGeneration = nil
+                    self.lastDownloadActivity = nil
+                    self.downloadInactivityTask = nil
+                    self.activeLoadGeneration = nil
+                    self.isLoading = false
+                    self.downloadProgress = nil
+                    self.errorMessage = "20초 동안 다운로드가 진행되지 않았습니다. 네트워크 상태를 확인한 뒤 다시 시도해 주세요."
+                    return
+                }
+            }
+        }
+    }
+
+    private func stopDownloadInactivityWatchdog(generation: UUID? = nil) {
+        if let generation, downloadInactivityGeneration != generation { return }
+        downloadInactivityTask?.cancel()
+        downloadInactivityTask = nil
+        downloadInactivityGeneration = nil
+        lastDownloadActivity = nil
+    }
+
+    private func clearActiveDownload(generation: UUID) {
+        guard activeDownloadGeneration == generation else { return }
+        activeDownloadTask = nil
+        activeDownloadGeneration = nil
+    }
+
+    private func cancelActiveDownload(generation: UUID? = nil) {
+        if let generation, activeDownloadGeneration != generation { return }
+        activeDownloadTask?.cancel()
+        activeDownloadTask = nil
+        activeDownloadGeneration = nil
     }
 
     private func schedulePhotoAdvance() {

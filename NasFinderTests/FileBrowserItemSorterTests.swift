@@ -120,6 +120,61 @@ final class FileBrowserItemSorterTests: XCTestCase {
         XCTAssertEqual(result.map(\.name), ["Résumé-2.jpg", "resume-10.JPG"])
     }
 
+    func testNamePriorityCanPutNumbersKoreanOrForeignNamesFirst() {
+        let items = [
+            item(name: "가족사진.jpg"),
+            item(name: "album.jpg"),
+            item(name: "10-report.pdf"),
+            item(name: "2-report.pdf")
+        ]
+
+        let numbersFirst = FileBrowserItemSorter.sorted(
+            items,
+            options: FileBrowserSortOptions(
+                field: .name,
+                direction: .ascending,
+                namePriority: .numbersFirst,
+                foldersFirst: false
+            )
+        )
+        let koreanFirst = FileBrowserItemSorter.sorted(
+            items,
+            options: FileBrowserSortOptions(
+                field: .name,
+                direction: .ascending,
+                namePriority: .koreanFirst,
+                foldersFirst: false
+            )
+        )
+        let foreignFirst = FileBrowserItemSorter.sorted(
+            items,
+            options: FileBrowserSortOptions(
+                field: .name,
+                direction: .ascending,
+                namePriority: .foreignFirst,
+                foldersFirst: false
+            )
+        )
+
+        XCTAssertEqual(numbersFirst.map(\.name), ["2-report.pdf", "10-report.pdf", "가족사진.jpg", "album.jpg"])
+        XCTAssertEqual(koreanFirst.first?.name, "가족사진.jpg")
+        XCTAssertEqual(foreignFirst.first?.name, "album.jpg")
+    }
+
+    func testSelectedNamePriorityStaysFirstWhenNameDirectionIsDescending() {
+        let result = FileBrowserItemSorter.sorted(
+            [item(name: "album.jpg"), item(name: "가족사진.jpg"), item(name: "2-report.pdf")],
+            options: FileBrowserSortOptions(
+                field: .name,
+                direction: .descending,
+                namePriority: .koreanFirst,
+                foldersFirst: false
+            )
+        )
+
+        XCTAssertEqual(result.first?.name, "가족사진.jpg")
+    }
+
     private func item(
         name: String,
         kind: RemoteFileItem.ItemKind = .file,

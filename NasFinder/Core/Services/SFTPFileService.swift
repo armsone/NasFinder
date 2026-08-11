@@ -60,16 +60,62 @@ actor SFTPFileService: RemoteFileService {
     }
 
     func download(_ item: RemoteFileItem) async throws -> URL {
+        try await download(item) { _ in }
+    }
+
+    func download(
+        _ item: RemoteFileItem,
+        progress: @escaping RemoteDownloadProgressHandler
+    ) async throws -> URL {
+        // Cache format v2 entries are published only after this service has
+        // validated the downloaded payload against a live pre-read stat. The
+        // directory-listing size can be stale, so rechecking the trusted file
+        // against `item.size` here would discard a valid download forever for
+        // the same stale list entry.
         if let cached = await cache.cachedURL(for: item) {
+            let cachedSize = try? cached.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            let actualByteCount = cachedSize.map(Int64.init)
+            let completedByteCount = actualByteCount ?? item.size ?? 0
+            await progress(
+                RemoteDownloadProgress(
+                    completedByteCount: completedByteCount,
+                    totalByteCount: actualByteCount ?? item.size
+                )
+            )
             return cached
         }
+
+        await progress(
+            RemoteDownloadProgress(
+                completedByteCount: 0,
+                totalByteCount: item.size
+            )
+        )
 
         let temporaryURL = FileManager.default.temporaryDirectory
             .appending(path: UUID().uuidString, directoryHint: .notDirectory)
         FileManager.default.createFile(atPath: temporaryURL.path, contents: nil)
 
         do {
-            try await withSFTP { sftp in
+            let liveExpectedByteCount = try await withSFTP(
+                closeTransportOnCancellation: true
+            ) { sftp in
+                // Directory entries can be stale by the time the user opens a
+                // preview. Re-read the size on the same connection immediately
+                // before opening the file, and use that value for integrity
+                // validation so a legitimately replaced file is not rejected.
+                let attributes = try await sftp.getAttributes(at: item.path)
+                let expectedByteCount = SFTPDownloadSizePolicy.expectedByteCount(
+                    liveByteCount: attributes.size,
+                    listedByteCount: item.size
+                )
+                await progress(
+                    RemoteDownloadProgress(
+                        completedByteCount: 0,
+                        totalByteCount: expectedByteCount
+                    )
+                )
+
                 try await sftp.withFile(filePath: item.path, flags: .read) { file in
                     let handle = try FileHandle(forWritingTo: temporaryURL)
                     defer { try? handle.close() }
@@ -82,11 +128,33 @@ actor SFTPFileService: RemoteFileService {
                         let bytes = buffer.readBytes(length: buffer.readableBytes) ?? []
                         try handle.write(contentsOf: Data(bytes))
                         offset += UInt64(bytes.count)
+                        await progress(
+                            RemoteDownloadProgress(
+                                completedByteCount: Int64(exactly: offset) ?? Int64.max,
+                                totalByteCount: expectedByteCount
+                            )
+                        )
                     }
                     try Task.checkCancellation()
                 }
+                return expectedByteCount
             }
-            return try await cache.store(downloadedURL: temporaryURL, for: item)
+            let actualByteCount = Int64(
+                try temporaryURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+            )
+            try RemoteDownloadIntegrityError.validate(
+                expectedByteCount: liveExpectedByteCount,
+                actualByteCount: actualByteCount
+            )
+            let cachedURL = try await cache.store(downloadedURL: temporaryURL, for: item)
+            let completedByteCount = actualByteCount
+            await progress(
+                RemoteDownloadProgress(
+                    completedByteCount: completedByteCount,
+                    totalByteCount: actualByteCount
+                )
+            )
+            return cachedURL
         } catch {
             try? FileManager.default.removeItem(at: temporaryURL)
             throw error
@@ -106,7 +174,7 @@ actor SFTPFileService: RemoteFileService {
             throw CocoaError(.fileReadInvalidFileName)
         }
 
-        return try await withSFTP { sftp in
+        return try await withSFTP(closeTransportOnCancellation: true) { sftp in
             try await sftp.withFile(filePath: item.path, flags: .read) { file in
                 var result = Data()
                 result.reserveCapacity(length)
@@ -188,7 +256,7 @@ actor SFTPFileService: RemoteFileService {
             return UInt64(exactly: size)
         }
 
-        try await withSFTP { sftp in
+        try await withSFTP(closeTransportOnCancellation: true) { sftp in
             let fileSize: UInt64
             if let listedSize {
                 fileSize = listedSize
@@ -312,44 +380,75 @@ actor SFTPFileService: RemoteFileService {
     private static let thumbnailReadChunkSize: UInt32 = 256 * 1_024
 
     private func withSFTP<T: Sendable>(
+        closeTransportOnCancellation: Bool = false,
         _ operation: @escaping @Sendable (SFTPClient) async throws -> T
     ) async throws -> T {
         let validator = SSHHostKeyValidator.custom(
             NasFinderSSHHostKeyValidator(expectedKey: connection.trustedHostKey)
         )
-        let client = try await SSHClient.connect(
-            host: connection.host,
-            port: connection.port,
-            authenticationMethod: .passwordBased(
-                username: connection.username,
-                password: credential.password
-            ),
-            hostKeyValidator: validator,
-            reconnect: .never,
-            // NIOSSH's bundled set only advertises AES-GCM, elliptic-curve
-            // key exchange, and Ed25519/ECDSA host keys. Synology and other
-            // established SFTP servers can still require AES-CTR, group14,
-            // or an RSA host key. Citadel appends those compatibility
-            // algorithms after the modern defaults, so stronger algorithms
-            // remain preferred whenever the server supports them.
-            algorithms: .all
-        )
-
+        let client: SSHClient
         do {
-            let sftp = try await client.openSFTP()
+            client = try await SSHClient.connect(
+                host: connection.host,
+                port: connection.port,
+                authenticationMethod: .passwordBased(
+                    username: connection.username,
+                    password: credential.password
+                ),
+                hostKeyValidator: validator,
+                reconnect: .never,
+                // NIOSSH's bundled set only advertises AES-GCM, elliptic-curve
+                // key exchange, and Ed25519/ECDSA host keys. Synology and other
+                // established SFTP servers can still require AES-CTR, group14,
+                // or an RSA host key. Citadel appends those compatibility
+                // algorithms after the modern defaults, so stronger algorithms
+                // remain preferred whenever the server supports them.
+                algorithms: .all,
+                connectTimeout: closeTransportOnCancellation
+                    ? .seconds(20)
+                    : .seconds(30)
+            )
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
+
+        let transportCloser = SFTPClientTransportCloser(client: client)
+        if Task.isCancelled {
+            try? await transportCloser.close()
+            throw CancellationError()
+        }
+
+        let runOperation = {
             do {
-                let result = try await operation(sftp)
-                try await sftp.close()
-                try await client.close()
-                return result
+                let sftp = try await client.openSFTP()
+                do {
+                    let result = try await operation(sftp)
+                    try await sftp.close()
+                    try await transportCloser.close()
+                    return result
+                } catch {
+                    try? await sftp.close()
+                    try? await transportCloser.close()
+                    throw error
+                }
             } catch {
-                try? await sftp.close()
-                try? await client.close()
+                try? await transportCloser.close()
                 throw error
             }
-        } catch {
-            try? await client.close()
-            throw error
+        }
+
+        guard closeTransportOnCancellation else {
+            return try await runOperation()
+        }
+
+        return try await SFTPTaskCancellationBridge.run(
+            operation: runOperation
+        ) {
+            // Citadel's in-flight NIO futures do not observe Swift task
+            // cancellation. Closing the transport makes a stalled read fail,
+            // allowing preview retry/dismissal to release the old SSH session.
+            try? await transportCloser.close()
         }
     }
 
@@ -357,6 +456,61 @@ actor SFTPFileService: RemoteFileService {
         if directory == "/" { return "/\(name)" }
         if directory == "." { return "./\(name)" }
         return directory.hasSuffix("/") ? "\(directory)\(name)" : "\(directory)/\(name)"
+    }
+}
+
+/// Bridges Swift task cancellation to transports backed by NIO futures.
+/// Those futures do not necessarily resume merely because their awaiting task
+/// was cancelled, so the caller supplies an async action that tears down the
+/// transport and makes the pending operation finish.
+enum SFTPTaskCancellationBridge {
+    static func run<Value: Sendable>(
+        operation: @escaping () async throws -> Value,
+        onCancel: @escaping @Sendable () async -> Void
+    ) async throws -> Value {
+        try await withTaskCancellationHandler {
+            do {
+                let value = try await operation()
+                try Task.checkCancellation()
+                return value
+            } catch {
+                if Task.isCancelled { throw CancellationError() }
+                throw error
+            }
+        } onCancel: {
+            Task {
+                await onCancel()
+            }
+        }
+    }
+}
+
+private final class SFTPClientTransportCloser: @unchecked Sendable {
+    let client: SSHClient
+    private let lock = NSLock()
+    private var didStartClosing = false
+
+    init(client: SSHClient) {
+        self.client = client
+    }
+
+    func close() async throws {
+        let shouldClose = lock.withLock {
+            guard !didStartClosing else { return false }
+            didStartClosing = true
+            return true
+        }
+        guard shouldClose else { return }
+        try await client.close()
+    }
+}
+
+enum SFTPDownloadSizePolicy {
+    static func expectedByteCount(
+        liveByteCount: UInt64?,
+        listedByteCount: Int64?
+    ) -> Int64? {
+        liveByteCount.flatMap(Int64.init(exactly:)) ?? listedByteCount
     }
 }
 

@@ -4,6 +4,90 @@ import XCTest
 
 @MainActor
 final class SynologyFileServiceTests: XCTestCase {
+    func testDownloadReportsByteProgressAndPreservesPayload() async throws {
+        let fixture = SynologyAPIFixture()
+        let payload = Data(repeating: 0x5A, count: 384 * 1_024)
+        let progress = LockedBox<[RemoteDownloadProgress]>([])
+        let service = fixture.makeService { request in
+            let fields = request.formFields
+            switch (fields["api"], fields["method"]) {
+            case ("SYNO.API.Auth", "login"):
+                return .json(#"{"success":true,"data":{"sid":"test-sid"}}"#)
+            case ("SYNO.FileStation.Download", "download"):
+                return SynologyStubResponse(
+                    statusCode: 200,
+                    headers: [
+                        "Content-Type": "video/quicktime",
+                        "Content-Length": "\(payload.count)"
+                    ],
+                    data: payload
+                )
+            default:
+                throw SynologyMockError.unexpectedRequest(fields)
+            }
+        }
+        defer { fixture.unregister() }
+
+        let item = fixture.item(
+            path: "/share/clip.mov",
+            name: "clip.mov",
+            kind: .file,
+            size: Int64(payload.count)
+        )
+        let downloadedURL = try await service.download(item) { update in
+            progress.withLock { $0.append(update) }
+        }
+
+        XCTAssertEqual(try Data(contentsOf: downloadedURL), payload)
+        XCTAssertEqual(progress.values.first?.completedByteCount, 0)
+        XCTAssertEqual(progress.values.last?.completedByteCount, Int64(payload.count))
+        XCTAssertEqual(progress.values.last?.fractionCompleted, 1)
+    }
+
+    func testDownloadFinishesAtActualSizeWhenListingMetadataIsStale() async throws {
+        let fixture = SynologyAPIFixture()
+        let payload = Data(repeating: 0x33, count: 96 * 1_024)
+        let progress = LockedBox<[RemoteDownloadProgress]>([])
+        let downloadCalls = LockedBox(0)
+        let service = fixture.makeService { request in
+            let fields = request.formFields
+            switch (fields["api"], fields["method"]) {
+            case ("SYNO.API.Auth", "login"):
+                return .json(#"{"success":true,"data":{"sid":"test-sid"}}"#)
+            case ("SYNO.FileStation.Download", "download"):
+                downloadCalls.withLock { $0 += 1 }
+                return SynologyStubResponse(
+                    statusCode: 200,
+                    headers: ["Content-Length": "\(payload.count)"],
+                    data: payload
+                )
+            default:
+                throw SynologyMockError.unexpectedRequest(fields)
+            }
+        }
+        defer { fixture.unregister() }
+
+        let item = fixture.item(
+            path: "/share/replaced.mov",
+            name: "replaced.mov",
+            kind: .file,
+            size: Int64(payload.count * 2)
+        )
+        let downloadedURL = try await service.download(item) { update in
+            progress.withLock { $0.append(update) }
+        }
+        let cachedURL = try await service.download(item) { update in
+            progress.withLock { $0.append(update) }
+        }
+
+        XCTAssertEqual(try Data(contentsOf: downloadedURL), payload)
+        XCTAssertEqual(try Data(contentsOf: cachedURL), payload)
+        XCTAssertEqual(downloadCalls.values, 1)
+        XCTAssertEqual(progress.values.last?.completedByteCount, Int64(payload.count))
+        XCTAssertEqual(progress.values.last?.totalByteCount, Int64(payload.count))
+        XCTAssertEqual(progress.values.last?.fractionCompleted, 1)
+    }
+
     func testConnectionUsesConfiguredHTTPSDSMEndpointAndFolderList() async throws {
         let fixture = SynologyAPIFixture(rootPath: "/share")
         let service = fixture.makeService { request in
@@ -371,6 +455,58 @@ final class SynologyFileServiceTests: XCTestCase {
         XCTAssertEqual(request.body[payloadRange], payload[...])
     }
 
+    func testUploadKeepBothChoosesAvailableNameWithoutOverwrite() async throws {
+        let fixture = SynologyAPIFixture()
+        let multipartRequest = LockedBox<SynologyRecordedRequest?>(nil)
+        let service = fixture.makeService { request in
+            if request.contentType.hasPrefix("multipart/form-data") {
+                multipartRequest.withLock { $0 = request }
+                return .json(#"{"success":true}"#)
+            }
+            let fields = request.formFields
+            switch (fields["api"], fields["method"]) {
+            case ("SYNO.API.Auth", "login"):
+                return .json(#"{"success":true,"data":{"sid":"test-sid"}}"#)
+            case ("SYNO.FileStation.List", "list"):
+                return .json(
+                    #"{"success":true,"data":{"files":[{"name":"report.txt","path":"/share/uploads/report.txt","isdir":false}]}}"#
+                )
+            default:
+                throw SynologyMockError.unexpectedRequest(fields)
+            }
+        }
+        defer { fixture.unregister() }
+
+        let localURL = FileManager.default.temporaryDirectory
+            .appending(path: "NasFinder-Synology-KeepBoth-\(UUID().uuidString).txt")
+        XCTAssertTrue(
+            FileManager.default.createFile(
+                atPath: localURL.path,
+                contents: Data("new report".utf8)
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: localURL) }
+
+        let result = try await service.upload(
+            localURL: localURL,
+            to: "/share/uploads",
+            preferredName: "report.txt",
+            conflictPolicy: .keepBoth,
+            context: RemoteOperationContext()
+        )
+
+        XCTAssertEqual(
+            result.succeeded.first?.destinationPath,
+            "/share/uploads/report (1).txt"
+        )
+        let bodyText = String(
+            decoding: try XCTUnwrap(multipartRequest.values).body,
+            as: UTF8.self
+        )
+        XCTAssertTrue(bodyText.contains("filename=\"report (1).txt\""))
+        XCTAssertFalse(bodyText.contains("name=\"overwrite\""))
+    }
+
     func testDetailedSynologyConflictBecomesTypedOperationError() async throws {
         let fixture = SynologyAPIFixture()
         let service = fixture.makeService { request in
@@ -503,6 +639,7 @@ private final class SynologyAPIFixture: @unchecked Sendable {
     }
 
     func makeService(
+        cache: DownloadCache = .shared,
         handler: @escaping @Sendable (SynologyRecordedRequest) throws -> SynologyStubResponse
     ) -> SynologyFileService {
         SynologyMockURLProtocol.register(host: host) { [requests] request in
@@ -517,6 +654,7 @@ private final class SynologyAPIFixture: @unchecked Sendable {
             connection: connection,
             credential: RemoteCredential(password: "secret"),
             session: session,
+            cache: cache,
             pollInterval: pollInterval
         )
     }

@@ -87,6 +87,10 @@ private final class RemoteThumbnailLoader: ObservableObject {
             requestedRemoteSize: requestedRemoteSize,
             displaySize: size
         )
+        let diskCacheKey = diskCacheKey(
+            for: item,
+            requestedRemoteSize: requestedRemoteSize
+        )
         guard loadedCacheKey != cacheKey else { return }
         loadedCacheKey = cacheKey
 
@@ -95,7 +99,7 @@ private final class RemoteThumbnailLoader: ObservableObject {
             isLoading = false
             return
         }
-        if let diskData = await RemoteThumbnailDiskCache.shared.data(forKey: cacheKey as String),
+        if let diskData = await RemoteThumbnailDiskCache.shared.data(forKey: diskCacheKey),
            let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
                data: diskData,
                maximumPixelSize: maximumPixelSize(for: size)
@@ -176,7 +180,7 @@ private final class RemoteThumbnailLoader: ObservableObject {
                 cache(remoteImage, forKey: cacheKey)
                 await RemoteThumbnailDiskCache.shared.store(
                     remoteThumbnailData,
-                    forKey: cacheKey as String
+                    forKey: diskCacheKey
                 )
                 return
             } catch is CancellationError {
@@ -218,6 +222,14 @@ private final class RemoteThumbnailLoader: ObservableObject {
             guard operationID == currentOperationID else { return }
             image = generatedImage.image
             cache(generatedImage.image, forKey: cacheKey)
+            if let generatedThumbnailData = generatedImage.image.jpegData(
+                compressionQuality: 0.82
+            ) {
+                await RemoteThumbnailDiskCache.shared.store(
+                    generatedThumbnailData,
+                    forKey: diskCacheKey
+                )
+            }
         } catch is CancellationError {
             if operationID == currentOperationID {
                 loadedCacheKey = nil
@@ -232,8 +244,7 @@ private final class RemoteThumbnailLoader: ObservableObject {
     }
 
     private func shouldGenerateThumbnail(for item: RemoteFileItem) -> Bool {
-        !item.isDirectory
-            && (item.isImage || item.isVideo || item.contentType.conforms(to: .pdf))
+        item.supportsQuickLookThumbnail
     }
 
     private func requestedRemoteSize(for size: CGSize) -> RemoteThumbnailSize {
@@ -259,6 +270,16 @@ private final class RemoteThumbnailLoader: ObservableObject {
         let pixelWidth = Int((displaySize.width * scale).rounded(.up))
         let pixelHeight = Int((displaySize.height * scale).rounded(.up))
         return "\(item.id)|\(version)|\(item.size ?? -1)|\(requestedRemoteSize.rawValue)|\(pixelWidth)x\(pixelHeight)" as NSString
+    }
+
+    /// Disk entries are shared by list, small-grid, and large-grid layouts.
+    /// The decoded in-memory image still has a display-size-specific key.
+    private func diskCacheKey(
+        for item: RemoteFileItem,
+        requestedRemoteSize: RemoteThumbnailSize
+    ) -> String {
+        let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
+        return "\(item.id)|\(version)|\(item.size ?? -1)|\(requestedRemoteSize.rawValue)"
     }
 
     private func cache(_ image: UIImage, forKey key: NSString) {
@@ -292,8 +313,8 @@ private actor RemoteThumbnailDiskCache {
 
     private let fileManager = FileManager.default
     private let directoryURL: URL
-    private let maximumFileCount = 600
-    private let maximumAge: TimeInterval = 30 * 24 * 60 * 60
+    private let maximumFileCount = 2_000
+    private let maximumAge: TimeInterval = 90 * 24 * 60 * 60
 
     init() {
         let baseURL = FileManager.default.urls(
@@ -301,7 +322,7 @@ private actor RemoteThumbnailDiskCache {
             in: .userDomainMask
         ).first ?? FileManager.default.temporaryDirectory
         directoryURL = baseURL.appendingPathComponent(
-            "RemoteThumbnails.v1",
+            "RemoteThumbnails.v2",
             isDirectory: true
         )
     }

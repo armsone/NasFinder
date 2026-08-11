@@ -39,6 +39,9 @@ struct ConnectionListView: View {
                             NetworkLocationCard(
                                 connection: connection,
                                 isPreferred: store.preferredConnection?.id == connection.id,
+                                requestOpening: {
+                                    automaticallyOpenedConnection = connection
+                                },
                                 requestPreferred: {
                                     store.setPreferredConnection(connection)
                                 },
@@ -97,11 +100,11 @@ struct ConnectionListView: View {
                     }
                 }
 
-                Section("도움말") {
+                Section {
                     NavigationLink {
-                        FilesAppIntegrationGuideView(connectionCount: store.connections.count)
+                        AppSettingsView(connectionCount: store.connections.count)
                     } label: {
-                        Label("Apple 파일 앱 연동", systemImage: "folder")
+                        Label("설정", systemImage: "gearshape")
                     }
                 }
             }
@@ -221,6 +224,9 @@ struct ConnectionListView: View {
                     NetworkLocationCard(
                         connection: connection,
                         isPreferred: store.preferredConnection?.id == connection.id,
+                        requestOpening: {
+                            automaticallyOpenedConnection = connection
+                        },
                         requestPreferred: {
                             store.setPreferredConnection(connection)
                         },
@@ -514,15 +520,14 @@ private struct QuickLocationCard: View {
 private struct NetworkLocationCard: View {
     let connection: RemoteConnection
     let isPreferred: Bool
+    let requestOpening: () -> Void
     let requestPreferred: () -> Void
     let requestEditing: () -> Void
     let requestDeletion: () -> Void
 
     var body: some View {
         HStack(spacing: 4) {
-            NavigationLink {
-                FileBrowserContainerView(connection: connection)
-            } label: {
+            Button(action: requestOpening) {
                 HStack(spacing: 13) {
                     Image(systemName: connection.kind.systemImage)
                         .font(.title3)
@@ -555,23 +560,13 @@ private struct NetworkLocationCard: View {
                                 )
                         }
 
-                        Text(connection.endpointDescription)
+                        Text(connection.host)
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            .lineLimit(2)
-
-                        Label(connection.dashboardRootDescription, systemImage: "folder")
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
                             .lineLimit(1)
                     }
 
-                    Spacer(minLength: 2)
-
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
+                    Spacer(minLength: 0)
                 }
                 .padding(.vertical, 6)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -580,7 +575,7 @@ private struct NetworkLocationCard: View {
             .buttonStyle(.plain)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(connection.name), \(connection.kind.title)")
-            .accessibilityValue("\(connection.endpointDescription), \(connection.dashboardRootDescription)")
+            .accessibilityValue(connection.host)
             .accessibilityHint("파일 목록을 엽니다.")
 
             Menu {
@@ -685,7 +680,7 @@ private struct FileAppIntegrationBanner: View {
     }
 }
 
-private struct FilesAppIntegrationGuideView: View {
+struct FilesAppIntegrationGuideView: View {
     let connectionCount: Int?
 
     var body: some View {
@@ -813,13 +808,6 @@ private extension ConnectionKind {
         case .synology: "NAS"
         case .sftp: "SFTP"
         }
-    }
-}
-
-private extension RemoteConnection {
-    var dashboardRootDescription: String {
-        let normalized = normalizedRootPath
-        return normalized == "/" || normalized == "." ? "기본 폴더" : normalized
     }
 }
 

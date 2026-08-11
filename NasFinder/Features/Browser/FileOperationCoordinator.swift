@@ -18,16 +18,34 @@ struct FileClipboardPayload: Sendable {
     let mode: FileClipboardMode
 }
 
+struct LocalUploadSource: Sendable, Hashable {
+    let url: URL
+    let preferredName: String
+
+    init(url: URL, preferredName: String? = nil) {
+        self.url = url
+        if let preferredName, !preferredName.isEmpty {
+            self.preferredName = preferredName
+        } else {
+            self.preferredName = url.lastPathComponent
+        }
+    }
+}
+
 @MainActor
 final class FileOperationCoordinator: ObservableObject {
     @Published private(set) var clipboard: FileClipboardPayload?
     @Published private(set) var progress: RemoteOperationProgress?
     @Published private(set) var operationTitle: String?
     @Published private(set) var isWorking = false
+    @Published private(set) var isRefreshing = false
     @Published var errorMessage: String?
     @Published var statusMessage: String?
 
     private var activeTask: Task<Void, Never>?
+    private var activeRefreshID: UUID?
+
+    var isBusy: Bool { isWorking || isRefreshing }
 
     func placeOnClipboard(_ items: [RemoteFileItem], mode: FileClipboardMode) {
         guard let connectionID = items.first?.connectionID else { return }
@@ -44,6 +62,142 @@ final class FileOperationCoordinator: ObservableObject {
 
     func clearClipboard() {
         clipboard = nil
+    }
+
+    func upload(
+        _ localURLs: [URL],
+        into directoryPath: String,
+        using service: any RemoteFileService,
+        conflictPolicy: RemoteConflictPolicy = .keepBoth,
+        onCompletion: @escaping @MainActor () async -> Void
+    ) {
+        upload(
+            localURLs.map { LocalUploadSource(url: $0) },
+            into: directoryPath,
+            using: service,
+            conflictPolicy: conflictPolicy,
+            onCompletion: onCompletion
+        )
+    }
+
+    func upload(
+        _ sources: [LocalUploadSource],
+        into directoryPath: String,
+        using service: any RemoteFileService,
+        conflictPolicy: RemoteConflictPolicy = .keepBoth,
+        onCompletion: @escaping @MainActor () async -> Void
+    ) {
+        guard !sources.isEmpty,
+              !isWorking,
+              service.capabilities.contains(.upload) else { return }
+
+        start(title: "\(sources.count)개 파일 업로드 중…") { [weak self] in
+            guard let self else { return }
+
+            var succeededCount = 0
+            var failureMessages: [String] = []
+            var wasCancelled = false
+
+            for (index, source) in sources.enumerated() {
+                self.operationTitle = sources.count == 1
+                    ? "\(source.preferredName) 업로드 중…"
+                    : "\(index + 1)/\(sources.count) • \(source.preferredName) 업로드 중…"
+
+                do {
+                    try Task.checkCancellation()
+
+                    // File importers return security-scoped URLs. Hold one
+                    // access token only while that file is being uploaded so
+                    // large selections do not exhaust the process allowance.
+                    let didStartAccess = source.url.startAccessingSecurityScopedResource()
+                    defer {
+                        if didStartAccess {
+                            source.url.stopAccessingSecurityScopedResource()
+                        }
+                    }
+
+                    let result = try await service.upload(
+                        localURL: source.url,
+                        to: directoryPath,
+                        preferredName: source.preferredName,
+                        conflictPolicy: conflictPolicy,
+                        context: self.operationContext()
+                    )
+
+                    if !result.succeeded.isEmpty {
+                        succeededCount += 1
+                    }
+                    if result.wasCancelled {
+                        failureMessages.append(
+                            contentsOf: Self.actionableCancellationIssueMessages(
+                                from: result,
+                                preferredName: source.preferredName
+                            )
+                        )
+                        wasCancelled = true
+                        break
+                    }
+                    failureMessages.append(
+                        contentsOf: Self.issueMessages(
+                            from: result,
+                            preferredName: source.preferredName
+                        )
+                    )
+                } catch let interruption as RemoteOperationInterruptedError {
+                    if !interruption.partialResult.succeeded.isEmpty {
+                        succeededCount += 1
+                    }
+                    if interruption.reason == .cancelled {
+                        failureMessages.append(
+                            contentsOf: Self.actionableCancellationIssueMessages(
+                                from: interruption.partialResult,
+                                preferredName: source.preferredName
+                            )
+                        )
+                        wasCancelled = true
+                        break
+                    }
+                    failureMessages.append(
+                        contentsOf: Self.issueMessages(
+                            from: interruption.partialResult,
+                            preferredName: source.preferredName
+                        )
+                    )
+                    if interruption.partialResult.failures.isEmpty {
+                        failureMessages.append(
+                            "\(source.preferredName): \(interruption.localizedDescription)"
+                        )
+                    }
+                } catch is CancellationError {
+                    wasCancelled = true
+                    break
+                } catch {
+                    failureMessages.append(
+                        "\(source.preferredName): \(error.localizedDescription)"
+                    )
+                }
+            }
+
+            if wasCancelled || Task.isCancelled {
+                self.presentCancellationSummary(
+                    succeededCount: succeededCount,
+                    operationName: "업로드",
+                    failureMessages: failureMessages
+                )
+                // The remote mutation is already stopped. Refresh separately
+                // so a disconnected server cannot trap the user in this sheet.
+                self.beginRefresh(onCompletion)
+                return
+            }
+
+            await onCompletion()
+            self.presentSummary(
+                succeededCount: succeededCount,
+                totalCount: sources.count,
+                operationName: "업로드",
+                failureMessages: failureMessages
+            )
+        }
     }
 
     func paste(
@@ -112,7 +266,7 @@ final class FileOperationCoordinator: ObservableObject {
 
             if wasCancelled || Task.isCancelled {
                 self.statusMessage = "\(succeededIDs.count)개 완료 후 작업을 취소했습니다."
-                Task { await onCompletion() }
+                self.beginRefresh(onCompletion)
                 return
             }
             await onCompletion()
@@ -157,7 +311,7 @@ final class FileOperationCoordinator: ObservableObject {
 
             if wasCancelled || Task.isCancelled {
                 self.statusMessage = "\(succeededCount)개 완료 후 삭제를 취소했습니다."
-                Task { await onCompletion() }
+                self.beginRefresh(onCompletion)
                 return
             }
             await onCompletion()
@@ -236,7 +390,7 @@ final class FileOperationCoordinator: ObservableObject {
         title: String,
         operation: @escaping @MainActor () async -> Void
     ) {
-        guard activeTask == nil else { return }
+        guard activeTask == nil, activeRefreshID == nil else { return }
         isWorking = true
         operationTitle = title
         progress = nil
@@ -250,6 +404,20 @@ final class FileOperationCoordinator: ObservableObject {
             self.isWorking = false
             self.operationTitle = nil
             self.progress = nil
+        }
+    }
+
+    private func beginRefresh(_ refresh: @escaping @MainActor () async -> Void) {
+        guard activeRefreshID == nil else { return }
+        let refreshID = UUID()
+        activeRefreshID = refreshID
+        isRefreshing = true
+
+        Task { @MainActor [weak self] in
+            await refresh()
+            guard let self, self.activeRefreshID == refreshID else { return }
+            self.activeRefreshID = nil
+            self.isRefreshing = false
         }
     }
 
@@ -274,5 +442,40 @@ final class FileOperationCoordinator: ObservableObject {
             errorMessage = "\(succeededCount)개 성공, \(failureCount)개 실패\n"
                 + failureMessages.prefix(3).joined(separator: "\n")
         }
+    }
+
+    private func presentCancellationSummary(
+        succeededCount: Int,
+        operationName: String,
+        failureMessages: [String]
+    ) {
+        let summary = "\(succeededCount)개 완료 후 \(operationName)를 취소했습니다."
+        if failureMessages.isEmpty {
+            statusMessage = summary
+        } else {
+            errorMessage = summary + "\n" + failureMessages.prefix(3).joined(separator: "\n")
+        }
+    }
+
+    private static func issueMessages(
+        from result: RemoteOperationResult,
+        preferredName: String
+    ) -> [String] {
+        (result.failures + result.skipped).map { outcome in
+            let message = outcome.issue?.message ?? "작업 결과를 확인할 수 없습니다."
+            return preferredName.isEmpty ? message : "\(preferredName): \(message)"
+        }
+    }
+
+    /// A backend can represent an ordinary cancellation as a failed outcome so
+    /// the affected path is retained in its partial result. Do not turn that
+    /// bookkeeping outcome into an error alert. A failed rollback, however,
+    /// means cleanup really did fail and must remain visible to the user.
+    private static func actionableCancellationIssueMessages(
+        from result: RemoteOperationResult,
+        preferredName: String
+    ) -> [String] {
+        guard result.rollbackState == .failed else { return [] }
+        return issueMessages(from: result, preferredName: preferredName)
     }
 }

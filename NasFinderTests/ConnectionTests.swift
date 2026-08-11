@@ -75,6 +75,31 @@ final class ConnectionTests: XCTestCase {
         XCTAssertTrue(legacyVideo.isVideo)
     }
 
+    func testQuickLookThumbnailCandidatesIncludeDocumentsAndAudio() {
+        let connectionID = UUID()
+        let filenames = [
+            "report.DOCX",
+            "budget.xlsx",
+            "slides.pptx",
+            "notes.md",
+            "book.epub",
+            "recording.m4a"
+        ]
+
+        for filename in filenames {
+            let item = RemoteFileItem(
+                connectionID: connectionID,
+                path: "/files/\(filename)",
+                name: filename,
+                kind: .file,
+                size: nil,
+                modifiedAt: nil,
+                contentTypeIdentifier: nil
+            )
+            XCTAssertTrue(item.supportsQuickLookThumbnail, filename)
+        }
+    }
+
     func testSFTPAddressAcceptsPastedURLAndExtractsPort() throws {
         let parsed = try ServerAddressParser.parse(
             "  sftp://files.example.com:2222/  ",

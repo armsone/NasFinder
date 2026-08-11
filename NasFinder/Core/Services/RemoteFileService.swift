@@ -13,12 +13,61 @@ enum RemoteThumbnailError: Error, Sendable {
     case optimizedPreviewUnavailable
 }
 
+struct RemoteDownloadProgress: Sendable, Hashable {
+    let completedByteCount: Int64
+    let totalByteCount: Int64?
+
+    var fractionCompleted: Double? {
+        guard let totalByteCount, totalByteCount >= 0 else { return nil }
+        if totalByteCount == 0 {
+            return completedByteCount == 0 ? 1 : nil
+        }
+        let fraction = Double(completedByteCount) / Double(totalByteCount)
+        return min(max(fraction, 0), 1)
+    }
+}
+
+enum RemoteDownloadIntegrityError: LocalizedError, Sendable, Equatable {
+    case sizeMismatch(expected: Int64, actual: Int64)
+
+    static func validate(expectedByteCount: Int64?, actualByteCount: Int64) throws {
+        guard let expectedByteCount,
+              expectedByteCount >= 0,
+              expectedByteCount != actualByteCount else { return }
+        throw Self.sizeMismatch(
+            expected: expectedByteCount,
+            actual: actualByteCount
+        )
+    }
+
+    var errorDescription: String? {
+        switch self {
+        case let .sizeMismatch(expected, actual):
+            let expectedText = ByteCountFormatter.string(
+                fromByteCount: expected,
+                countStyle: .file
+            )
+            let actualText = ByteCountFormatter.string(
+                fromByteCount: actual,
+                countStyle: .file
+            )
+            return "파일을 끝까지 내려받지 못했습니다. 예상 \(expectedText), 수신 \(actualText)"
+        }
+    }
+}
+
+typealias RemoteDownloadProgressHandler = @Sendable (RemoteDownloadProgress) async -> Void
+
 protocol RemoteFileService: Sendable {
     var connection: RemoteConnection { get }
     var capabilities: RemoteFileServiceCapabilities { get }
 
     func list(directory path: String?) async throws -> [RemoteFileItem]
     func download(_ item: RemoteFileItem) async throws -> URL
+    func download(
+        _ item: RemoteFileItem,
+        progress: @escaping RemoteDownloadProgressHandler
+    ) async throws -> URL
     var supportsRangeStreaming: Bool { get }
     func readRange(
         of item: RemoteFileItem,
@@ -75,6 +124,29 @@ protocol RemoteFileService: Sendable {
 extension RemoteFileService {
     var capabilities: RemoteFileServiceCapabilities { [] }
     var supportsRangeStreaming: Bool { false }
+
+    func download(
+        _ item: RemoteFileItem,
+        progress: @escaping RemoteDownloadProgressHandler
+    ) async throws -> URL {
+        await progress(
+            RemoteDownloadProgress(
+                completedByteCount: 0,
+                totalByteCount: item.size
+            )
+        )
+        let url = try await download(item)
+        let localSize = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        let actualByteCount = localSize.map(Int64.init)
+        let completedByteCount = actualByteCount ?? item.size ?? 0
+        await progress(
+            RemoteDownloadProgress(
+                completedByteCount: completedByteCount,
+                totalByteCount: actualByteCount ?? item.size
+            )
+        )
+        return url
+    }
 
     func readRange(
         of item: RemoteFileItem,

@@ -32,9 +32,26 @@ enum FileBrowserSortDirection: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
+enum FileBrowserNamePriority: String, CaseIterable, Identifiable, Sendable {
+    case numbersFirst
+    case koreanFirst
+    case foreignFirst
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .numbersFirst: "숫자 먼저"
+        case .koreanFirst: "한글 먼저"
+        case .foreignFirst: "외국어 먼저"
+        }
+    }
+}
+
 struct FileBrowserSortOptions: Equatable, Sendable {
     var field: FileBrowserSortField = .name
     var direction: FileBrowserSortDirection = .ascending
+    var namePriority: FileBrowserNamePriority = .numbersFirst
     var foldersFirst = true
 }
 
@@ -75,6 +92,17 @@ enum FileBrowserItemSorter {
                 return lhs.isDirectory
             }
 
+            if options.field == .name {
+                let priority = compareNamePriority(
+                    lhs.name,
+                    rhs.name,
+                    priority: options.namePriority
+                )
+                if priority != .orderedSame {
+                    return priority == .orderedAscending
+                }
+            }
+
             let primary = compare(lhs, rhs, by: options.field)
             if primary != .orderedSame {
                 // Missing metadata remains at the end in both directions.
@@ -84,6 +112,15 @@ enum FileBrowserItemSorter {
                 return options.direction == .ascending
                     ? primary == .orderedAscending
                     : primary == .orderedDescending
+            }
+
+            let priority = compareNamePriority(
+                lhs.name,
+                rhs.name,
+                priority: options.namePriority
+            )
+            if priority != .orderedSame {
+                return priority == .orderedAscending
             }
 
             let name = lhs.name.localizedStandardCompare(rhs.name)
@@ -145,6 +182,83 @@ enum FileBrowserItemSorter {
         if !filenameExtension.isEmpty { return filenameExtension }
         return item.contentTypeIdentifier?.lowercased() ?? "file"
     }
+
+    private static func compareNamePriority(
+        _ lhs: String,
+        _ rhs: String,
+        priority: FileBrowserNamePriority
+    ) -> ComparisonResult {
+        let lhsRank = nameGroupRank(for: lhs, priority: priority)
+        let rhsRank = nameGroupRank(for: rhs, priority: priority)
+        if lhsRank < rhsRank { return .orderedAscending }
+        if lhsRank > rhsRank { return .orderedDescending }
+        return .orderedSame
+    }
+
+    private static func nameGroupRank(
+        for name: String,
+        priority: FileBrowserNamePriority
+    ) -> Int {
+        let group = nameGroup(for: name)
+        switch priority {
+        case .numbersFirst:
+            return switch group {
+            case .number: 0
+            case .korean: 1
+            case .foreign: 2
+            case .other: 3
+            }
+        case .koreanFirst:
+            return switch group {
+            case .korean: 0
+            case .number: 1
+            case .foreign: 2
+            case .other: 3
+            }
+        case .foreignFirst:
+            return switch group {
+            case .foreign: 0
+            case .number: 1
+            case .korean: 2
+            case .other: 3
+            }
+        }
+    }
+
+    private static func nameGroup(for name: String) -> NameGroup {
+        guard let scalar = name
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .unicodeScalars
+            .first else {
+            return .other
+        }
+
+        if CharacterSet.decimalDigits.contains(scalar) {
+            return .number
+        }
+        if isHangul(scalar.value) {
+            return .korean
+        }
+        if CharacterSet.letters.contains(scalar) {
+            return .foreign
+        }
+        return .other
+    }
+
+    private static func isHangul(_ value: UInt32) -> Bool {
+        (0x1100...0x11FF).contains(value)
+            || (0x3130...0x318F).contains(value)
+            || (0xA960...0xA97F).contains(value)
+            || (0xAC00...0xD7A3).contains(value)
+            || (0xD7B0...0xD7FF).contains(value)
+    }
+
+    private enum NameGroup {
+        case number
+        case korean
+        case foreign
+        case other
+    }
 }
 
 @MainActor
@@ -159,6 +273,7 @@ final class FileBrowserViewModel: ObservableObject {
     let service: any RemoteFileService
     private var searchQuery = ""
     private var sortOptions = FileBrowserSortOptions()
+    private var loadCompletionWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(connection: RemoteConnection, path: String, service: any RemoteFileService) {
         self.connection = connection
@@ -179,7 +294,12 @@ final class FileBrowserViewModel: ObservableObject {
     func load() async {
         guard !isLoading else { return }
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            isLoading = false
+            let waiters = loadCompletionWaiters
+            loadCompletionWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
 
         do {
             items = try await service.list(directory: path)
@@ -205,6 +325,26 @@ final class FileBrowserViewModel: ObservableObject {
                 SynologyConnectionDiagnostics.record(diagnostic)
                 errorMessage = diagnostic.userMessage
             }
+        }
+    }
+
+    /// Waits for an in-flight listing, if any, and then starts a new request.
+    /// Mutation completions use this so a listing that began before the remote
+    /// change cannot make the post-operation refresh appear complete early.
+    func reloadAfterCurrentLoad() async {
+        while isLoading {
+            await waitForCurrentLoadToFinish()
+        }
+        await load()
+    }
+
+    private func waitForCurrentLoadToFinish() async {
+        await withCheckedContinuation { continuation in
+            guard isLoading else {
+                continuation.resume()
+                return
+            }
+            loadCompletionWaiters.append(continuation)
         }
     }
 
