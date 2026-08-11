@@ -63,6 +63,7 @@ struct FileBrowserView: View {
     @State private var isShowingMorePanel = false
     @State private var contextPanelItem: RemoteFileItem?
     @State private var searchText = ""
+    @State private var thumbnailReloadVersion = 0
 
     @MainActor
     init(
@@ -123,7 +124,9 @@ struct FileBrowserView: View {
         }
         .refreshable {
             guard !operationCoordinator.isBusy else { return }
-            await viewModel.load()
+            await viewModel.reloadAfterCurrentLoad()
+            await RemoteVideoThumbnailTrafficBudget.shared.reset()
+            thumbnailReloadVersion &+= 1
         }
         .fileImporter(
             isPresented: $isImportingFiles,
@@ -231,11 +234,6 @@ struct FileBrowserView: View {
                 sequentialItems: sequentialPreviewItems(for: item),
                 service: viewModel.service
             )
-        }
-        .sheet(item: $contextPanelItem) { item in
-            itemActionPanel(for: item)
-                .presentationDetents([.height(item.isDirectory ? 410 : 350)])
-                .presentationDragIndicator(.visible)
         }
         .confirmationDialog(
             deleteConfirmationTitle,
@@ -677,7 +675,8 @@ struct FileBrowserView: View {
                 RemoteFileGridCell(
                     item: item,
                     service: viewModel.service,
-                    isLarge: style == .largeThumbnails
+                    isLarge: style == .largeThumbnails,
+                    thumbnailReloadVersion: thumbnailReloadVersion
                 )
             }
 
@@ -688,12 +687,23 @@ struct FileBrowserView: View {
         }
         .contentShape(Rectangle())
         .simultaneousGesture(itemLongPressGesture(for: item))
+        .popover(
+            isPresented: contextPanelBinding(for: item),
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .top
+        ) {
+            contextActionPopover(for: item)
+        }
     }
 
     private func listItem(_ item: RemoteFileItem) -> some View {
         HStack(spacing: 8) {
             destination(for: item) {
-                RemoteFileListRow(item: item, service: viewModel.service)
+                RemoteFileListRow(
+                    item: item,
+                    service: viewModel.service,
+                    thumbnailReloadVersion: thumbnailReloadVersion
+                )
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -703,6 +713,13 @@ struct FileBrowserView: View {
         }
         .contentShape(Rectangle())
         .simultaneousGesture(itemLongPressGesture(for: item))
+        .popover(
+            isPresented: contextPanelBinding(for: item),
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .top
+        ) {
+            contextActionPopover(for: item)
+        }
     }
 
     private func itemLongPressGesture(for item: RemoteFileItem) -> some Gesture {
@@ -711,6 +728,23 @@ struct FileBrowserView: View {
                 guard !isSelecting else { return }
                 contextPanelItem = item
             }
+    }
+
+    private func contextPanelBinding(for item: RemoteFileItem) -> Binding<Bool> {
+        Binding(
+            get: { contextPanelItem?.id == item.id },
+            set: { isPresented in
+                if !isPresented, contextPanelItem?.id == item.id {
+                    contextPanelItem = nil
+                }
+            }
+        )
+    }
+
+    private func contextActionPopover(for item: RemoteFileItem) -> some View {
+        itemActionPanel(for: item)
+            .frame(width: 340)
+            .presentationCompactAdaptation(.popover)
     }
 
     private func selectionIndicator(isSelected: Bool) -> some View {
@@ -809,18 +843,18 @@ struct FileBrowserView: View {
                         contextPanelItem = nil
                     }
                 } else if item.isDirectory {
-                    CompactPanelButton(title: "이 폴더", systemImage: "photo.stack") {
+                    CompactPanelButton(title: "현재 폴더 썸네일", systemImage: "photo.stack") {
                         performContextPanelAction {
                             startThumbnailPreheating(for: item, recursively: false)
                         }
                     }
-                    CompactPanelButton(title: "하위까지", systemImage: "folder.badge.gearshape") {
+                    CompactPanelButton(title: "하위 폴더 썸네일", systemImage: "folder.badge.gearshape") {
                         performContextPanelAction {
                             startThumbnailPreheating(for: item, recursively: true)
                         }
                     }
                 } else if item.supportsQuickLookThumbnail {
-                    CompactPanelButton(title: "썸네일 생성", systemImage: "photo.stack") {
+                    CompactPanelButton(title: "이 파일 썸네일", systemImage: "photo.stack") {
                         performContextPanelAction {
                             startThumbnailPreheating(for: item, recursively: false)
                         }
@@ -1145,10 +1179,16 @@ private struct RemoteFileGridCell: View {
     let item: RemoteFileItem
     let service: any RemoteFileService
     let isLarge: Bool
+    let thumbnailReloadVersion: Int
 
     var body: some View {
         VStack(alignment: .leading, spacing: isLarge ? 9 : 6) {
-            RemoteThumbnailView(item: item, service: service, size: thumbnailRequestSize)
+            RemoteThumbnailView(
+                item: item,
+                service: service,
+                size: thumbnailRequestSize,
+                reloadVersion: thumbnailReloadVersion
+            )
                 .aspectRatio(1, contentMode: .fit)
                 .frame(maxWidth: .infinity)
                 .background(
@@ -1197,13 +1237,15 @@ private struct RemoteFileListRow: View {
 
     let item: RemoteFileItem
     let service: any RemoteFileService
+    let thumbnailReloadVersion: Int
 
     var body: some View {
         HStack(spacing: 12) {
             RemoteThumbnailView(
                 item: item,
                 service: service,
-                size: CGSize(width: thumbnailSide, height: thumbnailSide)
+                size: CGSize(width: thumbnailSide, height: thumbnailSide),
+                reloadVersion: thumbnailReloadVersion
             )
                 .frame(width: thumbnailSide, height: thumbnailSide)
                 .background(SkyBreezeTheme.thumbnailSurface, in: RoundedRectangle(cornerRadius: 9))

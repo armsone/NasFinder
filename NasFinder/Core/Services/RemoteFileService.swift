@@ -1,6 +1,6 @@
 import Foundation
 
-enum RemoteThumbnailSize: String, Sendable {
+enum RemoteThumbnailSize: String, CaseIterable, Sendable {
     case small
     case medium
     case large

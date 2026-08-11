@@ -2,6 +2,7 @@ import SwiftUI
 
 struct FavoriteShelfView: View {
     @EnvironmentObject private var favoriteStore: FavoriteStore
+    @State private var favoritePendingRemoval: FavoriteItem?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -14,13 +15,22 @@ struct FavoriteShelfView: View {
             } else {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 9) {
-                        ForEach(favoriteStore.items.prefix(5)) { favorite in
+                        ForEach(visibleFavorites) { favorite in
                             NavigationLink {
                                 FavoriteDestinationView(favorite: favorite)
                             } label: {
                                 FavoriteCell(favorite: favorite, side: 52)
                             }
                             .buttonStyle(.plain)
+                            .contextMenu {
+                                Button(
+                                    "즐겨찾기에서 제거…",
+                                    systemImage: "star.slash",
+                                    role: .destructive
+                                ) {
+                                    favoritePendingRemoval = favorite
+                                }
+                            }
                         }
 
                         if favoriteStore.items.count > 5 {
@@ -45,11 +55,39 @@ struct FavoriteShelfView: View {
             }
         }
         .padding(.vertical, 4)
+        .confirmationDialog(
+            "즐겨찾기에서 제거할까요?",
+            isPresented: removalConfirmationBinding,
+            titleVisibility: .visible,
+            presenting: favoritePendingRemoval
+        ) { favorite in
+            Button("제거", role: .destructive) {
+                favoriteStore.remove(id: favorite.id)
+                favoritePendingRemoval = nil
+            }
+            Button("취소", role: .cancel) {
+                favoritePendingRemoval = nil
+            }
+        } message: { favorite in
+            Text("‘\(favorite.name)’ 항목을 즐겨찾기에서 제거합니다.")
+        }
+    }
+
+    private var visibleFavorites: ArraySlice<FavoriteItem> {
+        favoriteStore.items.prefix(favoriteStore.items.count > 5 ? 4 : 5)
+    }
+
+    private var removalConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { favoritePendingRemoval != nil },
+            set: { if !$0 { favoritePendingRemoval = nil } }
+        )
     }
 }
 
 struct FavoriteListView: View {
     @EnvironmentObject private var favoriteStore: FavoriteStore
+    @State private var favoritePendingRemoval: FavoriteItem?
 
     private let columns = Array(
         repeating: GridItem(.flexible(), spacing: 12, alignment: .top),
@@ -75,8 +113,8 @@ struct FavoriteListView: View {
                             }
                             .buttonStyle(.plain)
                             .contextMenu {
-                                Button("즐겨찾기에서 제거", systemImage: "star.slash", role: .destructive) {
-                                    favoriteStore.remove(id: favorite.id)
+                                Button("즐겨찾기에서 제거…", systemImage: "star.slash", role: .destructive) {
+                                    favoritePendingRemoval = favorite
                                 }
                             }
                         }
@@ -87,6 +125,29 @@ struct FavoriteListView: View {
         }
         .navigationTitle("즐겨찾기")
         .navigationBarTitleDisplayMode(.inline)
+        .confirmationDialog(
+            "즐겨찾기에서 제거할까요?",
+            isPresented: removalConfirmationBinding,
+            titleVisibility: .visible,
+            presenting: favoritePendingRemoval
+        ) { favorite in
+            Button("제거", role: .destructive) {
+                favoriteStore.remove(id: favorite.id)
+                favoritePendingRemoval = nil
+            }
+            Button("취소", role: .cancel) {
+                favoritePendingRemoval = nil
+            }
+        } message: { favorite in
+            Text("‘\(favorite.name)’ 항목을 즐겨찾기에서 제거합니다.")
+        }
+    }
+
+    private var removalConfirmationBinding: Binding<Bool> {
+        Binding(
+            get: { favoritePendingRemoval != nil },
+            set: { if !$0 { favoritePendingRemoval = nil } }
+        )
     }
 }
 

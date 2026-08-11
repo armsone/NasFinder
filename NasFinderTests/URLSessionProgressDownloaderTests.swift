@@ -3,6 +3,48 @@ import XCTest
 @testable import NasFinder
 
 final class URLSessionProgressDownloaderTests: XCTestCase {
+    func testBoundedRangeReaderAcceptsMatchingPartialResponse() async throws {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BoundedRangeURLProtocol.self]
+        let reader = URLSessionBoundedRangeReader(
+            configuration: configuration,
+            expectedOffset: 128,
+            maximumByteCount: 4
+        )
+        let request = URLRequest(
+            url: URL(string: "https://valid-range.nasfinder.invalid/video.mp4")!
+        )
+
+        let result = try await reader.read(request)
+
+        XCTAssertEqual(result.response.statusCode, 206)
+        XCTAssertEqual(result.data, Data([1, 2, 3, 4]))
+    }
+
+    func testBoundedRangeReaderRejectsFullResponseAtHeaders() async throws {
+        BoundedRangeURLProtocol.reset()
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [BoundedRangeURLProtocol.self]
+        let reader = URLSessionBoundedRangeReader(
+            configuration: configuration,
+            expectedOffset: 128,
+            maximumByteCount: 4
+        )
+        let request = URLRequest(
+            url: URL(string: "https://ignored-range.nasfinder.invalid/video.mp4")!
+        )
+
+        do {
+            _ = try await reader.read(request)
+            XCTFail("Range를 무시한 전체 응답은 성공하면 안 됩니다.")
+        } catch is CancellationError {
+            XCTFail("서버 응답 오류가 사용자 취소로 바뀌면 안 됩니다.")
+        } catch {
+            // Expected: the 200 response is rejected before its body is kept.
+        }
+        try await BoundedRangeURLProtocol.waitUntilStopped()
+    }
+
     func testProgressRelayCoalescesInOrderAndDrainsBeforeReturning() async {
         let recorder = SuspendedProgressRecorder()
         let relay = URLSessionDownloadProgressRelay { update in
@@ -216,4 +258,83 @@ private final class CancellationProtocolState: @unchecked Sendable {
 
 private enum CancellationProtocolTestError: Error {
     case didNotStart
+}
+
+private final class BoundedRangeURLProtocol: URLProtocol, @unchecked Sendable {
+    private static let state = BoundedRangeProtocolState()
+
+    static func reset() {
+        state.reset()
+    }
+
+    static func waitUntilStopped() async throws {
+        try await state.waitUntilStopped()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host?.hasSuffix("range.nasfinder.invalid") == true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        guard let url = request.url else { return }
+        if url.host == "valid-range.nasfinder.invalid",
+           let response = HTTPURLResponse(
+               url: url,
+               statusCode: 206,
+               httpVersion: "HTTP/1.1",
+               headerFields: [
+                   "Content-Length": "4",
+                   "Content-Range": "bytes 128-131/1000"
+               ]
+           ) {
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data([1, 2, 3, 4]))
+            client?.urlProtocolDidFinishLoading(self)
+            return
+        }
+
+        guard let response = HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Length": "1073741824"]
+        ) else { return }
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: Data(repeating: 0x55, count: 1_024 * 1_024))
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {
+        Self.state.markStopped()
+    }
+}
+
+private final class BoundedRangeProtocolState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stopped = false
+
+    func reset() {
+        lock.lock()
+        stopped = false
+        lock.unlock()
+    }
+
+    func markStopped() {
+        lock.lock()
+        stopped = true
+        lock.unlock()
+    }
+
+    func waitUntilStopped() async throws {
+        for _ in 0..<200 {
+            let currentStopped = lock.withLock { stopped }
+            if currentStopped { return }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        throw CancellationProtocolTestError.didNotStart
+    }
 }

@@ -90,12 +90,18 @@ struct ConnectionListView: View {
                         ReceivedFilesView()
                     } label: {
                         LabeledContent {
-                            Text("\(inboxStore.records.count)개 · \(formattedByteCount(inboxByteCount))")
+                            Text(
+                                inboxStore.records.isEmpty
+                                    ? "0개"
+                                    : "\(inboxStore.records.count)개 · \(formattedByteCount(inboxByteCount))"
+                            )
                                 .foregroundStyle(.secondary)
                         } label: {
                             Label("받은 파일", systemImage: "tray.and.arrow.down")
                         }
                     }
+
+                    ThumbnailCacheSettingsLink()
 
                     FavoriteShelfView()
                 } header: {
@@ -105,10 +111,11 @@ struct ConnectionListView: View {
                 .foregroundStyle(.secondary)
 
                 Section {
-                    LabeledContent("iPhone 여유") {
+                    LabeledContent("iPhone 저장공간") {
                         Text(
                             deviceStorage.hasCapacity
-                                ? formattedByteCount(deviceStorage.availableBytes)
+                                ? "전체 \(formattedByteCount(deviceStorage.totalBytes)) · "
+                                    + "사용 가능 \(formattedByteCount(deviceStorage.availableBytes))"
                                 : "확인 불가"
                         )
                     }

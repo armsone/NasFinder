@@ -31,7 +31,8 @@ final class ThumbnailNetworkMonitor: @unchecked Sendable {
 
 @MainActor
 final class ThumbnailPreheater: ObservableObject {
-    static let maximumDataBytes: Int64 = 100 * 1_024 * 1_024
+    static let maximumSynologyDataBytes: Int64 = 20 * 1_024 * 1_024
+    static let maximumSFTPDataBytes: Int64 = 100 * 1_024 * 1_024
 
     @Published private(set) var isRunning = false
     @Published private(set) var completedCount = 0
@@ -119,8 +120,10 @@ final class ThumbnailPreheater: ObservableObject {
                 service: service
             )
             totalCount = candidates.count
+            let maximumDataBytes = maximumDataBytes(for: service)
 
             var reachedDataLimit = false
+            var reachedPreviouslyUsedDataLimit = false
             for item in candidates {
                 try Task.checkCancellation()
                 try validateRuntimeConditions()
@@ -132,10 +135,12 @@ final class ThumbnailPreheater: ObservableObject {
                     completedCount += 1
                     continue
                 }
+                let diskCacheGeneration = await RemoteThumbnailDiskCache.shared
+                    .currentGeneration()
 
                 let estimatedBytes = estimatedTransferBytes(for: item, service: service)
                 if let estimatedBytes,
-                   transferredBytes + estimatedBytes > Self.maximumDataBytes {
+                   transferredBytes + estimatedBytes > maximumDataBytes {
                     reachedDataLimit = true
                     break
                 }
@@ -145,18 +150,22 @@ final class ThumbnailPreheater: ObservableObject {
                 defer { RemoteThumbnailActivityTracker.shared.finish(activityID) }
 
                 do {
-                    if let data = try await thumbnailData(
+                    if let payload = try await thumbnailData(
                         for: item,
                         service: service
                     ) {
                         _ = try await RemoteThumbnailImageDecoder.downsample(
-                            data: data,
+                            data: payload.data,
                             maximumPixelSize: 192
                         )
-                        await RemoteThumbnailDiskCache.shared.store(data, forKey: cacheKey)
+                        await RemoteThumbnailDiskCache.shared.store(
+                            payload.data,
+                            forKey: cacheKey,
+                            expectedGeneration: diskCacheGeneration
+                        )
                         generatedCount += 1
-                        transferredBytes += estimatedBytes ?? Int64(data.count)
-                        if transferredBytes >= Self.maximumDataBytes {
+                        transferredBytes += Int64(payload.transferredBytes)
+                        if transferredBytes >= maximumDataBytes {
                             reachedDataLimit = true
                         }
                     } else {
@@ -164,6 +173,12 @@ final class ThumbnailPreheater: ObservableObject {
                     }
                 } catch is CancellationError {
                     throw CancellationError()
+                } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
+                    reachedDataLimit = true
+                    reachedPreviouslyUsedDataLimit = true
+                    let usedBytes = await RemoteVideoThumbnailTrafficBudget.shared
+                        .transferredBytes(for: item)
+                    transferredBytes = max(transferredBytes, Int64(usedBytes))
                 } catch {
                     failedCount += 1
                 }
@@ -172,9 +187,22 @@ final class ThumbnailPreheater: ObservableObject {
                 if reachedDataLimit { break }
             }
 
-            let suffix = reachedDataLimit ? " · 100MB 제한에서 중지" : ""
+            let limitText = "\(maximumDataBytes / (1_024 * 1_024)) MB"
+            let suffix: String
+            if reachedPreviouslyUsedDataLimit {
+                suffix = " · 이 폴더의 \(limitText) 한도가 이미 소진됨"
+            } else if reachedDataLimit {
+                suffix = " · \(limitText) 한도에서 중지"
+            } else {
+                suffix = ""
+            }
+            let trafficText = ByteCountFormatter.string(
+                fromByteCount: transferredBytes,
+                countStyle: .file
+            )
             statusMessage = "썸네일 \(generatedCount)개 생성, \(cachedCount)개 건너뜀"
                 + (failedCount > 0 ? ", \(failedCount)개 실패" : "")
+                + " · \(trafficText) 사용"
                 + suffix
         } catch is CancellationError {
             statusMessage = "썸네일 미리 생성을 중지했습니다."
@@ -226,9 +254,48 @@ final class ThumbnailPreheater: ObservableObject {
     private func thumbnailData(
         for item: RemoteFileItem,
         service: any RemoteFileService
-    ) async throws -> Data? {
-        let data = try await service.thumbnailData(for: item, size: .small)
-        return data.flatMap { $0.isEmpty ? nil : $0 }
+    ) async throws -> ThumbnailPreheatPayload? {
+        do {
+            if let data = try await service.thumbnailData(for: item, size: .small),
+               !data.isEmpty {
+                let transferredBytes = estimatedTransferBytes(
+                    for: item,
+                    service: service
+                ).map(Int.init) ?? data.count
+                return ThumbnailPreheatPayload(
+                    data: data,
+                    transferredBytes: transferredBytes
+                )
+            }
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            guard canGenerateBoundedVideoThumbnail(for: item, service: service) else {
+                throw error
+            }
+        }
+
+        guard canGenerateBoundedVideoThumbnail(for: item, service: service) else {
+            return nil
+        }
+        let generated = try await RemoteVideoThumbnailGenerator.generate(
+            for: item,
+            service: service,
+            size: .small
+        )
+        return ThumbnailPreheatPayload(
+            data: generated.data,
+            transferredBytes: generated.transferredBytes
+        )
+    }
+
+    private func canGenerateBoundedVideoThumbnail(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) -> Bool {
+        item.isVideo
+            && service.connection.kind == .synology
+            && service.supportsRangeStreaming
     }
 
     private func estimatedTransferBytes(
@@ -239,6 +306,12 @@ final class ThumbnailPreheater: ObservableObject {
         let upperBound: Int64 = 640 * 1_024
         guard let size = item.size, size > 0 else { return upperBound }
         return min(size, upperBound)
+    }
+
+    private func maximumDataBytes(for service: any RemoteFileService) -> Int64 {
+        service.connection.kind == .synology
+            ? Self.maximumSynologyDataBytes
+            : Self.maximumSFTPDataBytes
     }
 
     private func validateRuntimeConditions() throws {
@@ -267,6 +340,11 @@ final class ThumbnailPreheater: ObservableObject {
         statusMessage = nil
         errorMessage = nil
     }
+}
+
+private struct ThumbnailPreheatPayload {
+    let data: Data
+    let transferredBytes: Int
 }
 
 private enum ThumbnailPreheatError: LocalizedError {

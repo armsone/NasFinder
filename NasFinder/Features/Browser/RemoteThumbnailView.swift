@@ -88,8 +88,22 @@ struct RemoteThumbnailView: View {
     let item: RemoteFileItem
     let service: any RemoteFileService
     let size: CGSize
+    let reloadVersion: Int
 
     @StateObject private var loader = RemoteThumbnailLoader()
+    @State private var cacheRefreshVersion = 0
+
+    init(
+        item: RemoteFileItem,
+        service: any RemoteFileService,
+        size: CGSize,
+        reloadVersion: Int = 0
+    ) {
+        self.item = item
+        self.service = service
+        self.size = size
+        self.reloadVersion = reloadVersion
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -124,13 +138,34 @@ struct RemoteThumbnailView: View {
             .clipped()
         }
         .task(id: taskIdentity) {
-            await loader.load(item: item, service: service, size: size)
+            await loader.load(
+                item: item,
+                service: service,
+                size: size,
+                reloadVersion: reloadVersion
+            )
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: .remoteThumbnailDiskCacheDidStore
+            )
+        ) { notification in
+            guard let storedKey = notification.object as? String,
+                  thumbnailCacheKeys.contains(storedKey) else { return }
+            loader.invalidateForStoredThumbnail()
+            cacheRefreshVersion &+= 1
         }
     }
 
     private var taskIdentity: String {
         let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
-        return "\(item.id)|\(version)|\(item.size ?? -1)|\(size.width)x\(size.height)|\(UIScreen.main.scale)"
+        return "\(item.id)|\(version)|\(item.size ?? -1)|\(size.width)x\(size.height)|\(UIScreen.main.scale)|\(reloadVersion)|\(cacheRefreshVersion)"
+    }
+
+    private var thumbnailCacheKeys: Set<String> {
+        Set(RemoteThumbnailSize.allCases.map {
+            RemoteThumbnailCacheKey.remoteData(for: item, size: $0)
+        })
     }
 }
 
@@ -149,11 +184,25 @@ private final class RemoteThumbnailLoader: ObservableObject {
 
     private var loadedCacheKey: NSString?
     private var operationID: UUID?
+    private var loadedReloadVersion = 0
+
+    static func clearInMemoryCaches() {
+        imageCache.removeAllObjects()
+        negativeCacheExpirations.removeAll()
+    }
+
+    func invalidateForStoredThumbnail() {
+        if let loadedCacheKey {
+            Self.negativeCacheExpirations.removeValue(forKey: loadedCacheKey)
+        }
+        loadedCacheKey = nil
+    }
 
     func load(
         item: RemoteFileItem,
         service: any RemoteFileService,
-        size: CGSize
+        size: CGSize,
+        reloadVersion: Int
     ) async {
         guard shouldGenerateThumbnail(for: item) else {
             image = nil
@@ -172,6 +221,13 @@ private final class RemoteThumbnailLoader: ObservableObject {
             for: item,
             size: requestedRemoteSize
         )
+        if reloadVersion != loadedReloadVersion {
+            if let loadedCacheKey {
+                Self.negativeCacheExpirations.removeValue(forKey: loadedCacheKey)
+            }
+            loadedCacheKey = nil
+            loadedReloadVersion = reloadVersion
+        }
         guard loadedCacheKey != cacheKey else { return }
         loadedCacheKey = cacheKey
 
@@ -206,6 +262,7 @@ private final class RemoteThumbnailLoader: ObservableObject {
             isLoading = false
             return
         }
+        let diskCacheGeneration = await RemoteThumbnailDiskCache.shared.currentGeneration()
 
         let currentOperationID = UUID()
         operationID = currentOperationID
@@ -259,6 +316,11 @@ private final class RemoteThumbnailLoader: ObservableObject {
                 }
                 try Task.checkCancellation()
                 guard operationID == currentOperationID else { return }
+                guard await RemoteThumbnailDiskCache.shared.currentGeneration()
+                    == diskCacheGeneration else {
+                    loadedCacheKey = nil
+                    return
+                }
                 let remoteImage = UIImage(
                     cgImage: decodedImage.image,
                     scale: UIScreen.main.scale,
@@ -268,7 +330,9 @@ private final class RemoteThumbnailLoader: ObservableObject {
                 cache(remoteImage, forKey: cacheKey)
                 await RemoteThumbnailDiskCache.shared.store(
                     remoteThumbnailData,
-                    forKey: diskCacheKey
+                    forKey: diskCacheKey,
+                    expectedGeneration: diskCacheGeneration,
+                    notifyObservers: false
                 )
                 return
             } catch is CancellationError {
@@ -285,16 +349,77 @@ private final class RemoteThumbnailLoader: ObservableObject {
                 }
                 // A malformed server thumbnail may still have a valid original,
                 // except when doing so would require a complete remote movie.
-                if item.isVideo, !service.permitsFullDownloadForVideoThumbnail {
+                if item.isVideo,
+                   !service.permitsFullDownloadForVideoThumbnail,
+                   !canGenerateBoundedVideoThumbnail(
+                       for: item,
+                       service: service
+                   ) {
                     cacheNegative(cacheKey, for: 5 * 60)
                     return
                 }
             }
-        } else if item.isVideo, !service.permitsFullDownloadForVideoThumbnail {
+        } else if item.isVideo,
+                  !service.permitsFullDownloadForVideoThumbnail,
+                  !canGenerateBoundedVideoThumbnail(for: item, service: service) {
             // A remote video thumbnail must remain a bounded request. Never
             // replace a missing optimized result with the complete movie.
             cacheNegative(cacheKey, for: 5 * 60)
             return
+        }
+
+        if canGenerateBoundedVideoThumbnail(for: item, service: service) {
+            do {
+                let generated = try await RemoteThumbnailWorkLimiter.shared.withPermit {
+                    try await RemoteVideoThumbnailGenerator.generate(
+                        for: item,
+                        service: service,
+                        size: requestedRemoteSize
+                    )
+                }
+                let maximumPixelSize = maximumPixelSize(for: size)
+                let decodedImage = try await RemoteThumbnailWorkLimiter.shared.withPermit {
+                    try await RemoteThumbnailImageDecoder.downsample(
+                        data: generated.data,
+                        maximumPixelSize: maximumPixelSize
+                    )
+                }
+                try Task.checkCancellation()
+                guard operationID == currentOperationID else { return }
+                guard await RemoteThumbnailDiskCache.shared.currentGeneration()
+                    == diskCacheGeneration else {
+                    loadedCacheKey = nil
+                    return
+                }
+                let generatedUIImage = UIImage(
+                    cgImage: decodedImage.image,
+                    scale: UIScreen.main.scale,
+                    orientation: .up
+                )
+                image = generatedUIImage
+                cache(generatedUIImage, forKey: cacheKey)
+                await RemoteThumbnailDiskCache.shared.store(
+                    generated.data,
+                    forKey: diskCacheKey,
+                    expectedGeneration: diskCacheGeneration,
+                    notifyObservers: false
+                )
+                return
+            } catch is CancellationError {
+                if operationID == currentOperationID {
+                    loadedCacheKey = nil
+                }
+                return
+            } catch {
+                if RemoteRequestCancellation.isCancellation(error) {
+                    if operationID == currentOperationID {
+                        loadedCacheKey = nil
+                    }
+                    return
+                }
+                cacheNegative(cacheKey, for: 5 * 60)
+                return
+            }
         }
 
         do {
@@ -313,6 +438,11 @@ private final class RemoteThumbnailLoader: ObservableObject {
             }
             try Task.checkCancellation()
             guard operationID == currentOperationID else { return }
+            guard await RemoteThumbnailDiskCache.shared.currentGeneration()
+                == diskCacheGeneration else {
+                loadedCacheKey = nil
+                return
+            }
             image = generatedImage.image
             cache(generatedImage.image, forKey: cacheKey)
             if let generatedThumbnailData = generatedImage.image.jpegData(
@@ -320,7 +450,9 @@ private final class RemoteThumbnailLoader: ObservableObject {
             ) {
                 await RemoteThumbnailDiskCache.shared.store(
                     generatedThumbnailData,
-                    forKey: diskCacheKey
+                    forKey: diskCacheKey,
+                    expectedGeneration: diskCacheGeneration,
+                    notifyObservers: false
                 )
             }
         } catch is CancellationError {
@@ -362,6 +494,15 @@ private final class RemoteThumbnailLoader: ObservableObject {
 
     private func shouldGenerateThumbnail(for item: RemoteFileItem) -> Bool {
         item.supportsQuickLookThumbnail
+    }
+
+    private func canGenerateBoundedVideoThumbnail(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) -> Bool {
+        item.isVideo
+            && service.connection.kind == .synology
+            && service.supportsRangeStreaming
     }
 
     private func requestedRemoteSize(for size: CGSize) -> RemoteThumbnailSize {
@@ -406,22 +547,41 @@ private final class RemoteThumbnailLoader: ObservableObject {
 actor RemoteThumbnailDiskCache {
     static let shared = RemoteThumbnailDiskCache()
 
+    static let automaticLimitOptions: [Int64] = [
+        128 * 1_024 * 1_024,
+        256 * 1_024 * 1_024,
+        512 * 1_024 * 1_024
+    ]
+    static let defaultAutomaticLimitBytes: Int64 = 256 * 1_024 * 1_024
+    private static let automaticLimitDefaultsKey =
+        "remoteThumbnailCacheAutomaticLimitBytes"
+
     private let fileManager = FileManager.default
     private let directoryURL: URL
+    private let userDefaults: UserDefaults
     private let maximumFileCount = 5_000
-    private let maximumTotalBytes: Int64 = 256 * 1_024 * 1_024
     private let maximumAge: TimeInterval = 30 * 24 * 60 * 60
-    private var storesSincePrune = 0
+    private var generation: UInt64 = 0
 
-    init() {
-        let baseURL = FileManager.default.urls(
-            for: .cachesDirectory,
-            in: .userDomainMask
-        ).first ?? FileManager.default.temporaryDirectory
-        directoryURL = baseURL.appendingPathComponent(
-            "RemoteThumbnails.v2",
-            isDirectory: true
-        )
+    init(directoryURL: URL? = nil, userDefaultsSuiteName: String? = nil) {
+        if let directoryURL {
+            self.directoryURL = directoryURL
+        } else {
+            let baseURL = FileManager.default.urls(
+                for: .cachesDirectory,
+                in: .userDomainMask
+            ).first ?? FileManager.default.temporaryDirectory
+            self.directoryURL = baseURL.appendingPathComponent(
+                "RemoteThumbnails.v2",
+                isDirectory: true
+            )
+        }
+        if let userDefaultsSuiteName,
+           let suiteDefaults = UserDefaults(suiteName: userDefaultsSuiteName) {
+            userDefaults = suiteDefaults
+        } else {
+            userDefaults = .standard
+        }
     }
 
     func data(forKey key: String) -> Data? {
@@ -439,23 +599,58 @@ actor RemoteThumbnailDiskCache {
         data(forKey: key) != nil
     }
 
-    func store(_ data: Data, forKey key: String) {
+    func store(
+        _ data: Data,
+        forKey key: String,
+        expectedGeneration: UInt64? = nil,
+        notifyObservers: Bool = true
+    ) {
         guard !data.isEmpty else { return }
+        if let expectedGeneration, expectedGeneration != generation { return }
         do {
             try fileManager.createDirectory(
                 at: directoryURL,
                 withIntermediateDirectories: true
             )
             try data.write(to: fileURL(forKey: key), options: .atomic)
-            storesSincePrune += 1
-            if storesSincePrune >= 25 {
-                storesSincePrune = 0
-                pruneIfNeeded()
+            pruneIfNeeded()
+            if notifyObservers {
+                NotificationCenter.default.post(
+                    name: .remoteThumbnailDiskCacheDidStore,
+                    object: key
+                )
             }
         } catch {
             // Disk caching is an optimization. The in-memory thumbnail remains
             // valid even if the cache directory cannot be written.
         }
+    }
+
+    func statistics() -> RemoteThumbnailCacheStatistics {
+        pruneIfNeeded()
+        let entries = cacheEntries()
+        return RemoteThumbnailCacheStatistics(
+            fileCount: entries.count,
+            totalBytes: entries.reduce(Int64(0)) { $0 + $1.byteCount },
+            automaticLimitBytes: automaticLimitBytes
+        )
+    }
+
+    func setAutomaticLimitBytes(_ byteCount: Int64) {
+        guard Self.automaticLimitOptions.contains(byteCount) else { return }
+        userDefaults.set(byteCount, forKey: Self.automaticLimitDefaultsKey)
+        pruneIfNeeded()
+    }
+
+    func currentGeneration() -> UInt64 {
+        generation
+    }
+
+    func removeAll() async {
+        generation &+= 1
+        try? fileManager.removeItem(at: directoryURL)
+        await RemoteVideoThumbnailTrafficBudget.shared.reset()
+        await RemoteThumbnailLoader.clearInMemoryCaches()
     }
 
     private func fileURL(forKey key: String) -> URL {
@@ -465,24 +660,7 @@ actor RemoteThumbnailDiskCache {
     }
 
     private func pruneIfNeeded() {
-        let keys: Set<URLResourceKey> = [
-            .contentModificationDateKey,
-            .fileSizeKey
-        ]
-        guard let urls = try? fileManager.contentsOfDirectory(
-            at: directoryURL,
-            includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
-        ) else { return }
-
-        let entries = urls.map { url in
-            let values = try? url.resourceValues(forKeys: keys)
-            return (
-                url: url,
-                modifiedAt: values?.contentModificationDate ?? .distantPast,
-                byteCount: Int64(values?.fileSize ?? 0)
-            )
-        }
+        let entries = cacheEntries()
         let expirationDate = Date().addingTimeInterval(-maximumAge)
         for entry in entries where entry.modifiedAt < expirationDate {
             try? fileManager.removeItem(at: entry.url)
@@ -491,12 +669,65 @@ actor RemoteThumbnailDiskCache {
         var remaining = entries.filter { $0.modifiedAt >= expirationDate }
             .sorted { $0.modifiedAt < $1.modifiedAt }
         var totalBytes = remaining.reduce(Int64(0)) { $0 + $1.byteCount }
-        while remaining.count > maximumFileCount || totalBytes > maximumTotalBytes {
+        while remaining.count > maximumFileCount || totalBytes > automaticLimitBytes {
             let entry = remaining.removeFirst()
             totalBytes -= entry.byteCount
             try? fileManager.removeItem(at: entry.url)
         }
     }
+
+    private var automaticLimitBytes: Int64 {
+        let storedValue = Int64(
+            userDefaults.integer(forKey: Self.automaticLimitDefaultsKey)
+        )
+        return Self.automaticLimitOptions.contains(storedValue)
+            ? storedValue
+            : Self.defaultAutomaticLimitBytes
+    }
+
+    private func cacheEntries() -> [RemoteThumbnailCacheEntry] {
+        let keys: Set<URLResourceKey> = [
+            .contentModificationDateKey,
+            .fileSizeKey
+        ]
+        guard let urls = try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles]
+        ) else { return [] }
+        return urls.map { url in
+            let values = try? url.resourceValues(forKeys: keys)
+            return RemoteThumbnailCacheEntry(
+                url: url,
+                modifiedAt: values?.contentModificationDate ?? .distantPast,
+                byteCount: Int64(values?.fileSize ?? 0)
+            )
+        }
+    }
+}
+
+struct RemoteThumbnailCacheStatistics: Equatable, Sendable {
+    let fileCount: Int
+    let totalBytes: Int64
+    let automaticLimitBytes: Int64
+
+    static let empty = RemoteThumbnailCacheStatistics(
+        fileCount: 0,
+        totalBytes: 0,
+        automaticLimitBytes: RemoteThumbnailDiskCache.defaultAutomaticLimitBytes
+    )
+}
+
+private struct RemoteThumbnailCacheEntry {
+    let url: URL
+    let modifiedAt: Date
+    let byteCount: Int64
+}
+
+private extension Notification.Name {
+    static let remoteThumbnailDiskCacheDidStore = Notification.Name(
+        "RemoteThumbnailDiskCacheDidStore"
+    )
 }
 
 struct RemoteThumbnailSendableCGImage: @unchecked Sendable {

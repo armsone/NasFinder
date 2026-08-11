@@ -187,15 +187,14 @@ actor SynologyFileService: RemoteFileService {
                 "bytes=\(offset)-\(requestedEnd.partialValue)",
                 forHTTPHeaderField: "Range"
             )
-            let (data, response) = try await self.session.data(for: request)
-            try self.validateHTTP(response)
-            guard let http = response as? HTTPURLResponse,
-                  http.statusCode == 206,
-                  !data.isEmpty,
-                  data.count <= length else {
-                throw NasFinderError.invalidResponse
-            }
-            return data
+            let reader = URLSessionBoundedRangeReader(
+                configuration: self.session.configuration,
+                expectedOffset: offset,
+                maximumByteCount: length
+            )
+            let result = try await reader.read(request)
+            try self.validateHTTP(result.response)
+            return result.data
         }
     }
 

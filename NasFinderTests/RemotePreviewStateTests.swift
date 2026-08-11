@@ -159,6 +159,121 @@ final class RemotePreviewStateTests: XCTestCase {
         viewModel.tearDown()
     }
 
+    func testRemoteThumbnailGenerationUsesBoundedRangeReads() async throws {
+        let movieURL = try await makeTinyMOV()
+        defer { try? FileManager.default.removeItem(at: movieURL) }
+        let byteCount = Int64(
+            try movieURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        )
+        let service = RangeReadingTinyVideoService(movieURL: movieURL)
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/tiny.mov",
+            name: "tiny.mov",
+            kind: .file,
+            size: byteCount,
+            modifiedAt: nil,
+            contentTypeIdentifier: "com.apple.quicktime-movie"
+        )
+        let maximumBytes = 1 * 1_024 * 1_024
+        let trafficBudget = RemoteVideoThumbnailTrafficBudget(
+            maximumFolderBytes: maximumBytes,
+            maximumItemBytes: maximumBytes,
+            minimumLeaseBytes: 1
+        )
+
+        let result = try await RemoteVideoThumbnailGenerator.generate(
+            for: item,
+            service: service,
+            size: .small,
+            trafficBudget: trafficBudget
+        )
+
+        XCTAssertFalse(result.data.isEmpty)
+        XCTAssertGreaterThan(result.transferredBytes, 0)
+        XCTAssertLessThanOrEqual(result.transferredBytes, maximumBytes)
+        let recordedBytes = await trafficBudget.transferredBytes(for: item)
+        XCTAssertEqual(recordedBytes, result.transferredBytes)
+    }
+
+    func testRemoteThumbnailGenerationTimesOutStalledRangeRead() async throws {
+        let service = StallingRangeVideoService()
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/stalled.mp4",
+            name: "stalled.mp4",
+            kind: .file,
+            size: 8 * 1_024 * 1_024,
+            modifiedAt: nil,
+            contentTypeIdentifier: "public.mpeg-4"
+        )
+        let trafficBudget = RemoteVideoThumbnailTrafficBudget(
+            maximumFolderBytes: 1 * 1_024 * 1_024,
+            maximumItemBytes: 1 * 1_024 * 1_024,
+            minimumLeaseBytes: 1
+        )
+        let clock = ContinuousClock()
+        let startedAt = clock.now
+
+        do {
+            _ = try await RemoteVideoThumbnailGenerator.generate(
+                for: item,
+                service: service,
+                size: .small,
+                trafficBudget: trafficBudget,
+                timeout: .milliseconds(100)
+            )
+            XCTFail("멈춘 범위 읽기는 제한 시간 오류여야 합니다.")
+        } catch RemoteVideoThumbnailGenerationError.timedOut {
+            XCTAssertLessThan(startedAt.duration(to: clock.now), .seconds(2))
+        } catch {
+            XCTFail("예상하지 못한 오류: \(error)")
+        }
+    }
+
+    func testRemoteThumbnailQualityRejectsFlatWhiteFrame() throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil,
+                width: 32,
+                height: 32,
+                bitsPerComponent: 8,
+                bytesPerRow: 32 * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        context.setFillColor(CGColor(gray: 1, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        let image = try XCTUnwrap(context.makeImage())
+
+        XCTAssertFalse(RemoteVideoThumbnailQuality.isUsable(image))
+    }
+
+    func testRemoteThumbnailQualityAcceptsDetailedBrightFrame() throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil,
+                width: 32,
+                height: 32,
+                bitsPerComponent: 8,
+                bytesPerRow: 32 * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        context.setFillColor(CGColor(gray: 0.95, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        context.setFillColor(CGColor(gray: 0.25, alpha: 1))
+        context.fill(CGRect(x: 4, y: 4, width: 12, height: 12))
+        context.fill(CGRect(x: 20, y: 20, width: 8, height: 8))
+        let image = try XCTUnwrap(context.makeImage())
+
+        XCTAssertTrue(RemoteVideoThumbnailQuality.isUsable(image))
+    }
+
     func testDownloadProgressClampsFractionToValidRange() {
         XCTAssertEqual(
             RemoteDownloadProgress(
@@ -533,6 +648,72 @@ private struct SuccessfulSmallVideoService: RemoteFileService {
         )
         await gate.record(totalByteCount)
         return movieURL
+    }
+
+    func testConnection() async throws {}
+}
+
+private struct RangeReadingTinyVideoService: RemoteFileService {
+    let connection = RemoteConnection(
+        name: "Range thumbnail test",
+        kind: .synology,
+        host: "thumbnail.invalid",
+        username: "tester"
+    )
+    let supportsRangeStreaming = true
+    let movieURL: URL
+
+    func list(directory path: String?) async throws -> [RemoteFileItem] {
+        []
+    }
+
+    func download(_ item: RemoteFileItem) async throws -> URL {
+        XCTFail("범위 썸네일 생성은 전체 다운로드를 호출하면 안 됩니다.")
+        return movieURL
+    }
+
+    func readRange(
+        of item: RemoteFileItem,
+        offset: Int64,
+        length: Int
+    ) async throws -> Data {
+        let data = try Data(contentsOf: movieURL, options: .mappedIfSafe)
+        guard offset >= 0,
+              length > 0,
+              offset < Int64(data.count) else { return Data() }
+        let lowerBound = Int(offset)
+        let upperBound = min(lowerBound + length, data.count)
+        return data.subdata(in: lowerBound..<upperBound)
+    }
+
+    func testConnection() async throws {}
+}
+
+private struct StallingRangeVideoService: RemoteFileService {
+    let connection = RemoteConnection(
+        name: "Stalling range thumbnail test",
+        kind: .synology,
+        host: "thumbnail.invalid",
+        username: "tester"
+    )
+    let supportsRangeStreaming = true
+
+    func list(directory path: String?) async throws -> [RemoteFileItem] {
+        []
+    }
+
+    func download(_ item: RemoteFileItem) async throws -> URL {
+        XCTFail("범위 썸네일 생성은 전체 다운로드를 호출하면 안 됩니다.")
+        throw CancellationError()
+    }
+
+    func readRange(
+        of item: RemoteFileItem,
+        offset: Int64,
+        length: Int
+    ) async throws -> Data {
+        try await Task.sleep(for: .seconds(30))
+        return Data()
     }
 
     func testConnection() async throws {}
