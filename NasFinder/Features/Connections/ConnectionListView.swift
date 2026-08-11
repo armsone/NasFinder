@@ -6,6 +6,7 @@ struct ConnectionListView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var store: ConnectionStore
     @EnvironmentObject private var inboxStore: SharedInboxStore
+    @EnvironmentObject private var favoriteStore: FavoriteStore
 
     @State private var isAddingConnection: Bool
     @State private var connectionPendingDeletion: RemoteConnection?
@@ -78,6 +79,8 @@ struct ConnectionListView: View {
                             Label("받은 파일", systemImage: "tray.and.arrow.down")
                         }
                     }
+
+                    FavoriteShelfView()
                 }
 
                 Section("iPhone 저장공간") {

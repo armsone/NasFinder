@@ -227,25 +227,8 @@ final class ThumbnailPreheater: ObservableObject {
         for item: RemoteFileItem,
         service: any RemoteFileService
     ) async throws -> Data? {
-        let attempts = service.connection.kind == .synology ? 3 : 1
-        var lastError: Error?
-        for attempt in 0..<attempts {
-            do {
-                if let data = try await service.thumbnailData(for: item, size: .small),
-                   !data.isEmpty {
-                    return data
-                }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                lastError = error
-            }
-            if attempt + 1 < attempts {
-                try await Task.sleep(for: .milliseconds(650))
-            }
-        }
-        if let lastError { throw lastError }
-        return nil
+        let data = try await service.thumbnailData(for: item, size: .small)
+        return data.flatMap { $0.isEmpty ? nil : $0 }
     }
 
     private func estimatedTransferBytes(

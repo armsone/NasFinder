@@ -40,6 +40,39 @@ final class SynologyFileServiceTests: XCTestCase {
         }
     }
 
+    func testThumbnailRequestUsesShortBoundedTimeout() async throws {
+        let fixture = SynologyAPIFixture()
+        let observedTimeout = LockedBox<TimeInterval?>(nil)
+        let service = fixture.makeService { request in
+            let fields = request.formFields
+            switch (fields["api"], fields["method"]) {
+            case ("SYNO.API.Auth", "login"):
+                return .json(#"{"success":true,"data":{"sid":"test-sid"}}"#)
+            case ("SYNO.FileStation.Thumb", "get"):
+                observedTimeout.withLock { $0 = request.timeoutInterval }
+                return SynologyStubResponse(
+                    statusCode: 200,
+                    headers: ["Content-Type": "image/jpeg"],
+                    data: Data([0xFF, 0xD8, 0xFF, 0xD9])
+                )
+            default:
+                throw SynologyMockError.unexpectedRequest(fields)
+            }
+        }
+        defer { fixture.unregister() }
+
+        let item = fixture.item(
+            path: "/share/clip.mp4",
+            name: "clip.mp4",
+            kind: .file,
+            size: 10_000
+        )
+
+        _ = try await service.thumbnailData(for: item, size: .small)
+
+        XCTAssertEqual(observedTimeout.values, 12)
+    }
+
     func testDownloadReportsByteProgressAndPreservesPayload() async throws {
         let fixture = SynologyAPIFixture()
         let payload = Data(repeating: 0x5A, count: 384 * 1_024)
@@ -169,7 +202,7 @@ final class SynologyFileServiceTests: XCTestCase {
         XCTAssertEqual(listing.formFields["version"], "2")
         XCTAssertEqual(listing.formFields["folder_path"], "/share")
         XCTAssertEqual(listing.formFields["_sid"], "test-sid")
-        XCTAssertEqual(listing.timeoutInterval, 30)
+        XCTAssertEqual(listing.timeoutInterval, 12)
     }
 
     func testConnectionUsesHTTPAndListShareForConfiguredRoot() async throws {

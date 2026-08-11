@@ -40,6 +40,7 @@ struct FileBrowserView: View {
 
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.scenePhase) private var scenePhase
+    @EnvironmentObject private var favoriteStore: FavoriteStore
     @AppStorage("fileBrowserLayoutStyle") private var storedLayoutStyle = LayoutStyle.smallThumbnails.rawValue
     @AppStorage("fileBrowserSortField") private var storedSortField = FileBrowserSortField.name.rawValue
     @AppStorage("fileBrowserSortDirection") private var storedSortDirection = FileBrowserSortDirection.ascending.rawValue
@@ -750,6 +751,15 @@ struct FileBrowserView: View {
     @ViewBuilder
     private func itemContextMenu(for item: RemoteFileItem) -> some View {
         Section("파일 작업") {
+            Button {
+                favoriteStore.toggle(item)
+            } label: {
+                Label(
+                    favoriteStore.contains(item) ? "즐겨찾기에서 제거" : "즐겨찾기에 추가",
+                    systemImage: favoriteStore.contains(item) ? "star.slash" : "star"
+                )
+            }
+
             Button {
                 beginQuickSelection(with: item)
             } label: {

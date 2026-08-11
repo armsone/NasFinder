@@ -52,7 +52,14 @@ final class RemoteThumbnailActivityTracker: ObservableObject {
             fractionCompleted = 0
             return
         }
-        fractionCompleted = min(Double(completedCount) / Double(totalCount), 1)
+        // File Station returns a complete image rather than byte progress. Give
+        // each active request a small in-flight credit so the 2-point line is
+        // visible immediately instead of looking frozen at an empty 0%.
+        let inFlightCredit = Double(activeOperationIDs.count) * 0.12
+        fractionCompleted = min(
+            (Double(completedCount) + inFlightCredit) / Double(totalCount),
+            1
+        )
     }
 }
 
@@ -340,42 +347,17 @@ private final class RemoteThumbnailLoader: ObservableObject {
         service: any RemoteFileService,
         size: RemoteThumbnailSize
     ) async throws -> Data? {
-        let attemptCount = item.isVideo
-            && service.connection.kind == .synology
-            && !service.permitsFullDownloadForVideoThumbnail
-            ? 3
-            : 1
-
-        var lastError: Error?
-        for attempt in 0..<attemptCount {
-            do {
-                let data = try await RemoteThumbnailWorkLimiter.shared.withPermit {
-                    try await service.thumbnailData(for: item, size: size)
-                }
-                if let data, !data.isEmpty { return data }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                if RemoteRequestCancellation.isCancellation(error) {
-                    // URLSession can report -999 even while the surrounding
-                    // Swift task remains active. Retry that transient request,
-                    // but never retry after the view task itself was cancelled.
-                    try Task.checkCancellation()
-                    if attempt + 1 >= attemptCount {
-                        throw CancellationError()
-                    }
-                } else {
-                    lastError = error
-                }
+        do {
+            let data = try await RemoteThumbnailWorkLimiter.shared.withPermit {
+                try await service.thumbnailData(for: item, size: size)
             }
-
-            if attempt + 1 < attemptCount {
-                try await Task.sleep(nanoseconds: 650_000_000)
-            }
+            return data.flatMap { $0.isEmpty ? nil : $0 }
+        } catch {
+            // A cancelled URLSession request is already terminal. Retrying it
+            // immediately kept all three work permits occupied and made the
+            // grid appear to load forever. A later view reload can try again.
+            throw RemoteRequestCancellation.normalized(error)
         }
-
-        if let lastError { throw lastError }
-        return nil
     }
 
     private func shouldGenerateThumbnail(for item: RemoteFileItem) -> Bool {

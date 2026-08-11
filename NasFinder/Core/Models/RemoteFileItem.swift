@@ -17,7 +17,7 @@ struct RemoteFileItem: Identifiable, Hashable, Sendable {
         "xls", "xlsx"
     ]
 
-    enum ItemKind: String, Sendable {
+    enum ItemKind: String, Codable, Sendable {
         case folder
         case file
     }

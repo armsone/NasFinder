@@ -11,6 +11,12 @@ actor SynologyFileService: RemoteFileService {
     private let pollInterval: Duration
     private var sessionID: String?
 
+    /// File Station thumbnails are small responses. If DSM cannot provide one
+    /// promptly, keeping a grid cell (and the global progress indicator) alive
+    /// for the general 30-second API timeout makes the browser look frozen.
+    private static let thumbnailRequestTimeout: TimeInterval = 12
+    private static let directoryListingRequestTimeout: TimeInterval = 12
+
     init(
         connection: RemoteConnection,
         credential: RemoteCredential,
@@ -58,7 +64,8 @@ actor SynologyFileService: RemoteFileService {
             parameters["sort_by"] = "name"
             parameters["sort_direction"] = "asc"
 
-            let request = try self.request(script: "entry.cgi", parameters: parameters)
+            var request = try self.request(script: "entry.cgi", parameters: parameters)
+            request.timeoutInterval = Self.directoryListingRequestTimeout
             let (data, response) = try await self.session.data(for: request)
             try self.validateHTTP(response)
             let envelope = try JSONDecoder().decode(SynologyEnvelope<SynologyListData>.self, from: data)
@@ -168,7 +175,8 @@ actor SynologyFileService: RemoteFileService {
                 "size": size.rawValue,
                 "rotate": "0"
             ]) { _, new in new }
-            let request = try self.request(script: "entry.cgi", parameters: parameters)
+            var request = try self.request(script: "entry.cgi", parameters: parameters)
+            request.timeoutInterval = Self.thumbnailRequestTimeout
             let (data, response) = try await self.session.data(for: request)
             try self.validateHTTP(response)
 
