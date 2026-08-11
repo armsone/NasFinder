@@ -16,17 +16,17 @@ cd "$repository_root"
 verified_sha="$(git rev-parse HEAD)"
 short_sha="$(git rev-parse --short=12 HEAD)"
 derived_data="/tmp/NasFinder-verified-$short_sha"
-simulator_name="${NASFINDER_SIMULATOR_NAME:-iPhone 17 Pro}"
 project="NasFinder.xcodeproj"
 scheme="NasFinder"
 bundle_identifier="com.armsone.nasfinder"
 
-echo "[1/5] Running the complete test suite at $verified_sha"
+echo "[1/5] Running the complete test suite on device $device_identifier at $verified_sha"
 xcodebuild -quiet \
     -project "$project" \
     -scheme "$scheme" \
-    -destination "platform=iOS Simulator,name=$simulator_name" \
-    -derivedDataPath "$derived_data-simulator" \
+    -destination "id=$device_identifier" \
+    -derivedDataPath "$derived_data-device-tests" \
+    -allowProvisioningUpdates \
     test
 
 [[ "$(git rev-parse HEAD)" == "$verified_sha" ]] || {
