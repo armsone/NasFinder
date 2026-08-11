@@ -112,7 +112,8 @@ final class RemoteVideoStreamingTaskRegistryTests: XCTestCase {
         if let leaseAfterReset {
             await budget.finish(leaseAfterReset, transferredBytes: 600)
         }
-        XCTAssertEqual(await budget.transferredBytes(for: item), 800)
+        let finalTransferredBytes = await budget.transferredBytes(for: item)
+        XCTAssertEqual(finalTransferredBytes, 800)
     }
 
     func testByteBudgetNeverExceedsConfiguredLimit() {
