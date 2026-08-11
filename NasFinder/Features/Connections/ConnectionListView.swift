@@ -161,25 +161,7 @@ struct ConnectionListView: View {
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 7) {
-                        Image(currentLogoAssetName)
-                            .resizable()
-                            .scaledToFit()
-                            .frame(width: 36, height: 36)
-                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-                            .overlay {
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .stroke(.primary.opacity(0.08), lineWidth: 0.5)
-                            }
-
-                        Text("NasFinder")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.primary.opacity(0.82))
-                    }
-                    .accessibilityElement(children: .combine)
-                    .accessibilityLabel("NasFinder")
-                }
+                dashboardLogoToolbar
             }
             .sheet(isPresented: $isAddingConnection) {
                 AddConnectionView()
@@ -392,6 +374,42 @@ struct ConnectionListView: View {
         AppIconChoice.current(
             alternateIconName: UIApplication.shared.alternateIconName
         ).previewAssetName
+    }
+
+    private var dashboardLogo: some View {
+        HStack(spacing: 7) {
+            Image(currentLogoAssetName)
+                .resizable()
+                .scaledToFill()
+                .frame(width: 36, height: 36)
+                .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(.primary.opacity(0.08), lineWidth: 0.5)
+                }
+
+            Text("NasFinder")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.primary.opacity(0.82))
+                .fixedSize(horizontal: true, vertical: false)
+        }
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("NasFinder")
+    }
+
+    @ToolbarContentBuilder
+    private var dashboardLogoToolbar: some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            ToolbarItem(placement: .topBarLeading) {
+                dashboardLogo
+            }
+            .sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(placement: .topBarLeading) {
+                dashboardLogo
+            }
+        }
     }
 
     private func sectionHeader(_ title: String, systemImage: String) -> some View {
