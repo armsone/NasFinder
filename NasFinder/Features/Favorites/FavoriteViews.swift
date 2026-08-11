@@ -61,15 +61,15 @@ private struct FavoriteShelfTile: View {
             .background {
                 if isRemovalPresented {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .fill(Color.red.opacity(0.08))
-                        .padding(-4)
+                        .fill(SkyBreezeTheme.accent.opacity(0.07))
+                        .padding(-2)
                 }
             }
             .overlay {
                 if isRemovalPresented {
                     RoundedRectangle(cornerRadius: 12, style: .continuous)
-                        .stroke(Color.red.opacity(0.68), lineWidth: 2)
-                        .padding(-4)
+                        .stroke(SkyBreezeTheme.accent.opacity(0.48), lineWidth: 1.5)
+                        .padding(-2)
                 }
             }
             .gesture(
@@ -117,27 +117,34 @@ private struct FavoriteRemovalPopover: View {
     let remove: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("즐겨찾기에서 제거할까요?")
-                .font(.subheadline.weight(.semibold))
-
+        VStack(alignment: .leading, spacing: 8) {
             Text(favoriteName)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.primary.opacity(0.82))
                 .lineLimit(2)
 
-            HStack(spacing: 8) {
+            Text("즐겨찾기에서 제거할까요?")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 7) {
                 Button("취소", role: .cancel, action: cancel)
-                    .buttonStyle(.bordered)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .buttonStyle(.plain)
+
+                Divider()
+                    .frame(height: 14)
 
                 Button("제거", role: .destructive, action: remove)
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.red)
+                    .buttonStyle(.plain)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .padding(16)
-        .frame(width: 240)
+        .padding(12)
+        .frame(width: 190)
     }
 }
 

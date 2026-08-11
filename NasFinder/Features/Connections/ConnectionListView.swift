@@ -162,23 +162,21 @@ struct ConnectionListView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 7) {
                         Image(currentLogoAssetName)
                             .resizable()
                             .scaledToFit()
-                            .frame(width: 48, height: 48)
-                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            .frame(width: 36, height: 36)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                             .overlay {
-                                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .stroke(.primary.opacity(0.08), lineWidth: 0.5)
                             }
 
                         Text("NasFinder")
-                            .font(.title3.weight(.semibold))
+                            .font(.subheadline.weight(.semibold))
                             .foregroundStyle(.primary.opacity(0.82))
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 4)
                     .accessibilityElement(children: .combine)
                     .accessibilityLabel("NasFinder")
                 }
