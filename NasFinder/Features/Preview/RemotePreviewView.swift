@@ -14,8 +14,8 @@ struct RemotePreviewView: View {
     @State private var videoVerticalOffset: CGFloat = 0
     @State private var areControlsVisible = true
     @State private var controlsHideTask: Task<Void, Never>?
-    @State private var isAspectFill = false
     @State private var videoZoomScale: CGFloat = 1
+    @State private var videoMagnificationStartScale: CGFloat = 1
     @State private var videoZoomOffset = CGSize.zero
     @State private var videoPanStartOffset = CGSize.zero
     @State private var videoDragVolume: Float?
@@ -55,7 +55,10 @@ struct RemotePreviewView: View {
                     .id(viewModel.currentItem.id)
                     .transition(.opacity)
 
-                previewChrome(safeAreaInsets: geometry.safeAreaInsets)
+                previewChrome(
+                    safeAreaInsets: geometry.safeAreaInsets,
+                    viewportSize: geometry.size
+                )
 
                 if let seekText = viewModel.seekHUDText {
                     seekHUD(text: seekText)
@@ -182,7 +185,7 @@ struct RemotePreviewView: View {
 
                     SharedVideoPlayerSurface(
                         player: player,
-                        videoGravity: isAspectFill ? .resizeAspectFill : .resizeAspect
+                        videoGravity: .resizeAspect
                     )
                         .background(Color.black)
                         .scaleEffect(videoZoomScale)
@@ -192,12 +195,11 @@ struct RemotePreviewView: View {
                         .contentShape(Rectangle())
                         .simultaneousGesture(videoDragGesture(in: geometry.size))
                         .simultaneousGesture(videoMagnificationGesture(in: geometry.size))
-                        .onTapGesture {
-                            viewModel.togglePlayback()
-                            revealControls()
-                        }
+                        .simultaneousGesture(videoTapGesture)
                         .accessibilityLabel("공용 동영상 플레이어")
-                        .accessibilityHint("한 번 탭하면 재생하거나 일시 정지합니다.")
+                        .accessibilityHint(
+                            "한 번 탭하면 재생하거나 일시 정지하고, 두 번 탭하면 화면 크기를 초기화합니다."
+                        )
 
                     if !areControlsVisible {
                         SharedVideoMiniProgressLine(player: player)
@@ -265,15 +267,18 @@ struct RemotePreviewView: View {
         return "\(completed) / \(totalText) • \(percent)%"
     }
 
-    private func previewChrome(safeAreaInsets: EdgeInsets) -> some View {
+    private func previewChrome(
+        safeAreaInsets: EdgeInsets,
+        viewportSize: CGSize
+    ) -> some View {
         VStack(spacing: 0) {
-            topBar
+            topBar(showsPosition: viewportSize.width <= viewportSize.height)
                 .padding(.top, max(safeAreaInsets.top, 8) + 8)
 
             Spacer(minLength: 72)
 
             if viewModel.currentItem.isImage || viewModel.currentItem.isVideo {
-                bottomControls
+                bottomControls(isLandscape: viewportSize.width > viewportSize.height)
                     .padding(.bottom, max(safeAreaInsets.bottom, 8) + 10)
             }
         }
@@ -285,7 +290,7 @@ struct RemotePreviewView: View {
         .animation(.easeInOut(duration: 0.2), value: areControlsVisible)
     }
 
-    private var topBar: some View {
+    private func topBar(showsPosition: Bool) -> some View {
         HStack(spacing: 10) {
             Button {
                 dismiss()
@@ -294,13 +299,20 @@ struct RemotePreviewView: View {
             }
             .accessibilityLabel("미리보기 닫기")
 
-            Text(viewModel.currentItem.name)
-                .font(.headline)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-                .multilineTextAlignment(.center)
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 4)
+            VStack(spacing: 2) {
+                Text(viewModel.currentItem.name)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .multilineTextAlignment(.center)
+
+                if showsPosition,
+                   viewModel.currentItem.isImage || viewModel.currentItem.isVideo {
+                    positionLabel
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 4)
 
             Group {
                 if let url = viewModel.localURL {
@@ -346,106 +358,122 @@ struct RemotePreviewView: View {
         )
     }
 
-    private var bottomControls: some View {
+    private func bottomControls(isLandscape: Bool) -> some View {
         VStack(spacing: 10) {
             if viewModel.currentItem.isVideo, let player = viewModel.player {
                 SharedVideoProgressBar(player: player)
             }
 
-            HStack(spacing: 12) {
-                Button {
-                    viewModel.navigate(by: -1)
-                    revealControls()
-                } label: {
-                    SharedPlayerCircleLabel(systemImage: "backward.end.fill")
+            if isLandscape {
+                HStack(spacing: 12) {
+                    transportControls
+                    Spacer(minLength: 32)
+                    playbackStatusControls
                 }
-                .disabled(viewModel.itemsCount < 2)
-                .accessibilityLabel("이전 미디어")
-
-                Button {
-                    viewModel.togglePlayback()
-                    revealControls()
-                } label: {
-                    SharedPlayerCircleLabel(
-                        systemImage: viewModel.isPlaying ? "pause.fill" : "play.fill"
-                    )
-                }
-                .accessibilityLabel(viewModel.isPlaying ? "일시 정지" : "재생")
-
-                Button {
-                    viewModel.navigate(by: 1)
-                    revealControls()
-                } label: {
-                    SharedPlayerCircleLabel(systemImage: "forward.end.fill")
-                }
-                .disabled(viewModel.itemsCount < 2)
-                .accessibilityLabel("다음 미디어")
-
-                Text("\(viewModel.currentIndex + 1) / \(viewModel.itemsCount)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.72))
-                    .frame(minWidth: 42)
-
-                Menu {
-                    Section("재생 모드") {
-                        ForEach(PreviewPlaybackMode.allCases) { mode in
-                            Button {
-                                viewModel.setPlaybackMode(mode)
-                            } label: {
-                                Label(
-                                    mode.title,
-                                    systemImage: viewModel.playbackMode == mode
-                                        ? "checkmark"
-                                        : mode.systemImage
-                                )
-                            }
-                        }
-                    }
-
-                    Section("사진 전환 간격") {
-                        ForEach(PhotoAdvanceInterval.allCases) { interval in
-                            Button {
-                                viewModel.setPhotoAdvanceInterval(interval)
-                            } label: {
-                                Label(
-                                    interval.title,
-                                    systemImage: viewModel.photoAdvanceInterval == interval
-                                        ? "checkmark"
-                                        : "timer"
-                                )
-                            }
-                        }
-                    }
-                } label: {
-                    SharedPlayerCircleLabel(
-                        systemImage: viewModel.playbackMode.systemImage,
-                        isActive: viewModel.playbackMode != .repeatAll
-                    )
-                }
-                .accessibilityLabel(
-                    "재생 모드: \(viewModel.playbackMode.title), 사진 \(viewModel.photoAdvanceInterval.title)"
-                )
-
-                if viewModel.currentItem.isVideo {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.18)) {
-                            isAspectFill.toggle()
-                        }
-                        revealControls()
-                    } label: {
-                        SharedPlayerCircleLabel(
-                            systemImage: isAspectFill
-                                ? "rectangle.arrowtriangle.2.inward"
-                                : "rectangle.arrowtriangle.2.outward",
-                            isActive: isAspectFill
-                        )
-                    }
-                    .accessibilityLabel(isAspectFill ? "화면에 맞추기" : "화면 채우기")
+                .frame(maxWidth: .infinity)
+            } else {
+                HStack(spacing: 12) {
+                    transportControls
+                    Spacer(minLength: 8)
+                    playbackModeControl
                 }
             }
         }
         .foregroundStyle(.white)
         .shadow(color: .black.opacity(0.38), radius: 10, y: 4)
+    }
+
+    private var transportControls: some View {
+        HStack(spacing: 12) {
+            Button {
+                viewModel.navigate(by: -1)
+                revealControls()
+            } label: {
+                SharedPlayerCircleLabel(systemImage: "backward.end.fill")
+            }
+            .disabled(viewModel.itemsCount < 2)
+            .accessibilityLabel("이전 미디어")
+
+            Button {
+                viewModel.navigate(by: 1)
+                revealControls()
+            } label: {
+                SharedPlayerCircleLabel(systemImage: "forward.end.fill")
+            }
+            .disabled(viewModel.itemsCount < 2)
+            .accessibilityLabel("다음 미디어")
+
+            Button {
+                viewModel.togglePlayback()
+                revealControls()
+            } label: {
+                SharedPlayerCircleLabel(
+                    systemImage: viewModel.isPlaying ? "pause.fill" : "play.fill"
+                )
+            }
+            .accessibilityLabel(viewModel.isPlaying ? "일시 정지" : "재생")
+        }
+    }
+
+    private var playbackStatusControls: some View {
+        HStack(spacing: 12) {
+            positionLabel
+            playbackModeControl
+        }
+    }
+
+    private var positionLabel: some View {
+        Text("\(viewModel.currentIndex + 1) / \(viewModel.itemsCount)")
+            .font(.caption.monospacedDigit())
+            .foregroundStyle(.white.opacity(0.72))
+            .frame(minWidth: 42)
+            .accessibilityLabel(
+                "전체 \(viewModel.itemsCount)개 중 \(viewModel.currentIndex + 1)번째"
+            )
+    }
+
+    private var playbackModeControl: some View {
+        Menu {
+            Section("재생 모드") {
+                ForEach(PreviewPlaybackMode.allCases) { mode in
+                    Button {
+                        viewModel.setPlaybackMode(mode)
+                        revealControls()
+                    } label: {
+                        Label(
+                            mode.title,
+                            systemImage: viewModel.playbackMode == mode
+                                ? "checkmark"
+                                : mode.systemImage
+                        )
+                    }
+                }
+            }
+
+            Section("사진 전환 간격") {
+                ForEach(PhotoAdvanceInterval.allCases) { interval in
+                    Button {
+                        viewModel.setPhotoAdvanceInterval(interval)
+                        revealControls()
+                    } label: {
+                        Label(
+                            interval.title,
+                            systemImage: viewModel.photoAdvanceInterval == interval
+                                ? "checkmark"
+                                : "timer"
+                        )
+                    }
+                }
+            }
+        } label: {
+            SharedPlayerCircleLabel(
+                systemImage: viewModel.playbackMode.systemImage,
+                isActive: viewModel.playbackMode != .repeatAll
+            )
+        }
+        .accessibilityLabel(
+            "재생 모드: \(viewModel.playbackMode.title), 사진 \(viewModel.photoAdvanceInterval.title)"
+        )
     }
 
     private func seekHUD(text: String) -> some View {
@@ -568,16 +596,39 @@ struct RemotePreviewView: View {
     private func videoMagnificationGesture(in size: CGSize) -> some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                videoZoomScale = min(max(value.magnification, 1), 4)
+                videoZoomScale = min(
+                    max(videoMagnificationStartScale * value.magnification, 0.5),
+                    4
+                )
                 if videoZoomScale <= 1.01 { videoZoomOffset = .zero }
             }
             .onEnded { _ in
-                if videoZoomScale < 1.02 {
-                    resetVideoTransform()
-                } else {
+                videoMagnificationStartScale = videoZoomScale
+                if videoZoomScale > 1.01 {
                     videoZoomOffset = clampedVideoOffset(videoZoomOffset, in: size)
+                } else {
+                    videoZoomOffset = .zero
+                    videoPanStartOffset = .zero
                 }
                 revealControls()
+            }
+    }
+
+    private var videoTapGesture: some Gesture {
+        TapGesture(count: 2)
+            .exclusively(before: TapGesture(count: 1))
+            .onEnded { value in
+                switch value {
+                case .first:
+                    guard abs(videoZoomScale - 1) > 0.01 else { return }
+                    withAnimation(.spring(response: 0.25, dampingFraction: 0.86)) {
+                        resetVideoTransform()
+                    }
+                    revealControls()
+                case .second:
+                    viewModel.togglePlayback()
+                    revealControls()
+                }
             }
     }
 
@@ -591,6 +642,7 @@ struct RemotePreviewView: View {
 
     private func resetVideoTransform() {
         videoZoomScale = 1
+        videoMagnificationStartScale = 1
         videoZoomOffset = .zero
         videoPanStartOffset = .zero
         videoVerticalOffset = 0
