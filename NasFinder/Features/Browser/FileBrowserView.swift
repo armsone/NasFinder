@@ -1700,7 +1700,7 @@ private struct CompactPanelButton: View {
     let title: String
     let systemImage: String
     var isSelected = false
-    var tint: Color = .accentColor
+    var tint = Color(uiColor: .secondaryLabel)
     let action: () -> Void
 
     var body: some View {
@@ -1715,11 +1715,13 @@ private struct CompactPanelButton: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.65)
             }
-            .foregroundStyle(isSelected ? Color.white : tint)
+            .foregroundStyle(
+                isSelected ? Color(uiColor: .systemBackground) : tint
+            )
             .frame(maxWidth: .infinity)
             .frame(height: 52)
             .background(
-                isSelected ? tint : Color(uiColor: .tertiarySystemFill),
+                isSelected ? SkyBreezeTheme.accent : Color(uiColor: .tertiarySystemFill),
                 in: RoundedRectangle(cornerRadius: 10, style: .continuous)
             )
             .contentShape(Rectangle())

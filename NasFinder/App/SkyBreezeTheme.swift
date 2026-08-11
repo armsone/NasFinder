@@ -5,16 +5,8 @@ import UIKit
 /// 얹는 가벼운 시각 테마. 기능 화면의 대비를 해치지 않도록 배경과
 /// 포인트 컬러에만 적용한다.
 enum SkyBreezeTheme {
-    /// 흰색 위에서도 충분한 대비를 갖는 차분한 번트 오렌지.
-    /// 밝은 systemOrange를 그대로 쓰면 작은 글자와 아이콘의 대비가
-    /// 부족하므로 조작 요소에만 이 색을 사용한다.
-    static let accent = Color(
-        uiColor: UIColor { traits in
-            traits.userInterfaceStyle == .dark
-                ? UIColor(red: 1.00, green: 0.61, blue: 0.29, alpha: 1)
-                : UIColor(red: 0.72, green: 0.25, blue: 0.035, alpha: 1)
-        }
-    )
+    /// iOS 기본 강조색. 시스템이 라이트·다크 모드에 맞춰 자동 조정한다.
+    static let accent = Color(uiColor: .systemBlue)
 
     static let folderBlue = Color(
         uiColor: UIColor { traits in
