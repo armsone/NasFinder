@@ -600,7 +600,9 @@ struct FileBrowserView: View {
                     }
                 }
 
-                Divider().padding(.vertical, 6)
+                Divider()
+                    .overlay(Color(uiColor: .separator).opacity(0.32))
+                    .padding(.vertical, 6)
                 MorePanelSectionTitle("보기")
 
                 HStack(spacing: 4) {
@@ -617,7 +619,9 @@ struct FileBrowserView: View {
                     }
                 }
 
-                Divider().padding(.vertical, 6)
+                Divider()
+                    .overlay(Color(uiColor: .separator).opacity(0.32))
+                    .padding(.vertical, 6)
                 MorePanelSectionTitle("정렬")
 
                 CompactPanelOptionRow(title: "기준") {
@@ -677,6 +681,7 @@ struct FileBrowserView: View {
         }
         .scrollIndicators(.visible)
         .frame(width: 340, height: 460)
+        .background(Color(uiColor: .systemBackground))
         .presentationCompactAdaptation(.popover)
         .buttonStyle(.plain)
         .accessibilityLabel("파일 작업과 보기 설정")
@@ -1981,8 +1986,8 @@ private struct MorePanelSectionTitle: View {
 
     var body: some View {
         Text(title)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
+            .font(.subheadline.weight(.bold))
+            .foregroundStyle(.primary)
             .textCase(.uppercase)
             .padding(.horizontal, 8)
             .padding(.vertical, 6)
@@ -1993,7 +1998,7 @@ private struct CompactPanelButton: View {
     let title: String
     let systemImage: String
     var isSelected = false
-    var tint = Color(uiColor: .secondaryLabel)
+    var tint = Color(uiColor: .label)
     let action: () -> Void
 
     var body: some View {
@@ -2004,19 +2009,26 @@ private struct CompactPanelButton: View {
                     .frame(width: 24, height: 24)
 
                 Text(title)
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.system(size: 10, weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.65)
             }
-            .foregroundStyle(
-                isSelected ? Color(uiColor: .systemBackground) : tint
-            )
+            .foregroundStyle(isSelected ? Color.white : tint)
             .frame(maxWidth: .infinity)
             .frame(height: 52)
             .background(
-                isSelected ? SkyBreezeTheme.accent : Color(uiColor: .tertiarySystemFill),
+                isSelected ? SkyBreezeTheme.accent : Color(uiColor: .secondarySystemBackground),
                 in: RoundedRectangle(cornerRadius: 10, style: .continuous)
             )
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(
+                        isSelected
+                            ? SkyBreezeTheme.accent
+                            : Color(uiColor: .separator).opacity(0.24),
+                        lineWidth: 0.75
+                    )
+            }
             .contentShape(Rectangle())
         }
         .accessibilityLabel(title)
@@ -2036,7 +2048,7 @@ private struct CompactPanelOptionRow<Content: View>: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(title)
                 .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.primary)
                 .padding(.horizontal, 2)
 
             content
@@ -2059,23 +2071,23 @@ private struct CompactPanelOptionButton: View {
                 .minimumScaleFactor(0.8)
                 .foregroundStyle(
                     isSelected
-                        ? Color(uiColor: .label).opacity(0.82)
-                        : Color(uiColor: .secondaryLabel)
+                        ? Color.white
+                        : Color(uiColor: .label)
                 )
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: 44)
                 .background(
                     isSelected
-                        ? SkyBreezeTheme.accent.opacity(0.1)
-                        : Color(uiColor: .tertiarySystemFill),
+                        ? SkyBreezeTheme.accent
+                        : Color(uiColor: .secondarySystemBackground),
                     in: RoundedRectangle(cornerRadius: 10, style: .continuous)
                 )
                 .overlay {
                     RoundedRectangle(cornerRadius: 10, style: .continuous)
                         .stroke(
                             isSelected
-                                ? SkyBreezeTheme.accent.opacity(0.24)
-                                : Color(uiColor: .separator).opacity(0.08),
+                                ? SkyBreezeTheme.accent
+                                : Color(uiColor: .separator).opacity(0.24),
                             lineWidth: 0.75
                         )
                 }
