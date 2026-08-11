@@ -270,6 +270,40 @@ final class RemotePreviewStateTests: XCTestCase {
         await loadTask.value
     }
 
+    func testMixedMediaNavigationWrapsAndPlaybackOptionsAreSelectable() {
+        let recorder = StallingPreviewRecorder()
+        let service = StallingPreviewService(recorder: recorder)
+        let first = previewVideoItem(connectionID: service.connection.id)
+        let second = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/share/photo.jpg",
+            name: "photo.jpg",
+            kind: .file,
+            size: 512,
+            modifiedAt: nil,
+            contentTypeIdentifier: "public.jpeg"
+        )
+        let viewModel = RemotePreviewViewModel(
+            items: [first, second],
+            initialItemID: first.id,
+            service: service
+        )
+        defer {
+            viewModel.setPlaybackMode(.repeatAll)
+            viewModel.setPhotoAdvanceInterval(.fiveSeconds)
+        }
+
+        viewModel.navigate(by: -1)
+        XCTAssertEqual(viewModel.currentItem.id, second.id)
+        viewModel.navigate(by: 1)
+        XCTAssertEqual(viewModel.currentItem.id, first.id)
+
+        viewModel.setPlaybackMode(.shuffle)
+        viewModel.setPhotoAdvanceInterval(.tenSeconds)
+        XCTAssertEqual(viewModel.playbackMode, .shuffle)
+        XCTAssertEqual(viewModel.photoAdvanceInterval, .tenSeconds)
+    }
+
     private func previewVideoItem(connectionID: UUID) -> RemoteFileItem {
         RemoteFileItem(
             connectionID: connectionID,
