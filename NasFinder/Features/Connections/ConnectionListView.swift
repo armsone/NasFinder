@@ -90,7 +90,7 @@ struct ConnectionListView: View {
                         ReceivedFilesView()
                     } label: {
                         LabeledContent {
-                            Text("\(inboxStore.records.count)개")
+                            Text("\(inboxStore.records.count)개 · \(formattedByteCount(inboxByteCount))")
                                 .foregroundStyle(.secondary)
                         } label: {
                             Label("받은 파일", systemImage: "tray.and.arrow.down")
@@ -105,9 +105,6 @@ struct ConnectionListView: View {
                 .foregroundStyle(.secondary)
 
                 Section {
-                    LabeledContent("받은 파일") {
-                        Text("\(inboxStore.records.count)개 · \(formattedByteCount(inboxByteCount))")
-                    }
                     LabeledContent("iPhone 여유") {
                         Text(
                             deviceStorage.hasCapacity
@@ -117,7 +114,7 @@ struct ConnectionListView: View {
                     }
                     if deviceStorage.hasCapacity {
                         ProgressView(value: deviceStorage.usedFraction) {
-                            Text("iPhone 저장공간")
+                            Text("저장공간")
                         } currentValueLabel: {
                             Text(
                                 deviceStorage.usedFraction,
@@ -126,7 +123,7 @@ struct ConnectionListView: View {
                         }
                     }
                 } header: {
-                    sectionHeader("iPhone 저장공간", systemImage: "internaldrive")
+                    sectionHeader("저장공간", systemImage: "internaldrive")
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -349,9 +346,14 @@ struct ConnectionListView: View {
     }
 
     private func sectionHeader(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
+        HStack(spacing: 3) {
+            Spacer(minLength: 0)
+            Image(systemName: systemImage)
+            Text(title)
+        }
             .font(.footnote.weight(.medium))
             .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .trailing)
     }
 
     private var errorBinding: Binding<Bool> {
