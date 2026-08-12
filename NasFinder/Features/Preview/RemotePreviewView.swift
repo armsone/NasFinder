@@ -110,6 +110,7 @@ struct RemotePreviewView: View {
         .background(Color.black.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
         .onAppear {
+            resetVideoTransform()
             revealControls()
             updateScreenAwakeActivity()
         }
@@ -785,6 +786,10 @@ struct RemotePreviewView: View {
     }
 
     private func resetVideoTransform() {
+        videoDragAxis = nil
+        videoVerticalDragMode = nil
+        videoDragVolume = nil
+        volumeDragStart = nil
         videoZoomScale = 1
         videoMagnificationStartScale = 1
         videoZoomOffset = .zero

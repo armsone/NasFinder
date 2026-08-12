@@ -1,6 +1,25 @@
 import SwiftUI
 import UIKit
 
+enum FileBrowserCoverFlowPolicy {
+    static let visibleCardCountPerSide = 7
+    static let preloadCardCountPerSide = visibleCardCountPerSide + 1
+
+    static func preloadIndices(
+        itemCount: Int,
+        scrollPosition: CGFloat
+    ) -> [Int] {
+        guard itemCount > 0 else { return [] }
+        let liveCenter = min(
+            max(Int(scrollPosition.rounded()), 0),
+            itemCount - 1
+        )
+        let lower = max(liveCenter - preloadCardCountPerSide, 0)
+        let upper = min(liveCenter + preloadCardCountPerSide, itemCount - 1)
+        return Array(lower...upper)
+    }
+}
+
 struct FileBrowserNavigationAppearanceModifier: ViewModifier {
     let isCoverFlow: Bool
 
@@ -88,7 +107,6 @@ enum FileBrowserOrientationController {
 
 struct FileBrowserCoverFlowView: View {
     private let sideCardScale: CGFloat = 0.80
-    private let visibleCardCountPerSide = 7
 
     let items: [RemoteFileItem]
     let service: any RemoteFileService
@@ -104,7 +122,7 @@ struct FileBrowserCoverFlowView: View {
     var body: some View {
         GeometryReader { proxy in
             let step = cardStep(for: proxy.size.width)
-            let baseline = proxy.size.height - 44
+            let baseline = proxy.size.height - 22
             ZStack {
                 LinearGradient(
                     colors: [Color.black.opacity(0.045), .clear],
@@ -144,13 +162,10 @@ struct FileBrowserCoverFlowView: View {
     }
 
     private var visibleIndices: [Int] {
-        guard !items.isEmpty else { return [] }
-        let lower = max(selectedIndex - visibleCardCountPerSide, items.startIndex)
-        let upper = min(
-            selectedIndex + visibleCardCountPerSide,
-            items.index(before: items.endIndex)
-        )
-        return Array(lower...upper).sorted {
+        FileBrowserCoverFlowPolicy.preloadIndices(
+            itemCount: items.count,
+            scrollPosition: scrollPosition
+        ).sorted {
             abs($0 - selectedIndex) > abs($1 - selectedIndex)
         }
     }
@@ -186,8 +201,8 @@ struct FileBrowserCoverFlowView: View {
             baseWidth: baseWidth,
             centralTarget: centralTarget
         )
-        let maximumReflectionHeight: CGFloat = emphasis > 0 ? 34 : 24
-        let reflectionHeight = min(renderedSide * 0.10, maximumReflectionHeight)
+        let maximumReflectionHeight: CGFloat = 18
+        let reflectionHeight = min(renderedSide * 0.08, maximumReflectionHeight)
         let totalHeight = renderedSide + 2 + reflectionHeight
         let centerY = baseline - renderedSide + totalHeight / 2
 
@@ -215,13 +230,15 @@ struct FileBrowserCoverFlowView: View {
                 size: CGSize(width: 360, height: 260),
                 reloadVersion: thumbnailReloadVersion
             )
-            .frame(width: renderedSide, height: reflectionHeight)
+            .frame(width: renderedSide, height: renderedSide)
             .scaleEffect(x: 1, y: -1)
-            .opacity(0.08 + emphasis * 0.06)
-            .blur(radius: 1.2)
+            .frame(width: renderedSide, height: reflectionHeight, alignment: .top)
+            .clipped()
+            .opacity(0.12 + emphasis * 0.10)
+            .blur(radius: 0.8)
             .mask {
                 LinearGradient(
-                    colors: [.white.opacity(0.38), .clear],
+                    colors: [.white.opacity(0.58), .clear],
                     startPoint: .top,
                     endPoint: .bottom
                 )
@@ -378,7 +395,7 @@ struct FileBrowserCoverFlowView: View {
             min(
                 max(baseWidth * 1.22, size.width * 0.34),
                 baseline - topClearance,
-                400
+                432
             ),
             1
         )

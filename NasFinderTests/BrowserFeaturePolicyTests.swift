@@ -3,6 +3,23 @@ import XCTest
 
 @MainActor
 final class BrowserFeaturePolicyTests: XCTestCase {
+    func testCoverFlowPreloadsAroundLiveDragPosition() {
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.preloadIndices(
+                itemCount: 30,
+                scrollPosition: 5.2
+            ),
+            Array(0...13)
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.preloadIndices(
+                itemCount: 30,
+                scrollPosition: 10.6
+            ),
+            Array(3...19)
+        )
+    }
+
     func testPathComponentsStayWithinConfiguredRoot() {
         XCTAssertEqual(
             FileBrowserPathNavigation.components(
