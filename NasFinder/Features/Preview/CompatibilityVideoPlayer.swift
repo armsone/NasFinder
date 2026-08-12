@@ -586,6 +586,7 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
         var stream: CompatibilityRemoteInputStream?
         var localURL: URL?
         var transferredBytes = 0
+        var priorStreamBytes = 0
         defer {
             if let localURL {
                 try? FileManager.default.removeItem(at: localURL)
@@ -628,22 +629,69 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
             }
             let dimensions = maximumDimensions(for: size)
             let initialPosition: Float = 0.3
+            let preciseSeekTimeout = min(timeout, .seconds(5))
             let initialOperation = CompatibilityVideoThumbnailOperation()
             activeOperation = initialOperation
             defer {
                 if activeOperation === initialOperation { activeOperation = nil }
             }
-            let initialImage = try await initialOperation.generate(
-                media: media,
-                stream: stream,
-                dimensions: dimensions,
-                snapshotPosition: initialPosition,
-                closesStreamOnSuccess: false,
-                timeout: timeout
-            )
+            let initialImage: CGImage
+            do {
+                initialImage = try await initialOperation.generate(
+                    media: media,
+                    stream: stream,
+                    dimensions: dimensions,
+                    snapshotPosition: initialPosition,
+                    preciseSeek: true,
+                    closesStreamOnSuccess: false,
+                    timeout: preciseSeekTimeout
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if activeOperation === initialOperation { activeOperation = nil }
+                let fallbackMedia: VLCMedia?
+                if let localURL {
+                    fallbackMedia = VLCMedia(url: localURL)
+                } else {
+                    if let stream {
+                        priorStreamBytes += stream.accountedByteCount
+                        stream.close()
+                    }
+                    let remainingBytes = max(
+                        lease.maximumBytes - priorStreamBytes,
+                        0
+                    )
+                    guard remainingBytes > 0 else { throw error }
+                    let freshStream = try CompatibilityRemoteInputStream(
+                        item: item,
+                        service: service,
+                        maximumTransferredBytes: remainingBytes
+                    )
+                    stream = freshStream
+                    fallbackMedia = VLCMedia(stream: freshStream)
+                }
+                guard let fallbackMedia else { throw error }
+                let fallbackOperation = CompatibilityVideoThumbnailOperation()
+                activeOperation = fallbackOperation
+                defer {
+                    if activeOperation === fallbackOperation {
+                        activeOperation = nil
+                    }
+                }
+                initialImage = try await fallbackOperation.generate(
+                    media: fallbackMedia,
+                    stream: stream,
+                    dimensions: dimensions,
+                    snapshotPosition: initialPosition,
+                    preciseSeek: false,
+                    closesStreamOnSuccess: false,
+                    timeout: timeout
+                )
+            }
             if activeOperation === initialOperation { activeOperation = nil }
             if let stream {
-                transferredBytes = stream.accountedByteCount
+                transferredBytes = priorStreamBytes + stream.accountedByteCount
             }
 
             var image = initialImage
@@ -688,8 +736,9 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                             dimensions: dimensions,
                             snapshotPosition: initialPosition
                                 + (1 - initialPosition) / 2,
+                            preciseSeek: true,
                             closesStreamOnSuccess: true,
-                            timeout: timeout
+                            timeout: preciseSeekTimeout
                         )
                     } catch is CancellationError {
                         if let retryStream {
@@ -722,7 +771,7 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
             if let stream {
                 transferredBytes = max(
                     transferredBytes,
-                    stream.accountedByteCount
+                    priorStreamBytes + stream.accountedByteCount
                 )
             }
             await trafficBudget.finish(lease, transferredBytes: transferredBytes)
@@ -787,6 +836,7 @@ private final class CompatibilityVideoThumbnailOperation:
         stream: CompatibilityRemoteInputStream?,
         dimensions: CGSize,
         snapshotPosition: Float,
+        preciseSeek: Bool,
         closesStreamOnSuccess: Bool,
         timeout: Duration
     ) async throws -> CGImage {
@@ -806,7 +856,7 @@ private final class CompatibilityVideoThumbnailOperation:
                 thumbnailer.thumbnailWidth = max(dimensions.width, 1)
                 thumbnailer.thumbnailHeight = max(dimensions.height, 1)
                 thumbnailer.snapshotPosition = snapshotPosition
-                thumbnailer.preciseSeek = true
+                thumbnailer.preciseSeek = preciseSeek
                 thumbnailer.cropsToFit = false
                 self.thumbnailer = thumbnailer
                 timeoutTask = Task { [weak self] in
