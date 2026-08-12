@@ -155,7 +155,7 @@ final class RemotePreviewStateTests: XCTestCase {
             ThumbnailPreheater.maximumSynologyDataBytes,
             256 * 1_024 * 1_024
         )
-        XCTAssertTrue(
+        XCTAssertFalse(
             CompatibilityVideoThumbnailAttemptPolicy.usesPlayerSnapshotFirst(
                 for: .synology
             )
