@@ -14,6 +14,36 @@ final class RemotePreviewStateTests: XCTestCase {
         )
     }
 
+    func testVerticalVolumeDragStaysVolumeUntilFingerIsReleased() {
+        let started = RemotePreviewVerticalDragMode.resolve(
+            existing: nil,
+            verticalTranslation: -80
+        )
+        XCTAssertEqual(started, .volume)
+        XCTAssertEqual(
+            RemotePreviewVerticalDragMode.resolve(
+                existing: started,
+                verticalTranslation: 140
+            ),
+            .volume
+        )
+    }
+
+    func testVerticalDismissDragDoesNotBecomeVolumeMidGesture() {
+        let started = RemotePreviewVerticalDragMode.resolve(
+            existing: nil,
+            verticalTranslation: 40
+        )
+        XCTAssertEqual(started, .dismiss)
+        XCTAssertEqual(
+            RemotePreviewVerticalDragMode.resolve(
+                existing: started,
+                verticalTranslation: -140
+            ),
+            .dismiss
+        )
+    }
+
     func testCompatibilityFormatPolicyKeepsMP4AndMOVOnAVPlayer() {
         let connectionID = UUID()
         for filename in ["movie.mp4", "clip.mov", "recording.m4v"] {

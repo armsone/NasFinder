@@ -12,6 +12,18 @@ enum RemotePreviewInteractionPolicy {
     }
 }
 
+enum RemotePreviewVerticalDragMode: Equatable {
+    case volume
+    case dismiss
+
+    static func resolve(
+        existing: Self?,
+        verticalTranslation: CGFloat
+    ) -> Self {
+        existing ?? (verticalTranslation < 0 ? .volume : .dismiss)
+    }
+}
+
 enum RemoteVideoPlaybackSource: Equatable {
     case partial
     case completeFile
@@ -40,6 +52,7 @@ struct RemotePreviewView: View {
     @State private var videoPanStartOffset = CGSize.zero
     @State private var videoDragVolume: Float?
     @State private var volumeDragStart: Float?
+    @State private var videoVerticalDragMode: RemotePreviewVerticalDragMode?
     @State private var systemVolumeSlider: UISlider?
     @State private var screenAwakeActivityID = UUID()
 
@@ -649,7 +662,12 @@ struct RemotePreviewView: View {
                         viewWidth: max(size.width, 1)
                     )
                 case .vertical:
-                    if value.translation.height < 0 {
+                    let verticalMode = RemotePreviewVerticalDragMode.resolve(
+                        existing: videoVerticalDragMode,
+                        verticalTranslation: value.translation.height
+                    )
+                    videoVerticalDragMode = verticalMode
+                    if verticalMode == .volume {
                         if volumeDragStart == nil {
                             volumeDragStart = AVAudioSession.sharedInstance().outputVolume
                         }
@@ -680,7 +698,9 @@ struct RemotePreviewView: View {
                 case .horizontal:
                     viewModel.endVideoScrub()
                 case .vertical:
-                    let isDownwardDominant = value.translation.height > 0
+                    let shouldDismiss = videoVerticalDragMode == .dismiss
+                    let isDownwardDominant = shouldDismiss
+                        && value.translation.height > 0
                         && abs(value.translation.height) > abs(value.translation.width)
                     if isDownwardDominant && value.translation.height >= 120 {
                         viewModel.pauseForLifecycle()
@@ -703,6 +723,7 @@ struct RemotePreviewView: View {
                     }
                     volumeDragStart = nil
                     videoDragVolume = nil
+                    videoVerticalDragMode = nil
                 case .pan:
                     videoZoomOffset = clampedVideoOffset(videoZoomOffset, in: size)
                     videoPanStartOffset = videoZoomOffset
