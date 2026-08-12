@@ -362,6 +362,56 @@ private final class BlockingRemoteRangeRead: @unchecked Sendable {
 }
 
 @MainActor
+final class CompatibilityPlaybackWatchdog {
+    private var task: Task<Void, Never>?
+
+    func start(
+        stallTimeout: Duration,
+        pollInterval: Duration,
+        isPlaybackExpected: @escaping @MainActor () -> Bool,
+        currentSeconds: @escaping @MainActor () -> Double,
+        onStall: @escaping @MainActor () -> Void
+    ) {
+        stop()
+        task = Task { @MainActor [weak self] in
+            let clock = ContinuousClock()
+            var lastObservedSeconds = currentSeconds()
+            var lastProgressAt = clock.now
+
+            while !Task.isCancelled {
+                try? await Task.sleep(for: pollInterval)
+                guard !Task.isCancelled else { return }
+
+                guard isPlaybackExpected() else {
+                    lastObservedSeconds = currentSeconds()
+                    lastProgressAt = clock.now
+                    continue
+                }
+
+                let observedSeconds = currentSeconds()
+                if abs(observedSeconds - lastObservedSeconds) >= 0.05 {
+                    lastObservedSeconds = observedSeconds
+                    lastProgressAt = clock.now
+                    continue
+                }
+
+                guard lastProgressAt.duration(to: clock.now) >= stallTimeout else {
+                    continue
+                }
+                self?.task = nil
+                onStall()
+                return
+            }
+        }
+    }
+
+    func stop() {
+        task?.cancel()
+        task = nil
+    }
+}
+
+@MainActor
 final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     @Published private(set) var currentSeconds = 0.0
     @Published private(set) var durationSeconds = 0.0
@@ -448,8 +498,11 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
     func stop() {
         isStopping = true
         mediaPlayer.delegate = nil
-        mediaPlayer.stop()
+        // VLC waits for its synchronous input callback to return while stopping.
+        // Cancel a blocked NAS range read first so dismissal never waits for the
+        // remote timeout on the main actor.
         inputStream?.close()
+        mediaPlayer.stop()
         mediaPlayer.drawable = nil
     }
 

@@ -99,6 +99,9 @@ struct SuperThumbnailView: View {
     @State private var isShowingProgress = false
     @State private var isPreparing = false
     @State private var isConfirmingReset = false
+    @State private var isConfirmingVaultRemoval = false
+    @State private var isRemovingVault = false
+    @State private var vaultResultMessage: String?
     @State private var eligibilityVersion = 0
     @State private var preparationError: String?
     @State private var compactJobAssessment: CompactJobAssessment?
@@ -116,15 +119,20 @@ struct SuperThumbnailView: View {
     @AppStorage("superThumbnail.previousTitle.v1") private var previousTitle = ""
     @AppStorage("superThumbnail.folderHistory.v1") private var folderHistoryJSON = ""
     @AppStorage("superThumbnail.hasPendingSession.v1") private var hasPendingSession = false
+    @AppStorage("superThumbnail.nasVaultEnabled.v1") private var nasVaultEnabled = true
+    @AppStorage("superThumbnail.nasVaultTiming.v1")
+    private var nasVaultTimingRaw = SuperThumbnailVaultTiming.now.rawValue
 
     var body: some View {
         ScrollView {
             VStack(spacing: 18) {
                 hero
                 folderSelection
+                vaultOptions
                 requirements
                 startButton
                 statisticsGrid
+                vaultRemovalLink
                 resetLink
             }
             .padding(.horizontal, 18)
@@ -183,6 +191,23 @@ struct SuperThumbnailView: View {
             Button("확인", role: .cancel) { preparationError = nil }
         } message: {
             Text(preparationError ?? "")
+        }
+        .alert("NAS Vault", isPresented: vaultResultBinding) {
+            Button("확인", role: .cancel) { vaultResultMessage = nil }
+        } message: {
+            Text(vaultResultMessage ?? "")
+        }
+        .confirmationDialog(
+            "선택한 폴더와 하위 폴더의 NAS 보관본을 삭제할까요?",
+            isPresented: $isConfirmingVaultRemoval,
+            titleVisibility: .visible
+        ) {
+            Button("NAS 보관본 삭제", role: .destructive) {
+                removeSelectedVaults()
+            }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("원본 영상과 이 아이폰의 Super Cache는 삭제되지 않습니다.")
         }
         .navigationDestination(isPresented: $isShowingReport) {
             if let reportSelection {
@@ -253,6 +278,49 @@ struct SuperThumbnailView: View {
         .font(.caption2)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 4)
+    }
+
+    private var vaultOptions: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
+                Picker("NAS Vault", selection: $nasVaultEnabled) {
+                    Text("NAS Vault").tag(true)
+                    Text("Not").tag(false)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: .infinity)
+
+                Picker("Save", selection: $nasVaultTimingRaw) {
+                    Text("Now").tag(SuperThumbnailVaultTiming.now.rawValue)
+                    Text("Later").tag(SuperThumbnailVaultTiming.later.rawValue)
+                }
+                .pickerStyle(.segmented)
+                .frame(maxWidth: .infinity)
+                .disabled(!nasVaultEnabled)
+                .opacity(nasVaultEnabled ? 1 : 0.42)
+            }
+            Text(vaultOptionDescription)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(
+            SkyBreezeTheme.thumbnailSurface,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+    }
+
+    private var vaultOptionDescription: String {
+        guard nasVaultEnabled else {
+            return "이 아이폰의 Super Cache에만 저장합니다."
+        }
+        return vaultTiming == .now
+            ? "각 폴더가 완료될 때마다 NAS에 보관합니다."
+            : "모든 작업이 완료된 뒤 NAS에 한 번에 보관합니다."
+    }
+
+    private var vaultTiming: SuperThumbnailVaultTiming {
+        SuperThumbnailVaultTiming(rawValue: nasVaultTimingRaw) ?? .now
     }
 
     private var folderSelection: some View {
@@ -426,6 +494,22 @@ struct SuperThumbnailView: View {
         .disabled(statistics.fileCount == 0 && statistics.lifetimeNetworkBytes == 0)
     }
 
+    private var vaultRemovalLink: some View {
+        Button(role: .destructive) {
+            isConfirmingVaultRemoval = true
+        } label: {
+            if isRemovingVault {
+                ProgressView()
+            } else {
+                Label("선택 폴더 NAS Vault 삭제", systemImage: "trash")
+            }
+        }
+        .font(.footnote)
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(selection == nil || isRemovingVault || preheater.isRunning)
+    }
+
     private var hasWiFi: Bool {
         _ = eligibilityVersion
         return ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
@@ -481,12 +565,43 @@ struct SuperThumbnailView: View {
         )
     }
 
+    private var vaultResultBinding: Binding<Bool> {
+        Binding(
+            get: { vaultResultMessage != nil },
+            set: { if !$0 { vaultResultMessage = nil } }
+        )
+    }
+
     private func startProcessing() {
         guard let selection, canStart else { return }
         launchProcessing(
             selection: selection,
             allowsConstrainedRun: usesCompactOverride
         )
+    }
+
+    private func removeSelectedVaults() {
+        guard let selection else { return }
+        isRemovingVault = true
+        Task {
+            defer { isRemovingVault = false }
+            do {
+                let credential = try connectionStore.credential(for: selection.connection)
+                let service = RemoteFileServiceFactory.make(
+                    connection: selection.connection,
+                    credential: credential
+                )
+                let removed = try await SuperThumbnailVault.shared.removeVaults(
+                    startingAt: selection.path,
+                    service: service
+                )
+                vaultResultMessage = removed == 0
+                    ? "삭제할 NAS 보관본이 없습니다."
+                    : "NAS 보관본 \(removed)개를 삭제했습니다. 이 아이폰의 캐시는 유지됩니다."
+            } catch {
+                vaultResultMessage = "NAS 보관본을 삭제하지 못했습니다. \(error.localizedDescription)"
+            }
+        }
     }
 
     private func launchProcessing(
@@ -517,6 +632,10 @@ struct SuperThumbnailView: View {
                     requiresExternalPower: true,
                     allowsConstrainedRun: allowsConstrainedRun,
                     generationMode: .completeFile,
+                    vaultOptions: SuperThumbnailVaultOptions(
+                        isEnabled: nasVaultEnabled,
+                        timing: vaultTiming
+                    ),
                     service: service
                 )
             } catch {
@@ -948,6 +1067,20 @@ private struct SuperThumbnailProgressView: View {
                         progressMetric("Created", preheater.generatedCount)
                         progressMetric("Already Done", preheater.cachedCount)
                         progressMetric("Failed", preheater.failedCount)
+                    }
+                    if preheater.vaultRestoredCount > 0 || preheater.vaultStoredCount > 0 {
+                        Text(
+                            "NAS Vault · 가져옴 \(preheater.vaultRestoredCount) · "
+                                + "보관 \(preheater.vaultStoredCount)"
+                        )
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
+                    if let vaultErrorMessage = preheater.vaultErrorMessage {
+                        Text("NAS Vault 보관 대기 · \(vaultErrorMessage)")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .multilineTextAlignment(.center)
                     }
                     if !preheater.recentGeneratedThumbnails.isEmpty {
                         overflowPanel

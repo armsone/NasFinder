@@ -99,6 +99,9 @@ final class ThumbnailPreheater: ObservableObject {
     @Published private(set) var totalCount = 0
     @Published private(set) var generatedCount = 0
     @Published private(set) var cachedCount = 0
+    @Published private(set) var vaultRestoredCount = 0
+    @Published private(set) var vaultStoredCount = 0
+    @Published private(set) var vaultErrorMessage: String?
     @Published private(set) var failedCount = 0
     @Published private(set) var failedItemNames: [String] = []
     @Published private(set) var failedItems: [SuperThumbnailFailureRecord] = []
@@ -145,6 +148,10 @@ final class ThumbnailPreheater: ObservableObject {
         requiresExternalPower powerOverride: Bool? = nil,
         allowsConstrainedRun: Bool = false,
         generationMode: RemoteVideoThumbnailGenerationMode = .bounded,
+        vaultOptions: SuperThumbnailVaultOptions = .init(
+            isEnabled: false,
+            timing: .later
+        ),
         service: any RemoteFileService
     ) {
         guard !isRunning else { return }
@@ -175,6 +182,7 @@ final class ThumbnailPreheater: ObservableObject {
                 requiresExternalPower: requiresExternalPower,
                 allowsConstrainedRun: allowsConstrainedRun,
                 generationMode: generationMode,
+                vaultOptions: vaultOptions,
                 service: service
             )
         }
@@ -195,6 +203,7 @@ final class ThumbnailPreheater: ObservableObject {
         requiresExternalPower: Bool,
         allowsConstrainedRun: Bool,
         generationMode: RemoteVideoThumbnailGenerationMode,
+        vaultOptions: SuperThumbnailVaultOptions,
         service: any RemoteFileService
     ) async {
         defer {
@@ -219,6 +228,13 @@ final class ThumbnailPreheater: ObservableObject {
             let candidates = generationMode == .completeFile
                 ? collectedCandidates.filter(\.isVideo)
                 : collectedCandidates
+            let vaultRun = SuperThumbnailVaultRun(
+                options: generationMode == .completeFile
+                    ? vaultOptions
+                    : .init(isEnabled: false, timing: .later),
+                items: candidates,
+                service: service
+            )
             totalCount = candidates.count
             estimatedTimeRemaining = etaEstimator.totalEstimate(
                 for: candidates,
@@ -260,7 +276,21 @@ final class ThumbnailPreheater: ObservableObject {
             var pendingCandidates: [RemoteFileItem] = []
             if generationMode == .completeFile {
                 for item in candidates {
-                    if let cachedData = await cachedThumbnailData(for: item) {
+                    var cachedData = await cachedThumbnailData(for: item)
+                    if cachedData == nil,
+                       let restored = await vaultRun.restoredData(for: item),
+                       UIImage(data: restored) != nil {
+                        cachedData = restored
+                        vaultRestoredCount += 1
+                        await SuperThumbnailCache.shared.store(
+                            restored,
+                            forKey: RemoteThumbnailCacheKey.remoteData(
+                                for: item,
+                                size: .small
+                            )
+                        )
+                    }
+                    if let cachedData {
                         cachedCount += 1
                         completedCount += 1
                         appendRecentThumbnail(name: item.name, data: cachedData)
@@ -282,6 +312,10 @@ final class ThumbnailPreheater: ObservableObject {
                             }
                             failedCount = failedItems.count
                         }
+                        applyVaultResult(await vaultRun.markCompleted(
+                            item,
+                            localData: Self.localSuperThumbnailData
+                        ))
                     } else {
                         pendingCandidates.append(item)
                     }
@@ -362,6 +396,10 @@ final class ThumbnailPreheater: ObservableObject {
                             name: item.name,
                             data: cachedThumbnailData
                         )
+                        applyVaultResult(await vaultRun.markCompleted(
+                            item,
+                            localData: Self.localSuperThumbnailData
+                        ))
                     }
                     estimatedTimeRemaining = etaEstimator.totalEstimate(
                         for: workQueue.dropFirst(workIndex).map { $0.item },
@@ -558,12 +596,24 @@ final class ThumbnailPreheater: ObservableObject {
                     generationMode: generationMode
                 )
                 completedCount += 1
+                if generationMode == .completeFile {
+                    applyVaultResult(await vaultRun.markCompleted(
+                        item,
+                        localData: Self.localSuperThumbnailData
+                    ))
+                }
                 currentItemTransferredBytes = 0
                 currentItemTotalBytes = 0
                 currentItemStartedAt = nil
                 updateQueueCounts(workQueue, from: workIndex)
 
                 if reachedDataLimit { break }
+            }
+
+            if generationMode == .completeFile {
+                applyVaultResult(await vaultRun.finish(
+                    localData: Self.localSuperThumbnailData
+                ))
             }
 
             let limitText = service.connection.kind == .sftp
@@ -768,6 +818,24 @@ final class ThumbnailPreheater: ObservableObject {
             if let data, UIImage(data: data) != nil { return data }
         }
         return nil
+    }
+
+    private static let localSuperThumbnailData:
+        @Sendable (RemoteFileItem) async -> Data? = { item in
+            for key in RemoteThumbnailCacheKey.allRemoteDataKeys(for: item) {
+                if let data = await SuperThumbnailCache.shared.data(forKey: key),
+                   UIImage(data: data) != nil {
+                    return data
+                }
+            }
+            return nil
+        }
+
+    private func applyVaultResult(_ result: SuperThumbnailVaultStoreResult) {
+        vaultStoredCount += result.storedCount
+        if let errorDescription = result.errorDescription {
+            vaultErrorMessage = errorDescription
+        }
     }
 
     private func normalizedSuccessCounts(_ counts: [Int]) -> [Int] {
@@ -981,6 +1049,9 @@ final class ThumbnailPreheater: ObservableObject {
         totalCount = 0
         generatedCount = 0
         cachedCount = 0
+        vaultRestoredCount = 0
+        vaultStoredCount = 0
+        vaultErrorMessage = nil
         failedCount = 0
         failedItemNames = []
         failedItems = []

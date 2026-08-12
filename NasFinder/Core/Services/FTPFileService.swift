@@ -26,6 +26,9 @@ actor FTPFileService: RemoteFileService {
 
     nonisolated var supportsRangeStreaming: Bool { true }
     nonisolated var permitsFullDownloadForVideoThumbnail: Bool { false }
+    nonisolated var capabilities: RemoteFileServiceCapabilities {
+        [.createFolder, .rename, .delete, .upload, .replaceFile, .serverSideMove]
+    }
 
     init(connection: RemoteConnection, credential: RemoteCredential) {
         self.connection = connection
@@ -103,6 +106,138 @@ actor FTPFileService: RemoteFileService {
         await dataConnection.close()
         await session.close()
         return result
+    }
+
+    func createFolder(
+        named name: String,
+        in directoryPath: String,
+        context: RemoteOperationContext
+    ) async throws -> RemoteFileItem {
+        let name = try RemotePath.validatedName(name)
+        let destination = appending(name, to: directoryPath)
+        let session = try await loggedInSession()
+        _ = try await session.command("MKD \(destination)", accepting: 200..<300)
+        await session.close()
+        return RemoteFileItem(
+            connectionID: connection.id,
+            path: destination,
+            name: name,
+            kind: .folder,
+            size: nil,
+            modifiedAt: .now,
+            contentTypeIdentifier: nil
+        )
+    }
+
+    func rename(
+        _ item: RemoteFileItem,
+        to newName: String,
+        context: RemoteOperationContext
+    ) async throws -> RemoteFileItem {
+        let name = try RemotePath.validatedName(newName)
+        let destination = appending(
+            name,
+            to: (item.path as NSString).deletingLastPathComponent
+        )
+        let session = try await loggedInSession()
+        _ = try await session.command("RNFR \(item.path)", accepting: 300..<400)
+        _ = try await session.command("RNTO \(destination)", accepting: 200..<300)
+        await session.close()
+        return RemoteFileItem(
+            connectionID: item.connectionID,
+            path: destination,
+            name: name,
+            kind: item.kind,
+            size: item.size,
+            modifiedAt: item.modifiedAt,
+            contentTypeIdentifier: item.contentTypeIdentifier
+        )
+    }
+
+    func delete(
+        _ item: RemoteFileItem,
+        recursive: Bool,
+        context: RemoteOperationContext
+    ) async throws -> RemoteOperationResult {
+        let session = try await loggedInSession()
+        _ = try await session.command(
+            "\(item.isDirectory ? "RMD" : "DELE") \(item.path)",
+            accepting: 200..<300
+        )
+        await session.close()
+        return .init(
+            operationID: context.operationID,
+            operation: .delete,
+            outcomes: [.succeeded(sourcePath: item.path)]
+        )
+    }
+
+    func upload(
+        localURL: URL,
+        to directoryPath: String,
+        preferredName: String?,
+        conflictPolicy: RemoteConflictPolicy,
+        context: RemoteOperationContext
+    ) async throws -> RemoteOperationResult {
+        let requestedName = try RemotePath.validatedName(
+            preferredName ?? localURL.lastPathComponent
+        )
+        let siblings = try await list(directory: directoryPath)
+        let existing = siblings.first { $0.name == requestedName }
+        let finalName: String
+        switch conflictPolicy {
+        case .fail:
+            guard existing == nil else {
+                throw RemoteFileOperationError.conflict(
+                    sourcePath: localURL.path,
+                    destinationPath: appending(requestedName, to: directoryPath)
+                )
+            }
+            finalName = requestedName
+        case .skip:
+            if let existing {
+                return .init(
+                    operationID: context.operationID,
+                    operation: .upload,
+                    outcomes: [.skipped(
+                        sourcePath: localURL.path,
+                        destinationPath: existing.path,
+                        issue: .init(
+                            code: .conflict,
+                            message: "같은 이름의 파일이 이미 있습니다."
+                        )
+                    )]
+                )
+            }
+            finalName = requestedName
+        case .replace:
+            guard existing?.isDirectory != true else {
+                throw RemoteFileOperationError.folderReplacementNotAllowed(
+                    path: existing?.path ?? requestedName
+                )
+            }
+            finalName = requestedName
+        case .keepBoth:
+            finalName = try RemotePath.keepBothName(
+                for: requestedName,
+                existingNames: siblings.map(\.name)
+            )
+        }
+        let destination = appending(finalName, to: directoryPath)
+        let session = try await loggedInSession()
+        let dataConnection = try await session.openPassiveDataConnection()
+        _ = try await session.command("STOR \(destination)", accepting: 100..<200)
+        try await dataConnection.sendFile(at: localURL)
+        _ = try await session.readReply(accepting: 200..<300)
+        await session.close()
+        return .init(
+            operationID: context.operationID,
+            operation: .upload,
+            outcomes: [.succeeded(
+                sourcePath: localURL.path,
+                destinationPath: destination
+            )]
+        )
     }
 
     private func loggedInSession() async throws -> FTPControlSession {
@@ -338,6 +473,18 @@ private final class FTPDataConnection: @unchecked Sendable {
     }
 
     func close() async { connection.cancel() }
+
+    func sendFile(at url: URL) async throws {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        while true {
+            try Task.checkCancellation()
+            let data = try handle.read(upToCount: 256 * 1_024) ?? Data()
+            if data.isEmpty { break }
+            try await connection.sendData(data)
+        }
+        try await connection.finishSending()
+    }
 }
 
 private extension NWConnection {
@@ -372,6 +519,21 @@ private extension NWConnection {
                 if let error { continuation.resume(throwing: error) }
                 else { continuation.resume() }
             })
+        }
+    }
+
+    func finishSending() async throws {
+        try await withCheckedThrowingContinuation {
+            (continuation: CheckedContinuation<Void, Error>) in
+            send(
+                content: nil,
+                contentContext: .finalMessage,
+                isComplete: true,
+                completion: .contentProcessed { error in
+                    if let error { continuation.resume(throwing: error) }
+                    else { continuation.resume() }
+                }
+            )
         }
     }
 

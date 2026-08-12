@@ -866,6 +866,7 @@ final class RemotePreviewViewModel: ObservableObject {
     private var streamingLoader: RemoteVideoStreamingLoader?
     private var playerItemStatusObservation: NSKeyValueObservation?
     private var videoPreparationTimeoutTask: Task<Void, Never>?
+    private let compatibilityPlaybackWatchdog = CompatibilityPlaybackWatchdog()
     private var videoMetadataTask: Task<Void, Never>?
     private var externalSubtitleTask: Task<Void, Never>?
     private var activeDownloadTask: Task<URL, Error>?
@@ -875,6 +876,8 @@ final class RemotePreviewViewModel: ObservableObject {
     private var lastDownloadActivity: ContinuousClock.Instant?
     private let downloadInactivityTimeout: Duration
     private let downloadInactivityPollInterval: Duration
+    private let compatibilityPlaybackStallTimeout: Duration
+    private let compatibilityPlaybackPollInterval: Duration
 
     private static let photoAdvanceIntervalDefaultsKey = "previewPhotoAdvanceIntervalSeconds"
     private static let playbackModeDefaultsKey = "previewPlaybackMode"
@@ -889,7 +892,9 @@ final class RemotePreviewViewModel: ObservableObject {
         initialItemID: RemoteFileItem.ID,
         service: any RemoteFileService,
         downloadInactivityTimeout: Duration = .seconds(20),
-        downloadInactivityPollInterval: Duration = .seconds(1)
+        downloadInactivityPollInterval: Duration = .seconds(1),
+        compatibilityPlaybackStallTimeout: Duration = .seconds(12),
+        compatibilityPlaybackPollInterval: Duration = .seconds(1)
     ) {
         precondition(!items.isEmpty)
         self.items = items
@@ -897,6 +902,8 @@ final class RemotePreviewViewModel: ObservableObject {
         self.service = service
         self.downloadInactivityTimeout = downloadInactivityTimeout
         self.downloadInactivityPollInterval = downloadInactivityPollInterval
+        self.compatibilityPlaybackStallTimeout = compatibilityPlaybackStallTimeout
+        self.compatibilityPlaybackPollInterval = compatibilityPlaybackPollInterval
         currentIndex = items.firstIndex(where: { $0.id == initialItemID }) ?? 0
         let savedInterval = UserDefaults.standard.integer(
             forKey: Self.photoAdvanceIntervalDefaultsKey
@@ -926,6 +933,7 @@ final class RemotePreviewViewModel: ObservableObject {
         playerItemStatusObservation = nil
         videoPreparationTimeoutTask?.cancel()
         videoPreparationTimeoutTask = nil
+        compatibilityPlaybackWatchdog.stop()
         videoMetadataTask?.cancel()
         videoMetadataTask = nil
         externalSubtitleTask?.cancel()
@@ -1258,6 +1266,7 @@ final class RemotePreviewViewModel: ObservableObject {
         streamingLoader = nil
         compatibilityPlayer?.stop()
         compatibilityPlayer = nil
+        compatibilityPlaybackWatchdog.stop()
         playerItemStatusObservation?.invalidate()
         playerItemStatusObservation = nil
         videoPreparationTimeoutTask?.cancel()
@@ -1286,6 +1295,7 @@ final class RemotePreviewViewModel: ObservableObject {
         player = nil
         compatibilityPlayer?.stop()
         compatibilityPlayer = nil
+        compatibilityPlaybackWatchdog.stop()
         playerItemStatusObservation?.invalidate()
         playerItemStatusObservation = nil
         videoPreparationTimeoutTask?.cancel()
@@ -1390,6 +1400,30 @@ final class RemotePreviewViewModel: ObservableObject {
             self.isPreparingVideo = false
             self.videoPreparationTimeoutTask?.cancel()
             self.videoPreparationTimeoutTask = nil
+            guard newPlayer.usesRemoteStream else { return }
+            self.compatibilityPlaybackWatchdog.start(
+                stallTimeout: self.compatibilityPlaybackStallTimeout,
+                pollInterval: self.compatibilityPlaybackPollInterval,
+                isPlaybackExpected: { [weak self, weak newPlayer] in
+                    guard let self, let newPlayer else { return false }
+                    return self.isPlaying
+                        && self.scrubStartSeconds == nil
+                        && self.compatibilityPlayer === newPlayer
+                },
+                currentSeconds: { [weak newPlayer] in
+                    newPlayer?.currentSeconds ?? 0
+                },
+                onStall: { [weak self, weak newPlayer] in
+                    guard let self,
+                          let newPlayer,
+                          self.compatibilityPlayer === newPlayer,
+                          self.currentItem.id == itemID else { return }
+                    self.failCompatibilityVideoPreparation(
+                        "원격 영상 재생이 진행되지 않아 전체 파일로 다시 시도합니다.",
+                        itemID: itemID
+                    )
+                }
+            )
         }
         newPlayer.onPlaybackEnded = { [weak self, weak newPlayer] in
             guard let self,
@@ -1490,6 +1524,7 @@ final class RemotePreviewViewModel: ObservableObject {
         let shouldRetryWithFullDownload = compatibilityPlayer?.usesRemoteStream == true
         videoPreparationTimeoutTask?.cancel()
         videoPreparationTimeoutTask = nil
+        compatibilityPlaybackWatchdog.stop()
         externalSubtitleTask?.cancel()
         externalSubtitleTask = nil
         isPreparingVideo = false

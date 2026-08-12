@@ -326,7 +326,97 @@ final class RemotePreviewStateTests: XCTestCase {
         )
     }
 
-    func testSynologyCompatibilityThumbnailUsesPlayerSnapshot() async throws {
+    func testClosingCompatibilityRemoteStreamUnblocksActiveRead() async throws {
+        let service = StallingRangeVideoService()
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/stalled.avi",
+            name: "stalled.avi",
+            kind: .file,
+            size: 1_024 * 1_024,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let stream = try CompatibilityRemoteInputStream(
+            item: item,
+            service: service,
+            rangeReadTimeout: 30
+        )
+        stream.open()
+        let readTask = Task.detached {
+            var bytes = [UInt8](repeating: 0, count: 32)
+            return stream.read(&bytes, maxLength: bytes.count)
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        let clock = ContinuousClock()
+        let closingStartedAt = clock.now
+        stream.close()
+
+        let readResult = await readTask.value
+        XCTAssertEqual(readResult, -1)
+        XCTAssertLessThan(
+            closingStartedAt.duration(to: clock.now),
+            .seconds(1)
+        )
+    }
+
+    func testCompatibilityPlaybackWatchdogReportsNoProgress() async {
+        let expectation = expectation(description: "stalled playback detected")
+        let watchdog = CompatibilityPlaybackWatchdog()
+        watchdog.start(
+            stallTimeout: .milliseconds(40),
+            pollInterval: .milliseconds(5),
+            isPlaybackExpected: { true },
+            currentSeconds: { 0 },
+            onStall: { expectation.fulfill() }
+        )
+
+        await fulfillment(of: [expectation], timeout: 1)
+        watchdog.stop()
+    }
+
+    func testCompatibilityPlaybackWatchdogIgnoresPausedPlayback() async {
+        let expectation = expectation(description: "paused playback is not stalled")
+        expectation.isInverted = true
+        let watchdog = CompatibilityPlaybackWatchdog()
+        watchdog.start(
+            stallTimeout: .milliseconds(30),
+            pollInterval: .milliseconds(5),
+            isPlaybackExpected: { false },
+            currentSeconds: { 0 },
+            onStall: { expectation.fulfill() }
+        )
+
+        await fulfillment(of: [expectation], timeout: 0.1)
+        watchdog.stop()
+    }
+
+    func testCompatibilityPlaybackWatchdogAcceptsContinuedProgress() async {
+        let expectation = expectation(description: "progressing playback is not stalled")
+        expectation.isInverted = true
+        var currentSeconds = 0.0
+        let watchdog = CompatibilityPlaybackWatchdog()
+        watchdog.start(
+            stallTimeout: .milliseconds(35),
+            pollInterval: .milliseconds(5),
+            isPlaybackExpected: { true },
+            currentSeconds: { currentSeconds },
+            onStall: { expectation.fulfill() }
+        )
+        let progressTask = Task { @MainActor in
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .milliseconds(10))
+                currentSeconds += 0.1
+            }
+        }
+
+        await fulfillment(of: [expectation], timeout: 0.1)
+        await progressTask.value
+        watchdog.stop()
+    }
+
+    func testAAAHeavySynologyCompatibilityThumbnailUsesPlayerSnapshot() async throws {
         let movieURL = try await makeTinyMOV()
         defer { try? FileManager.default.removeItem(at: movieURL) }
         let byteCount = Int64(

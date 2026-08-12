@@ -13,9 +13,9 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .synology: "Synology NAS"
         case .sftp: "SFTP 서버"
-        case .smb: "ipTIME · SMB"
-        case .webDAV: "ipTIME · WebDAV"
-        case .ftp: "ipTIME · FTP (ipDISK)"
+        case .smb: "SMB"
+        case .webDAV: "WebDAV"
+        case .ftp: "FTP"
         }
     }
 
