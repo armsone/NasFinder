@@ -162,6 +162,7 @@ struct FileBrowserView: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.returnToDashboard) private var returnToDashboard
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var favoriteStore: FavoriteStore
     @AppStorage("fileBrowserLayoutStyle") private var storedLayoutStyle = LayoutStyle.smallThumbnails.rawValue
@@ -232,101 +233,37 @@ struct FileBrowserView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            if layoutStyle != .coverFlow {
-                currentPathBar
-                thumbnailProgressLine
-            }
-            browserContent
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
-        .modifier(
-            FileBrowserNavigationAppearanceModifier(
-                isCoverFlow: layoutStyle == .coverFlow
-            )
-        )
-        .navigationTitle("")
-        .navigationBarTitleDisplayMode(.inline)
-        .modifier(
-            FileBrowserSearchModifier(
-                isEnabled: layoutStyle != .coverFlow,
-                text: $searchText
-            )
-        )
-        .toolbar {
-            ToolbarItem(placement: .topBarLeading) {
-                if layoutStyle == .coverFlow {
-                    Text(title)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(
-                            maxWidth: min(
-                                UIScreen.main.bounds.width * 0.42,
-                                300
-                            ),
-                            alignment: .leading
-                        )
-                        .allowsHitTesting(false)
-                }
-            }
-
-            ToolbarItem(placement: .principal) {
+        AnyView(
+            VStack(spacing: 0) {
                 if layoutStyle != .coverFlow {
-                    Button(action: dashboardAction) {
-                        FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
-                    }
-                    .buttonStyle(.plain)
-                    .contentShape(Rectangle())
-                    .accessibilityLabel("\(title), 첫 화면으로 이동")
-                    .accessibilityHint("NasFinder 첫 화면으로 돌아갑니다.")
+                    currentPathBar
+                    thumbnailProgressLine
                 }
+                browserContent
             }
-
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                if isSelecting {
-                    Button("완료") {
-                        endSelection()
-                    }
-                    .disabled(shareCoordinator.isPreparing)
-                } else {
-                    Button {
-                        interactionCoordinator.showBrowserPanel()
-                    } label: {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 15, weight: .bold))
-                            .foregroundStyle(SkyBreezeTheme.accent)
-                            .frame(width: 32, height: 32)
-                            .background(
-                                SkyBreezeTheme.accent.opacity(0.16),
-                                in: Circle()
-                            )
-                            .overlay {
-                                Circle()
-                                    .stroke(
-                                        SkyBreezeTheme.accent.opacity(0.48),
-                                        lineWidth: 1
-                                    )
-                            }
-                    }
-                    .disabled(operationCoordinator.isBusy)
-                    .accessibilityLabel("더 보기")
-                    .accessibilityHint("파일 작업, 새로 고침과 보기 설정 메뉴를 엽니다.")
-                    .popover(
-                        item: $interactionCoordinator.panel,
-                        attachmentAnchor: .rect(.bounds),
-                        arrowEdge: .top
-                    ) { panel in
-                        interactionPanel(panel)
-                            .onDisappear {
-                                interactionCoordinator.panelDidDisappear()
-                            }
-                    }
-                }
-            }
-        }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
+            .modifier(
+                FileBrowserNavigationAppearanceModifier(
+                    isCoverFlow: layoutStyle == .coverFlow
+                )
+            )
+            .navigationTitle("")
+            .navigationBarTitleDisplayMode(.inline)
+            .modifier(
+                FileBrowserCoverFlowChromeModifier(
+                    isActive: layoutStyle == .coverFlow
+                )
+            )
+            .modifier(
+                FileBrowserSearchModifier(
+                    isEnabled: layoutStyle != .coverFlow,
+                    text: $searchText
+                )
+            )
+            .toolbar { browserToolbar }
+            .overlay { coverFlowNavigationOverlay }
+        )
         .navigationDestination(item: $navigatedFolder) { item in
             FileBrowserView(
                 connection: viewModel.connection,
@@ -525,6 +462,134 @@ struct FileBrowserView: View {
             if preparedID != nil {
                 endSelection(allowDuringSharePreparation: true)
             }
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var browserToolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            if layoutStyle != .coverFlow {
+                Button(action: dashboardAction) {
+                    FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
+                }
+                .buttonStyle(.plain)
+                .contentShape(Rectangle())
+                .accessibilityLabel("\(title), 첫 화면으로 이동")
+                .accessibilityHint("NasFinder 첫 화면으로 돌아갑니다.")
+            }
+        }
+
+        ToolbarItemGroup(placement: .topBarTrailing) {
+            if layoutStyle != .coverFlow {
+                if isSelecting {
+                    Button("완료") {
+                        endSelection()
+                    }
+                    .disabled(shareCoordinator.isPreparing)
+                } else {
+                    regularMoreButton
+                }
+            }
+        }
+    }
+
+    private var regularMoreButton: some View {
+        Button {
+            interactionCoordinator.showBrowserPanel()
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(SkyBreezeTheme.accent)
+                .frame(width: 32, height: 32)
+                .background(SkyBreezeTheme.accent.opacity(0.16), in: Circle())
+                .overlay {
+                    Circle().stroke(
+                        SkyBreezeTheme.accent.opacity(0.48),
+                        lineWidth: 1
+                    )
+                }
+        }
+        .disabled(operationCoordinator.isBusy)
+        .accessibilityLabel("더 보기")
+        .accessibilityHint("파일 작업, 새로 고침과 보기 설정 메뉴를 엽니다.")
+        .popover(
+            item: $interactionCoordinator.panel,
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .top
+        ) { panel in
+            interactionPanel(panel)
+                .onDisappear {
+                    interactionCoordinator.panelDidDisappear()
+                }
+        }
+    }
+
+    @ViewBuilder
+    private var coverFlowNavigationOverlay: some View {
+        if layoutStyle == .coverFlow {
+            GeometryReader { geometry in
+                HStack(spacing: 8) {
+                    coverFlowBackButton
+
+                    Text(title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .layoutPriority(1)
+                        .frame(
+                            maxWidth: min(geometry.size.width * 0.44, 340),
+                            alignment: .leading
+                        )
+
+                    Spacer(minLength: 8)
+                    coverFlowMoreButton
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, geometry.safeAreaInsets.top + 4)
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
+        }
+    }
+
+    private var coverFlowBackButton: some View {
+        Button {
+            dismiss()
+        } label: {
+            Image(systemName: "chevron.left")
+                .font(.system(size: 22, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .background(.ultraThinMaterial, in: Circle())
+        .accessibilityLabel("이전 폴더")
+    }
+
+    private var coverFlowMoreButton: some View {
+        Button {
+            interactionCoordinator.showBrowserPanel()
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 16, weight: .bold))
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(SkyBreezeTheme.accent)
+        .background(.ultraThinMaterial, in: Circle())
+        .disabled(operationCoordinator.isBusy)
+        .accessibilityLabel("더 보기")
+        .popover(
+            item: $interactionCoordinator.panel,
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .top
+        ) { panel in
+            interactionPanel(panel)
+                .onDisappear {
+                    interactionCoordinator.panelDidDisappear()
+                }
         }
     }
 
@@ -2443,6 +2508,16 @@ private struct ThumbnailNetworkChangeModifier: ViewModifier {
         ) { _ in
             onChange()
         }
+    }
+}
+
+private struct FileBrowserCoverFlowChromeModifier: ViewModifier {
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .navigationBarBackButtonHidden(isActive)
+            .toolbar(isActive ? .hidden : .visible, for: .navigationBar)
     }
 }
 

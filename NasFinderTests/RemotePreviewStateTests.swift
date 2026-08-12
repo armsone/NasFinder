@@ -299,6 +299,33 @@ final class RemotePreviewStateTests: XCTestCase {
         )
     }
 
+    func testCompatibilityRemoteStreamStopsAStalledRangeRead() {
+        let service = StallingRangeVideoService()
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/stalled.avi",
+            name: "stalled.avi",
+            kind: .file,
+            size: 1_024 * 1_024,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let stream = try! CompatibilityRemoteInputStream(
+            item: item,
+            service: service,
+            rangeReadTimeout: 0.05
+        )
+        stream.open()
+        defer { stream.close() }
+
+        var bytes = [UInt8](repeating: 0, count: 32)
+        XCTAssertEqual(stream.read(&bytes, maxLength: bytes.count), -1)
+        XCTAssertEqual(
+            stream.streamError as? CompatibilityVideoPlayerError,
+            .remoteReadTimedOut
+        )
+    }
+
     func testSynologyCompatibilityThumbnailUsesPlayerSnapshot() async throws {
         let movieURL = try await makeTinyMOV()
         defer { try? FileManager.default.removeItem(at: movieURL) }

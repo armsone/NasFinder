@@ -62,6 +62,7 @@ enum CompatibilityVideoPlayerError: LocalizedError {
     case invalidRemoteFileSize
     case cannotCreateMedia
     case remoteReadFailed
+    case remoteReadTimedOut
 
     var errorDescription: String? {
         switch self {
@@ -71,6 +72,8 @@ enum CompatibilityVideoPlayerError: LocalizedError {
             "호환 영상 소스를 열 수 없습니다."
         case .remoteReadFailed:
             "호환 영상을 원격 위치에서 읽지 못했습니다."
+        case .remoteReadTimedOut:
+            "원격 영상 데이터 응답 시간이 초과되었습니다."
         }
     }
 }
@@ -89,11 +92,13 @@ final class CompatibilityRemoteInputStream: InputStream, @unchecked Sendable {
 
     static let maximumReadChunkBytes = 1_024 * 1_024
     static let maximumCachedBytes = 2 * 1_024 * 1_024
+    static let remoteReadTimeout: TimeInterval = 8
 
     private let item: RemoteFileItem
     private let service: any RemoteFileService
     private let maximumTransferredBytes: Int?
     private let onTransfer: (@Sendable (Int) -> Void)?
+    private let rangeReadTimeout: TimeInterval
     private let lock = NSLock()
     private var status: Stream.Status = .notOpen
     private var storedError: Error?
@@ -106,7 +111,8 @@ final class CompatibilityRemoteInputStream: InputStream, @unchecked Sendable {
         item: RemoteFileItem,
         service: any RemoteFileService,
         maximumTransferredBytes: Int? = nil,
-        onTransfer: (@Sendable (Int) -> Void)? = nil
+        onTransfer: (@Sendable (Int) -> Void)? = nil,
+        rangeReadTimeout: TimeInterval = CompatibilityRemoteInputStream.remoteReadTimeout
     ) throws {
         guard item.size.map({ $0 > 0 }) == true else {
             throw CompatibilityVideoPlayerError.invalidRemoteFileSize
@@ -115,6 +121,7 @@ final class CompatibilityRemoteInputStream: InputStream, @unchecked Sendable {
         self.service = service
         self.maximumTransferredBytes = maximumTransferredBytes
         self.onTransfer = onTransfer
+        self.rangeReadTimeout = rangeReadTimeout
         super.init(data: Data())
     }
 
@@ -186,7 +193,8 @@ final class CompatibilityRemoteInputStream: InputStream, @unchecked Sendable {
         }
         let remainingFileBytes = Int(min(Int64(Int.max), fileSize - readOffset))
         let preferredLength = min(
-            max(len, Self.maximumReadChunkBytes),
+            max(len, 64 * 1_024),
+            Self.maximumReadChunkBytes,
             remainingFileBytes,
             remainingBudget ?? Int.max
         )
@@ -198,7 +206,8 @@ final class CompatibilityRemoteInputStream: InputStream, @unchecked Sendable {
             service: service,
             item: item,
             offset: readOffset,
-            length: preferredLength
+            length: preferredLength,
+            timeout: rangeReadTimeout
         )
 
         lock.lock()
@@ -293,7 +302,8 @@ private final class BlockingRemoteRangeRead: @unchecked Sendable {
         service: any RemoteFileService,
         item: RemoteFileItem,
         offset: Int64,
-        length: Int
+        length: Int,
+        timeout: TimeInterval
     ) -> Result<Data, Error> {
         condition.lock()
         task = Task.detached(priority: .userInitiated) { [weak self] in
@@ -311,12 +321,22 @@ private final class BlockingRemoteRangeRead: @unchecked Sendable {
             }
             self?.finish(result)
         }
+        let deadline = Date(timeIntervalSinceNow: timeout)
         while result == nil && !isCancelled {
-            condition.wait()
+            if !condition.wait(until: deadline), result == nil {
+                isCancelled = true
+            }
         }
-        let finalResult = result ?? .failure(CancellationError())
+        let timedOut = result == nil && isCancelled
+        let activeTask = task
+        let finalResult = result ?? .failure(
+            timedOut
+                ? CompatibilityVideoPlayerError.remoteReadTimedOut
+                : CancellationError()
+        )
         task = nil
         condition.unlock()
+        if timedOut { activeTask?.cancel() }
         return finalResult
     }
 
@@ -366,10 +386,15 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
         configure(media: media)
     }
 
-    init(item: RemoteFileItem, service: any RemoteFileService) throws {
+    init(
+        item: RemoteFileItem,
+        service: any RemoteFileService,
+        onTransfer: (@Sendable (Int) -> Void)? = nil
+    ) throws {
         let inputStream = try CompatibilityRemoteInputStream(
             item: item,
-            service: service
+            service: service,
+            onTransfer: onTransfer
         )
         mediaPlayer = VLCMediaPlayer()
         self.inputStream = inputStream
@@ -428,9 +453,13 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
         mediaPlayer.drawable = nil
     }
 
+    var usesRemoteStream: Bool { inputStream != nil }
+
     nonisolated func mediaPlayerStateChanged(_ newState: VLCMediaPlayerState) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            // VLCKit 4: 0 nothing, 1 opening, 2 playing, 3 paused,
+            // 4 stopped, 5 stopping, 6 error.
             switch newState.rawValue {
             case 1:
                 self.isPreparing = true

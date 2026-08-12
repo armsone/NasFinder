@@ -271,17 +271,28 @@ struct RemotePreviewView: View {
 
     private var remoteLoadingView: some View {
         VStack(spacing: 14) {
-            if let progress = viewModel.downloadProgress,
-               let fraction = progress.fractionCompleted {
-                ProgressView(value: fraction)
-                    .tint(.white)
-                    .frame(maxWidth: 260)
+            if let progress = viewModel.downloadProgress {
+                if let fraction = progress.fractionCompleted {
+                    ProgressView(value: fraction)
+                        .tint(.white)
+                        .frame(maxWidth: 260)
+                } else {
+                    ProgressView()
+                        .tint(.white)
+                }
                 Text(downloadProgressDescription(progress))
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.72))
             } else {
                 ProgressView()
                     .tint(.white)
+                if viewModel.streamedVideoByteCount > 0 {
+                    Text(
+                        "Range \(ByteCountFormatter.string(fromByteCount: viewModel.streamedVideoByteCount, countStyle: .file)) 수신"
+                    )
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.72))
+                }
             }
 
             Text(
@@ -835,6 +846,7 @@ final class RemotePreviewViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isPreparingVideo = false
     @Published private(set) var downloadProgress: RemoteDownloadProgress?
+    @Published private(set) var streamedVideoByteCount: Int64 = 0
     @Published private(set) var isPlaying = true
     @Published private(set) var playbackMode: PreviewPlaybackMode = .repeatAll
     @Published private(set) var photoAdvanceInterval: PhotoAdvanceInterval
@@ -926,6 +938,7 @@ final class RemotePreviewViewModel: ObservableObject {
         localURL = nil
         image = nil
         downloadProgress = nil
+        streamedVideoByteCount = 0
         loadedVideoDurationSeconds = nil
         defer {
             cancelActiveDownload(generation: generation)
@@ -952,7 +965,14 @@ final class RemotePreviewViewModel: ObservableObject {
                 try Task.checkCancellation()
                 let newPlayer = try CompatibilityVideoPlayer(
                     item: requestedItem,
-                    service: service
+                    service: service,
+                    onTransfer: { [weak self] byteCount in
+                        Task { @MainActor [weak self] in
+                            guard let self,
+                                  self.currentItem.id == requestedItem.id else { return }
+                            self.streamedVideoByteCount = Int64(byteCount)
+                        }
+                    }
                 )
                 guard isCurrentLoad(generation, itemID: requestedItem.id) else {
                     newPlayer.stop()
@@ -1386,7 +1406,7 @@ final class RemotePreviewViewModel: ObservableObject {
             self.failCompatibilityVideoPreparation(message, itemID: itemID)
         }
         videoPreparationTimeoutTask = Task { [weak self, weak newPlayer] in
-            try? await Task.sleep(for: .seconds(20))
+            try? await Task.sleep(for: .seconds(12))
             guard !Task.isCancelled,
                   let self,
                   let newPlayer,
@@ -1467,6 +1487,7 @@ final class RemotePreviewViewModel: ObservableObject {
         itemID: RemoteFileItem.ID
     ) {
         guard currentItem.id == itemID else { return }
+        let shouldRetryWithFullDownload = compatibilityPlayer?.usesRemoteStream == true
         videoPreparationTimeoutTask?.cancel()
         videoPreparationTimeoutTask = nil
         externalSubtitleTask?.cancel()
@@ -1474,8 +1495,24 @@ final class RemotePreviewViewModel: ObservableObject {
         isPreparingVideo = false
         compatibilityPlayer?.stop()
         compatibilityPlayer = nil
-        errorMessage = "영상을 재생하지 못했습니다: \(message)"
+        streamedVideoByteCount = 0
         downloadProgress = nil
+
+        if shouldRetryWithFullDownload {
+            errorMessage = nil
+            activeLoadGeneration = nil
+            isLoading = false
+            Task { [weak self] in
+                await Task.yield()
+                guard let self, self.currentItem.id == itemID else { return }
+                await self.loadCurrentItem(
+                    forceFullDownload: true,
+                    forceCompatibilityPlayer: true
+                )
+            }
+        } else {
+            errorMessage = "영상을 재생하지 못했습니다: \(message)"
+        }
     }
 
     private func failVideoPreparation(_ message: String, itemID: RemoteFileItem.ID) {

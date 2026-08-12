@@ -120,17 +120,13 @@ struct FileBrowserCoverFlowView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(
-                    .bottom,
-                    reflectionReserve(for: proxy.size)
-                )
+                .padding(.bottom, 46)
                 .contentShape(Rectangle())
                 .gesture(flowGesture(step: step))
 
             }
             .padding(.horizontal, 12)
             .padding(.top, 0)
-            .offset(y: 16)
         }
         .background(Color.white)
         .onChange(of: items.map(\.id), initial: true) { _, _ in
@@ -169,16 +165,24 @@ struct FileBrowserCoverFlowView: View {
         let emphasis = max(1 - absoluteDistance, 0)
         let isSelected = index == selectedIndex
         let cornerRadius = 13 + emphasis * 5
+        let centralTarget = centralTargetWidth(
+            for: availableSize,
+            baseWidth: baseWidth
+        )
         let scaleValue = scale(
             for: absoluteDistance,
             baseWidth: baseWidth,
-            availableHeight: availableSize.height
+            centralTarget: centralTarget
         )
         let sidePush = horizontalPush(
             for: distance,
-            baseWidth: baseWidth
+            baseWidth: baseWidth,
+            centralTarget: centralTarget
         )
-        let reflectionHeight = baseHeight * 0.18
+        let reflectionHeight = min(
+            baseWidth * scaleValue * 0.12,
+            28 + 10 * smoothstep(emphasis)
+        )
 
         RemoteThumbnailView(
             item: item,
@@ -209,11 +213,11 @@ struct FileBrowserCoverFlowView: View {
                 height: reflectionHeight * scaleValue
             )
             .scaleEffect(x: 1, y: -1)
-            .opacity(0.10 + emphasis * 0.08)
+            .opacity(0.09 + emphasis * 0.07)
             .blur(radius: 1.2)
             .mask {
                 LinearGradient(
-                    colors: [.white.opacity(0.42), .clear],
+                    colors: [.white.opacity(0.38), .clear],
                     startPoint: .top,
                     endPoint: .bottom
                 )
@@ -328,7 +332,7 @@ struct FileBrowserCoverFlowView: View {
     private func scale(
         for distance: CGFloat,
         baseWidth: CGFloat,
-        availableHeight: CGFloat
+        centralTarget: CGFloat
     ) -> CGFloat {
         let surroundingScale: CGFloat
         if distance <= 1 {
@@ -336,39 +340,42 @@ struct FileBrowserCoverFlowView: View {
         } else {
             surroundingScale = max(0.60, 0.92 - 0.08 * (distance - 1))
         }
-        let emphasis = max(1 - distance, 0)
-        let boostedScale = surroundingScale * (1 + 0.24 * emphasis)
-        let usableImageHeight = max(
-            availableHeight
-                - (baseWidth * 1.34 * 0.18 + 20)
-                - 16
-                - 8,
-            baseWidth
-        )
-        let centralScaleCap = min(
-            1.34,
-            min(usableImageHeight, 400) / max(baseWidth, 1)
-        )
-        return max(
-            surroundingScale,
-            min(boostedScale, centralScaleCap)
-        )
+        let focus = max(1 - distance, 0)
+        let easedFocus = smoothstep(focus)
+        let focusedScale = centralTarget / max(baseWidth, 1)
+        return surroundingScale
+            + (focusedScale - surroundingScale) * easedFocus
     }
 
     private func horizontalPush(
         for distance: CGFloat,
-        baseWidth: CGFloat
+        baseWidth: CGFloat,
+        centralTarget: CGFloat
     ) -> CGFloat {
         guard distance != 0 else { return 0 }
-        let emphasis = max(1 - abs(distance), 0)
+        let travel = smoothstep(min(max(abs(distance), 0), 1))
+        let fullPush = max(
+            (centralTarget - baseWidth * 0.92) / 2 + 18,
+            44
+        )
         return (distance < 0 ? -1 : 1)
-            * baseWidth
-            * 0.13
-            * (1 - emphasis)
+            * fullPush
+            * travel
     }
 
-    private func reflectionReserve(for size: CGSize) -> CGFloat {
-        cardBaseWidth(for: size) * 1.34 * 0.18 + 20
+    private func centralTargetWidth(
+        for size: CGSize,
+        baseWidth: CGFloat
+    ) -> CGFloat {
+        max(
+            baseWidth * 1.32,
+            min(size.width * 0.38, size.height - 92, 420)
+        )
+    }
+
+    private func smoothstep(_ value: CGFloat) -> CGFloat {
+        let clamped = min(max(value, 0), 1)
+        return clamped * clamped * (3 - 2 * clamped)
     }
 
     private func opacity(for distance: CGFloat) -> Double {
