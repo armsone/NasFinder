@@ -549,6 +549,8 @@ struct CompatibilityVideoMiniProgressLine: View {
 @MainActor
 enum CompatibilityRemoteVideoThumbnailGenerator {
     private static var activeOperation: CompatibilityVideoThumbnailOperation?
+    private static var activeSnapshotOperation:
+        CompatibilityVideoPlayerSnapshotOperation?
 
     static func generate(
         for item: RemoteFileItem,
@@ -587,6 +589,15 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
         var localURL: URL?
         var transferredBytes = 0
         var priorStreamBytes = 0
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        func remainingGenerationTime() throws -> Duration {
+            let remaining = clock.now.duration(to: deadline)
+            guard remaining > .zero else {
+                throw RemoteVideoThumbnailGenerationError.timedOut
+            }
+            return remaining
+        }
         defer {
             if let localURL {
                 try? FileManager.default.removeItem(at: localURL)
@@ -649,6 +660,7 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                try Task.checkCancellation()
                 if activeOperation === initialOperation { activeOperation = nil }
                 let fallbackMedia: VLCMedia?
                 if let localURL {
@@ -679,15 +691,68 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                         activeOperation = nil
                     }
                 }
-                initialImage = try await fallbackOperation.generate(
-                    media: fallbackMedia,
-                    stream: stream,
-                    dimensions: dimensions,
-                    snapshotPosition: initialPosition,
-                    preciseSeek: false,
-                    closesStreamOnSuccess: false,
-                    timeout: timeout
-                )
+                do {
+                    let fallbackTimeout = try remainingGenerationTime()
+                    initialImage = try await fallbackOperation.generate(
+                        media: fallbackMedia,
+                        stream: stream,
+                        dimensions: dimensions,
+                        snapshotPosition: initialPosition,
+                        preciseSeek: false,
+                        closesStreamOnSuccess: false,
+                        timeout: fallbackTimeout
+                    )
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    try Task.checkCancellation()
+                    guard service.connection.kind == .synology else {
+                        throw error
+                    }
+                    if activeOperation === fallbackOperation {
+                        activeOperation = nil
+                    }
+                    let snapshotMedia: VLCMedia?
+                    let snapshotStream: CompatibilityRemoteInputStream?
+                    if let localURL {
+                        snapshotMedia = VLCMedia(url: localURL)
+                        snapshotStream = nil
+                    } else {
+                        if let stream {
+                            priorStreamBytes += stream.accountedByteCount
+                            stream.close()
+                        }
+                        let remainingBytes = max(
+                            lease.maximumBytes - priorStreamBytes,
+                            0
+                        )
+                        guard remainingBytes > 0 else { throw error }
+                        let freshStream = try CompatibilityRemoteInputStream(
+                            item: item,
+                            service: service,
+                            maximumTransferredBytes: remainingBytes
+                        )
+                        stream = freshStream
+                        snapshotStream = freshStream
+                        snapshotMedia = VLCMedia(stream: freshStream)
+                    }
+                    guard let snapshotMedia else { throw error }
+                    let snapshotOperation =
+                        CompatibilityVideoPlayerSnapshotOperation()
+                    activeSnapshotOperation = snapshotOperation
+                    defer {
+                        if activeSnapshotOperation === snapshotOperation {
+                            activeSnapshotOperation = nil
+                        }
+                    }
+                    initialImage = try await snapshotOperation.generate(
+                        media: snapshotMedia,
+                        stream: snapshotStream,
+                        dimensions: dimensions,
+                        position: initialPosition,
+                        timeout: try remainingGenerationTime()
+                    )
+                }
             }
             if activeOperation === initialOperation { activeOperation = nil }
             if let stream {
@@ -730,6 +795,7 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                         if activeOperation === retryOperation { activeOperation = nil }
                     }
                     do {
+                        let retryTimeout = try remainingGenerationTime()
                         image = try await retryOperation.generate(
                             media: retryMedia,
                             stream: retryStream,
@@ -738,7 +804,7 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                                 + (1 - initialPosition) / 2,
                             preciseSeek: true,
                             closesStreamOnSuccess: true,
-                            timeout: preciseSeekTimeout
+                            timeout: min(preciseSeekTimeout, retryTimeout)
                         )
                     } catch is CancellationError {
                         if let retryStream {
@@ -782,7 +848,8 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
     static func cancelAll() async {
         await CompatibilityVideoThumbnailExecutionLimiter.shared.cancelWaitingOperations()
         activeOperation?.cancel()
-        while activeOperation != nil {
+        activeSnapshotOperation?.cancel()
+        while activeOperation != nil || activeSnapshotOperation != nil {
             await Task.yield()
         }
     }
@@ -816,6 +883,131 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
             throw RemoteVideoThumbnailGenerationError.imageEncodingFailed
         }
         return data as Data
+    }
+}
+
+@MainActor
+private final class CompatibilityVideoPlayerSnapshotOperation {
+    private var continuation: CheckedContinuation<CGImage, Error>?
+    private var player: VLCMediaPlayer?
+    private var stream: CompatibilityRemoteInputStream?
+    private var pollingTask: Task<Void, Never>?
+    private var drawable: UIView?
+    private var snapshotURL: URL?
+    private var isFinished = false
+
+    func generate(
+        media: VLCMedia,
+        stream: CompatibilityRemoteInputStream?,
+        dimensions: CGSize,
+        position: Float,
+        timeout: Duration
+    ) async throws -> CGImage {
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                self.continuation = continuation
+                self.stream = stream
+                media.addOption(":no-audio")
+
+                let player = VLCMediaPlayer()
+                let drawable = UIView(
+                    frame: CGRect(origin: .zero, size: dimensions)
+                )
+                drawable.backgroundColor = .black
+                player.drawable = drawable
+                player.media = media
+                player.audio?.volume = 0
+                self.player = player
+                self.drawable = drawable
+                player.play()
+
+                pollingTask = Task { @MainActor [weak self] in
+                    await self?.capture(
+                        dimensions: dimensions,
+                        position: position,
+                        timeout: timeout
+                    )
+                }
+            }
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.finish(.failure(CancellationError()))
+            }
+        }
+    }
+
+    func cancel() {
+        finish(.failure(CancellationError()))
+    }
+
+    private func capture(
+        dimensions: CGSize,
+        position: Float,
+        timeout: Duration
+    ) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        var didSeek = false
+        var didRequestSnapshot = false
+        let targetPosition = Double(position)
+
+        while clock.now < deadline, !Task.isCancelled {
+            guard let player else { return }
+            player.audio?.volume = 0
+            if player.state.rawValue == 6 {
+                finish(
+                    .failure(RemoteVideoThumbnailGenerationError.imageGenerationFailed)
+                )
+                return
+            }
+            if player.isPlaying {
+                if !didSeek {
+                    player.position = targetPosition
+                    didSeek = true
+                } else if !didRequestSnapshot,
+                          player.position >= max(targetPosition - 0.04, 0) {
+                    let url = FileManager.default.temporaryDirectory
+                        .appending(path: UUID().uuidString)
+                        .appendingPathExtension("png")
+                    snapshotURL = url
+                    didRequestSnapshot = true
+                    player.saveVideoSnapshot(
+                        at: url.path,
+                        withWidth: Int32(max(dimensions.width, 1)),
+                        andHeight: Int32(max(dimensions.height, 1))
+                    )
+                }
+            }
+            if didRequestSnapshot,
+               let snapshotURL,
+               let image = UIImage(contentsOfFile: snapshotURL.path)?.cgImage {
+                finish(.success(image))
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(80))
+        }
+        finish(.failure(RemoteVideoThumbnailGenerationError.timedOut))
+    }
+
+    private func finish(_ result: Result<CGImage, Error>) {
+        guard !isFinished else { return }
+        isFinished = true
+        let continuation = continuation
+        self.continuation = nil
+        pollingTask?.cancel()
+        pollingTask = nil
+        player?.audio?.volume = 0
+        player?.stop()
+        player?.drawable = nil
+        player = nil
+        drawable = nil
+        stream?.close()
+        stream = nil
+        if let snapshotURL {
+            try? FileManager.default.removeItem(at: snapshotURL)
+        }
+        snapshotURL = nil
+        continuation?.resume(with: result)
     }
 }
 
