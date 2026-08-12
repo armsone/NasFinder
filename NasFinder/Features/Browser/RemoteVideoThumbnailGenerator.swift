@@ -6,6 +6,32 @@ import UniformTypeIdentifiers
 struct RemoteVideoThumbnailGenerationResult: Sendable {
     let data: Data
     let transferredBytes: Int
+    let mediaDurationSeconds: TimeInterval?
+    let processingPath: RemoteVideoThumbnailProcessingPath
+
+    init(
+        data: Data,
+        transferredBytes: Int,
+        mediaDurationSeconds: TimeInterval? = nil,
+        processingPath: RemoteVideoThumbnailProcessingPath = .avFoundationRange
+    ) {
+        self.data = data
+        self.transferredBytes = transferredBytes
+        self.mediaDurationSeconds = mediaDurationSeconds
+        self.processingPath = processingPath
+    }
+}
+
+enum RemoteVideoThumbnailProcessingPath: String, Codable, Sendable {
+    case backend
+    case avFoundationRange
+    case compatibilityRange
+    case compatibilityLocalFile
+}
+
+enum RemoteVideoThumbnailGenerationMode: Sendable {
+    case bounded
+    case completeFile
 }
 
 enum RemoteVideoThumbnailRoutingPolicy {
@@ -40,6 +66,7 @@ enum RemoteVideoThumbnailRoutingPolicy {
 enum RemoteVideoThumbnailGenerationError: LocalizedError, Sendable {
     case unsupportedSource
     case trafficBudgetExhausted
+    case itemTrafficLimitReached
     case invalidDuration
     case imageGenerationFailed
     case imageEncodingFailed
@@ -51,6 +78,8 @@ enum RemoteVideoThumbnailGenerationError: LocalizedError, Sendable {
             "이 연결에서는 영상 일부를 읽어 썸네일을 만들 수 없습니다."
         case .trafficBudgetExhausted:
             "이 폴더의 썸네일 데이터 사용 한도에 도달했습니다."
+        case .itemTrafficLimitReached:
+            "파일당 128MB 범위 한도에서 썸네일을 만들지 못했습니다."
         case .invalidDuration:
             "영상 재생 시간을 확인할 수 없습니다."
         case .imageGenerationFailed:
@@ -79,9 +108,12 @@ enum RemoteVideoThumbnailGenerator {
         service: any RemoteFileService,
         size: RemoteThumbnailSize,
         trafficBudget: RemoteVideoThumbnailTrafficBudget = .shared,
-        timeout: Duration = defaultGenerationTimeout
+        mode: RemoteVideoThumbnailGenerationMode = .bounded,
+        timeout: Duration = defaultGenerationTimeout,
+        progress: (@Sendable (Int64, Int64) -> Void)? = nil
     ) async throws -> RemoteVideoThumbnailGenerationResult {
-        if CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item) {
+        if mode == .completeFile
+            || CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item) {
             // Keep VLCKit work structured under the cell task. The shared
             // coordinator intentionally outlives individual waiters, which is
             // useful for AVFoundation but retained cancelled VLC players when
@@ -91,7 +123,9 @@ enum RemoteVideoThumbnailGenerator {
                 service: service,
                 size: size,
                 trafficBudget: trafficBudget,
-                timeout: timeout
+                mode: mode,
+                timeout: timeout,
+                progress: progress
             )
         }
         let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
@@ -424,6 +458,32 @@ actor RemoteVideoThumbnailTrafficBudget {
     }
 
     static let shared = RemoteVideoThumbnailTrafficBudget()
+    static let completeFileMaximumItemBytes = 128 * 1_024 * 1_024
+    static let completeFileFastPass = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumItemBytes: 16 * 1_024 * 1_024,
+        minimumLeaseBytes: defaultMinimumLeaseBytes
+    )
+    static let completeFileRetryPass = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumItemBytes: 24 * 1_024 * 1_024,
+        minimumLeaseBytes: defaultMinimumLeaseBytes
+    )
+    static let completeFileRecoveryPass = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumItemBytes: 32 * 1_024 * 1_024,
+        minimumLeaseBytes: defaultMinimumLeaseBytes
+    )
+    static let completeFileFinalPass = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumItemBytes: 56 * 1_024 * 1_024,
+        minimumLeaseBytes: defaultMinimumLeaseBytes
+    )
+    static let completeFileShared = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumItemBytes: completeFileMaximumItemBytes,
+        minimumLeaseBytes: defaultMinimumLeaseBytes
+    )
     static let sftpShared = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: 18_000_000,
         maximumItemBytes: defaultMaximumItemBytes,

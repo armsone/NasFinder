@@ -128,6 +128,7 @@ struct FileBrowserView: View {
         case list
         case smallThumbnails
         case largeThumbnails
+        case coverFlow
 
         var id: String { rawValue }
 
@@ -136,9 +137,11 @@ struct FileBrowserView: View {
             case .list:
                 "자세히"
             case .smallThumbnails:
-                "썸네일"
+                "작은 썸네일"
             case .largeThumbnails:
-                "미리보기"
+                "포스터"
+            case .coverFlow:
+                "오버플로우"
             }
         }
 
@@ -150,6 +153,8 @@ struct FileBrowserView: View {
                 "square.grid.3x3"
             case .largeThumbnails:
                 "square.grid.2x2"
+            case .coverFlow:
+                "rectangle.stack.fill"
             }
         }
     }
@@ -183,6 +188,10 @@ struct FileBrowserView: View {
     @State private var isImportingFiles = false
     @State private var searchText = ""
     @State private var thumbnailReloadVersion = 0
+    @State private var isRequestingCoverFlowOrientation = false
+    @State private var coverFlowEnteredFromPoster = false
+    @State private var suppressAutomaticCoverFlowUntil = Date.distantPast
+    @State private var hasSuperThumbnailsInCurrentFolder = false
 
     @MainActor
     init(
@@ -223,28 +232,43 @@ struct FileBrowserView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            currentPathBar
-            thumbnailProgressLine
+            if layoutStyle != .coverFlow {
+                currentPathBar
+                thumbnailProgressLine
+            }
             browserContent
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
+        .modifier(
+            FileBrowserNavigationAppearanceModifier(
+                isCoverFlow: layoutStyle == .coverFlow
+            )
+        )
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
-        .searchable(
-            text: $searchText,
-            placement: .navigationBarDrawer(displayMode: .automatic),
-            prompt: "현재 폴더 검색"
+        .modifier(
+            FileBrowserSearchModifier(
+                isEnabled: layoutStyle != .coverFlow,
+                text: $searchText
+            )
         )
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Button(action: dashboardAction) {
-                    FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
+                if layoutStyle == .coverFlow {
+                    Text(title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Button(action: dashboardAction) {
+                        FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("\(title), 첫 화면으로 이동")
+                    .accessibilityHint("NasFinder 첫 화면으로 돌아갑니다.")
                 }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
-                .accessibilityLabel("\(title), 첫 화면으로 이동")
-                .accessibilityHint("NasFinder 첫 화면으로 돌아갑니다.")
             }
 
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -346,46 +370,30 @@ struct FileBrowserView: View {
                 title: title
             )
         }
+        .onChange(of: layoutStyle, initial: true) { _, style in
+            updateCoverFlowOrientation(for: style)
+        }
+        .modifier(
+            FileBrowserDeviceRotationModifier(
+                onChange: handleDeviceOrientationChange
+            )
+        )
         .task {
             await RemoteThumbnailDiskCache.shared.clearTransientFailures()
             await viewModel.load()
+            await refreshSuperThumbnailAvailability()
+            guard !Task.isCancelled, !viewModel.items.isEmpty else { return }
+            thumbnailPreheater.start(
+                rootItems: viewModel.items,
+                rootPath: viewModel.path,
+                recursively: false,
+                requiresExternalPower: false,
+                generationMode: .bounded,
+                service: viewModel.service
+            )
         }
         .overlay(alignment: .bottom) {
-            VStack(spacing: 8) {
-                if shareCoordinator.isPreparing {
-                    SharePreparationBanner(
-                        itemName: shareCoordinator.preparingItemName,
-                        completedCount: shareCoordinator.completedCount,
-                        totalCount: shareCoordinator.totalCount
-                    ) {
-                        shareCoordinator.cancelPreparation()
-                    }
-                }
-
-                if operationCoordinator.isWorking {
-                    FileOperationProgressBanner(
-                        title: operationCoordinator.operationTitle ?? "파일 작업 중…",
-                        progress: operationCoordinator.progress,
-                        onCancel: operationCoordinator.cancel
-                    )
-                } else if let status = operationCoordinator.statusMessage {
-                    FileOperationStatusBanner(
-                        message: status,
-                        onDismiss: operationCoordinator.dismissStatus
-                    )
-                }
-
-                if thumbnailPreheater.isRunning {
-                    ThumbnailPreheatProgressBanner(preheater: thumbnailPreheater)
-                } else if let status = thumbnailPreheater.statusMessage {
-                    FileOperationStatusBanner(
-                        message: status,
-                        onDismiss: thumbnailPreheater.dismissStatus
-                    )
-                }
-            }
-            .padding()
-            .transition(.move(edge: .bottom).combined(with: .opacity))
+            browserStatusOverlay
         }
         .safeAreaInset(edge: .bottom) {
             if isSelecting {
@@ -472,6 +480,10 @@ struct FileBrowserView: View {
         .onDisappear {
             shareCoordinator.cancelPreparation()
             thumbnailPreheater.cancel()
+            if isRequestingCoverFlowOrientation {
+                FileBrowserOrientationController.endCoverFlow()
+                isRequestingCoverFlowOrientation = false
+            }
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             thumbnailPreheater.updateAppIsActive(phase == .active)
@@ -486,6 +498,47 @@ struct FileBrowserView: View {
             if preparedID != nil {
                 endSelection(allowDuringSharePreparation: true)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var browserStatusOverlay: some View {
+        if layoutStyle != .coverFlow {
+            VStack(spacing: 8) {
+                if shareCoordinator.isPreparing {
+                    SharePreparationBanner(
+                        itemName: shareCoordinator.preparingItemName,
+                        completedCount: shareCoordinator.completedCount,
+                        totalCount: shareCoordinator.totalCount
+                    ) {
+                        shareCoordinator.cancelPreparation()
+                    }
+                }
+
+                if operationCoordinator.isWorking {
+                    FileOperationProgressBanner(
+                        title: operationCoordinator.operationTitle ?? "파일 작업 중…",
+                        progress: operationCoordinator.progress,
+                        onCancel: operationCoordinator.cancel
+                    )
+                } else if let status = operationCoordinator.statusMessage {
+                    FileOperationStatusBanner(
+                        message: status,
+                        onDismiss: operationCoordinator.dismissStatus
+                    )
+                }
+
+                if thumbnailPreheater.isRunning {
+                    ThumbnailPreheatProgressBanner(preheater: thumbnailPreheater)
+                } else if let status = thumbnailPreheater.statusMessage {
+                    FileOperationStatusBanner(
+                        message: status,
+                        onDismiss: thumbnailPreheater.dismissStatus
+                    )
+                }
+            }
+            .padding()
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
 
@@ -514,15 +567,79 @@ struct FileBrowserView: View {
                 list
             case .smallThumbnails, .largeThumbnails:
                 thumbnailGrid(for: layoutStyle)
+            case .coverFlow:
+                FileBrowserCoverFlowView(
+                    items: displayedItems,
+                    service: viewModel.service,
+                    thumbnailReloadVersion: thumbnailReloadVersion,
+                    onActivate: activate,
+                    onShowActions: showItemPanel
+                )
             }
         }
     }
 
     private var layoutStyle: LayoutStyle {
-        LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
+        let stored = LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
+        if stored == .coverFlow, !hasSuperThumbnailsInCurrentFolder {
+            return .largeThumbnails
+        }
+        return stored
     }
 
-    private func startThumbnailPreheating(for item: RemoteFileItem, recursively: Bool) {
+    private var availableLayoutStyles: [LayoutStyle] {
+        LayoutStyle.allCases.filter {
+            $0 != .coverFlow || hasSuperThumbnailsInCurrentFolder
+        }
+    }
+
+    @MainActor
+    private func refreshSuperThumbnailAvailability() async {
+        let keys = Set(
+            viewModel.items
+                .filter(\.isVideo)
+                .flatMap(RemoteThumbnailCacheKey.allRemoteDataKeys)
+        )
+        let isAvailable = await SuperThumbnailCache.shared.containsAnyData(
+            forKeys: keys
+        )
+        guard !Task.isCancelled else { return }
+        hasSuperThumbnailsInCurrentFolder = isAvailable
+    }
+
+    private func updateCoverFlowOrientation(for style: LayoutStyle) {
+        if style == .coverFlow,
+           !coverFlowEnteredFromPoster,
+           !isRequestingCoverFlowOrientation {
+            FileBrowserOrientationController.beginCoverFlow()
+            isRequestingCoverFlowOrientation = true
+        } else if (style != .coverFlow || coverFlowEnteredFromPoster),
+                  isRequestingCoverFlowOrientation {
+            FileBrowserOrientationController.endCoverFlow()
+            isRequestingCoverFlowOrientation = false
+        }
+    }
+
+    private func handleDeviceOrientationChange(_ orientation: UIDeviceOrientation) {
+        guard Date.now >= suppressAutomaticCoverFlowUntil else { return }
+        if orientation.isLandscape,
+           layoutStyle == .largeThumbnails,
+           hasSuperThumbnailsInCurrentFolder {
+            coverFlowEnteredFromPoster = true
+            storedLayoutStyle = LayoutStyle.coverFlow.rawValue
+        } else if orientation.isPortrait,
+                  layoutStyle == .coverFlow,
+                  coverFlowEnteredFromPoster {
+            storedLayoutStyle = LayoutStyle.largeThumbnails.rawValue
+            coverFlowEnteredFromPoster = false
+        }
+    }
+
+    private func startThumbnailPreheating(
+        for item: RemoteFileItem,
+        recursively: Bool,
+        generationMode: RemoteVideoThumbnailGenerationMode = .bounded
+    ) {
         if item.isDirectory {
             Task {
                 do {
@@ -532,7 +649,9 @@ struct FileBrowserView: View {
                         rootItems: children,
                         rootPath: item.path,
                         recursively: recursively,
-                        requiresExternalPower: true,
+                        requiresExternalPower: recursively
+                            || generationMode == .completeFile,
+                        generationMode: generationMode,
                         service: viewModel.service
                     )
                 } catch {
@@ -546,6 +665,7 @@ struct FileBrowserView: View {
             rootItems: [item],
             rootPath: viewModel.path,
             recursively: false,
+            generationMode: generationMode,
             service: viewModel.service
         )
     }
@@ -609,13 +729,15 @@ struct FileBrowserView: View {
                 MorePanelSectionTitle("보기")
 
                 HStack(spacing: 4) {
-                    ForEach(LayoutStyle.allCases) { style in
+                    ForEach(availableLayoutStyles) { style in
                         CompactPanelButton(
                             title: style.title,
                             systemImage: style.systemImage,
                             isSelected: layoutStyle == style
                         ) {
                             performMorePanelAction {
+                                coverFlowEnteredFromPoster = false
+                                suppressAutomaticCoverFlowUntil = Date.now.addingTimeInterval(0.8)
                                 storedLayoutStyle = style.rawValue
                             }
                         }
@@ -946,6 +1068,10 @@ struct FileBrowserView: View {
             minimum = dynamicTypeSize.isAccessibilitySize ? 270 : 158
             maximum = 340
             spacing = 16
+        case .coverFlow:
+            minimum = 320
+            maximum = 600
+            spacing = 12
         }
 
         return [

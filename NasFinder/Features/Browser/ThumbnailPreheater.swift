@@ -2,6 +2,12 @@ import Foundation
 import Network
 import UIKit
 
+extension Notification.Name {
+    static let thumbnailNetworkPathDidChange = Notification.Name(
+        "thumbnailNetworkPathDidChange"
+    )
+}
+
 enum ThumbnailPreheatPolicy {
     static func canGenerate(
         item: RemoteFileItem,
@@ -27,6 +33,11 @@ enum ThumbnailPreheatPolicy {
     }
 }
 
+private struct SuperThumbnailWorkItem {
+    let item: RemoteFileItem
+    let attempt: Int
+}
+
 final class ThumbnailNetworkMonitor: @unchecked Sendable {
     static let shared = ThumbnailNetworkMonitor()
 
@@ -40,6 +51,10 @@ final class ThumbnailNetworkMonitor: @unchecked Sendable {
             self?.lock.lock()
             self?.currentPath = path
             self?.lock.unlock()
+            NotificationCenter.default.post(
+                name: .thumbnailNetworkPathDidChange,
+                object: nil
+            )
         }
         monitor.start(queue: queue)
     }
@@ -57,6 +72,7 @@ final class ThumbnailNetworkMonitor: @unchecked Sendable {
 @MainActor
 final class ThumbnailPreheater: ObservableObject {
     static let maximumSynologyDataBytes: Int64 = 256 * 1_024 * 1_024
+    static let maximumCompleteFileDataBytes: Int64 = 64 * 1_024 * 1_024 * 1_024
     static let maximumSFTPDataBytes: Int64 = 18_000_000
 
     @Published private(set) var isRunning = false
@@ -65,13 +81,27 @@ final class ThumbnailPreheater: ObservableObject {
     @Published private(set) var generatedCount = 0
     @Published private(set) var cachedCount = 0
     @Published private(set) var failedCount = 0
+    @Published private(set) var failedItemNames: [String] = []
     @Published private(set) var transferredBytes: Int64 = 0
+    @Published private(set) var currentItemTransferredBytes: Int64 = 0
+    @Published private(set) var currentItemTotalBytes: Int64 = 0
     @Published private(set) var currentItemName: String?
+    @Published private(set) var currentItemStartedAt: Date?
+    @Published private(set) var currentItemAttempt = 0
+    @Published private(set) var currentItemTimeLimit: TimeInterval = 3
+    @Published private(set) var queuedFastCount = 0
+    @Published private(set) var queuedRetryCount = 0
+    @Published private(set) var queuedRecoveryCount = 0
+    @Published private(set) var queuedFinalCount = 0
+    @Published private(set) var estimatedTimeRemaining: TimeInterval?
+    @Published private(set) var pauseReason: String?
+    @Published private(set) var recentGeneratedThumbnails: [GeneratedThumbnailPreview] = []
     @Published var statusMessage: String?
     @Published var errorMessage: String?
 
     private var task: Task<Void, Never>?
     private var appIsActive = true
+    private var etaEstimator = ThumbnailETAEstimator()
     private let screenAwakeActivityID = UUID()
 
     init() {
@@ -86,9 +116,6 @@ final class ThumbnailPreheater: ObservableObject {
 
     func updateAppIsActive(_ isActive: Bool) {
         appIsActive = isActive
-        if !isActive, isRunning {
-            cancel()
-        }
     }
 
     func start(
@@ -96,6 +123,8 @@ final class ThumbnailPreheater: ObservableObject {
         rootPath: String,
         recursively: Bool,
         requiresExternalPower powerOverride: Bool? = nil,
+        allowsConstrainedRun: Bool = false,
+        generationMode: RemoteVideoThumbnailGenerationMode = .bounded,
         service: any RemoteFileService
     ) {
         guard !isRunning else { return }
@@ -105,7 +134,10 @@ final class ThumbnailPreheater: ObservableObject {
                 recursively: recursively
             )
         do {
-            try validateRuntimeConditions(requiresExternalPower: requiresExternalPower)
+            try validateRuntimeConditions(
+                requiresExternalPower: requiresExternalPower,
+                allowsConstrainedRun: allowsConstrainedRun
+            )
         } catch {
             errorMessage = error.localizedDescription
             return
@@ -121,6 +153,8 @@ final class ThumbnailPreheater: ObservableObject {
                 rootPath: rootPath,
                 recursively: recursively,
                 requiresExternalPower: requiresExternalPower,
+                allowsConstrainedRun: allowsConstrainedRun,
+                generationMode: generationMode,
                 service: service
             )
         }
@@ -139,49 +173,152 @@ final class ThumbnailPreheater: ObservableObject {
         rootPath: String,
         recursively: Bool,
         requiresExternalPower: Bool,
+        allowsConstrainedRun: Bool,
+        generationMode: RemoteVideoThumbnailGenerationMode,
         service: any RemoteFileService
     ) async {
         defer {
             ScreenAwakeController.shared.finishActivity(screenAwakeActivityID)
             isRunning = false
             currentItemName = nil
+            currentItemTransferredBytes = 0
+            currentItemTotalBytes = 0
+            currentItemStartedAt = nil
+            pauseReason = nil
             task = nil
         }
 
         do {
-            let candidates = try await collectCandidates(
+            let collectedCandidates = try await collectCandidates(
                 rootItems: rootItems,
                 rootPath: rootPath,
                 recursively: recursively,
+                allowsConstrainedRun: allowsConstrainedRun,
                 service: service
             )
+            let candidates = generationMode == .completeFile
+                ? collectedCandidates.filter(\.isVideo)
+                : collectedCandidates
             totalCount = candidates.count
-            let maximumDataBytes = maximumDataBytes(for: service)
+            estimatedTimeRemaining = etaEstimator.totalEstimate(
+                for: candidates,
+                processingPath: { item in
+                    predictedProcessingPath(
+                        for: item,
+                        service: service,
+                        generationMode: generationMode
+                    )
+                }
+            )
+            let maximumDataBytes = maximumDataBytes(
+                for: service,
+                generationMode: generationMode
+            )
 
+            let queueSessionKey = "\(service.connection.id.uuidString)|\(rootPath)"
+            let savedAttempts = generationMode == .completeFile
+                ? await SuperThumbnailQueueStore.shared.attempts(
+                    for: candidates,
+                    sessionKey: queueSessionKey
+                )
+                : [:]
+            var pendingCandidates: [RemoteFileItem] = []
+            if generationMode == .completeFile {
+                for item in candidates {
+                    if let cachedData = await cachedThumbnailData(for: item) {
+                        cachedCount += 1
+                        completedCount += 1
+                        appendRecentThumbnail(name: item.name, data: cachedData)
+                        await SuperThumbnailQueueStore.shared.markSucceeded(
+                            item,
+                            sessionKey: queueSessionKey
+                        )
+                    } else {
+                        pendingCandidates.append(item)
+                    }
+                }
+            } else {
+                pendingCandidates = candidates
+            }
+            var workQueue: [SuperThumbnailWorkItem] = (0...3).flatMap {
+                attempt -> [SuperThumbnailWorkItem] in
+                pendingCandidates.compactMap {
+                    item -> SuperThumbnailWorkItem? in
+                    let savedAttempt = savedAttempts[item.id] ?? 0
+                    guard savedAttempt == attempt else { return nil }
+                    return SuperThumbnailWorkItem(item: item, attempt: attempt)
+                }
+            }
+            var workIndex = 0
+            updateQueueCounts(workQueue, from: workIndex)
             var reachedDataLimit = false
             var reachedPreviouslyUsedDataLimit = false
-            for item in candidates {
+            while workIndex < workQueue.count {
+                let work = workQueue[workIndex]
+                workIndex += 1
+                let item = work.item
                 try Task.checkCancellation()
-                try validateRuntimeConditions(requiresExternalPower: requiresExternalPower)
+                try await waitForRuntimeConditions(
+                    requiresExternalPower: requiresExternalPower,
+                    allowsConstrainedRun: allowsConstrainedRun
+                )
                 currentItemName = item.name
+                currentItemTransferredBytes = 0
+                currentItemTotalBytes = 0
+                currentItemStartedAt = nil
+                currentItemAttempt = work.attempt
+                currentItemTimeLimit = superThumbnailTimeLimit(
+                    for: work.attempt,
+                    generationMode: generationMode
+                )
 
                 let cacheKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
-                var hasCachedThumbnail = false
+                var cachedThumbnailData: Data?
                 for candidateKey in RemoteThumbnailCacheKey.allRemoteDataKeys(for: item) {
-                    if await RemoteThumbnailDiskCache.shared.containsData(
+                    var data = await SuperThumbnailCache.shared.data(
                         forKey: candidateKey
-                    ) {
-                        hasCachedThumbnail = true
+                    )
+                    if data == nil {
+                        data = await RemoteThumbnailDiskCache.shared.data(
+                            forKey: candidateKey
+                        )
+                    }
+                    if let data, UIImage(data: data) != nil {
+                        cachedThumbnailData = data
                         break
                     }
                 }
-                if hasCachedThumbnail {
+                if let cachedThumbnailData {
                     cachedCount += 1
                     completedCount += 1
+                    if generationMode == .completeFile {
+                        appendRecentThumbnail(
+                            name: item.name,
+                            data: cachedThumbnailData
+                        )
+                    }
+                    estimatedTimeRemaining = etaEstimator.totalEstimate(
+                        for: workQueue.dropFirst(workIndex).map { $0.item },
+                        processingPath: { remainingItem in
+                            predictedProcessingPath(
+                                for: remainingItem,
+                                service: service,
+                                generationMode: generationMode
+                            )
+                        }
+                    )
                     continue
                 }
-                let diskCacheGeneration = await RemoteThumbnailDiskCache.shared
-                    .currentGeneration()
+                let diskCacheGeneration = generationMode == .completeFile
+                    ? await SuperThumbnailCache.shared.currentGeneration()
+                    : await RemoteThumbnailDiskCache.shared.currentGeneration()
+
+                currentItemStartedAt = Date()
+                if generationMode == .completeFile {
+                    currentItemTotalBytes = Int64(
+                        superThumbnailMaximumBytes(for: work.attempt)
+                    )
+                }
 
                 let estimatedBytes = estimatedTransferBytes(for: item, service: service)
                 if let estimatedBytes,
@@ -193,22 +330,57 @@ final class ThumbnailPreheater: ObservableObject {
                 let activityID = UUID()
                 RemoteThumbnailActivityTracker.shared.begin(activityID)
                 defer { RemoteThumbnailActivityTracker.shared.finish(activityID) }
+                let processingStartedAt = Date()
+                var observedDuration: TimeInterval?
+                var observedPath = predictedProcessingPath(
+                    for: item,
+                    service: service,
+                    generationMode: generationMode
+                )
+                var deferredForLater = false
 
                 do {
                     if let payload = try await thumbnailData(
                         for: item,
-                        service: service
+                        service: service,
+                        generationMode: generationMode,
+                        attempt: work.attempt
                     ) {
+                        observedDuration = payload.mediaDurationSeconds
+                        observedPath = payload.processingPath
                         _ = try await RemoteThumbnailImageDecoder.downsample(
                             data: payload.data,
                             maximumPixelSize: 192
                         )
-                        await RemoteThumbnailDiskCache.shared.store(
-                            payload.data,
-                            forKey: cacheKey,
-                            expectedGeneration: diskCacheGeneration
-                        )
+                        if generationMode == .completeFile {
+                            await SuperThumbnailCache.shared.store(
+                                payload.data,
+                                forKey: cacheKey,
+                                expectedGeneration: diskCacheGeneration
+                            )
+                            await SuperThumbnailCache.shared.addNetworkUsage(
+                                Int64(payload.transferredBytes)
+                            )
+                        } else {
+                            await RemoteThumbnailDiskCache.shared.store(
+                                payload.data,
+                                forKey: cacheKey,
+                                expectedGeneration: diskCacheGeneration
+                            )
+                        }
                         generatedCount += 1
+                        if generationMode == .completeFile {
+                            await SuperThumbnailQueueStore.shared.markSucceeded(
+                                item,
+                                sessionKey: queueSessionKey
+                            )
+                        }
+                        if generationMode == .completeFile {
+                            appendRecentThumbnail(
+                                name: item.name,
+                                data: payload.data
+                            )
+                        }
                         if service.connection.kind == .sftp {
                             let usedBytes = await RemoteVideoThumbnailTrafficBudget
                                 .sftpShared.transferredBytes(for: item)
@@ -221,26 +393,86 @@ final class ThumbnailPreheater: ObservableObject {
                         }
                     } else {
                         failedCount += 1
+                        failedItemNames.append("\(item.name) · 썸네일 데이터 없음")
                     }
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
                     reachedDataLimit = true
                     reachedPreviouslyUsedDataLimit = true
-                    let trafficBudget = service.connection.kind == .sftp
-                        ? RemoteVideoThumbnailTrafficBudget.sftpShared
-                        : RemoteVideoThumbnailTrafficBudget.shared
+                    let trafficBudget = generationMode == .completeFile
+                        ? RemoteVideoThumbnailTrafficBudget.completeFileShared
+                        : service.connection.kind == .sftp
+                            ? RemoteVideoThumbnailTrafficBudget.sftpShared
+                            : RemoteVideoThumbnailTrafficBudget.shared
                     let usedBytes = await trafficBudget.transferredBytes(for: item)
                     transferredBytes = max(transferredBytes, Int64(usedBytes))
                 } catch {
-                    failedCount += 1
-                    let trafficBudget = service.connection.kind == .sftp
-                        ? RemoteVideoThumbnailTrafficBudget.sftpShared
-                        : RemoteVideoThumbnailTrafficBudget.shared
-                    let usedBytes = await trafficBudget.transferredBytes(for: item)
-                    transferredBytes = max(transferredBytes, Int64(usedBytes))
+                    if generationMode == .completeFile,
+                       work.attempt < 3 {
+                        workQueue.append(
+                            SuperThumbnailWorkItem(
+                                item: item,
+                                attempt: work.attempt + 1
+                            )
+                        )
+                        await SuperThumbnailQueueStore.shared.deferItem(
+                            item,
+                            sessionKey: queueSessionKey,
+                            nextAttempt: work.attempt + 1
+                        )
+                        deferredForLater = true
+                    } else {
+                        failedCount += 1
+                        failedItemNames.append(
+                            "\(item.name) · \(error.localizedDescription)"
+                        )
+                        if generationMode == .completeFile {
+                            await SuperThumbnailQueueStore.shared.keepForRecovery(
+                                item,
+                                sessionKey: queueSessionKey
+                            )
+                        }
+                    }
+                    if generationMode == .completeFile {
+                        let attemptBytes = currentItemTransferredBytes
+                        transferredBytes += attemptBytes
+                        await SuperThumbnailCache.shared.addNetworkUsage(
+                            attemptBytes
+                        )
+                    }
                 }
+                if deferredForLater {
+                    updateQueueCounts(workQueue, from: workIndex)
+                    currentItemTransferredBytes = 0
+                    currentItemTotalBytes = 0
+                    currentItemStartedAt = nil
+                    estimatedTimeRemaining = etaEstimator.totalEstimate(
+                        for: workQueue.dropFirst(workIndex).map { $0.item },
+                        processingPath: { remainingItem in
+                            predictedProcessingPath(
+                                for: remainingItem,
+                                service: service,
+                                generationMode: generationMode
+                            )
+                        }
+                    )
+                    continue
+                }
+                updateEstimatedTime(
+                    item: item,
+                    processingDuration: Date().timeIntervalSince(processingStartedAt),
+                    mediaDurationSeconds: observedDuration,
+                    processingPath: observedPath,
+                    remainingItems: workQueue.dropFirst(workIndex).map { $0.item },
+                    service: service,
+                    generationMode: generationMode
+                )
                 completedCount += 1
+                currentItemTransferredBytes = 0
+                currentItemTotalBytes = 0
+                currentItemStartedAt = nil
+                updateQueueCounts(workQueue, from: workIndex)
 
                 if reachedDataLimit { break }
             }
@@ -275,6 +507,7 @@ final class ThumbnailPreheater: ObservableObject {
         rootItems: [RemoteFileItem],
         rootPath: String,
         recursively: Bool,
+        allowsConstrainedRun: Bool,
         service: any RemoteFileService
     ) async throws -> [RemoteFileItem] {
         var candidates = eligibleItems(in: rootItems, service: service)
@@ -284,7 +517,10 @@ final class ThumbnailPreheater: ObservableObject {
         var visitedPaths: Set<String> = [rootPath]
         while !pendingDirectories.isEmpty {
             try Task.checkCancellation()
-            try validateRuntimeConditions(requiresExternalPower: true)
+            try await waitForRuntimeConditions(
+                requiresExternalPower: true,
+                allowsConstrainedRun: allowsConstrainedRun
+            )
             let directory = pendingDirectories.removeFirst()
             guard visitedPaths.insert(directory.path).inserted else { continue }
             currentItemName = "\(directory.name) 폴더 검색 중"
@@ -313,23 +549,41 @@ final class ThumbnailPreheater: ObservableObject {
 
     private func thumbnailData(
         for item: RemoteFileItem,
-        service: any RemoteFileService
+        service: any RemoteFileService,
+        generationMode: RemoteVideoThumbnailGenerationMode,
+        attempt: Int = 0
     ) async throws -> ThumbnailPreheatPayload? {
-        if !RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
-            for: item,
-            service: service
-        ) {
+        if generationMode != .completeFile,
+           !RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
+               for: item,
+               service: service
+           ) {
             do {
                 if let data = try await service.thumbnailData(for: item, size: .small),
                    !data.isEmpty {
-                    let transferredBytes = estimatedTransferBytes(
-                        for: item,
-                        service: service
-                    ).map(Int.init) ?? data.count
-                    return ThumbnailPreheatPayload(
-                        data: data,
-                        transferredBytes: transferredBytes
-                    )
+                    do {
+                        _ = try await RemoteThumbnailImageDecoder.downsample(
+                            data: data,
+                            maximumPixelSize: 192
+                        )
+                        let transferredBytes = estimatedTransferBytes(
+                            for: item,
+                            service: service
+                        ).map(Int.init) ?? data.count
+                        return ThumbnailPreheatPayload(
+                            data: data,
+                            transferredBytes: transferredBytes,
+                            mediaDurationSeconds: nil,
+                            processingPath: .backend
+                        )
+                    } catch {
+                        guard canGenerateBoundedVideoThumbnail(
+                            for: item,
+                            service: service
+                        ) else {
+                            throw error
+                        }
+                    }
                 }
             } catch is CancellationError {
                 throw CancellationError()
@@ -347,12 +601,104 @@ final class ThumbnailPreheater: ObservableObject {
             for: item,
             service: service,
             size: .small,
-            trafficBudget: RemoteVideoThumbnailRoutingPolicy.trafficBudget(for: service)
+            trafficBudget: generationMode == .completeFile
+                ? superThumbnailTrafficBudget(for: attempt)
+                : RemoteVideoThumbnailRoutingPolicy.trafficBudget(for: service),
+            mode: generationMode,
+            timeout: generationMode == .completeFile
+                ? .seconds(superThumbnailTimeLimit(for: attempt))
+                : RemoteVideoThumbnailGenerator.defaultGenerationTimeout,
+            progress: { [weak self] transferred, total in
+                Task { @MainActor [weak self] in
+                    self?.currentItemTransferredBytes = transferred
+                    self?.currentItemTotalBytes = total
+                }
+            }
         )
         return ThumbnailPreheatPayload(
             data: generated.data,
-            transferredBytes: generated.transferredBytes
+            transferredBytes: generated.transferredBytes,
+            mediaDurationSeconds: generated.mediaDurationSeconds,
+            processingPath: generated.processingPath
         )
+    }
+
+    private func cachedThumbnailData(for item: RemoteFileItem) async -> Data? {
+        for key in RemoteThumbnailCacheKey.allRemoteDataKeys(for: item) {
+            var data = await SuperThumbnailCache.shared.data(forKey: key)
+            if data == nil {
+                data = await RemoteThumbnailDiskCache.shared.data(forKey: key)
+            }
+            if let data, UIImage(data: data) != nil { return data }
+        }
+        return nil
+    }
+
+    private func updateQueueCounts(
+        _ queue: [SuperThumbnailWorkItem],
+        from index: Int
+    ) {
+        let pending = queue.dropFirst(index)
+        queuedFastCount = pending.lazy.filter { $0.attempt == 0 }.count
+        queuedRetryCount = pending.lazy.filter { $0.attempt == 1 }.count
+        queuedRecoveryCount = pending.lazy.filter { $0.attempt == 2 }.count
+        queuedFinalCount = pending.lazy.filter { $0.attempt == 3 }.count
+    }
+
+    private func superThumbnailTimeLimit(
+        for attempt: Int,
+        generationMode: RemoteVideoThumbnailGenerationMode = .completeFile
+    ) -> TimeInterval {
+        guard generationMode == .completeFile else {
+            return 20
+        }
+        switch attempt {
+        case 0: return 3
+        case 1: return 7
+        case 2: return 15
+        default: return 40
+        }
+    }
+
+    private func superThumbnailMaximumBytes(for attempt: Int) -> Int {
+        switch attempt {
+        case 0: return 16 * 1_024 * 1_024
+        case 1: return 24 * 1_024 * 1_024
+        case 2: return 32 * 1_024 * 1_024
+        default: return 56 * 1_024 * 1_024
+        }
+    }
+
+    private func superThumbnailTrafficBudget(
+        for attempt: Int
+    ) -> RemoteVideoThumbnailTrafficBudget {
+        switch attempt {
+        case 0: return .completeFileFastPass
+        case 1: return .completeFileRetryPass
+        case 2: return .completeFileRecoveryPass
+        default: return .completeFileFinalPass
+        }
+    }
+
+    private func predictedProcessingPath(
+        for item: RemoteFileItem,
+        service: any RemoteFileService,
+        generationMode: RemoteVideoThumbnailGenerationMode
+    ) -> RemoteVideoThumbnailProcessingPath {
+        let fallback: RemoteVideoThumbnailProcessingPath
+        if generationMode == .completeFile {
+            fallback = .compatibilityRange
+        } else if RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
+            for: item,
+            service: service
+        ) {
+            fallback = CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item)
+                ? .compatibilityRange
+                : .avFoundationRange
+        } else {
+            fallback = .backend
+        }
+        return etaEstimator.preferredProcessingPath(for: item, fallback: fallback)
     }
 
     private func canGenerateBoundedVideoThumbnail(
@@ -375,14 +721,28 @@ final class ThumbnailPreheater: ObservableObject {
         return min(size, upperBound)
     }
 
-    private func maximumDataBytes(for service: any RemoteFileService) -> Int64 {
-        service.connection.kind == .synology
+    private func maximumDataBytes(
+        for service: any RemoteFileService,
+        generationMode: RemoteVideoThumbnailGenerationMode
+    ) -> Int64 {
+        if generationMode == .completeFile {
+            return Self.maximumCompleteFileDataBytes
+        }
+        return service.connection.kind == .synology
             ? Self.maximumSynologyDataBytes
             : Self.maximumSFTPDataBytes
     }
 
-    private func validateRuntimeConditions(requiresExternalPower: Bool) throws {
+    private func validateRuntimeConditions(
+        requiresExternalPower: Bool,
+        allowsConstrainedRun: Bool
+    ) throws {
         guard appIsActive else { throw ThumbnailPreheatError.appInactive }
+        let batteryLevel = UIDevice.current.batteryLevel
+        if batteryLevel >= 0, batteryLevel <= 0.2 {
+            throw ThumbnailPreheatError.lowBattery
+        }
+        if allowsConstrainedRun { return }
         guard ThumbnailNetworkMonitor.shared.isUnmeteredWiFi else {
             throw ThumbnailPreheatError.wifiRequired
         }
@@ -397,28 +757,345 @@ final class ThumbnailPreheater: ObservableObject {
         }
     }
 
+    private func waitForRuntimeConditions(
+        requiresExternalPower: Bool,
+        allowsConstrainedRun: Bool
+    ) async throws {
+        while true {
+            try Task.checkCancellation()
+            if !appIsActive {
+                pauseReason = "앱 화면으로 돌아오면 계속합니다"
+                try await Task.sleep(for: .seconds(1))
+                continue
+            }
+            let batteryLevel = UIDevice.current.batteryLevel
+            if batteryLevel >= 0, batteryLevel <= 0.2 {
+                throw ThumbnailPreheatError.lowBattery
+            }
+            if allowsConstrainedRun {
+                pauseReason = nil
+                return
+            }
+
+            let hasWiFi = ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
+            let hasPower: Bool
+            if requiresExternalPower {
+                switch UIDevice.current.batteryState {
+                case .charging, .full:
+                    hasPower = true
+                case .unknown, .unplugged:
+                    hasPower = false
+                @unknown default:
+                    hasPower = false
+                }
+            } else {
+                hasPower = true
+            }
+            if hasWiFi, hasPower {
+                pauseReason = nil
+                return
+            }
+            if !hasWiFi, !hasPower {
+                pauseReason = "Wi‑Fi와 충전 연결을 기다리는 중"
+            } else if !hasWiFi {
+                pauseReason = "Wi‑Fi 연결을 기다리는 중"
+            } else {
+                pauseReason = "충전 연결을 기다리는 중"
+            }
+            try await Task.sleep(for: .seconds(1))
+        }
+    }
+
     private func resetProgress() {
         completedCount = 0
         totalCount = 0
         generatedCount = 0
         cachedCount = 0
         failedCount = 0
+        failedItemNames = []
         transferredBytes = 0
+        currentItemTransferredBytes = 0
+        currentItemTotalBytes = 0
         currentItemName = nil
+        currentItemStartedAt = nil
+        currentItemAttempt = 0
+        currentItemTimeLimit = 3
+        queuedFastCount = 0
+        queuedRetryCount = 0
+        queuedRecoveryCount = 0
+        queuedFinalCount = 0
+        pauseReason = nil
+        estimatedTimeRemaining = nil
+        recentGeneratedThumbnails = []
         statusMessage = nil
         errorMessage = nil
+    }
+
+    private func updateEstimatedTime(
+        item: RemoteFileItem,
+        processingDuration: TimeInterval,
+        mediaDurationSeconds: TimeInterval?,
+        processingPath: RemoteVideoThumbnailProcessingPath,
+        remainingItems: [RemoteFileItem],
+        service: any RemoteFileService,
+        generationMode: RemoteVideoThumbnailGenerationMode
+    ) {
+        guard processingDuration > 0 else { return }
+        etaEstimator.record(
+            item: item,
+            mediaDurationSeconds: mediaDurationSeconds,
+            processingPath: processingPath,
+            elapsedSeconds: processingDuration
+        )
+        guard !remainingItems.isEmpty else {
+            estimatedTimeRemaining = 0
+            return
+        }
+        let target = etaEstimator.totalEstimate(
+            for: remainingItems,
+            processingPath: { remainingItem in
+                predictedProcessingPath(
+                    for: remainingItem,
+                    service: service,
+                    generationMode: generationMode
+                )
+            }
+        )
+
+        guard let previous = estimatedTimeRemaining else {
+            estimatedTimeRemaining = target
+            return
+        }
+        let elapsedBaseline = max(previous - processingDuration, 0)
+        let blended = elapsedBaseline * 0.72 + target * 0.28
+        let maximumRise = max(10, elapsedBaseline * 0.08)
+        let maximumDrop = max(15, elapsedBaseline * 0.18)
+        estimatedTimeRemaining = min(
+            max(blended, max(elapsedBaseline - maximumDrop, 0)),
+            elapsedBaseline + maximumRise
+        )
+    }
+
+    private func appendRecentThumbnail(name: String, data: Data) {
+        recentGeneratedThumbnails.append(
+            GeneratedThumbnailPreview(name: name, data: data)
+        )
+        if recentGeneratedThumbnails.count > 20 {
+            recentGeneratedThumbnails.removeFirst(
+                recentGeneratedThumbnails.count - 20
+            )
+        }
+    }
+}
+
+struct GeneratedThumbnailPreview: Identifiable, Sendable {
+    let id = UUID()
+    let name: String
+    let data: Data
+}
+
+private struct ThumbnailETAEstimator {
+    private struct Observation: Codable {
+        let itemKey: String
+        let fileExtension: String
+        let sizeBytes: Int64?
+        let mediaDurationSeconds: TimeInterval?
+        let processingPath: RemoteVideoThumbnailProcessingPath
+        let elapsedSeconds: TimeInterval
+        let recordedAt: Date
+    }
+
+    private static let storageKey = "thumbnailETA.observations.v2"
+    private static let maximumObservationCount = 160
+    private var observations: [Observation]
+
+    init(userDefaults: UserDefaults = .standard) {
+        if let data = userDefaults.data(forKey: Self.storageKey),
+           let decoded = try? JSONDecoder().decode([Observation].self, from: data) {
+            observations = decoded.filter {
+                $0.elapsedSeconds.isFinite && $0.elapsedSeconds > 0
+            }
+        } else {
+            observations = []
+        }
+    }
+
+    mutating func record(
+        item: RemoteFileItem,
+        mediaDurationSeconds: TimeInterval?,
+        processingPath: RemoteVideoThumbnailProcessingPath,
+        elapsedSeconds: TimeInterval,
+        userDefaults: UserDefaults = .standard
+    ) {
+        guard elapsedSeconds.isFinite, elapsedSeconds > 0 else { return }
+        let key = itemKey(for: item)
+        observations.removeAll {
+            $0.itemKey == key && $0.processingPath == processingPath
+        }
+        observations.append(
+            Observation(
+                itemKey: key,
+                fileExtension: fileExtension(for: item),
+                sizeBytes: item.size,
+                mediaDurationSeconds: validDuration(mediaDurationSeconds),
+                processingPath: processingPath,
+                elapsedSeconds: elapsedSeconds,
+                recordedAt: Date()
+            )
+        )
+        if observations.count > Self.maximumObservationCount {
+            observations.removeFirst(
+                observations.count - Self.maximumObservationCount
+            )
+        }
+        if let data = try? JSONEncoder().encode(observations) {
+            userDefaults.set(data, forKey: Self.storageKey)
+        }
+    }
+
+    func totalEstimate(
+        for items: [RemoteFileItem],
+        processingPath: (RemoteFileItem) -> RemoteVideoThumbnailProcessingPath
+    ) -> TimeInterval {
+        items.reduce(0) { total, item in
+            total + estimate(for: item, processingPath: processingPath(item))
+        }
+    }
+
+    func preferredProcessingPath(
+        for item: RemoteFileItem,
+        fallback: RemoteVideoThumbnailProcessingPath
+    ) -> RemoteVideoThumbnailProcessingPath {
+        let key = itemKey(for: item)
+        if let exact = observations.last(where: { $0.itemKey == key }) {
+            return exact.processingPath
+        }
+        let extensionName = fileExtension(for: item)
+        return observations.last(where: { $0.fileExtension == extensionName })?
+            .processingPath ?? fallback
+    }
+
+    private func estimate(
+        for item: RemoteFileItem,
+        processingPath: RemoteVideoThumbnailProcessingPath
+    ) -> TimeInterval {
+        let extensionName = fileExtension(for: item)
+        let exactDuration = observations
+            .last(where: { $0.itemKey == itemKey(for: item) })?
+            .mediaDurationSeconds
+        let extensionDurations = observations.compactMap { observation in
+            observation.fileExtension == extensionName
+                ? observation.mediaDurationSeconds
+                : nil
+        }.sorted()
+        let typicalDuration = extensionDurations.isEmpty
+            ? nil
+            : extensionDurations[extensionDurations.count / 2]
+        let knownDuration = exactDuration ?? typicalDuration
+        let exact = observations.filter {
+            $0.processingPath == processingPath
+                && $0.fileExtension == extensionName
+        }
+        let candidates = exact.isEmpty
+            ? observations.filter { $0.processingPath == processingPath }
+            : exact
+        guard !candidates.isEmpty else {
+            return defaultEstimate(
+                sizeBytes: item.size,
+                durationSeconds: knownDuration,
+                processingPath: processingPath
+            )
+        }
+
+        let recent = Array(candidates.suffix(24))
+        var weightedSeconds = 0.0
+        var totalWeight = 0.0
+        for (index, sample) in recent.enumerated() {
+            let recencyWeight = 1 + Double(index) / Double(max(recent.count, 1))
+            let extensionWeight = sample.fileExtension == extensionName ? 2.5 : 1
+            let adjusted = adjustedElapsed(
+                sample,
+                targetSize: item.size,
+                targetDuration: knownDuration
+            )
+            let weight = recencyWeight * extensionWeight
+            weightedSeconds += adjusted * weight
+            totalWeight += weight
+        }
+        return min(max(weightedSeconds / max(totalWeight, 1), 0.4), 600)
+    }
+
+    private func adjustedElapsed(
+        _ observation: Observation,
+        targetSize: Int64?,
+        targetDuration: TimeInterval?
+    ) -> TimeInterval {
+        var factor = 1.0
+        if let sourceSize = observation.sizeBytes,
+           sourceSize > 0,
+           let targetSize,
+           targetSize > 0 {
+            let exponent = observation.processingPath == .compatibilityLocalFile
+                ? 0.82
+                : 0.2
+            factor *= pow(Double(targetSize) / Double(sourceSize), exponent)
+        }
+        if let sourceDuration = observation.mediaDurationSeconds,
+           sourceDuration > 0,
+           let targetDuration,
+           targetDuration > 0 {
+            factor *= pow(targetDuration / sourceDuration, 0.14)
+        }
+        return observation.elapsedSeconds * min(max(factor, 0.35), 3.2)
+    }
+
+    private func defaultEstimate(
+        sizeBytes: Int64?,
+        durationSeconds: TimeInterval?,
+        processingPath: RemoteVideoThumbnailProcessingPath
+    ) -> TimeInterval {
+        let gigabytes = Double(max(sizeBytes ?? 0, 0)) / 1_073_741_824
+        let hours = max(durationSeconds ?? 0, 0) / 3_600
+        switch processingPath {
+        case .backend:
+            return 1.8 + min(gigabytes, 8) * 0.18
+        case .avFoundationRange:
+            return 5.5 + min(gigabytes, 8) * 0.9 + min(hours, 6) * 0.4
+        case .compatibilityRange:
+            return 13 + min(gigabytes, 8) * 2.2 + min(hours, 6) * 1.2
+        case .compatibilityLocalFile:
+            return 10 + min(gigabytes, 12) * 18 + min(hours, 6)
+        }
+    }
+
+    private func itemKey(for item: RemoteFileItem) -> String {
+        let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
+        return "\(item.id)|\(version)|\(item.size ?? -1)"
+    }
+
+    private func fileExtension(for item: RemoteFileItem) -> String {
+        let value = (item.name as NSString).pathExtension.lowercased()
+        return value.isEmpty ? "unknown" : value
+    }
+
+    private func validDuration(_ value: TimeInterval?) -> TimeInterval? {
+        guard let value, value.isFinite, value > 0 else { return nil }
+        return value
     }
 }
 
 private struct ThumbnailPreheatPayload {
     let data: Data
     let transferredBytes: Int
+    let mediaDurationSeconds: TimeInterval?
+    let processingPath: RemoteVideoThumbnailProcessingPath
 }
 
 private enum ThumbnailPreheatError: LocalizedError {
     case wifiRequired
     case powerRequired
     case appInactive
+    case lowBattery
 
     var errorDescription: String? {
         switch self {
@@ -428,6 +1105,8 @@ private enum ThumbnailPreheatError: LocalizedError {
             "충전기를 연결한 상태에서 썸네일 미리 생성을 시작해 주세요."
         case .appInactive:
             "NasFinder가 화면에 열려 있을 때만 썸네일을 미리 만들 수 있습니다."
+        case .lowBattery:
+            "배터리가 20% 이하라서 Super Thumbnail 작업을 취소했습니다."
         }
     }
 }

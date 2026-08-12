@@ -190,7 +190,7 @@ struct RemoteThumbnailView: View {
 }
 
 @MainActor
-private final class RemoteThumbnailLoader: ObservableObject {
+final class RemoteThumbnailLoader: ObservableObject {
     @Published var image: UIImage?
     @Published var isLoading = false
 
@@ -264,10 +264,15 @@ private final class RemoteThumbnailLoader: ObservableObject {
             return
         }
         var cachedDiskData = await RemoteThumbnailDiskCache.shared.data(forKey: diskCacheKey)
+        if cachedDiskData == nil {
+            cachedDiskData = await SuperThumbnailCache.shared.data(forKey: diskCacheKey)
+        }
         if cachedDiskData == nil, requestedRemoteSize != .small {
-            cachedDiskData = await RemoteThumbnailDiskCache.shared.data(
-                forKey: RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
-            )
+            let smallKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
+            cachedDiskData = await RemoteThumbnailDiskCache.shared.data(forKey: smallKey)
+            if cachedDiskData == nil {
+                cachedDiskData = await SuperThumbnailCache.shared.data(forKey: smallKey)
+            }
         }
         if let diskData = cachedDiskData,
            let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(

@@ -190,6 +190,8 @@ struct ConnectionListView: View {
 
             ThumbnailCacheSettingsLink()
 
+            SuperThumbnailLink()
+
             FavoriteShelfView { favorite in
                 selectedFavorite = favorite
             }

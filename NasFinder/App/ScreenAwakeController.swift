@@ -63,6 +63,7 @@ final class ScreenAwakeController: ObservableObject {
     private let defaults: UserDefaults
     private let setIdleTimerDisabled: (Bool) -> Void
     private var activeActivityIDs: Set<UUID> = []
+    private var forcedActivityIDs: Set<UUID> = []
     private var appIsActive = false
 
     init(
@@ -92,11 +93,24 @@ final class ScreenAwakeController: ObservableObject {
         applyPolicy()
     }
 
+    func beginForcedActivity(_ activityID: UUID) {
+        guard forcedActivityIDs.insert(activityID).inserted else { return }
+        applyPolicy()
+    }
+
+    func finishForcedActivity(_ activityID: UUID) {
+        guard forcedActivityIDs.remove(activityID) != nil else { return }
+        applyPolicy()
+    }
+
     private func applyPolicy() {
-        let shouldPreventSleep = ScreenAwakePolicy.shouldPreventSleep(
-            mode: mode,
-            appIsActive: appIsActive,
-            hasActiveWork: !activeActivityIDs.isEmpty
+        let shouldPreventSleep = appIsActive && (
+            !forcedActivityIDs.isEmpty
+                || ScreenAwakePolicy.shouldPreventSleep(
+                    mode: mode,
+                    appIsActive: appIsActive,
+                    hasActiveWork: !activeActivityIDs.isEmpty
+                )
         )
         guard shouldPreventSleep != isPreventingSleep else { return }
         isPreventingSleep = shouldPreventSleep
