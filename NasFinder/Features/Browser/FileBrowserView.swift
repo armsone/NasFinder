@@ -170,6 +170,7 @@ struct FileBrowserView: View {
     @AppStorage("fileBrowserSortDirection") private var storedSortDirection = FileBrowserSortDirection.ascending.rawValue
     @AppStorage("fileBrowserNamePriority") private var storedNamePriority = FileBrowserNamePriority.numbersFirst.rawValue
     @AppStorage("fileBrowserFoldersFirst") private var foldersFirst = true
+    @AppStorage("browser.coverFlowBackground.v1") private var coverFlowUsesDarkBackground = false
     @StateObject private var viewModel: FileBrowserViewModel
     @StateObject private var trafficTracker: PageNetworkTrafficTracker
     @StateObject private var shareCoordinator = RemoteFileShareCoordinator()
@@ -533,7 +534,7 @@ struct FileBrowserView: View {
 
                     Text(title)
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(Color.black.opacity(0.82))
+                        .foregroundStyle(coverFlowChromeForeground)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .layoutPriority(1)
@@ -548,6 +549,7 @@ struct FileBrowserView: View {
                 .padding(.horizontal, 12)
                 .padding(.top, geometry.safeAreaInsets.top + 4)
                 .frame(maxWidth: .infinity, alignment: .top)
+                .animation(.easeInOut(duration: 0.20), value: coverFlowUsesDarkBackground)
             }
         }
     }
@@ -562,12 +564,12 @@ struct FileBrowserView: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(Color.black.opacity(0.82))
-        .background(Color.white.opacity(0.92), in: Circle())
+        .foregroundStyle(coverFlowChromeForeground)
+        .background(coverFlowChromeBackground, in: Circle())
         .overlay {
-            Circle().stroke(Color.black.opacity(0.10), lineWidth: 1)
+            Circle().stroke(coverFlowChromeBorder, lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.10), radius: 8, y: 2)
+        .shadow(color: .black.opacity(coverFlowUsesDarkBackground ? 0.40 : 0.10), radius: 8, y: 2)
         .accessibilityLabel("이전 폴더")
     }
 
@@ -582,11 +584,11 @@ struct FileBrowserView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(SkyBreezeTheme.accent)
-        .background(Color.white.opacity(0.92), in: Circle())
+        .background(coverFlowChromeBackground, in: Circle())
         .overlay {
-            Circle().stroke(Color.black.opacity(0.10), lineWidth: 1)
+            Circle().stroke(coverFlowChromeBorder, lineWidth: 1)
         }
-        .shadow(color: .black.opacity(0.10), radius: 8, y: 2)
+        .shadow(color: .black.opacity(coverFlowUsesDarkBackground ? 0.40 : 0.10), radius: 8, y: 2)
         .disabled(operationCoordinator.isBusy)
         .accessibilityLabel("더 보기")
         .popover(
@@ -599,6 +601,18 @@ struct FileBrowserView: View {
                     interactionCoordinator.panelDidDisappear()
                 }
         }
+    }
+
+    private var coverFlowChromeForeground: Color {
+        coverFlowUsesDarkBackground ? .white.opacity(0.88) : .black.opacity(0.82)
+    }
+
+    private var coverFlowChromeBackground: Color {
+        coverFlowUsesDarkBackground ? .white.opacity(0.10) : .white.opacity(0.92)
+    }
+
+    private var coverFlowChromeBorder: Color {
+        coverFlowUsesDarkBackground ? .white.opacity(0.16) : .black.opacity(0.10)
     }
 
     @ViewBuilder
@@ -664,6 +678,7 @@ struct FileBrowserView: View {
                     items: displayedItems,
                     service: viewModel.service,
                     thumbnailReloadVersion: thumbnailReloadVersion,
+                    usesDarkBackground: $coverFlowUsesDarkBackground,
                     onActivate: activate,
                     onShowActions: showItemPanel
                 )

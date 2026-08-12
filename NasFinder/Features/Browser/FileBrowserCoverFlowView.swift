@@ -111,6 +111,7 @@ struct FileBrowserCoverFlowView: View {
     let items: [RemoteFileItem]
     let service: any RemoteFileService
     let thumbnailReloadVersion: Int
+    @Binding var usesDarkBackground: Bool
     let onActivate: (RemoteFileItem) -> Void
     let onShowActions: (RemoteFileItem) -> Void
 
@@ -124,14 +125,24 @@ struct FileBrowserCoverFlowView: View {
             let step = cardStep(for: proxy.size.width)
             let baseline = proxy.size.height - 22
             ZStack {
+                Rectangle()
+                    .fill(coverFlowBackground)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        withAnimation(.easeInOut(duration: 0.20)) {
+                            usesDarkBackground.toggle()
+                        }
+                    }
+
                 LinearGradient(
-                    colors: [Color.black.opacity(0.045), .clear],
+                    colors: floorGlowColors,
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .frame(height: 82)
-                .blur(radius: 8)
+                .frame(height: usesDarkBackground ? 72 : 82)
+                .blur(radius: usesDarkBackground ? 5 : 8)
                 .position(x: proxy.size.width / 2, y: baseline + 18)
+                .allowsHitTesting(false)
 
                 ForEach(visibleIndices, id: \.self) { index in
                     coverCard(
@@ -147,7 +158,8 @@ struct FileBrowserCoverFlowView: View {
             .contentShape(Rectangle())
             .gesture(flowGesture(step: step))
         }
-        .background(Color.white)
+        .background(coverFlowBackground)
+        .animation(.easeInOut(duration: 0.20), value: usesDarkBackground)
         .onChange(of: items.map(\.id), initial: true) { _, _ in
             selectedIndex = min(max(selectedIndex, 0), max(items.count - 1, 0))
             scrollPosition = CGFloat(selectedIndex)
@@ -201,8 +213,11 @@ struct FileBrowserCoverFlowView: View {
             baseWidth: baseWidth,
             centralTarget: centralTarget
         )
-        let maximumReflectionHeight: CGFloat = 18
-        let reflectionHeight = min(renderedSide * 0.08, maximumReflectionHeight)
+        let maximumReflectionHeight: CGFloat = usesDarkBackground
+            ? (emphasis > 0 ? 42 : 30)
+            : 18
+        let reflectionRatio: CGFloat = usesDarkBackground ? 0.14 : 0.08
+        let reflectionHeight = min(renderedSide * reflectionRatio, maximumReflectionHeight)
         let totalHeight = renderedSide + 2 + reflectionHeight
         let centerY = baseline - renderedSide + totalHeight / 2
 
@@ -219,8 +234,10 @@ struct FileBrowserCoverFlowView: View {
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .stroke(
-                        Color.black.opacity(0.08 + emphasis * 0.08),
-                        lineWidth: 0.6 + emphasis * 0.4
+                        cardBorderColor(emphasis: emphasis),
+                        lineWidth: usesDarkBackground
+                            ? 0.75 + emphasis * 0.25
+                            : 0.6 + emphasis * 0.4
                     )
             }
 
@@ -234,16 +251,19 @@ struct FileBrowserCoverFlowView: View {
             .scaleEffect(x: 1, y: -1)
             .frame(width: renderedSide, height: reflectionHeight, alignment: .top)
             .clipped()
-            .opacity(0.12 + emphasis * 0.10)
-            .blur(radius: 0.8)
+            .opacity(reflectionOpacity(emphasis: emphasis))
+            .blur(radius: usesDarkBackground ? 0.65 : 0.8)
             .mask {
                 LinearGradient(
-                    colors: [.white.opacity(0.58), .clear],
+                    colors: [
+                        .white.opacity(usesDarkBackground ? 0.72 : 0.58),
+                        .clear
+                    ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
             }
-            .offset(y: renderedSide + 2)
+            .offset(y: renderedSide + (usesDarkBackground ? 1 : 2))
             .allowsHitTesting(false)
         }
         .frame(width: renderedSide, height: totalHeight, alignment: .top)
@@ -259,26 +279,21 @@ struct FileBrowserCoverFlowView: View {
         )
         .opacity(opacity(for: absoluteDistance))
         .shadow(
-            color: .black.opacity(0.08 + emphasis * 0.09),
-            radius: 4 + emphasis * 10,
-            y: 0
+            color: cardShadowColor(emphasis: emphasis),
+            radius: 4 + emphasis * (usesDarkBackground ? 8 : 10)
         )
         .zIndex(Double(20 - absoluteDistance))
         .compositingGroup()
         .contentShape(Rectangle())
         .onTapGesture {
-            if isSelected {
-                onActivate(item)
-            } else {
-                select(index)
-            }
+            onActivate(item)
         }
         .onLongPressGesture(minimumDuration: 0.45) {
             onShowActions(item)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(item.name)
-        .accessibilityHint(isSelected ? "두 번 탭하여 열기" : "두 번 탭하여 선택")
+        .accessibilityHint("두 번 탭하여 열기")
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
     }
 
@@ -411,6 +426,36 @@ struct FileBrowserCoverFlowView: View {
             return max(0, Double(8 - distance) * 0.14)
         }
         return max(0.16, 1 - Double(distance) * 0.115)
+    }
+
+    private var coverFlowBackground: Color {
+        usesDarkBackground
+            ? Color(red: 5.0 / 255.0, green: 5.0 / 255.0, blue: 6.0 / 255.0)
+            : .white
+    }
+
+    private var floorGlowColors: [Color] {
+        usesDarkBackground
+            ? [.white.opacity(0.10), .white.opacity(0.025), .clear]
+            : [.black.opacity(0.045), .clear]
+    }
+
+    private func cardBorderColor(emphasis: CGFloat) -> Color {
+        usesDarkBackground
+            ? .white.opacity(0.10 + emphasis * 0.08)
+            : .black.opacity(0.08 + emphasis * 0.08)
+    }
+
+    private func reflectionOpacity(emphasis: CGFloat) -> Double {
+        usesDarkBackground
+            ? 0.18 + Double(emphasis) * 0.12
+            : 0.12 + Double(emphasis) * 0.10
+    }
+
+    private func cardShadowColor(emphasis: CGFloat) -> Color {
+        usesDarkBackground
+            ? .white.opacity(Double(emphasis) * 0.06)
+            : .black.opacity(0.08 + Double(emphasis) * 0.09)
     }
 
     private func rotation(for distance: CGFloat) -> Double {
