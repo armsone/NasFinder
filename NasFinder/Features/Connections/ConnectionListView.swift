@@ -1092,6 +1092,9 @@ private extension ConnectionKind {
         switch self {
         case .synology: SkyBreezeTheme.nasBlue
         case .sftp: SkyBreezeTheme.sftpGreen
+        case .smb: .blue
+        case .webDAV: .cyan
+        case .ftp: .orange
         }
     }
 
@@ -1099,6 +1102,9 @@ private extension ConnectionKind {
         switch self {
         case .synology: "NAS"
         case .sftp: "SFTP"
+        case .smb: "SMB"
+        case .webDAV: "WebDAV"
+        case .ftp: "FTP"
         }
     }
 }

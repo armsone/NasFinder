@@ -533,7 +533,7 @@ struct FileBrowserView: View {
 
                     Text(title)
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.primary)
+                        .foregroundStyle(Color.black.opacity(0.82))
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .layoutPriority(1)
@@ -562,8 +562,12 @@ struct FileBrowserView: View {
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .foregroundStyle(.primary)
-        .background(.ultraThinMaterial, in: Circle())
+        .foregroundStyle(Color.black.opacity(0.82))
+        .background(Color.white.opacity(0.92), in: Circle())
+        .overlay {
+            Circle().stroke(Color.black.opacity(0.10), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.10), radius: 8, y: 2)
         .accessibilityLabel("이전 폴더")
     }
 
@@ -578,7 +582,11 @@ struct FileBrowserView: View {
         }
         .buttonStyle(.plain)
         .foregroundStyle(SkyBreezeTheme.accent)
-        .background(.ultraThinMaterial, in: Circle())
+        .background(Color.white.opacity(0.92), in: Circle())
+        .overlay {
+            Circle().stroke(Color.black.opacity(0.10), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.10), radius: 8, y: 2)
         .disabled(operationCoordinator.isBusy)
         .accessibilityLabel("더 보기")
         .popover(

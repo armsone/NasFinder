@@ -67,9 +67,7 @@ struct AddConnectionView: View {
                     }
                     LabeledContent("포트") {
                         TextField(
-                            kind == .synology
-                                ? String(ConnectionKind.synologyPort(usesTLS: usesTLS))
-                                : String(ConnectionKind.sftp.defaultPort),
+                            String(kind.defaultPort),
                             value: $port,
                             format: .number.grouping(.never)
                         )
@@ -98,7 +96,7 @@ struct AddConnectionView: View {
                         .foregroundStyle(.orange)
                     }
 
-                    if kind == .synology {
+                    if kind == .synology || kind == .webDAV {
                         Toggle("HTTPS 사용", isOn: $usesTLS)
                             .disabled(parsedServerAddress?.inferredTLS != nil)
                         if parsedServerAddress?.inferredTLS != nil {
@@ -109,7 +107,7 @@ struct AddConnectionView: View {
                     }
 
                     LabeledContent("시작 위치") {
-                        TextField(kind == .synology ? "/photo" : "예: .", text: $rootPath)
+                        TextField(rootPathPlaceholder, text: $rootPath)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .multilineTextAlignment(.trailing)
@@ -226,6 +224,14 @@ struct AddConnectionView: View {
                 ? "연결 테스트에서 표시되는 SSH 호스트 키 지문을 확인한 뒤 저장할 수 있습니다."
                 : "SSH 호스트 키가 이 연결에 고정되었습니다. 키가 바뀌면 NasFinder가 연결을 차단합니다."
             return "\(hostKeyGuidance) 처음에는 시작 위치를 ‘.’으로 테스트하세요. 상대 경로는 SSH 로그인 홈을 기준으로 합니다."
+        case .smb:
+            return "ipTIME에서는 Windows 파일공유(SMB)를 켜세요. 시작 위치가 ‘/’이면 사용 가능한 공유 폴더를 먼저 보여줍니다. SMB 2.0 이상을 사용합니다."
+        case .webDAV:
+            return usesTLS
+                ? "ipTIME NAS의 WebDAV 서비스를 켠 뒤 공유 폴더 권한을 지정하세요. 외부 연결은 HTTPS 또는 VPN을 권장합니다."
+                : "HTTP WebDAV는 같은 로컬 네트워크에서만 사용하세요. ipTIME NAS의 기본 WebDAV 포트는 모델 설정에 따라 80 또는 9800입니다."
+        case .ftp:
+            return "ipTIME 공유기 USB 저장장치와 ipDISK는 FTP를 사용합니다. FTP 암호화가 없으므로 로컬 네트워크나 VPN 안에서만 사용하세요."
         }
     }
 
@@ -263,7 +269,16 @@ struct AddConnectionView: View {
     }
 
     private var defaultName: String {
-        kind == .synology ? "Synology NAS" : "SFTP 서버"
+        kind.title
+    }
+
+    private var rootPathPlaceholder: String {
+        switch kind {
+        case .synology: "/photo"
+        case .sftp: "예: ."
+        case .smb: "/ 또는 /공유이름"
+        case .webDAV, .ftp: "/"
+        }
     }
 
     private var errorBinding: Binding<Bool> {
@@ -293,7 +308,7 @@ struct AddConnectionView: View {
             testedConfiguration = attemptedConfiguration
             if kind == .sftp {
                 SFTPConnectionDiagnostics.recordConnectionTestSucceeded()
-            } else {
+            } else if kind == .synology {
                 SynologyConnectionDiagnostics.recordConnectionTestSucceeded()
             }
         } catch let trust as SFTPHostKeyTrustRequired {
@@ -308,13 +323,15 @@ struct AddConnectionView: View {
                 )
                 SFTPConnectionDiagnostics.record(diagnostic)
                 errorMessage = diagnostic.userMessage
-            } else {
+            } else if kind == .synology {
                 let diagnostic = SynologyConnectionDiagnostics.diagnostic(
                     for: error,
                     connection: connection
                 )
                 SynologyConnectionDiagnostics.record(diagnostic)
                 errorMessage = diagnostic.userMessage
+            } else {
+                errorMessage = error.localizedDescription
             }
         }
     }
@@ -380,8 +397,16 @@ struct AddConnectionView: View {
             )
             if port != settings.port { port = settings.port }
             if usesTLS != settings.usesTLS { usesTLS = settings.usesTLS }
-        } else if let explicitPort = parsed.explicitPort, port != explicitPort {
-            port = explicitPort
+        } else {
+            if kind == .webDAV, let inferredTLS = parsed.inferredTLS {
+                usesTLS = inferredTLS
+                if parsed.explicitPort == nil {
+                    port = inferredTLS ? 443 : ConnectionKind.webDAV.defaultPort
+                }
+            }
+            if let explicitPort = parsed.explicitPort, port != explicitPort {
+                port = explicitPort
+            }
         }
     }
 
@@ -403,7 +428,7 @@ struct AddConnectionView: View {
             username: username.trimmingCharacters(in: .whitespacesAndNewlines),
             password: password,
             rootPath: draftConnection.normalizedRootPath,
-            usesTLS: kind == .synology && usesTLS,
+            usesTLS: (kind == .synology || kind == .webDAV) && usesTLS,
             trustedHostKey: kind == .sftp ? trustedHostKey : nil
         )
     }

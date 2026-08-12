@@ -3,6 +3,9 @@ import Foundation
 enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case synology
     case sftp
+    case smb
+    case webDAV
+    case ftp
 
     var id: Self { self }
 
@@ -10,6 +13,9 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .synology: "Synology NAS"
         case .sftp: "SFTP 서버"
+        case .smb: "ipTIME · SMB"
+        case .webDAV: "ipTIME · WebDAV"
+        case .ftp: "ipTIME · FTP (ipDISK)"
         }
     }
 
@@ -17,6 +23,9 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .synology: "DSM File Station API를 사용합니다"
         case .sftp: "SSH를 통한 안전한 파일 전송"
+        case .smb: "ipTIME·Windows·NAS의 SMB 2 파일 공유"
+        case .webDAV: "ipTIME NAS와 일반 WebDAV 서버"
+        case .ftp: "ipTIME 공유기·NAS·일반 FTP 서버"
         }
     }
 
@@ -24,6 +33,9 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .synology: "externaldrive.connected.to.line.below"
         case .sftp: "network.badge.shield.half.filled"
+        case .smb: "externaldrive.badge.wifi"
+        case .webDAV: "globe.badge.chevron.backward"
+        case .ftp: "arrow.up.arrow.down.square"
         }
     }
 
@@ -31,6 +43,9 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .synology: 5001
         case .sftp: 22
+        case .smb: 445
+        case .webDAV: 9800
+        case .ftp: 21
         }
     }
 
@@ -58,6 +73,9 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         switch self {
         case .synology: "/"
         case .sftp: "."
+        case .smb: "/"
+        case .webDAV: "/"
+        case .ftp: "/"
         }
     }
 }
@@ -93,13 +111,13 @@ struct RemoteConnection: Identifiable, Codable, Hashable, Sendable {
         self.port = port ?? kind.defaultPort
         self.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         self.rootPath = rootPath ?? kind.defaultRootPath
-        self.usesTLS = kind == .synology ? usesTLS : false
+        self.usesTLS = (kind == .synology || kind == .webDAV) ? usesTLS : false
         self.trustedHostKey = kind == .sftp ? trustedHostKey : nil
         self.createdAt = createdAt
     }
 
     var normalizedRootPath: String {
-        guard kind == .synology else {
+        guard kind == .synology || kind == .webDAV || kind == .smb || kind == .ftp else {
             let trimmed = rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed.isEmpty ? "." : trimmed
         }
@@ -115,6 +133,12 @@ struct RemoteConnection: Identifiable, Codable, Hashable, Sendable {
             "\(usesTLS ? "https" : "http")://\(host):\(port)"
         case .sftp:
             "sftp://\(host):\(port)"
+        case .smb:
+            "smb://\(host):\(port)"
+        case .webDAV:
+            "\(usesTLS ? "https" : "http")://\(host):\(port)"
+        case .ftp:
+            "ftp://\(host):\(port)"
         }
     }
 }

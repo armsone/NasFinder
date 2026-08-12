@@ -24,7 +24,7 @@ enum ThumbnailPreheatPolicy {
         switch connectionKind {
         case .synology:
             return item.isImage || item.isVideo
-        case .sftp:
+        case .sftp, .smb, .webDAV, .ftp:
             return item.isVideo
                 && supportsRangeStreaming
                 && item.size.map { $0 > 0 } == true
@@ -630,8 +630,8 @@ final class ThumbnailPreheater: ObservableObject {
         switch service.connection.kind {
         case .synology:
             return items.filter { !$0.isDirectory && ($0.isImage || $0.isVideo) }
-        case .sftp:
-            // SFTP photos would require their complete originals. Only bounded
+        case .sftp, .smb, .webDAV, .ftp:
+            // Generic network photos would require their complete originals. Only bounded
             // video range reads are eligible for unattended preheating.
             return items.filter { !$0.isDirectory && $0.isVideo }
         }

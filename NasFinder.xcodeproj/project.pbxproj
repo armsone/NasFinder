@@ -11,6 +11,7 @@
 		A1000000000000000000002A /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000002B /* Citadel */; };
 		A1000000000000000000002D /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000002E /* Citadel */; };
 		D40000000000000000000001 /* VLCKit in Frameworks */ = {isa = PBXBuildFile; productRef = D40000000000000000000003 /* VLCKit */; };
+		E50000000000000000000001 /* SMBClient in Frameworks */ = {isa = PBXBuildFile; productRef = E50000000000000000000003 /* SMBClient */; };
 		B20000000000000000000001 /* NasFinderShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* NasFinderShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		C30000000000000000000001 /* NasFinderWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = C30000000000000000000003 /* NasFinderWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
@@ -177,6 +178,7 @@
 			files = (
 				A1000000000000000000002A /* Citadel in Frameworks */,
 				D40000000000000000000001 /* VLCKit in Frameworks */,
+				E50000000000000000000001 /* SMBClient in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -264,6 +266,7 @@
 			packageProductDependencies = (
 				A1000000000000000000002B /* Citadel */,
 				D40000000000000000000003 /* VLCKit */,
+				E50000000000000000000003 /* SMBClient */,
 			);
 			productName = NasFinder;
 			productReference = A10000000000000000000007 /* NasFinder.app */;
@@ -400,6 +403,7 @@
 			packageReferences = (
 				A1000000000000000000002C /* XCRemoteSwiftPackageReference "Citadel" */,
 				D40000000000000000000002 /* XCRemoteSwiftPackageReference "VLCKit" */,
+				E50000000000000000000002 /* XCRemoteSwiftPackageReference "SMBClient" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A10000000000000000000003 /* Products */;
@@ -993,6 +997,14 @@
 				revision = e3774eb25c62c902e9066ba267e6416d82e83382;
 			};
 		};
+		E50000000000000000000002 /* XCRemoteSwiftPackageReference "SMBClient" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kishikawakatsumi/SMBClient.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.3.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1010,6 +1022,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = D40000000000000000000002 /* XCRemoteSwiftPackageReference "VLCKit" */;
 			productName = VLCKit;
+		};
+		E50000000000000000000003 /* SMBClient */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E50000000000000000000002 /* XCRemoteSwiftPackageReference "SMBClient" */;
+			productName = SMBClient;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

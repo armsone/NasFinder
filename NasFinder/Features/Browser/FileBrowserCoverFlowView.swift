@@ -101,32 +101,30 @@ struct FileBrowserCoverFlowView: View {
     var body: some View {
         GeometryReader { proxy in
             let step = cardStep(for: proxy.size.width)
-            VStack(spacing: 0) {
-                ZStack(alignment: .bottom) {
-                    LinearGradient(
-                        colors: [Color.black.opacity(0.045), .clear],
-                        startPoint: .top,
-                        endPoint: .bottom
+            let baseline = proxy.size.height - 44
+            ZStack {
+                LinearGradient(
+                    colors: [Color.black.opacity(0.045), .clear],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .frame(height: 82)
+                .blur(radius: 8)
+                .position(x: proxy.size.width / 2, y: baseline + 18)
+
+                ForEach(visibleIndices, id: \.self) { index in
+                    coverCard(
+                        item: items[index],
+                        index: index,
+                        availableSize: proxy.size,
+                        safeAreaTop: proxy.safeAreaInsets.top,
+                        baseline: baseline
                     )
-                    .frame(height: 82)
-                    .blur(radius: 8)
-
-                    ForEach(visibleIndices, id: \.self) { index in
-                        coverCard(
-                            item: items[index],
-                            index: index,
-                            availableSize: proxy.size
-                        )
-                    }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .padding(.bottom, 46)
-                .contentShape(Rectangle())
-                .gesture(flowGesture(step: step))
-
             }
-            .padding(.horizontal, 12)
-            .padding(.top, 0)
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .contentShape(Rectangle())
+            .gesture(flowGesture(step: step))
         }
         .background(Color.white)
         .onChange(of: items.map(\.id), initial: true) { _, _ in
@@ -155,10 +153,11 @@ struct FileBrowserCoverFlowView: View {
     private func coverCard(
         item: RemoteFileItem,
         index: Int,
-        availableSize: CGSize
+        availableSize: CGSize,
+        safeAreaTop: CGFloat,
+        baseline: CGFloat
     ) -> some View {
         let baseWidth = cardBaseWidth(for: availableSize)
-        let baseHeight = baseWidth
         let step = cardStep(for: availableSize.width)
         let distance = CGFloat(index) - scrollPosition
         let absoluteDistance = abs(distance)
@@ -167,9 +166,11 @@ struct FileBrowserCoverFlowView: View {
         let cornerRadius = 13 + emphasis * 5
         let centralTarget = centralTargetWidth(
             for: availableSize,
-            baseWidth: baseWidth
+            baseWidth: baseWidth,
+            safeAreaTop: safeAreaTop,
+            baseline: baseline
         )
-        let scaleValue = scale(
+        let renderedSide = renderedSide(
             for: absoluteDistance,
             baseWidth: baseWidth,
             centralTarget: centralTarget
@@ -179,41 +180,38 @@ struct FileBrowserCoverFlowView: View {
             baseWidth: baseWidth,
             centralTarget: centralTarget
         )
-        let reflectionHeight = min(
-            baseWidth * scaleValue * 0.12,
-            28 + 10 * smoothstep(emphasis)
-        )
+        let maximumReflectionHeight: CGFloat = emphasis > 0 ? 34 : 24
+        let reflectionHeight = min(renderedSide * 0.10, maximumReflectionHeight)
+        let totalHeight = renderedSide + 2 + reflectionHeight
+        let centerY = baseline - renderedSide + totalHeight / 2
 
-        RemoteThumbnailView(
-            item: item,
-            service: service,
-            size: CGSize(width: 360, height: 260),
-            reloadVersion: thumbnailReloadVersion
-        )
-        .frame(width: baseWidth, height: baseHeight)
-        .background(Color.black)
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-        .overlay {
-            RoundedRectangle(cornerRadius: cornerRadius)
-                .stroke(
-                    Color.black.opacity(0.08 + emphasis * 0.08),
-                    lineWidth: 0.6 + emphasis * 0.4
-                )
-        }
-        .scaleEffect(scaleValue, anchor: .bottom)
-        .overlay(alignment: .bottom) {
+        ZStack(alignment: .top) {
             RemoteThumbnailView(
                 item: item,
                 service: service,
                 size: CGSize(width: 360, height: 260),
                 reloadVersion: thumbnailReloadVersion
             )
-            .frame(
-                width: baseWidth * scaleValue,
-                height: reflectionHeight * scaleValue
+            .frame(width: renderedSide, height: renderedSide)
+            .background(Color.black)
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .stroke(
+                        Color.black.opacity(0.08 + emphasis * 0.08),
+                        lineWidth: 0.6 + emphasis * 0.4
+                    )
+            }
+
+            RemoteThumbnailView(
+                item: item,
+                service: service,
+                size: CGSize(width: 360, height: 260),
+                reloadVersion: thumbnailReloadVersion
             )
+            .frame(width: renderedSide, height: reflectionHeight)
             .scaleEffect(x: 1, y: -1)
-            .opacity(0.09 + emphasis * 0.07)
+            .opacity(0.08 + emphasis * 0.06)
             .blur(radius: 1.2)
             .mask {
                 LinearGradient(
@@ -222,18 +220,19 @@ struct FileBrowserCoverFlowView: View {
                     endPoint: .bottom
                 )
             }
-            .offset(y: reflectionHeight * scaleValue + 2)
+            .offset(y: renderedSide + 2)
             .allowsHitTesting(false)
         }
+        .frame(width: renderedSide, height: totalHeight, alignment: .top)
         .rotation3DEffect(
             .degrees(rotation(for: distance)),
             axis: (x: 0, y: 1, z: 0),
             anchor: .bottom,
             perspective: 0.74
         )
-        .offset(
-            x: distance * step + sidePush,
-            y: 0
+        .position(
+            x: availableSize.width / 2 + distance * step + sidePush,
+            y: centerY
         )
         .opacity(opacity(for: absoluteDistance))
         .shadow(
@@ -329,7 +328,7 @@ struct FileBrowserCoverFlowView: View {
         min(max(position, 0), CGFloat(max(items.count - 1, 0)))
     }
 
-    private func scale(
+    private func renderedSide(
         for distance: CGFloat,
         baseWidth: CGFloat,
         centralTarget: CGFloat
@@ -342,9 +341,8 @@ struct FileBrowserCoverFlowView: View {
         }
         let focus = max(1 - distance, 0)
         let easedFocus = smoothstep(focus)
-        let focusedScale = centralTarget / max(baseWidth, 1)
-        return surroundingScale
-            + (focusedScale - surroundingScale) * easedFocus
+        let sideSide = baseWidth * surroundingScale
+        return sideSide + (centralTarget - sideSide) * easedFocus
     }
 
     private func horizontalPush(
@@ -365,11 +363,18 @@ struct FileBrowserCoverFlowView: View {
 
     private func centralTargetWidth(
         for size: CGSize,
-        baseWidth: CGFloat
+        baseWidth: CGFloat,
+        safeAreaTop: CGFloat,
+        baseline: CGFloat
     ) -> CGFloat {
-        max(
-            baseWidth * 1.32,
-            min(size.width * 0.38, size.height - 92, 420)
+        let topClearance = safeAreaTop + 56
+        return max(
+            min(
+                max(baseWidth * 1.22, size.width * 0.34),
+                baseline - topClearance,
+                400
+            ),
+            1
         )
     }
 

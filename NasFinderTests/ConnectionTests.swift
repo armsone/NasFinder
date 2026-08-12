@@ -291,6 +291,61 @@ final class ConnectionTests: XCTestCase {
         )
     }
 
+    func testIPTimeAndStandardNetworkDriveAddresses() throws {
+        let smb = try ServerAddressParser.parse("smb://router.local:445", kind: .smb)
+        let webDAV = try ServerAddressParser.parse(
+            "https://nas.example.com:9800",
+            kind: .webDAV
+        )
+        let ftp = try ServerAddressParser.parse("ftp://ipdisk.example.com:2121", kind: .ftp)
+
+        XCTAssertEqual(smb.host, "router.local")
+        XCTAssertEqual(smb.explicitPort, 445)
+        XCTAssertEqual(webDAV.host, "nas.example.com")
+        XCTAssertEqual(webDAV.explicitPort, 9800)
+        XCTAssertEqual(webDAV.inferredTLS, true)
+        XCTAssertEqual(ftp.host, "ipdisk.example.com")
+        XCTAssertEqual(ftp.explicitPort, 2121)
+        XCTAssertEqual(ConnectionKind.smb.defaultPort, 445)
+        XCTAssertEqual(ConnectionKind.webDAV.defaultPort, 9800)
+        XCTAssertEqual(ConnectionKind.ftp.defaultPort, 21)
+    }
+
+    func testNetworkDriveFactorySelectsMatchingDriver() {
+        let credential = RemoteCredential(password: "test")
+        let smb = RemoteFileServiceFactory.make(
+            connection: RemoteConnection(
+                name: "SMB",
+                kind: .smb,
+                host: "router.local",
+                username: "user"
+            ),
+            credential: credential
+        )
+        let webDAV = RemoteFileServiceFactory.make(
+            connection: RemoteConnection(
+                name: "WebDAV",
+                kind: .webDAV,
+                host: "nas.local",
+                username: "user"
+            ),
+            credential: credential
+        )
+        let ftp = RemoteFileServiceFactory.make(
+            connection: RemoteConnection(
+                name: "FTP",
+                kind: .ftp,
+                host: "router.local",
+                username: "user"
+            ),
+            credential: credential
+        )
+
+        XCTAssertTrue(smb is SMBFileService)
+        XCTAssertTrue(webDAV is WebDAVFileService)
+        XCTAssertTrue(ftp is FTPFileService)
+    }
+
     func testAddressRejectsEmbeddedCredentialsAndPath() {
         XCTAssertThrowsError(
             try ServerAddressParser.parse("sftp://user:secret@nas.local:22", kind: .sftp)

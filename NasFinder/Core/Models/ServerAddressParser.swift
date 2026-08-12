@@ -77,6 +77,14 @@ enum ServerAddressParser {
                 inferredTLS = true
             case (.synology, "http"):
                 inferredTLS = false
+            case (.webDAV, "https"):
+                inferredTLS = true
+            case (.webDAV, "http"), (.webDAV, "webdav"):
+                inferredTLS = false
+            case (.smb, "smb"):
+                break
+            case (.ftp, "ftp"):
+                break
             default:
                 throw ServerAddressError.unsupportedScheme(scheme)
             }
