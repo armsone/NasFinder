@@ -237,7 +237,7 @@ struct SuperThumbnailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .background(
-            Color.white.opacity(0.82),
+            SkyBreezeTheme.thumbnailSurface,
             in: RoundedRectangle(cornerRadius: 20, style: .continuous)
         )
     }
@@ -283,7 +283,7 @@ struct SuperThumbnailView: View {
                 }
                 .padding(14)
                 .background(
-                    Color.white.opacity(0.82),
+                    SkyBreezeTheme.thumbnailSurface,
                     in: RoundedRectangle(cornerRadius: 16, style: .continuous)
                 )
             }
@@ -835,7 +835,7 @@ private struct SuperThumbnailProgressView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 13)
         .background(
-            Color.white.opacity(0.72),
+            SkyBreezeTheme.thumbnailSurface,
             in: RoundedRectangle(cornerRadius: 15, style: .continuous)
         )
     }
@@ -886,7 +886,7 @@ private struct SuperThumbnailProgressView: View {
         }
         .padding(14)
         .background(
-            Color.white.opacity(0.82),
+            SkyBreezeTheme.thumbnailSurface,
             in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
     }
@@ -950,7 +950,7 @@ private struct SuperThumbnailProgressView: View {
         .padding(.horizontal, 12)
         .padding(.vertical, isOverflowExpanded ? 10 : 9)
         .background(
-            Color.white.opacity(0.66),
+            SkyBreezeTheme.thumbnailSurface,
             in: RoundedRectangle(cornerRadius: 14, style: .continuous)
         )
         .contentShape(Rectangle())
@@ -1071,7 +1071,7 @@ private struct SuperThumbnailProgressView: View {
                     .tint(.indigo.opacity(0.72))
                 Text(currentItemTransferText)
                     .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 12)
@@ -1137,7 +1137,7 @@ private struct SuperThumbnailProgressView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(14)
         .background(
-            Color.white.opacity(0.72),
+            SkyBreezeTheme.thumbnailSurface,
             in: RoundedRectangle(cornerRadius: 15, style: .continuous)
         )
     }
