@@ -20,6 +20,36 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         )
     }
 
+    func testCoverFlowStopsAtTheCardUnderTheFingerWithoutProjectedMomentum() {
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 12.2
+            ),
+            12
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 12.7
+            ),
+            13
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 42
+            ),
+            29
+        )
+        XCTAssertNil(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 0,
+                scrollPosition: 0
+            )
+        )
+    }
+
     func testPathComponentsStayWithinConfiguredRoot() {
         XCTAssertEqual(
             FileBrowserPathNavigation.components(

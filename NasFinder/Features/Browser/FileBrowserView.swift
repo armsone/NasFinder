@@ -532,16 +532,23 @@ struct FileBrowserView: View {
                 HStack(spacing: 8) {
                     coverFlowBackButton
 
-                    Text(title)
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(coverFlowChromeForeground)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .layoutPriority(1)
-                        .frame(
-                            maxWidth: min(geometry.size.width * 0.44, 340),
-                            alignment: .leading
-                        )
+                    Button(action: dashboardAction) {
+                        Text(title)
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(coverFlowChromeForeground)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .layoutPriority(1)
+                            .frame(
+                                maxWidth: min(geometry.size.width * 0.44, 340),
+                                minHeight: 44,
+                                alignment: .leading
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(title), 첫 화면으로 이동")
+                    .accessibilityHint("NasFinder 첫 화면으로 돌아갑니다.")
 
                     Spacer(minLength: 8)
                     coverFlowMoreButton

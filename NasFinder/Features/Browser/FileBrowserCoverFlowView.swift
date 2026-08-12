@@ -18,6 +18,17 @@ enum FileBrowserCoverFlowPolicy {
         let upper = min(liveCenter + preloadCardCountPerSide, itemCount - 1)
         return Array(lower...upper)
     }
+
+    static func restingIndex(
+        itemCount: Int,
+        scrollPosition: CGFloat
+    ) -> Int? {
+        guard itemCount > 0 else { return nil }
+        return min(
+            max(Int(scrollPosition.rounded()), 0),
+            itemCount - 1
+        )
+    }
 }
 
 struct FileBrowserNavigationAppearanceModifier: ViewModifier {
@@ -312,17 +323,11 @@ struct FileBrowserCoverFlowView: View {
                     )
                 }
             }
-            .onEnded { value in
-                let projectedPosition = clampedPosition(
-                    dragStartPosition - value.predictedEndTranslation.width / step
-                )
-                let maximumMovement: CGFloat = 5
-                let lower = max(CGFloat(selectedIndex) - maximumMovement, 0)
-                let upper = min(
-                    CGFloat(selectedIndex) + maximumMovement,
-                    CGFloat(max(items.count - 1, 0))
-                )
-                let target = Int(min(max(projectedPosition.rounded(), lower), upper))
+            .onEnded { _ in
+                let target = FileBrowserCoverFlowPolicy.restingIndex(
+                    itemCount: items.count,
+                    scrollPosition: scrollPosition
+                ) ?? selectedIndex
                 isDragging = false
                 settle(at: target)
             }
