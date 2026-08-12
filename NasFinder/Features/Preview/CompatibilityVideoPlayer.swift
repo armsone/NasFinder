@@ -17,6 +17,38 @@ enum CompatibilityVideoFormatPolicy {
     }
 }
 
+enum CompatibilityExternalSubtitlePolicy {
+    private static let preferredExtensions = [
+        "srt", "ass", "ssa", "vtt", "smi", "sub",
+    ]
+
+    static func matchingSubtitle(
+        for video: RemoteFileItem,
+        in items: [RemoteFileItem]
+    ) -> RemoteFileItem? {
+        guard video.isVideo else { return nil }
+        let videoBaseName = deletingPathExtension(video.name)
+        let videoDirectory = (video.path as NSString).deletingLastPathComponent
+
+        return preferredExtensions.lazy.compactMap { subtitleExtension in
+            items.first { candidate in
+                !candidate.isDirectory
+                    && candidate.id != video.id
+                    && (candidate.path as NSString).deletingLastPathComponent
+                        == videoDirectory
+                    && (candidate.name as NSString).pathExtension
+                        .caseInsensitiveCompare(subtitleExtension) == .orderedSame
+                    && deletingPathExtension(candidate.name)
+                        .caseInsensitiveCompare(videoBaseName) == .orderedSame
+            }
+        }.first
+    }
+
+    private static func deletingPathExtension(_ filename: String) -> String {
+        (filename as NSString).deletingPathExtension
+    }
+}
+
 enum CompatibilityVideoPlayerError: LocalizedError {
     case invalidRemoteFileSize
     case cannotCreateMedia
@@ -365,6 +397,15 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
         currentSeconds = seconds
     }
 
+    @discardableResult
+    func addExternalSubtitle(at url: URL) -> Bool {
+        mediaPlayer.addPlaybackSlave(
+            url,
+            type: .subtitle,
+            enforce: true
+        ) == 0
+    }
+
     func stop() {
         isStopping = true
         mediaPlayer.delegate = nil
@@ -586,17 +627,41 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                 throw CompatibilityVideoPlayerError.cannotCreateMedia
             }
             let dimensions = maximumDimensions(for: size)
-            let operation = CompatibilityVideoThumbnailOperation()
-            activeOperation = operation
+            let initialPosition: Float = 0.3
+            let initialOperation = CompatibilityVideoThumbnailOperation()
+            activeOperation = initialOperation
             defer {
-                if activeOperation === operation { activeOperation = nil }
+                if activeOperation === initialOperation { activeOperation = nil }
             }
-            let image = try await operation.generate(
+            let initialImage = try await initialOperation.generate(
                 media: media,
                 stream: stream,
                 dimensions: dimensions,
+                snapshotPosition: initialPosition,
+                closesStreamOnSuccess: false,
                 timeout: timeout
             )
+            if activeOperation === initialOperation { activeOperation = nil }
+
+            let image: CGImage
+            if RemoteVideoThumbnailQuality.isAtLeast95PercentBlack(initialImage) {
+                let retryOperation = CompatibilityVideoThumbnailOperation()
+                activeOperation = retryOperation
+                defer {
+                    if activeOperation === retryOperation { activeOperation = nil }
+                }
+                image = try await retryOperation.generate(
+                    media: media,
+                    stream: stream,
+                    dimensions: dimensions,
+                    snapshotPosition: initialPosition + (1 - initialPosition) / 2,
+                    closesStreamOnSuccess: true,
+                    timeout: timeout
+                )
+            } else {
+                stream?.close()
+                image = initialImage
+            }
             let data = try jpegData(from: image)
             if let stream {
                 transferredBytes = stream.accountedByteCount
@@ -665,12 +730,15 @@ private final class CompatibilityVideoThumbnailOperation:
     private var thumbnailer: VLCMediaThumbnailer?
     private var stream: CompatibilityRemoteInputStream?
     private var timeoutTask: Task<Void, Never>?
+    private var closesStreamOnSuccess = true
     private var isFinished = false
 
     func generate(
         media: VLCMedia,
         stream: CompatibilityRemoteInputStream?,
         dimensions: CGSize,
+        snapshotPosition: Float,
+        closesStreamOnSuccess: Bool,
         timeout: Duration
     ) async throws -> CGImage {
         try await withTaskCancellationHandler {
@@ -681,13 +749,14 @@ private final class CompatibilityVideoThumbnailOperation:
                 }
                 self.continuation = continuation
                 self.stream = stream
+                self.closesStreamOnSuccess = closesStreamOnSuccess
                 let thumbnailer = VLCMediaThumbnailer(
                     media: media,
                     andDelegate: self
                 )
                 thumbnailer.thumbnailWidth = max(dimensions.width, 1)
                 thumbnailer.thumbnailHeight = max(dimensions.height, 1)
-                thumbnailer.snapshotPosition = 0.3
+                thumbnailer.snapshotPosition = snapshotPosition
                 thumbnailer.preciseSeek = false
                 thumbnailer.cropsToFit = false
                 self.thumbnailer = thumbnailer
@@ -765,7 +834,7 @@ private final class CompatibilityVideoThumbnailOperation:
         }
         CompatibilityVideoThumbnailCleanupExecutor.dispose(
             thumbnailer: thumbnailer,
-            stream: stream,
+            stream: shouldCancel || closesStreamOnSuccess ? stream : nil,
             cancel: shouldCancel
         ) {
             continuation?.resume(with: result)

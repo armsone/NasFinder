@@ -1344,8 +1344,7 @@ struct FileBrowserView: View {
 
     private func sequentialPreviewItems(for item: RemoteFileItem) -> [RemoteFileItem] {
         guard item.isImage || item.isVideo else { return [item] }
-        let mediaItems = displayedItems.filter { $0.isImage || $0.isVideo }
-        return mediaItems.contains(item) ? mediaItems : [item]
+        return displayedItems.contains(item) ? displayedItems : [item]
     }
 
     private var errorBinding: Binding<Bool> {

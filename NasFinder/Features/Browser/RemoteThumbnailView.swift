@@ -302,11 +302,14 @@ private final class RemoteThumbnailLoader: ObservableObject {
 
         let remoteThumbnailData: Data?
         do {
-            remoteThumbnailData = try await fetchRemoteThumbnailData(
-                item: item,
-                service: service,
-                size: requestedRemoteSize
-            )
+            remoteThumbnailData = RemoteVideoThumbnailRoutingPolicy
+                .bypassesBackendThumbnail(for: item, service: service)
+                ? nil
+                : try await fetchRemoteThumbnailData(
+                    item: item,
+                    service: service,
+                    size: requestedRemoteSize
+                )
         } catch RemoteThumbnailError.optimizedPreviewUnavailable {
             // SFTP video previews deliberately avoid downloading the complete
             // original when a bounded head/tail range is not sufficient.
@@ -397,7 +400,10 @@ private final class RemoteThumbnailLoader: ObservableObject {
                     try await RemoteVideoThumbnailGenerator.generate(
                         for: item,
                         service: service,
-                        size: requestedRemoteSize
+                        size: requestedRemoteSize,
+                        trafficBudget: RemoteVideoThumbnailRoutingPolicy.trafficBudget(
+                            for: service
+                        )
                     )
                 }
                 let maximumPixelSize = maximumPixelSize(for: size)
@@ -530,9 +536,10 @@ private final class RemoteThumbnailLoader: ObservableObject {
         for item: RemoteFileItem,
         service: any RemoteFileService
     ) -> Bool {
-        item.isVideo
-            && service.connection.kind == .synology
-            && service.supportsRangeStreaming
+        RemoteVideoThumbnailRoutingPolicy.canGenerateBoundedThumbnail(
+            for: item,
+            service: service
+        )
     }
 
     private func requestedRemoteSize(for size: CGSize) -> RemoteThumbnailSize {

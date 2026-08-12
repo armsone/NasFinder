@@ -359,10 +359,8 @@ struct ReceivedFilesView: View {
     ) -> [RemoteFileItem] {
         guard item.isImage || item.isVideo else { return [item] }
 
-        let mediaItems = records
-            .map { LocalInboxFileService.remoteItem(for: $0) }
-            .filter { $0.isImage || $0.isVideo }
-        return mediaItems.contains(item) ? mediaItems : [item]
+        let relatedItems = records.map { LocalInboxFileService.remoteItem(for: $0) }
+        return relatedItems.contains(item) ? relatedItems : [item]
     }
 
     private func iconColor(for item: RemoteFileItem) -> Color {

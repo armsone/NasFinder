@@ -8,6 +8,34 @@ struct RemoteVideoThumbnailGenerationResult: Sendable {
     let transferredBytes: Int
 }
 
+enum RemoteVideoThumbnailRoutingPolicy {
+    static func bypassesBackendThumbnail(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) -> Bool {
+        service.supportsRangeStreaming
+            && CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item)
+    }
+
+    static func canGenerateBoundedThumbnail(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) -> Bool {
+        item.isVideo
+            && service.supportsRangeStreaming
+            && (
+                service.connection.kind == .synology
+                    || CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item)
+            )
+    }
+
+    static func trafficBudget(
+        for service: any RemoteFileService
+    ) -> RemoteVideoThumbnailTrafficBudget {
+        service.connection.kind == .sftp ? .sftpShared : .shared
+    }
+}
+
 enum RemoteVideoThumbnailGenerationError: LocalizedError, Sendable {
     case unsupportedSource
     case trafficBudgetExhausted
@@ -301,25 +329,20 @@ private final class RemoteVideoThumbnailDeadlineRace<Value: Sendable>: @unchecke
 }
 
 enum RemoteVideoThumbnailQuality {
+    static func isAtLeast95PercentBlack(_ image: CGImage) -> Bool {
+        let values = grayscaleSamples(from: image)
+        guard !values.isEmpty else { return false }
+        let blackPixels = values.lazy.filter { $0 <= 0.05 }.count
+        return Double(blackPixels) / Double(values.count) >= 0.95
+    }
+
     /// Rejects near-uniform black or white intro frames while retaining normal
     /// bright and dark scenes that still contain visible detail.
     static func isUsable(_ image: CGImage) -> Bool {
-        let width = 32
-        let height = 32
-        var pixels = [UInt8](repeating: 0, count: width * height)
-        guard let context = CGContext(
-            data: &pixels,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ) else { return true }
-        context.interpolationQuality = .low
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let values = grayscaleSamples(from: image)
+        guard !values.isEmpty else { return true }
+        if isAtLeast95PercentBlack(image) { return false }
 
-        let values = pixels.map { Double($0) / 255.0 }
         let mean = values.reduce(0, +) / Double(values.count)
         let variance = values.reduce(0) { partial, value in
             let difference = value - mean
@@ -333,10 +356,25 @@ enum RemoteVideoThumbnailQuality {
         if mean > 0.97,
            standardDeviation < 0.03,
            luminanceRange < 0.08 { return false }
-        if mean < 0.03,
-           standardDeviation < 0.03,
-           luminanceRange < 0.08 { return false }
         return true
+    }
+
+    private static func grayscaleSamples(from image: CGImage) -> [Double] {
+        let width = 32
+        let height = 32
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else { return [] }
+        context.interpolationQuality = .low
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return pixels.map { Double($0) / 255.0 }
     }
 }
 

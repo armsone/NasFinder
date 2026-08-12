@@ -315,23 +315,28 @@ final class ThumbnailPreheater: ObservableObject {
         for item: RemoteFileItem,
         service: any RemoteFileService
     ) async throws -> ThumbnailPreheatPayload? {
-        do {
-            if let data = try await service.thumbnailData(for: item, size: .small),
-               !data.isEmpty {
-                let transferredBytes = estimatedTransferBytes(
-                    for: item,
-                    service: service
-                ).map(Int.init) ?? data.count
-                return ThumbnailPreheatPayload(
-                    data: data,
-                    transferredBytes: transferredBytes
-                )
-            }
-        } catch is CancellationError {
-            throw CancellationError()
-        } catch {
-            guard canGenerateBoundedVideoThumbnail(for: item, service: service) else {
-                throw error
+        if !RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
+            for: item,
+            service: service
+        ) {
+            do {
+                if let data = try await service.thumbnailData(for: item, size: .small),
+                   !data.isEmpty {
+                    let transferredBytes = estimatedTransferBytes(
+                        for: item,
+                        service: service
+                    ).map(Int.init) ?? data.count
+                    return ThumbnailPreheatPayload(
+                        data: data,
+                        transferredBytes: transferredBytes
+                    )
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                guard canGenerateBoundedVideoThumbnail(for: item, service: service) else {
+                    throw error
+                }
             }
         }
 
@@ -341,7 +346,8 @@ final class ThumbnailPreheater: ObservableObject {
         let generated = try await RemoteVideoThumbnailGenerator.generate(
             for: item,
             service: service,
-            size: .small
+            size: .small,
+            trafficBudget: RemoteVideoThumbnailRoutingPolicy.trafficBudget(for: service)
         )
         return ThumbnailPreheatPayload(
             data: generated.data,
@@ -353,9 +359,10 @@ final class ThumbnailPreheater: ObservableObject {
         for item: RemoteFileItem,
         service: any RemoteFileService
     ) -> Bool {
-        item.isVideo
-            && service.connection.kind == .synology
-            && service.supportsRangeStreaming
+        RemoteVideoThumbnailRoutingPolicy.canGenerateBoundedThumbnail(
+            for: item,
+            service: service
+        )
     }
 
     private func estimatedTransferBytes(

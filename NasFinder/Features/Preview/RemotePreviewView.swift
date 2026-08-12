@@ -47,6 +47,7 @@ struct RemotePreviewView: View {
         _viewModel = StateObject(
             wrappedValue: RemotePreviewViewModel(
                 items: orderedItems,
+                relatedItems: sequentialItems,
                 initialItemID: item.id,
                 service: service
             )
@@ -843,6 +844,7 @@ final class RemotePreviewViewModel: ObservableObject {
     let items: [RemoteFileItem]
 
     private let service: any RemoteFileService
+    private let relatedItems: [RemoteFileItem]
     private var downloadedURLs: [RemoteFileItem.ID: URL] = [:]
     private var photoAdvanceTask: Task<Void, Never>?
     private var seekHUDDismissTask: Task<Void, Never>?
@@ -853,6 +855,7 @@ final class RemotePreviewViewModel: ObservableObject {
     private var playerItemStatusObservation: NSKeyValueObservation?
     private var videoPreparationTimeoutTask: Task<Void, Never>?
     private var videoMetadataTask: Task<Void, Never>?
+    private var externalSubtitleTask: Task<Void, Never>?
     private var activeDownloadTask: Task<URL, Error>?
     private var activeDownloadGeneration: UUID?
     private var downloadInactivityTask: Task<Void, Never>?
@@ -870,6 +873,7 @@ final class RemotePreviewViewModel: ObservableObject {
 
     init(
         items: [RemoteFileItem],
+        relatedItems: [RemoteFileItem]? = nil,
         initialItemID: RemoteFileItem.ID,
         service: any RemoteFileService,
         downloadInactivityTimeout: Duration = .seconds(20),
@@ -877,6 +881,7 @@ final class RemotePreviewViewModel: ObservableObject {
     ) {
         precondition(!items.isEmpty)
         self.items = items
+        self.relatedItems = relatedItems ?? items
         self.service = service
         self.downloadInactivityTimeout = downloadInactivityTimeout
         self.downloadInactivityPollInterval = downloadInactivityPollInterval
@@ -911,6 +916,8 @@ final class RemotePreviewViewModel: ObservableObject {
         videoPreparationTimeoutTask = nil
         videoMetadataTask?.cancel()
         videoMetadataTask = nil
+        externalSubtitleTask?.cancel()
+        externalSubtitleTask = nil
         cancelActiveDownload()
         stopDownloadInactivityWatchdog()
         isPreparingVideo = false
@@ -952,6 +959,10 @@ final class RemotePreviewViewModel: ObservableObject {
                     return
                 }
                 installCompatibilityPlayer(newPlayer, for: requestedItem.id)
+                attachExternalSubtitleIfAvailable(
+                    to: newPlayer,
+                    for: requestedItem
+                )
                 downloadProgress = nil
                 if isPlaying { newPlayer.play() }
                 return
@@ -1037,6 +1048,10 @@ final class RemotePreviewViewModel: ObservableObject {
                 if shouldUseCompatibilityPlayer {
                     let newPlayer = try CompatibilityVideoPlayer(localURL: url)
                     installCompatibilityPlayer(newPlayer, for: requestedItem.id)
+                    attachExternalSubtitleIfAvailable(
+                        to: newPlayer,
+                        for: requestedItem
+                    )
                     downloadProgress = nil
                     if isPlaying { newPlayer.play() }
                 } else {
@@ -1229,6 +1244,8 @@ final class RemotePreviewViewModel: ObservableObject {
         videoPreparationTimeoutTask = nil
         videoMetadataTask?.cancel()
         videoMetadataTask = nil
+        externalSubtitleTask?.cancel()
+        externalSubtitleTask = nil
         cancelActiveDownload()
         stopDownloadInactivityWatchdog()
         activeLoadGeneration = nil
@@ -1255,6 +1272,8 @@ final class RemotePreviewViewModel: ObservableObject {
         videoPreparationTimeoutTask = nil
         videoMetadataTask?.cancel()
         videoMetadataTask = nil
+        externalSubtitleTask?.cancel()
+        externalSubtitleTask = nil
         cancelActiveDownload()
         stopDownloadInactivityWatchdog()
         isPreparingVideo = false
@@ -1381,6 +1400,38 @@ final class RemotePreviewViewModel: ObservableObject {
         }
     }
 
+    private func attachExternalSubtitleIfAvailable(
+        to player: CompatibilityVideoPlayer,
+        for video: RemoteFileItem
+    ) {
+        guard let subtitle = CompatibilityExternalSubtitlePolicy.matchingSubtitle(
+            for: video,
+            in: relatedItems
+        ) else { return }
+
+        externalSubtitleTask?.cancel()
+        externalSubtitleTask = Task { [weak self, weak player] in
+            guard let self, let player else { return }
+            do {
+                let url: URL
+                if let cachedURL = downloadedURLs[subtitle.id],
+                   FileManager.default.fileExists(atPath: cachedURL.path) {
+                    url = cachedURL
+                } else {
+                    url = try await service.download(subtitle)
+                    try Task.checkCancellation()
+                    downloadedURLs[subtitle.id] = url
+                }
+                guard !Task.isCancelled,
+                      currentItem.id == video.id,
+                      compatibilityPlayer === player else { return }
+                player.addExternalSubtitle(at: url)
+            } catch {
+                // External subtitles are optional and must never block playback.
+            }
+        }
+    }
+
     private func handleVideoPreparationFailure(
         _ message: String,
         itemID: RemoteFileItem.ID
@@ -1418,6 +1469,8 @@ final class RemotePreviewViewModel: ObservableObject {
         guard currentItem.id == itemID else { return }
         videoPreparationTimeoutTask?.cancel()
         videoPreparationTimeoutTask = nil
+        externalSubtitleTask?.cancel()
+        externalSubtitleTask = nil
         isPreparingVideo = false
         compatibilityPlayer?.stop()
         compatibilityPlayer = nil

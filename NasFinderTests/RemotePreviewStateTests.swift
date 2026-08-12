@@ -41,6 +41,75 @@ final class RemotePreviewStateTests: XCTestCase {
         }
     }
 
+    func testCompatibilitySubtitleMatchesExactBaseNameAndPrefersSRT() throws {
+        let connectionID = UUID()
+        let video = remoteItem(
+            connectionID: connectionID,
+            path: "/share/Movie.MKV"
+        )
+        let items = [
+            remoteItem(connectionID: connectionID, path: "/share/Movie.en.srt"),
+            remoteItem(connectionID: connectionID, path: "/share/movie.ass"),
+            remoteItem(connectionID: connectionID, path: "/share/MOVIE.SRT"),
+            remoteItem(connectionID: connectionID, path: "/other/Movie.srt"),
+        ]
+
+        let match = try XCTUnwrap(
+            CompatibilityExternalSubtitlePolicy.matchingSubtitle(
+                for: video,
+                in: items
+            )
+        )
+        XCTAssertEqual(match.path, "/share/MOVIE.SRT")
+    }
+
+    func testCompatibilitySubtitleDoesNotMatchLanguageSuffix() {
+        let connectionID = UUID()
+        let video = remoteItem(connectionID: connectionID, path: "/share/Movie.mkv")
+        let subtitle = remoteItem(
+            connectionID: connectionID,
+            path: "/share/Movie.ko.srt"
+        )
+
+        XCTAssertNil(
+            CompatibilityExternalSubtitlePolicy.matchingSubtitle(
+                for: video,
+                in: [subtitle]
+            )
+        )
+    }
+
+    func testSFTPMKVCircumventsAVFoundationBackendThumbnail() {
+        let service = ThumbnailRoutingTestService(kind: .sftp)
+        let mkv = remoteItem(
+            connectionID: service.connection.id,
+            path: "/share/video.mkv"
+        )
+        let mp4 = remoteItem(
+            connectionID: service.connection.id,
+            path: "/share/video.mp4"
+        )
+
+        XCTAssertTrue(
+            RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
+                for: mkv,
+                service: service
+            )
+        )
+        XCTAssertTrue(
+            RemoteVideoThumbnailRoutingPolicy.canGenerateBoundedThumbnail(
+                for: mkv,
+                service: service
+            )
+        )
+        XCTAssertFalse(
+            RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
+                for: mp4,
+                service: service
+            )
+        )
+    }
+
     func testCompatibilityThumbnailPlaybackIsSilentAndSerialized() {
         XCTAssertTrue(
             CompatibilityVideoThumbnailPlaybackPolicy.usesDedicatedThumbnailer
@@ -544,7 +613,7 @@ final class RemotePreviewStateTests: XCTestCase {
         XCTAssertFalse(RemoteVideoThumbnailQuality.isUsable(image))
     }
 
-    func testRemoteThumbnailQualityAcceptsDarkFrameWithSmallBrightPoint() throws {
+    func testRemoteThumbnailQualityRetriesWhenMoreThan95PercentIsBlack() throws {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let context = try XCTUnwrap(
             CGContext(
@@ -560,9 +629,33 @@ final class RemotePreviewStateTests: XCTestCase {
         context.setFillColor(CGColor(gray: 0.005, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
         context.setFillColor(CGColor(gray: 0.8, alpha: 1))
-        context.fill(CGRect(x: 15, y: 15, width: 1, height: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 1, height: 32))
         let image = try XCTUnwrap(context.makeImage())
 
+        XCTAssertTrue(RemoteVideoThumbnailQuality.isAtLeast95PercentBlack(image))
+        XCTAssertFalse(RemoteVideoThumbnailQuality.isUsable(image))
+    }
+
+    func testRemoteThumbnailQualityAcceptsFrameBelow95PercentBlack() throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil,
+                width: 32,
+                height: 32,
+                bitsPerComponent: 8,
+                bytesPerRow: 32 * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        context.setFillColor(CGColor(gray: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        context.setFillColor(CGColor(gray: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 2, height: 32))
+        let image = try XCTUnwrap(context.makeImage())
+
+        XCTAssertFalse(RemoteVideoThumbnailQuality.isAtLeast95PercentBlack(image))
         XCTAssertTrue(RemoteVideoThumbnailQuality.isUsable(image))
     }
 
@@ -913,6 +1006,46 @@ final class RemotePreviewStateTests: XCTestCase {
             throw error
         }
     }
+
+    private func remoteItem(
+        connectionID: UUID,
+        path: String
+    ) -> RemoteFileItem {
+        RemoteFileItem(
+            connectionID: connectionID,
+            path: path,
+            name: (path as NSString).lastPathComponent,
+            kind: .file,
+            size: 1_024,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+    }
+}
+
+private struct ThumbnailRoutingTestService: RemoteFileService {
+    let connection: RemoteConnection
+    let supportsRangeStreaming = true
+
+    init(kind: ConnectionKind) {
+        connection = RemoteConnection(
+            name: "Thumbnail routing test",
+            kind: kind,
+            host: "thumbnail.invalid",
+            username: "tester"
+        )
+    }
+
+    func list(directory path: String?) async throws -> [RemoteFileItem] { [] }
+    func download(_ item: RemoteFileItem) async throws -> URL {
+        throw RemoteThumbnailError.optimizedPreviewUnavailable
+    }
+    func readRange(
+        of item: RemoteFileItem,
+        offset: Int64,
+        length: Int
+    ) async throws -> Data { Data() }
+    func testConnection() async throws {}
 }
 
 private actor SuccessfulSmallVideoProgressGate {
