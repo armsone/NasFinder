@@ -1,5 +1,25 @@
 import Foundation
 
+struct SuperThumbnailFailureRecord: Codable, Identifiable, Sendable, Equatable {
+    let itemID: String
+    let name: String
+    let fileExtension: String
+    let fileSize: Int64?
+    let durationSeconds: TimeInterval?
+    let reason: String
+
+    var id: String { itemID }
+}
+
+struct SuperThumbnailSessionReport: Sendable, Equatable {
+    let successCounts: [Int]
+    let failures: [SuperThumbnailFailureRecord]
+    let pendingCount: Int
+
+    var successfulCount: Int { successCounts.reduce(0, +) }
+    var hasWorkToResume: Bool { pendingCount > 0 || !failures.isEmpty }
+}
+
 actor SuperThumbnailQueueStore {
     static let shared = SuperThumbnailQueueStore()
 
@@ -8,9 +28,20 @@ actor SuperThumbnailQueueStore {
         var nextAttempt: Int
     }
 
-    private typealias Sessions = [String: [String: ItemState]]
+    private struct ResultState: Codable {
+        let signature: String
+        var successAttempt: Int?
+        var failure: SuperThumbnailFailureRecord?
+    }
 
-    private static let storageKey = "superThumbnail.retryQueues.v1"
+    private struct SessionState: Codable {
+        var queue: [String: ItemState] = [:]
+        var results: [String: ResultState] = [:]
+    }
+
+    private typealias Sessions = [String: SessionState]
+
+    private static let storageKey = "superThumbnail.retryQueues.v2"
     private let userDefaults: UserDefaults
 
     init(userDefaults: UserDefaults = .standard) {
@@ -22,24 +53,26 @@ actor SuperThumbnailQueueStore {
         sessionKey: String
     ) -> [String: Int] {
         var sessions = load()
-        let existing = sessions[sessionKey] ?? [:]
+        var session = sessions[sessionKey] ?? SessionState()
         let currentItems = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
-        var cleaned: [String: ItemState] = [:]
-        var result: [String: Int] = [:]
-
-        for (itemID, state) in existing {
-            guard let item = currentItems[itemID],
-                  state.signature == signature(for: item) else { continue }
-            let attempt = min(max(state.nextAttempt, 0), 3)
-            cleaned[itemID] = ItemState(
-                signature: state.signature,
-                nextAttempt: attempt
-            )
-            result[itemID] = attempt
+        session.queue = session.queue.filter { itemID, state in
+            guard let item = currentItems[itemID] else { return false }
+            return state.signature == signature(for: item)
         }
-        sessions[sessionKey] = cleaned
+        session.results = session.results.filter { itemID, state in
+            guard let item = currentItems[itemID] else { return false }
+            return state.signature == signature(for: item)
+        }
+        for item in items
+        where session.queue[item.id] == nil && session.results[item.id] == nil {
+            session.queue[item.id] = ItemState(
+                signature: signature(for: item),
+                nextAttempt: 0
+            )
+        }
+        sessions[sessionKey] = session
         save(sessions)
-        return result
+        return session.queue.mapValues { min(max($0.nextAttempt, 0), 2) }
     }
 
     func deferItem(
@@ -47,30 +80,101 @@ actor SuperThumbnailQueueStore {
         sessionKey: String,
         nextAttempt: Int
     ) {
-        var sessions = load()
-        var session = sessions[sessionKey] ?? [:]
-        session[item.id] = ItemState(
-            signature: signature(for: item),
-            nextAttempt: min(max(nextAttempt, 0), 3)
+        updateSession(sessionKey) { session in
+            session.queue[item.id] = ItemState(
+                signature: signature(for: item),
+                nextAttempt: min(max(nextAttempt, 0), 2)
+            )
+            session.results[item.id] = nil
+        }
+    }
+
+    func markCached(_ item: RemoteFileItem, sessionKey: String) {
+        updateSession(sessionKey) { session in
+            session.queue[item.id] = nil
+            if session.results[item.id]?.failure != nil {
+                session.results[item.id] = nil
+            }
+        }
+    }
+
+    func recordSuccess(
+        _ item: RemoteFileItem,
+        sessionKey: String,
+        attempt: Int
+    ) {
+        updateSession(sessionKey) { session in
+            session.queue[item.id] = nil
+            session.results[item.id] = ResultState(
+                signature: signature(for: item),
+                successAttempt: min(max(attempt, 0), 2),
+                failure: nil
+            )
+        }
+    }
+
+    func recordFailure(
+        _ item: RemoteFileItem,
+        sessionKey: String,
+        durationSeconds: TimeInterval?,
+        reason: String
+    ) {
+        let record = SuperThumbnailFailureRecord(
+            itemID: item.id,
+            name: item.name,
+            fileExtension: (item.name as NSString).pathExtension.uppercased(),
+            fileSize: item.size,
+            durationSeconds: durationSeconds,
+            reason: reason
         )
-        sessions[sessionKey] = session
-        save(sessions)
+        updateSession(sessionKey) { session in
+            session.queue[item.id] = ItemState(
+                signature: signature(for: item),
+                nextAttempt: 2
+            )
+            session.results[item.id] = ResultState(
+                signature: signature(for: item),
+                successAttempt: nil,
+                failure: record
+            )
+        }
     }
 
-    func markSucceeded(_ item: RemoteFileItem, sessionKey: String) {
-        var sessions = load()
-        guard var session = sessions[sessionKey] else { return }
-        session.removeValue(forKey: item.id)
-        sessions[sessionKey] = session
-        save(sessions)
-    }
-
-    func keepForRecovery(_ item: RemoteFileItem, sessionKey: String) {
-        deferItem(item, sessionKey: sessionKey, nextAttempt: 3)
+    func report(sessionKey: String) -> SuperThumbnailSessionReport? {
+        guard let session = load()[sessionKey] else { return nil }
+        var counts = [0, 0, 0]
+        var failures: [SuperThumbnailFailureRecord] = []
+        for result in session.results.values {
+            if let attempt = result.successAttempt,
+               counts.indices.contains(attempt) {
+                counts[attempt] += 1
+            }
+            if let failure = result.failure {
+                failures.append(failure)
+            }
+        }
+        return SuperThumbnailSessionReport(
+            successCounts: counts,
+            failures: failures.sorted {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            },
+            pendingCount: session.queue.count
+        )
     }
 
     func reset() {
         userDefaults.removeObject(forKey: Self.storageKey)
+    }
+
+    private func updateSession(
+        _ sessionKey: String,
+        change: (inout SessionState) -> Void
+    ) {
+        var sessions = load()
+        var session = sessions[sessionKey] ?? SessionState()
+        change(&session)
+        sessions[sessionKey] = session
+        save(sessions)
     }
 
     private func signature(for item: RemoteFileItem) -> String {

@@ -388,6 +388,7 @@ struct FileBrowserView: View {
                 rootPath: viewModel.path,
                 recursively: false,
                 requiresExternalPower: false,
+                allowsConstrainedRun: true,
                 generationMode: .bounded,
                 service: viewModel.service
             )

@@ -82,17 +82,18 @@ final class ThumbnailPreheater: ObservableObject {
     @Published private(set) var cachedCount = 0
     @Published private(set) var failedCount = 0
     @Published private(set) var failedItemNames: [String] = []
+    @Published private(set) var failedItems: [SuperThumbnailFailureRecord] = []
+    @Published private(set) var successAttemptCounts = [0, 0, 0]
     @Published private(set) var transferredBytes: Int64 = 0
     @Published private(set) var currentItemTransferredBytes: Int64 = 0
     @Published private(set) var currentItemTotalBytes: Int64 = 0
     @Published private(set) var currentItemName: String?
     @Published private(set) var currentItemStartedAt: Date?
     @Published private(set) var currentItemAttempt = 0
-    @Published private(set) var currentItemTimeLimit: TimeInterval = 3
+    @Published private(set) var currentItemTimeLimit: TimeInterval = 5
     @Published private(set) var queuedFastCount = 0
     @Published private(set) var queuedRetryCount = 0
     @Published private(set) var queuedRecoveryCount = 0
-    @Published private(set) var queuedFinalCount = 0
     @Published private(set) var estimatedTimeRemaining: TimeInterval?
     @Published private(set) var pauseReason: String?
     @Published private(set) var recentGeneratedThumbnails: [GeneratedThumbnailPreview] = []
@@ -222,6 +223,19 @@ final class ThumbnailPreheater: ObservableObject {
                     sessionKey: queueSessionKey
                 )
                 : [:]
+            if generationMode == .completeFile,
+               let savedReport = await SuperThumbnailQueueStore.shared.report(
+                   sessionKey: queueSessionKey
+               ) {
+                successAttemptCounts = normalizedSuccessCounts(
+                    savedReport.successCounts
+                )
+                failedItems = savedReport.failures
+                failedItemNames = savedReport.failures.map {
+                    "\($0.name) · \($0.reason)"
+                }
+                failedCount = failedItems.count
+            }
             var pendingCandidates: [RemoteFileItem] = []
             if generationMode == .completeFile {
                 for item in candidates {
@@ -229,7 +243,7 @@ final class ThumbnailPreheater: ObservableObject {
                         cachedCount += 1
                         completedCount += 1
                         appendRecentThumbnail(name: item.name, data: cachedData)
-                        await SuperThumbnailQueueStore.shared.markSucceeded(
+                        await SuperThumbnailQueueStore.shared.markCached(
                             item,
                             sessionKey: queueSessionKey
                         )
@@ -240,7 +254,7 @@ final class ThumbnailPreheater: ObservableObject {
             } else {
                 pendingCandidates = candidates
             }
-            var workQueue: [SuperThumbnailWorkItem] = (0...3).flatMap {
+            var workQueue: [SuperThumbnailWorkItem] = (0...2).flatMap {
                 attempt -> [SuperThumbnailWorkItem] in
                 pendingCandidates.compactMap {
                     item -> SuperThumbnailWorkItem? in
@@ -370,9 +384,16 @@ final class ThumbnailPreheater: ObservableObject {
                         }
                         generatedCount += 1
                         if generationMode == .completeFile {
-                            await SuperThumbnailQueueStore.shared.markSucceeded(
+                            successAttemptCounts[work.attempt] += 1
+                            failedItems.removeAll { $0.itemID == item.id }
+                            failedItemNames = failedItems.map {
+                                "\($0.name) · \($0.reason)"
+                            }
+                            failedCount = failedItems.count
+                            await SuperThumbnailQueueStore.shared.recordSuccess(
                                 item,
-                                sessionKey: queueSessionKey
+                                sessionKey: queueSessionKey,
+                                attempt: work.attempt
                             )
                         }
                         if generationMode == .completeFile {
@@ -392,8 +413,8 @@ final class ThumbnailPreheater: ObservableObject {
                             reachedDataLimit = true
                         }
                     } else {
-                        failedCount += 1
-                        failedItemNames.append("\(item.name) · 썸네일 데이터 없음")
+                        throw RemoteVideoThumbnailGenerationError
+                            .imageGenerationFailed
                     }
                 } catch is CancellationError {
                     throw CancellationError()
@@ -409,12 +430,14 @@ final class ThumbnailPreheater: ObservableObject {
                     transferredBytes = max(transferredBytes, Int64(usedBytes))
                 } catch {
                     if generationMode == .completeFile,
-                       work.attempt < 3 {
-                        workQueue.append(
+                       work.attempt < 2 {
+                        enqueueForNextPass(
                             SuperThumbnailWorkItem(
                                 item: item,
                                 attempt: work.attempt + 1
-                            )
+                            ),
+                            in: &workQueue,
+                            after: workIndex
                         )
                         await SuperThumbnailQueueStore.shared.deferItem(
                             item,
@@ -423,14 +446,27 @@ final class ThumbnailPreheater: ObservableObject {
                         )
                         deferredForLater = true
                     } else {
-                        failedCount += 1
-                        failedItemNames.append(
-                            "\(item.name) · \(error.localizedDescription)"
+                        let failure = failureRecord(
+                            for: item,
+                            durationSeconds: observedDuration,
+                            reason: error.localizedDescription
                         )
+                        failedItems.removeAll { $0.itemID == item.id }
+                        failedItems.append(failure)
+                        failedItems.sort {
+                            $0.name.localizedStandardCompare($1.name)
+                                == .orderedAscending
+                        }
+                        failedItemNames = failedItems.map {
+                            "\($0.name) · \($0.reason)"
+                        }
+                        failedCount = failedItems.count
                         if generationMode == .completeFile {
-                            await SuperThumbnailQueueStore.shared.keepForRecovery(
+                            await SuperThumbnailQueueStore.shared.recordFailure(
                                 item,
-                                sessionKey: queueSessionKey
+                                sessionKey: queueSessionKey,
+                                durationSeconds: observedDuration,
+                                reason: error.localizedDescription
                             )
                         }
                     }
@@ -634,6 +670,27 @@ final class ThumbnailPreheater: ObservableObject {
         return nil
     }
 
+    private func normalizedSuccessCounts(_ counts: [Int]) -> [Int] {
+        (0..<3).map { index in
+            counts.indices.contains(index) ? max(counts[index], 0) : 0
+        }
+    }
+
+    private func failureRecord(
+        for item: RemoteFileItem,
+        durationSeconds: TimeInterval?,
+        reason: String
+    ) -> SuperThumbnailFailureRecord {
+        SuperThumbnailFailureRecord(
+            itemID: item.id,
+            name: item.name,
+            fileExtension: (item.name as NSString).pathExtension.uppercased(),
+            fileSize: item.size,
+            durationSeconds: durationSeconds,
+            reason: reason
+        )
+    }
+
     private func updateQueueCounts(
         _ queue: [SuperThumbnailWorkItem],
         from index: Int
@@ -642,7 +699,18 @@ final class ThumbnailPreheater: ObservableObject {
         queuedFastCount = pending.lazy.filter { $0.attempt == 0 }.count
         queuedRetryCount = pending.lazy.filter { $0.attempt == 1 }.count
         queuedRecoveryCount = pending.lazy.filter { $0.attempt == 2 }.count
-        queuedFinalCount = pending.lazy.filter { $0.attempt == 3 }.count
+    }
+
+    private func enqueueForNextPass(
+        _ work: SuperThumbnailWorkItem,
+        in queue: inout [SuperThumbnailWorkItem],
+        after currentIndex: Int
+    ) {
+        let remainingRange = min(currentIndex, queue.endIndex)..<queue.endIndex
+        let insertionIndex = remainingRange.first(where: {
+            queue[$0].attempt > work.attempt
+        }) ?? queue.endIndex
+        queue.insert(work, at: insertionIndex)
     }
 
     private func superThumbnailTimeLimit(
@@ -653,19 +721,17 @@ final class ThumbnailPreheater: ObservableObject {
             return 20
         }
         switch attempt {
-        case 0: return 3
-        case 1: return 7
-        case 2: return 15
+        case 0: return 5
+        case 1: return 20
         default: return 40
         }
     }
 
     private func superThumbnailMaximumBytes(for attempt: Int) -> Int {
         switch attempt {
-        case 0: return 16 * 1_024 * 1_024
-        case 1: return 24 * 1_024 * 1_024
-        case 2: return 32 * 1_024 * 1_024
-        default: return 56 * 1_024 * 1_024
+        case 0: return 24 * 1_024 * 1_024
+        case 1: return 40 * 1_024 * 1_024
+        default: return 64 * 1_024 * 1_024
         }
     }
 
@@ -675,8 +741,7 @@ final class ThumbnailPreheater: ObservableObject {
         switch attempt {
         case 0: return .completeFileFastPass
         case 1: return .completeFileRetryPass
-        case 2: return .completeFileRecoveryPass
-        default: return .completeFileFinalPass
+        default: return .completeFileRecoveryPass
         }
     }
 
@@ -813,17 +878,18 @@ final class ThumbnailPreheater: ObservableObject {
         cachedCount = 0
         failedCount = 0
         failedItemNames = []
+        failedItems = []
+        successAttemptCounts = [0, 0, 0]
         transferredBytes = 0
         currentItemTransferredBytes = 0
         currentItemTotalBytes = 0
         currentItemName = nil
         currentItemStartedAt = nil
         currentItemAttempt = 0
-        currentItemTimeLimit = 3
+        currentItemTimeLimit = 5
         queuedFastCount = 0
         queuedRetryCount = 0
         queuedRecoveryCount = 0
-        queuedFinalCount = 0
         pauseReason = nil
         estimatedTimeRemaining = nil
         recentGeneratedThumbnails = []

@@ -82,6 +82,12 @@ private struct CompactJobAssessment: Equatable {
     let totalBytes: Int64
 }
 
+private struct SuperThumbnailHistoryEntry: Codable, Equatable {
+    let connectionID: String
+    let path: String
+    let title: String
+}
+
 struct SuperThumbnailView: View {
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var connectionStore: ConnectionStore
@@ -99,6 +105,9 @@ struct SuperThumbnailView: View {
     @State private var isAssessingCompactJob = false
     @State private var compactAssessmentID = UUID()
     @State private var screenAwakeActivityID = UUID()
+    @State private var resumeSelection: SuperThumbnailSelection?
+    @State private var previousReport: SuperThumbnailSessionReport?
+    @State private var isConfirmingResume = false
     @AppStorage("superThumbnail.lastConnectionID.v1") private var lastConnectionID = ""
     @AppStorage("superThumbnail.lastPath.v1") private var lastPath = ""
     @AppStorage("superThumbnail.lastTitle.v1") private var lastTitle = ""
@@ -106,6 +115,7 @@ struct SuperThumbnailView: View {
     private var previousConnectionID = ""
     @AppStorage("superThumbnail.previousPath.v1") private var previousPath = ""
     @AppStorage("superThumbnail.previousTitle.v1") private var previousTitle = ""
+    @AppStorage("superThumbnail.folderHistory.v1") private var folderHistoryJSON = ""
     @AppStorage("superThumbnail.hasPendingSession.v1") private var hasPendingSession = false
 
     var body: some View {
@@ -113,8 +123,8 @@ struct SuperThumbnailView: View {
             VStack(spacing: 18) {
                 hero
                 folderSelection
-                startButton
                 requirements
+                startButton
                 statisticsGrid
                 resetLink
             }
@@ -139,6 +149,7 @@ struct SuperThumbnailView: View {
                 hasPendingSession = false
                 assessCompactJob(for: selected)
                 isSelectingFolder = false
+                Task { await loadPreviousReport(for: selected) }
             }
             .environmentObject(connectionStore)
         }
@@ -175,8 +186,19 @@ struct SuperThumbnailView: View {
         } message: {
             Text(preparationError ?? "")
         }
-        .task {
+        .alert("이전 Super Thumbnail 결과", isPresented: $isConfirmingResume) {
+            Button("미완료 다시 진행") {
+                resumePreviousWork()
+            }
+            Button("나중에", role: .cancel) {}
+        } message: {
+            Text(previousReportText)
+        }
+        .task(id: connectionStore.connections.count) {
             await refreshStatistics()
+            if let recent = historySelections.first {
+                await loadPreviousReport(for: recent)
+            }
         }
         .onAppear {
             ScreenAwakeController.shared.beginForcedActivity(screenAwakeActivityID)
@@ -282,58 +304,75 @@ struct SuperThumbnailView: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .padding(.leading, 4)
-            ForEach(Array(historySelections.enumerated()), id: \.element.id) {
-                index, previous in
-                Button {
-                    selection = previous
-                    saveSelection(previous)
-                    assessCompactJob(for: previous)
-                } label: {
-                    HStack(spacing: 11) {
-                        Image(systemName: index == 0 ? "clock.fill" : "clock")
-                            .font(.caption)
-                            .foregroundStyle(historyTint(for: index).opacity(0.78))
-                            .frame(width: 24, height: 24)
-                            .background(
-                                historyTint(for: index).opacity(0.10),
-                                in: Circle()
-                            )
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(previous.title)
-                                .font(.subheadline)
-                                .foregroundStyle(primaryInk)
-                                .lineLimit(1)
-                            Text(previous.path)
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                                .lineLimit(1)
-                        }
-                        Spacer(minLength: 8)
-                        Text(selection == previous ? "선택됨" : "이어하기")
-                            .font(.caption2.weight(.medium))
-                            .foregroundStyle(historyTint(for: index).opacity(0.82))
-                            .padding(.horizontal, 9)
-                            .padding(.vertical, 5)
-                            .background(
-                                historyTint(for: index).opacity(0.09),
-                                in: Capsule()
-                            )
-                    }
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 11)
-                    .background(
-                        historyTint(for: index).opacity(index == 0 ? 0.055 : 0.035),
-                        in: RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    )
-                    .overlay {
-                        RoundedRectangle(cornerRadius: 15, style: .continuous)
-                            .stroke(historyTint(for: index).opacity(0.08), lineWidth: 1)
+            ScrollView(.vertical, showsIndicators: historySelections.count > 3) {
+                LazyVStack(spacing: 7) {
+                    ForEach(Array(historySelections.enumerated()), id: \.element.id) {
+                        index, previous in
+                        historyRow(previous, index: index)
                     }
                 }
-                .buttonStyle(.plain)
             }
+            .scrollBounceBehavior(.basedOnSize)
+            .frame(height: min(CGFloat(historySelections.count) * 64, 206))
+            .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
         .padding(.top, 4)
+        .padding(.bottom, 4)
+    }
+
+    private func historyRow(
+        _ previous: SuperThumbnailSelection,
+        index: Int
+    ) -> some View {
+        Button {
+            selection = previous
+            saveSelection(previous)
+            assessCompactJob(for: previous)
+            Task { await loadPreviousReport(for: previous) }
+        } label: {
+            HStack(spacing: 11) {
+                Image(systemName: index == 0 ? "clock.fill" : "clock")
+                    .font(.caption)
+                    .foregroundStyle(historyTint(for: index).opacity(0.78))
+                    .frame(width: 24, height: 24)
+                    .background(
+                        historyTint(for: index).opacity(0.10),
+                        in: Circle()
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(previous.title)
+                        .font(.subheadline)
+                        .foregroundStyle(primaryInk)
+                        .lineLimit(1)
+                    Text(previous.path)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Text(selection == previous ? "선택됨" : "이어하기")
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(historyTint(for: index).opacity(0.82))
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(
+                        historyTint(for: index).opacity(0.09),
+                        in: Capsule()
+                    )
+            }
+            .frame(minHeight: 40)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(
+                historyTint(for: index).opacity(index == 0 ? 0.055 : 0.035),
+                in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 15, style: .continuous)
+                    .stroke(historyTint(for: index).opacity(0.08), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private func historyTint(for index: Int) -> Color {
@@ -450,6 +489,16 @@ struct SuperThumbnailView: View {
 
     private func startProcessing() {
         guard let selection, canStart else { return }
+        launchProcessing(
+            selection: selection,
+            allowsConstrainedRun: usesCompactOverride
+        )
+    }
+
+    private func launchProcessing(
+        selection: SuperThumbnailSelection,
+        allowsConstrainedRun: Bool
+    ) {
         isPreparing = true
         hasPendingSession = true
         Task {
@@ -472,7 +521,7 @@ struct SuperThumbnailView: View {
                     rootPath: selection.path,
                     recursively: true,
                     requiresExternalPower: true,
-                    allowsConstrainedRun: usesCompactOverride,
+                    allowsConstrainedRun: allowsConstrainedRun,
                     generationMode: .completeFile,
                     service: service
                 )
@@ -480,6 +529,52 @@ struct SuperThumbnailView: View {
                 preparationError = error.localizedDescription
             }
         }
+    }
+
+    private func loadPreviousReport(
+        for selected: SuperThumbnailSelection
+    ) async {
+        let report = await SuperThumbnailQueueStore.shared.report(
+            sessionKey: queueSessionKey(for: selected)
+        )
+        guard let report, report.hasWorkToResume else { return }
+        resumeSelection = selected
+        previousReport = report
+        isConfirmingResume = true
+    }
+
+    private func resumePreviousWork() {
+        guard let resumeSelection else { return }
+        selection = resumeSelection
+        saveSelection(resumeSelection)
+        hasPendingSession = true
+        guard hasStandardConditions else {
+            assessCompactJob(for: resumeSelection)
+            preparationError = "이전 미완료 작업을 계속하려면 Wi‑Fi와 충전 연결이 필요합니다."
+            return
+        }
+        launchProcessing(
+            selection: resumeSelection,
+            allowsConstrainedRun: false
+        )
+    }
+
+    private func queueSessionKey(
+        for selection: SuperThumbnailSelection
+    ) -> String {
+        "\(selection.connection.id.uuidString)|\(selection.path)"
+    }
+
+    private var previousReportText: String {
+        guard let report = previousReport else { return "" }
+        let counts = normalizedReportCounts(report.successCounts)
+        return "이전 결과: 총 \(report.successfulCount)개 성공 · "
+            + "5초 \(counts[0])개 · 20초 \(counts[1])개 · 40초 \(counts[2])개"
+            + "\n미완료 \(max(report.pendingCount, report.failures.count))개부터 다시 진행합니다."
+    }
+
+    private func normalizedReportCounts(_ counts: [Int]) -> [Int] {
+        (0..<3).map { counts.indices.contains($0) ? counts[$0] : 0 }
     }
 
     private func saveSelection(_ selection: SuperThumbnailSelection) {
@@ -493,6 +588,20 @@ struct SuperThumbnailView: View {
         lastConnectionID = selection.connection.id.uuidString
         lastPath = selection.path
         lastTitle = selection.title
+
+        let selectedEntry = SuperThumbnailHistoryEntry(
+            connectionID: selection.connection.id.uuidString,
+            path: selection.path,
+            title: selection.title
+        )
+        var entries = decodedHistoryEntries.filter {
+            $0.connectionID != selectedEntry.connectionID || $0.path != selectedEntry.path
+        }
+        entries.insert(selectedEntry, at: 0)
+        if let encoded = try? JSONEncoder().encode(Array(entries.prefix(10))),
+           let json = String(data: encoded, encoding: .utf8) {
+            folderHistoryJSON = json
+        }
     }
 
     private func assessCompactJob(for selection: SuperThumbnailSelection) {
@@ -548,7 +657,14 @@ struct SuperThumbnailView: View {
     }
 
     private var historySelections: [SuperThumbnailSelection] {
-        [
+        let saved = decodedHistoryEntries.map {
+            storedSelection(
+                connectionID: $0.connectionID,
+                path: $0.path,
+                title: $0.title
+            )
+        }
+        let legacy = [
             storedSelection(
                 connectionID: lastConnectionID,
                 path: lastPath,
@@ -560,11 +676,21 @@ struct SuperThumbnailView: View {
                 title: previousTitle
             ),
         ]
+        return (saved + legacy)
         .compactMap { $0 }
         .reduce(into: [SuperThumbnailSelection]()) { result, candidate in
-            guard !result.contains(candidate) else { return }
+            guard result.count < 10, !result.contains(candidate) else { return }
             result.append(candidate)
         }
+    }
+
+    private var decodedHistoryEntries: [SuperThumbnailHistoryEntry] {
+        guard let data = folderHistoryJSON.data(using: .utf8),
+              let entries = try? JSONDecoder().decode(
+                  [SuperThumbnailHistoryEntry].self,
+                  from: data
+              ) else { return [] }
+        return Array(entries.prefix(10))
     }
 
     private func storedSelection(
@@ -606,56 +732,41 @@ private struct SuperThumbnailProgressView: View {
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: 20) {
-                    SuperThumbnailMark()
-                        .scaleEffect(0.72)
-                        .frame(height: 62)
-                    VStack(spacing: 7) {
-                        if !preheater.isRunning {
-                            Text(statusTitle)
-                                .font(.title3.weight(.medium))
-                                .foregroundStyle(Color.primary.opacity(0.76))
-                        }
-                        Label(folderTitle, systemImage: "folder.fill")
+                VStack(spacing: 14) {
+                    HStack(spacing: 9) {
+                        SuperThumbnailMark(compact: true)
+                        Text("Super Processing")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(Color.primary.opacity(0.72))
+                    }
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                    HStack(spacing: 7) {
+                        Image(systemName: "folder.fill")
+                            .font(.caption)
+                            .foregroundStyle(SkyBreezeTheme.folderBlue.opacity(0.78))
+                        Text(folderTitle)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                        if let pauseReason = preheater.pauseReason {
-                            Text(pauseReason)
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                                .multilineTextAlignment(.center)
-                        }
+                            .truncationMode(.middle)
                     }
-                    ProgressView(value: preheater.fractionCompleted ?? 0)
-                        .progressViewStyle(.linear)
-                    Text("\(preheater.completedCount) / \(preheater.totalCount)")
-                        .font(.title3.monospacedDigit().weight(.medium))
-                        .foregroundStyle(Color.primary.opacity(0.76))
+                    .frame(maxWidth: .infinity, alignment: .center)
+
+                    if let pauseReason = preheater.pauseReason {
+                        Text(pauseReason)
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                            .multilineTextAlignment(.center)
+                    }
+
+                    overallProgressPanel
+
                     VStack(spacing: 0) {
-                        if let current = preheater.currentItemName {
-                            VStack(spacing: 5) {
-                                Text("Now Processing")
-                                    .font(.caption2)
-                                    .foregroundStyle(.secondary)
-                                Text(current)
-                                    .font(.subheadline)
-                                    .foregroundStyle(Color.primary.opacity(0.76))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .minimumScaleFactor(0.82)
-                                    .allowsTightening(true)
-                                    .multilineTextAlignment(.center)
-                                    .frame(
-                                        maxWidth: .infinity,
-                                        minHeight: 38,
-                                        maxHeight: 38
-                                    )
-                                if let startedAt = preheater.currentItemStartedAt {
-                                    currentItemWaitPanel(startedAt: startedAt)
-                                }
-                            }
-                        }
+                        currentFilenameRow
+                        currentItemWaitPanel(
+                            startedAt: preheater.currentItemStartedAt
+                        )
                         etaPanel
                     }
                     HStack(spacing: 18) {
@@ -666,7 +777,7 @@ private struct SuperThumbnailProgressView: View {
                     if !preheater.recentGeneratedThumbnails.isEmpty {
                         overflowPanel
                     }
-                    if preheater.failedCount > 0 {
+                    if preheater.isRunning, preheater.failedCount > 0 {
                         failurePanel
                     }
                     Text(
@@ -679,22 +790,13 @@ private struct SuperThumbnailProgressView: View {
                     .font(.footnote.monospacedDigit())
                     .foregroundStyle(.secondary)
 
-                    if !preheater.isRunning, !preheater.failedItemNames.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Needs Attention")
-                                .font(.headline)
-                            ForEach(preheater.failedItemNames, id: \.self) { name in
-                                Label(name, systemImage: "exclamationmark.triangle.fill")
-                                    .font(.caption)
-                                    .foregroundStyle(.orange)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
-                        .background(.background, in: RoundedRectangle(cornerRadius: 14))
+                    if !preheater.isRunning, preheater.totalCount > 0 {
+                        completionReportPanel
                     }
                 }
-                .padding(26)
+                .padding(.horizontal, 22)
+                .padding(.top, 20)
+                .padding(.bottom, 26)
             }
             .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
             .safeAreaInset(edge: .bottom) {
@@ -710,7 +812,7 @@ private struct SuperThumbnailProgressView: View {
                 .padding(.vertical, 12)
                 .background(.ultraThinMaterial)
             }
-            .navigationTitle("Super Processing")
+            .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 ScreenAwakeController.shared.beginForcedActivity(screenAwakeActivityID)
@@ -719,6 +821,46 @@ private struct SuperThumbnailProgressView: View {
                 ScreenAwakeController.shared.finishForcedActivity(screenAwakeActivityID)
             }
         }
+    }
+
+    private var overallProgressPanel: some View {
+        VStack(spacing: 9) {
+            ProgressView(value: preheater.fractionCompleted ?? 0)
+                .progressViewStyle(.linear)
+                .tint(Color.blue.opacity(0.72))
+            Text("\(preheater.completedCount) / \(preheater.totalCount)")
+                .font(.title3.monospacedDigit().weight(.regular))
+                .foregroundStyle(Color.primary.opacity(0.70))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 13)
+        .background(
+            Color.white.opacity(0.72),
+            in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+        )
+    }
+
+    private var currentFilenameRow: some View {
+        let filename = preheater.currentItemName ?? "처리 준비 중"
+        let fileExtension = (filename as NSString).pathExtension
+        let stem = fileExtension.isEmpty
+            ? filename
+            : (filename as NSString).deletingPathExtension
+
+        return HStack(spacing: 0) {
+            Text(stem)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if !fileExtension.isEmpty {
+                Text(".\(fileExtension)")
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+        .font(.subheadline)
+        .foregroundStyle(Color.primary.opacity(0.70))
+        .frame(maxWidth: .infinity, minHeight: 38, maxHeight: 38)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(filename)
     }
 
     private func progressMetric(_ title: String, _ value: Int) -> some View {
@@ -883,9 +1025,18 @@ private struct SuperThumbnailProgressView: View {
     }
 
     private var currentItemTransferText: String {
-        let current = formattedProgressBytes(preheater.currentItemTransferredBytes)
-        let total = formattedProgressBytes(preheater.currentItemTotalBytes)
+        let current = formattedRangeMegabytes(
+            preheater.currentItemTransferredBytes
+        )
+        let total = formattedRangeMegabytes(preheater.currentItemTotalBytes)
         return "Range \(current) / \(total)"
+    }
+
+    private func formattedRangeMegabytes(_ bytes: Int64) -> String {
+        String(
+            format: "%.1f MB",
+            Double(max(bytes, 0)) / Double(1_024 * 1_024)
+        )
     }
 
     private func formattedProgressBytes(_ bytes: Int64) -> String {
@@ -896,33 +1047,36 @@ private struct SuperThumbnailProgressView: View {
         )
     }
 
-    private func currentItemWaitPanel(startedAt: Date) -> some View {
+    private func currentItemWaitPanel(startedAt: Date?) -> some View {
         TimelineView(.periodic(from: .now, by: 1)) { context in
-            let elapsed = max(context.date.timeIntervalSince(startedAt), 0)
+            let elapsed = startedAt.map {
+                max(context.date.timeIntervalSince($0), 0)
+            } ?? 0
             let limit = max(preheater.currentItemTimeLimit, 1)
-            let remaining = max(Int(ceil(limit - elapsed)), 0)
+            let remaining = preheater.isRunning
+                ? max(Int(ceil(limit - elapsed)), 0)
+                : 0
             VStack(spacing: 6) {
                 HStack {
-                    Text(currentPassTitle)
+                    Text(preheater.isRunning ? currentPassTitle : statusTitle)
                     Spacer()
-                    Text(remaining > 0 ? "\(remaining)s 남음" : "넘어가는 중…")
+                    Text(String(format: "%02ds 남음", remaining))
                 }
                 .font(.caption2.monospacedDigit())
                 .foregroundStyle(.secondary)
-                ProgressView(value: min(elapsed / limit, 1))
+                ProgressView(
+                    value: preheater.isRunning ? min(elapsed / limit, 1) : 1
+                )
                     .progressViewStyle(.linear)
                     .tint(.indigo.opacity(0.72))
                 Text(currentItemTransferText)
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.tertiary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                Text(queueSummary)
-                    .font(.caption2.monospacedDigit())
-                    .foregroundStyle(.tertiary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
+            .frame(maxWidth: .infinity, minHeight: 76, maxHeight: 76)
             .background(
                 Color.indigo.opacity(0.045),
                 in: RoundedRectangle(cornerRadius: 12, style: .continuous)
@@ -933,17 +1087,184 @@ private struct SuperThumbnailProgressView: View {
     private var currentPassTitle: String {
         switch preheater.currentItemAttempt {
         case 0: return "빠른 처리"
-        case 1: return "두 번째 처리"
-        case 2: return "재시도"
+        case 1: return "재시도"
         default: return "최종 복구"
         }
     }
 
-    private var queueSummary: String {
-        "대기 3초 \(preheater.queuedFastCount) · "
-            + "7초 \(preheater.queuedRetryCount) · "
-            + "15초 \(preheater.queuedRecoveryCount) · "
-            + "40초 \(preheater.queuedFinalCount)"
+    private var completionReportPanel: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("처리 결과")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(Color.primary.opacity(0.72))
+
+            VStack(spacing: 10) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("성공 총계")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(normalizedSuccessCounts.reduce(0, +))개")
+                        .font(.title3.monospacedDigit().weight(.regular))
+                        .foregroundStyle(Color.primary.opacity(0.72))
+                }
+                Divider().opacity(0.65)
+                HStack(spacing: 0) {
+                    successMetric(seconds: 5, count: normalizedSuccessCounts[0])
+                    successMetric(seconds: 20, count: normalizedSuccessCounts[1])
+                    successMetric(seconds: 40, count: normalizedSuccessCounts[2])
+                }
+            }
+            .padding(12)
+            .background(
+                Color.blue.opacity(0.035),
+                in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            )
+
+            if !preheater.failedItems.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 5) {
+                    Text("실패 요약")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.orange.opacity(0.88))
+                    Text(failureSummaryText)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                failureTable
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(
+            Color.white.opacity(0.72),
+            in: RoundedRectangle(cornerRadius: 15, style: .continuous)
+        )
+    }
+
+    private func successMetric(seconds: Int, count: Int) -> some View {
+        VStack(spacing: 3) {
+            Text("\(seconds)초")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            Text("\(count)개")
+                .font(.subheadline.monospacedDigit().weight(.regular))
+                .foregroundStyle(Color.primary.opacity(0.68))
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var normalizedSuccessCounts: [Int] {
+        (0..<3).map { index in
+            preheater.successAttemptCounts.indices.contains(index)
+                ? preheater.successAttemptCounts[index]
+                : 0
+        }
+    }
+
+    private var failureSummaryText: String {
+        let typeCounts = Dictionary(grouping: preheater.failedItems) {
+            $0.fileExtension.isEmpty ? "기타" : $0.fileExtension
+        }
+        let types = typeCounts.keys.sorted().map {
+            "\($0) \(typeCounts[$0]?.count ?? 0)개"
+        }.joined(separator: " · ")
+        let durations = preheater.failedItems.compactMap(\.durationSeconds)
+        let durationText: String
+        if let minimum = durations.min(), let maximum = durations.max() {
+            durationText = minimum == maximum
+                ? "길이 \(formattedDuration(minimum))"
+                : "길이 \(formattedDuration(minimum))–\(formattedDuration(maximum))"
+        } else {
+            durationText = "영상 길이 확인 불가"
+        }
+        return "종류: \(types) · \(durationText)"
+    }
+
+    private var failureTable: some View {
+        ScrollView(.horizontal, showsIndicators: true) {
+            Grid(horizontalSpacing: 0, verticalSpacing: 0) {
+                GridRow {
+                    failureCell("파일 이름", width: 220, isHeader: true)
+                    failureCell("종류", width: 58, isHeader: true)
+                    failureCell("크기", width: 82, isHeader: true)
+                    failureCell("길이", width: 70, isHeader: true)
+                    failureCell("실패 사유", width: 210, isHeader: true)
+                }
+                ForEach(Array(preheater.failedItems.enumerated()), id: \.element.id) {
+                    index, failure in
+                    GridRow {
+                        failureCell(failure.name, width: 220, shaded: index.isMultiple(of: 2))
+                        failureCell(
+                            failure.fileExtension.isEmpty ? "—" : failure.fileExtension,
+                            width: 58,
+                            shaded: index.isMultiple(of: 2)
+                        )
+                        failureCell(
+                            failure.fileSize.map {
+                                formattedProgressBytes($0)
+                            } ?? "—",
+                            width: 82,
+                            shaded: index.isMultiple(of: 2)
+                        )
+                        failureCell(
+                            failure.durationSeconds.map {
+                                formattedDuration($0)
+                            } ?? "—",
+                            width: 70,
+                            shaded: index.isMultiple(of: 2)
+                        )
+                        failureCell(
+                            failure.reason,
+                            width: 210,
+                            shaded: index.isMultiple(of: 2)
+                        )
+                    }
+                }
+            }
+            .overlay {
+                Rectangle().stroke(Color.secondary.opacity(0.16), lineWidth: 0.5)
+            }
+        }
+    }
+
+    private func failureCell(
+        _ text: String,
+        width: CGFloat,
+        isHeader: Bool = false,
+        shaded: Bool = false
+    ) -> some View {
+        Text(text)
+            .font(isHeader ? .caption2.weight(.medium) : .caption2)
+            .foregroundStyle(isHeader ? Color.secondary : Color.primary.opacity(0.68))
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(width: width, alignment: .leading)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 7)
+            .background(
+                isHeader
+                    ? Color.secondary.opacity(0.08)
+                    : shaded ? Color.secondary.opacity(0.035) : Color.clear
+            )
+            .overlay(alignment: .trailing) {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.12))
+                    .frame(width: 0.5)
+            }
+    }
+
+    private func formattedDuration(_ seconds: TimeInterval) -> String {
+        let total = max(Int(seconds.rounded()), 0)
+        if total >= 3_600 {
+            return String(
+                format: "%d:%02d:%02d",
+                total / 3_600,
+                (total % 3_600) / 60,
+                total % 60
+            )
+        }
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 
     private var statusTitle: String {

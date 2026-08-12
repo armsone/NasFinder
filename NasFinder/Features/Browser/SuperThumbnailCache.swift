@@ -98,7 +98,6 @@ actor SuperThumbnailCache {
         await RemoteVideoThumbnailTrafficBudget.completeFileFastPass.reset()
         await RemoteVideoThumbnailTrafficBudget.completeFileRetryPass.reset()
         await RemoteVideoThumbnailTrafficBudget.completeFileRecoveryPass.reset()
-        await RemoteVideoThumbnailTrafficBudget.completeFileFinalPass.reset()
         await SuperThumbnailQueueStore.shared.reset()
         await RemoteThumbnailLoader.clearInMemoryCaches()
         await notifyChange()

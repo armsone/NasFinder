@@ -461,22 +461,17 @@ actor RemoteVideoThumbnailTrafficBudget {
     static let completeFileMaximumItemBytes = 128 * 1_024 * 1_024
     static let completeFileFastPass = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
-        maximumItemBytes: 16 * 1_024 * 1_024,
+        maximumItemBytes: 24 * 1_024 * 1_024,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
     static let completeFileRetryPass = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
-        maximumItemBytes: 24 * 1_024 * 1_024,
+        maximumItemBytes: 40 * 1_024 * 1_024,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
     static let completeFileRecoveryPass = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
-        maximumItemBytes: 32 * 1_024 * 1_024,
-        minimumLeaseBytes: defaultMinimumLeaseBytes
-    )
-    static let completeFileFinalPass = RemoteVideoThumbnailTrafficBudget(
-        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
-        maximumItemBytes: 56 * 1_024 * 1_024,
+        maximumItemBytes: 64 * 1_024 * 1_024,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
     static let completeFileShared = RemoteVideoThumbnailTrafficBudget(
