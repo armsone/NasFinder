@@ -320,7 +320,7 @@ struct FileBrowserCoverFlowView: View {
     }
 
     private func cardStep(for width: CGFloat) -> CGFloat {
-        min(max(width * 0.09, 62), 82)
+        min(max(width * 0.05, 42), 66)
     }
 
     private func cardBaseWidth(for size: CGSize) -> CGFloat {
