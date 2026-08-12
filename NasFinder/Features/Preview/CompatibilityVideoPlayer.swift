@@ -642,30 +642,76 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                 timeout: timeout
             )
             if activeOperation === initialOperation { activeOperation = nil }
-
-            let image: CGImage
-            if RemoteVideoThumbnailQuality.isAtLeast50PercentBlack(initialImage) {
-                let retryOperation = CompatibilityVideoThumbnailOperation()
-                activeOperation = retryOperation
-                defer {
-                    if activeOperation === retryOperation { activeOperation = nil }
-                }
-                image = try await retryOperation.generate(
-                    media: media,
-                    stream: stream,
-                    dimensions: dimensions,
-                    snapshotPosition: initialPosition + (1 - initialPosition) / 2,
-                    closesStreamOnSuccess: true,
-                    timeout: timeout
-                )
-            } else {
-                stream?.close()
-                image = initialImage
-            }
-            let data = try jpegData(from: image)
             if let stream {
                 transferredBytes = stream.accountedByteCount
             }
+
+            var image = initialImage
+            if RemoteVideoThumbnailQuality.isAtLeast50PercentBlack(initialImage) {
+                let transferredBeforeRetry = transferredBytes
+                let retryMedia: VLCMedia?
+                let retryStream: CompatibilityRemoteInputStream?
+                if let localURL {
+                    retryMedia = VLCMedia(url: localURL)
+                    retryStream = nil
+                } else {
+                    stream?.close()
+                    let remainingBytes = max(
+                        lease.maximumBytes - transferredBeforeRetry,
+                        0
+                    )
+                    if remainingBytes > 0 {
+                        let freshStream = try CompatibilityRemoteInputStream(
+                            item: item,
+                            service: service,
+                            maximumTransferredBytes: remainingBytes
+                        )
+                        stream = freshStream
+                        retryStream = freshStream
+                        retryMedia = VLCMedia(stream: freshStream)
+                    } else {
+                        retryStream = nil
+                        retryMedia = nil
+                    }
+                }
+
+                if let retryMedia {
+                    let retryOperation = CompatibilityVideoThumbnailOperation()
+                    activeOperation = retryOperation
+                    defer {
+                        if activeOperation === retryOperation { activeOperation = nil }
+                    }
+                    do {
+                        image = try await retryOperation.generate(
+                            media: retryMedia,
+                            stream: retryStream,
+                            dimensions: dimensions,
+                            snapshotPosition: initialPosition
+                                + (1 - initialPosition) / 2,
+                            closesStreamOnSuccess: true,
+                            timeout: timeout
+                        )
+                    } catch is CancellationError {
+                        if let retryStream {
+                            transferredBytes = transferredBeforeRetry
+                                + retryStream.accountedByteCount
+                        }
+                        throw CancellationError()
+                    } catch {
+                        // The first frame is already a valid thumbnail. A
+                        // best-effort later seek must not turn that success
+                        // into a missing thumbnail.
+                        retryStream?.close()
+                    }
+                    if let retryStream {
+                        transferredBytes = transferredBeforeRetry
+                            + retryStream.accountedByteCount
+                    }
+                }
+            } else {
+                stream?.close()
+            }
+            let data = try jpegData(from: image)
             await trafficBudget.finish(lease, transferredBytes: transferredBytes)
             return RemoteVideoThumbnailGenerationResult(
                 data: data,
@@ -674,7 +720,10 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
         } catch {
             stream?.close()
             if let stream {
-                transferredBytes = stream.accountedByteCount
+                transferredBytes = max(
+                    transferredBytes,
+                    stream.accountedByteCount
+                )
             }
             await trafficBudget.finish(lease, transferredBytes: transferredBytes)
             throw error
@@ -757,7 +806,7 @@ private final class CompatibilityVideoThumbnailOperation:
                 thumbnailer.thumbnailWidth = max(dimensions.width, 1)
                 thumbnailer.thumbnailHeight = max(dimensions.height, 1)
                 thumbnailer.snapshotPosition = snapshotPosition
-                thumbnailer.preciseSeek = false
+                thumbnailer.preciseSeek = true
                 thumbnailer.cropsToFit = false
                 self.thumbnailer = thumbnailer
                 timeoutTask = Task { [weak self] in
