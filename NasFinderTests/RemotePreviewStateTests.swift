@@ -155,6 +155,16 @@ final class RemotePreviewStateTests: XCTestCase {
             ThumbnailPreheater.maximumSynologyDataBytes,
             256 * 1_024 * 1_024
         )
+        XCTAssertTrue(
+            CompatibilityVideoThumbnailAttemptPolicy.usesPlayerSnapshotFirst(
+                for: .synology
+            )
+        )
+        XCTAssertFalse(
+            CompatibilityVideoThumbnailAttemptPolicy.usesPlayerSnapshotFirst(
+                for: .sftp
+            )
+        )
     }
 
     func testCompatibilityRemoteStreamSupportsBoundedReadsAndSeeking() async throws {
@@ -200,6 +210,42 @@ final class RemotePreviewStateTests: XCTestCase {
             stream.accountedByteCount,
             CompatibilityRemoteInputStream.maximumReadChunkBytes * 2
         )
+    }
+
+    func testSynologyCompatibilityThumbnailUsesPlayerSnapshot() async throws {
+        let movieURL = try await makeTinyMOV()
+        defer { try? FileManager.default.removeItem(at: movieURL) }
+        let byteCount = Int64(
+            try movieURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        )
+        let service = RangeReadingTinyVideoService(movieURL: movieURL)
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/tiny.avi",
+            name: "tiny.avi",
+            kind: .file,
+            size: byteCount,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let maximumBytes = 1 * 1_024 * 1_024
+        let trafficBudget = RemoteVideoThumbnailTrafficBudget(
+            maximumFolderBytes: maximumBytes,
+            maximumItemBytes: maximumBytes,
+            minimumLeaseBytes: 1
+        )
+
+        let result = try await RemoteVideoThumbnailGenerator.generate(
+            for: item,
+            service: service,
+            size: .small,
+            trafficBudget: trafficBudget,
+            timeout: .seconds(10)
+        )
+
+        XCTAssertFalse(result.data.isEmpty)
+        XCTAssertGreaterThan(result.transferredBytes, 0)
+        XCTAssertLessThanOrEqual(result.transferredBytes, maximumBytes)
     }
 
     func testOfficialAVIAndASFSamplesPlaySeekRotateAndCreateThumbnails() async throws {

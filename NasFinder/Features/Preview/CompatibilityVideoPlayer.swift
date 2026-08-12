@@ -17,6 +17,12 @@ enum CompatibilityVideoFormatPolicy {
     }
 }
 
+enum CompatibilityVideoThumbnailAttemptPolicy {
+    static func usesPlayerSnapshotFirst(for connectionKind: ConnectionKind) -> Bool {
+        connectionKind == .synology
+    }
+}
+
 enum CompatibilityExternalSubtitlePolicy {
     private static let preferredExtensions = [
         "srt", "ass", "ssa", "vtt", "smi", "sub",
@@ -642,21 +648,44 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
             let initialPosition: Float = 0.3
             let preciseSeekTimeout = min(timeout, .seconds(5))
             let initialOperation = CompatibilityVideoThumbnailOperation()
-            activeOperation = initialOperation
             defer {
                 if activeOperation === initialOperation { activeOperation = nil }
             }
             let initialImage: CGImage
             do {
-                initialImage = try await initialOperation.generate(
-                    media: media,
-                    stream: stream,
-                    dimensions: dimensions,
-                    snapshotPosition: initialPosition,
-                    preciseSeek: true,
-                    closesStreamOnSuccess: false,
-                    timeout: preciseSeekTimeout
-                )
+                if CompatibilityVideoThumbnailAttemptPolicy.usesPlayerSnapshotFirst(
+                    for: service.connection.kind
+                ) {
+                    let snapshotOperation =
+                        CompatibilityVideoPlayerSnapshotOperation()
+                    activeSnapshotOperation = snapshotOperation
+                    defer {
+                        if activeSnapshotOperation === snapshotOperation {
+                            activeSnapshotOperation = nil
+                        }
+                    }
+                    initialImage = try await snapshotOperation.generate(
+                        media: media,
+                        stream: stream,
+                        dimensions: dimensions,
+                        position: initialPosition,
+                        timeout: min(
+                            try remainingGenerationTime(),
+                            .seconds(14)
+                        )
+                    )
+                } else {
+                    activeOperation = initialOperation
+                    initialImage = try await initialOperation.generate(
+                        media: media,
+                        stream: stream,
+                        dimensions: dimensions,
+                        snapshotPosition: initialPosition,
+                        preciseSeek: true,
+                        closesStreamOnSuccess: false,
+                        timeout: preciseSeekTimeout
+                    )
+                }
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -911,15 +940,27 @@ private final class CompatibilityVideoPlayerSnapshotOperation {
 
                 let player = VLCMediaPlayer()
                 let drawable = UIView(
-                    frame: CGRect(origin: .zero, size: dimensions)
+                    frame: CGRect(
+                        x: -max(dimensions.width, 1) - 1,
+                        y: 0,
+                        width: max(dimensions.width, 1),
+                        height: max(dimensions.height, 1)
+                    )
                 )
                 drawable.backgroundColor = .black
+                drawable.isUserInteractionEnabled = false
+                drawable.accessibilityElementsHidden = true
+                let keyWindow = UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }
+                    .flatMap(\.windows)
+                    .first(where: \.isKeyWindow)
+                keyWindow?.addSubview(drawable)
                 player.drawable = drawable
                 player.media = media
                 player.audio?.volume = 0
                 self.player = player
                 self.drawable = drawable
-                player.play()
+                CompatibilityVideoPlayerSnapshotStartExecutor.start(player)
 
                 pollingTask = Task { @MainActor [weak self] in
                     await self?.capture(
@@ -996,18 +1037,47 @@ private final class CompatibilityVideoPlayerSnapshotOperation {
         self.continuation = nil
         pollingTask?.cancel()
         pollingTask = nil
+        stream?.close()
+        stream = nil
         player?.audio?.volume = 0
         player?.stop()
         player?.drawable = nil
         player = nil
+        drawable?.removeFromSuperview()
         drawable = nil
-        stream?.close()
-        stream = nil
         if let snapshotURL {
             try? FileManager.default.removeItem(at: snapshotURL)
         }
         snapshotURL = nil
         continuation?.resume(with: result)
+    }
+}
+
+private enum CompatibilityVideoPlayerSnapshotStartExecutor {
+    private static let queue = DispatchQueue(
+        label: "com.armsone.nasfinder.vlc-thumbnail-player-start",
+        qos: .utility
+    )
+
+    static func start(_ player: VLCMediaPlayer) {
+        let resource = CompatibilityVideoPlayerSnapshotStartResource(player)
+        queue.async {
+            resource.play()
+        }
+    }
+}
+
+private final class CompatibilityVideoPlayerSnapshotStartResource:
+    @unchecked Sendable
+{
+    private let player: VLCMediaPlayer
+
+    init(_ player: VLCMediaPlayer) {
+        self.player = player
+    }
+
+    func play() {
+        player.play()
     }
 }
 
