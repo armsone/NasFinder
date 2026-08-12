@@ -110,6 +110,27 @@ final class RemotePreviewStateTests: XCTestCase {
         )
     }
 
+    func testSynologyMKVTriesServerThumbnailBeforeVLCKitFallback() {
+        let service = ThumbnailRoutingTestService(kind: .synology)
+        let mkv = remoteItem(
+            connectionID: service.connection.id,
+            path: "/share/video.mkv"
+        )
+
+        XCTAssertFalse(
+            RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
+                for: mkv,
+                service: service
+            )
+        )
+        XCTAssertTrue(
+            RemoteVideoThumbnailRoutingPolicy.canGenerateBoundedThumbnail(
+                for: mkv,
+                service: service
+            )
+        )
+    }
+
     func testCompatibilityThumbnailPlaybackIsSilentAndSerialized() {
         XCTAssertTrue(
             CompatibilityVideoThumbnailPlaybackPolicy.usesDedicatedThumbnailer

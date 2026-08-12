@@ -13,7 +13,8 @@ enum RemoteVideoThumbnailRoutingPolicy {
         for item: RemoteFileItem,
         service: any RemoteFileService
     ) -> Bool {
-        service.supportsRangeStreaming
+        service.connection.kind == .sftp
+            && service.supportsRangeStreaming
             && CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item)
     }
 
