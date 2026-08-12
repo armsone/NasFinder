@@ -613,7 +613,7 @@ final class RemotePreviewStateTests: XCTestCase {
         XCTAssertFalse(RemoteVideoThumbnailQuality.isUsable(image))
     }
 
-    func testRemoteThumbnailQualityRetriesWhenMoreThan95PercentIsBlack() throws {
+    func testRemoteThumbnailQualityRetriesWhenAtLeast50PercentIsBlack() throws {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let context = try XCTUnwrap(
             CGContext(
@@ -629,14 +629,14 @@ final class RemotePreviewStateTests: XCTestCase {
         context.setFillColor(CGColor(gray: 0.005, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
         context.setFillColor(CGColor(gray: 0.8, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: 1, height: 32))
+        context.fill(CGRect(x: 0, y: 0, width: 16, height: 32))
         let image = try XCTUnwrap(context.makeImage())
 
-        XCTAssertTrue(RemoteVideoThumbnailQuality.isAtLeast95PercentBlack(image))
+        XCTAssertTrue(RemoteVideoThumbnailQuality.isAtLeast50PercentBlack(image))
         XCTAssertFalse(RemoteVideoThumbnailQuality.isUsable(image))
     }
 
-    func testRemoteThumbnailQualityAcceptsFrameBelow95PercentBlack() throws {
+    func testRemoteThumbnailQualityAcceptsFrameBelow50PercentBlack() throws {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let context = try XCTUnwrap(
             CGContext(
@@ -652,10 +652,10 @@ final class RemotePreviewStateTests: XCTestCase {
         context.setFillColor(CGColor(gray: 0, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
         context.setFillColor(CGColor(gray: 0.8, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: 2, height: 32))
+        context.fill(CGRect(x: 0, y: 0, width: 17, height: 32))
         let image = try XCTUnwrap(context.makeImage())
 
-        XCTAssertFalse(RemoteVideoThumbnailQuality.isAtLeast95PercentBlack(image))
+        XCTAssertFalse(RemoteVideoThumbnailQuality.isAtLeast50PercentBlack(image))
         XCTAssertTrue(RemoteVideoThumbnailQuality.isUsable(image))
     }
 

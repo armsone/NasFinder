@@ -644,7 +644,7 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
             if activeOperation === initialOperation { activeOperation = nil }
 
             let image: CGImage
-            if RemoteVideoThumbnailQuality.isAtLeast95PercentBlack(initialImage) {
+            if RemoteVideoThumbnailQuality.isAtLeast50PercentBlack(initialImage) {
                 let retryOperation = CompatibilityVideoThumbnailOperation()
                 activeOperation = retryOperation
                 defer {

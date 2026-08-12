@@ -329,11 +329,11 @@ private final class RemoteVideoThumbnailDeadlineRace<Value: Sendable>: @unchecke
 }
 
 enum RemoteVideoThumbnailQuality {
-    static func isAtLeast95PercentBlack(_ image: CGImage) -> Bool {
+    static func isAtLeast50PercentBlack(_ image: CGImage) -> Bool {
         let values = grayscaleSamples(from: image)
         guard !values.isEmpty else { return false }
         let blackPixels = values.lazy.filter { $0 <= 0.05 }.count
-        return Double(blackPixels) / Double(values.count) >= 0.95
+        return Double(blackPixels) / Double(values.count) >= 0.5
     }
 
     /// Rejects near-uniform black or white intro frames while retaining normal
@@ -341,7 +341,7 @@ enum RemoteVideoThumbnailQuality {
     static func isUsable(_ image: CGImage) -> Bool {
         let values = grayscaleSamples(from: image)
         guard !values.isEmpty else { return true }
-        if isAtLeast95PercentBlack(image) { return false }
+        if isAtLeast50PercentBlack(image) { return false }
 
         let mean = values.reduce(0, +) / Double(values.count)
         let variance = values.reduce(0) { partial, value in
