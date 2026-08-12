@@ -114,6 +114,7 @@ struct RemoteThumbnailView: View {
 
     @StateObject private var loader = RemoteThumbnailLoader()
     @State private var cacheRefreshVersion = 0
+    @State private var networkPathVersion = 0
 
     init(
         item: RemoteFileItem,
@@ -177,11 +178,20 @@ struct RemoteThumbnailView: View {
             loader.invalidateForStoredThumbnail()
             cacheRefreshVersion &+= 1
         }
+        .onReceive(
+            NotificationCenter.default.publisher(
+                for: .thumbnailNetworkPathDidChange
+            )
+        ) { _ in
+            // The task identity change cancels an in-flight Wi-Fi request and
+            // restarts it using the current LTE/Wi-Fi traffic budget.
+            networkPathVersion &+= 1
+        }
     }
 
     private var taskIdentity: String {
         let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
-        return "\(item.id)|\(version)|\(item.size ?? -1)|\(size.width)x\(size.height)|\(UIScreen.main.scale)|\(reloadVersion)|\(cacheRefreshVersion)"
+        return "\(item.id)|\(version)|\(item.size ?? -1)|\(size.width)x\(size.height)|\(UIScreen.main.scale)|\(reloadVersion)|\(cacheRefreshVersion)|\(networkPathVersion)"
     }
 
     private var thumbnailCacheKeys: Set<String> {
@@ -311,13 +321,17 @@ final class RemoteThumbnailLoader: ObservableObject {
 
         let remoteThumbnailData: Data?
         do {
+            let cellularBudget = ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
+                ? nil
+                : RemoteVideoThumbnailTrafficBudget.cellularShared
             remoteThumbnailData = RemoteVideoThumbnailRoutingPolicy
                 .bypassesBackendThumbnail(for: item, service: service)
                 ? nil
                 : try await fetchRemoteThumbnailData(
                     item: item,
                     service: service,
-                    size: requestedRemoteSize
+                    size: requestedRemoteSize,
+                    cellularBudget: cellularBudget
                 )
         } catch RemoteThumbnailError.optimizedPreviewUnavailable {
             // SFTP video previews deliberately avoid downloading the complete
@@ -405,14 +419,18 @@ final class RemoteThumbnailLoader: ObservableObject {
 
         if canGenerateBoundedVideoThumbnail(for: item, service: service) {
             do {
+                let usesCellularBudget = !ThumbnailNetworkMonitor.shared
+                    .isUnmeteredWiFi
                 let generated = try await RemoteThumbnailWorkLimiter.shared.withPermit {
                     try await RemoteVideoThumbnailGenerator.generate(
                         for: item,
                         service: service,
                         size: requestedRemoteSize,
-                        trafficBudget: RemoteVideoThumbnailRoutingPolicy.trafficBudget(
-                            for: service
-                        )
+                        trafficBudget: usesCellularBudget
+                            ? RemoteVideoThumbnailTrafficBudget.cellularShared
+                            : RemoteVideoThumbnailRoutingPolicy.trafficBudget(
+                                for: service
+                            )
                     )
                 }
                 let maximumPixelSize = maximumPixelSize(for: size)
@@ -450,8 +468,9 @@ final class RemoteThumbnailLoader: ObservableObject {
                 return
             } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
                 RemoteThumbnailActivityTracker.shared.reachedTrafficLimit(
-                    maximumBytes:
-                        RemoteVideoThumbnailTrafficBudget.defaultMaximumFolderBytes
+                    maximumBytes: ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
+                        ? RemoteVideoThumbnailTrafficBudget.defaultMaximumFolderBytes
+                        : Int(ThumbnailPreheater.maximumCellularDataBytes)
                 )
                 cacheNegative(cacheKey, for: 30)
                 return
@@ -465,6 +484,11 @@ final class RemoteThumbnailLoader: ObservableObject {
                 cacheNegative(cacheKey, for: 5 * 60)
                 return
             }
+        }
+
+        guard ThumbnailNetworkMonitor.shared.isUnmeteredWiFi else {
+            cacheNegative(cacheKey, for: 30)
+            return
         }
 
         do {
@@ -522,14 +546,46 @@ final class RemoteThumbnailLoader: ObservableObject {
     private func fetchRemoteThumbnailData(
         item: RemoteFileItem,
         service: any RemoteFileService,
-        size: RemoteThumbnailSize
+        size: RemoteThumbnailSize,
+        cellularBudget: RemoteVideoThumbnailTrafficBudget?
     ) async throws -> Data? {
+        let lease: RemoteVideoThumbnailTrafficBudget.Lease?
+        if let cellularBudget {
+            guard let grantedLease = await cellularBudget.lease(for: item) else {
+                throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
+            }
+            lease = grantedLease
+        } else {
+            lease = nil
+        }
         do {
             let data = try await RemoteThumbnailWorkLimiter.shared.withPermit {
-                try await service.thumbnailData(for: item, size: size)
+                if let lease {
+                    try await service.thumbnailData(
+                        for: item,
+                        size: size,
+                        maximumByteCount: lease.maximumBytes
+                    )
+                } else {
+                    try await service.thumbnailData(for: item, size: size)
+                }
+            }
+            if let cellularBudget, let lease {
+                await cellularBudget.finish(
+                    lease,
+                    transferredBytes: data == nil
+                        ? lease.maximumBytes
+                        : min(data?.count ?? 0, lease.maximumBytes)
+                )
             }
             return data.flatMap { $0.isEmpty ? nil : $0 }
         } catch {
+            if let cellularBudget, let lease {
+                await cellularBudget.finish(
+                    lease,
+                    transferredBytes: lease.maximumBytes
+                )
+            }
             // A cancelled URLSession request is already terminal. Retrying it
             // immediately kept all three work permits occupied and made the
             // grid appear to load forever. A later view reload can try again.

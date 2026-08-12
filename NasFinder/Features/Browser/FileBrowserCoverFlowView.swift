@@ -120,13 +120,17 @@ struct FileBrowserCoverFlowView: View {
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .padding(
+                    .bottom,
+                    cardBaseWidth(for: proxy.size) * 0.18 + 20
+                )
                 .contentShape(Rectangle())
                 .gesture(flowGesture(step: step))
 
             }
             .padding(.horizontal, 12)
-            .padding(.top, 2)
-            .padding(.bottom, 4)
+            .padding(.top, 0)
+            .offset(y: 16)
         }
         .background(Color.white)
         .onChange(of: items.map(\.id), initial: true) { _, _ in
@@ -144,8 +148,8 @@ struct FileBrowserCoverFlowView: View {
 
     private var visibleIndices: [Int] {
         guard !items.isEmpty else { return [] }
-        let lower = max(selectedIndex - 6, items.startIndex)
-        let upper = min(selectedIndex + 6, items.index(before: items.endIndex))
+        let lower = max(selectedIndex - 5, items.startIndex)
+        let upper = min(selectedIndex + 5, items.index(before: items.endIndex))
         return Array(lower...upper).sorted {
             abs($0 - selectedIndex) > abs($1 - selectedIndex)
         }
@@ -157,10 +161,7 @@ struct FileBrowserCoverFlowView: View {
         index: Int,
         availableSize: CGSize
     ) -> some View {
-        let baseWidth = min(
-            max(availableSize.width * 0.34, 220),
-            min(availableSize.height * 0.78, 310)
-        )
+        let baseWidth = cardBaseWidth(for: availableSize)
         let baseHeight = baseWidth
         let step = cardStep(for: availableSize.width)
         let distance = CGFloat(index) - scrollPosition
@@ -169,7 +170,7 @@ struct FileBrowserCoverFlowView: View {
         let isSelected = index == selectedIndex
         let cornerRadius = 13 + emphasis * 5
         let scaleValue = scale(for: absoluteDistance)
-        let reflectionHeight = baseHeight * 0.24
+        let reflectionHeight = baseHeight * 0.18
 
         RemoteThumbnailView(
             item: item,
@@ -183,8 +184,8 @@ struct FileBrowserCoverFlowView: View {
         .overlay {
             RoundedRectangle(cornerRadius: cornerRadius)
                 .stroke(
-                    Color.black.opacity(0.14 + emphasis * 0.22),
-                    lineWidth: 0.7 + emphasis * 0.8
+                    Color.black.opacity(0.08 + emphasis * 0.08),
+                    lineWidth: 0.6 + emphasis * 0.4
                 )
         }
         .scaleEffect(scaleValue, anchor: .bottom)
@@ -200,11 +201,11 @@ struct FileBrowserCoverFlowView: View {
                 height: reflectionHeight * scaleValue
             )
             .scaleEffect(x: 1, y: -1)
-            .opacity(0.17 + emphasis * 0.13)
-            .blur(radius: 0.45)
+            .opacity(0.10 + emphasis * 0.08)
+            .blur(radius: 1.2)
             .mask {
                 LinearGradient(
-                    colors: [.white.opacity(0.68), .clear],
+                    colors: [.white.opacity(0.42), .clear],
                     startPoint: .top,
                     endPoint: .bottom
                 )
@@ -216,7 +217,7 @@ struct FileBrowserCoverFlowView: View {
             .degrees(rotation(for: distance)),
             axis: (x: 0, y: 1, z: 0),
             anchor: .bottom,
-            perspective: 0.62
+            perspective: 0.74
         )
         .offset(
             x: distance * step,
@@ -283,7 +284,7 @@ struct FileBrowserCoverFlowView: View {
         let next = min(max(index, items.startIndex), items.index(before: items.endIndex))
         guard next != selectedIndex else { return }
         UISelectionFeedbackGenerator().selectionChanged()
-        withAnimation(.smooth(duration: 0.22)) {
+        withAnimation(.smooth(duration: 0.28, extraBounce: 0)) {
             selectedIndex = next
             scrollPosition = CGFloat(next)
         }
@@ -295,14 +296,21 @@ struct FileBrowserCoverFlowView: View {
         if next != selectedIndex {
             UISelectionFeedbackGenerator().selectionChanged()
         }
-        withAnimation(.smooth(duration: 0.2)) {
+        withAnimation(.smooth(duration: 0.28, extraBounce: 0)) {
             selectedIndex = next
             scrollPosition = CGFloat(next)
         }
     }
 
     private func cardStep(for width: CGFloat) -> CGFloat {
-        min(max(width * 0.075, 48), 70)
+        min(max(width * 0.09, 62), 82)
+    }
+
+    private func cardBaseWidth(for size: CGSize) -> CGFloat {
+        min(
+            max(size.width * 0.32, 230),
+            min(size.height * 0.72, 310)
+        )
     }
 
     private func clampedPosition(_ position: CGFloat) -> CGFloat {
@@ -310,7 +318,8 @@ struct FileBrowserCoverFlowView: View {
     }
 
     private func scale(for distance: CGFloat) -> CGFloat {
-        max(0.34, 1 - distance * 0.13)
+        guard distance > 1 else { return 1.08 - 0.16 * distance }
+        return max(0.60, 0.92 - 0.08 * (distance - 1))
     }
 
     private func opacity(for distance: CGFloat) -> Double {
@@ -322,6 +331,6 @@ struct FileBrowserCoverFlowView: View {
 
     private func rotation(for distance: CGFloat) -> Double {
         let clamped = min(max(distance, -1), 1)
-        return -Double(clamped) * 58
+        return -Double(clamped) * 42
     }
 }

@@ -15,12 +15,30 @@ struct SuperThumbnailSessionReport: Sendable, Equatable {
     let successCounts: [Int]
     let failures: [SuperThumbnailFailureRecord]
     let pendingCount: Int
+    let cachedCount: Int
 
     var successfulCount: Int { successCounts.reduce(0, +) }
     var hasWorkToResume: Bool { pendingCount > 0 || !failures.isEmpty }
+    var unresolvedCount: Int { max(pendingCount, failures.count) }
+    var totalCount: Int { cachedCount + successfulCount + unresolvedCount }
+    var remainingCounts: [Int] {
+        let counts = (0..<3).map {
+            successCounts.indices.contains($0) ? successCounts[$0] : 0
+        }
+        return [
+            counts[1] + counts[2] + unresolvedCount,
+            counts[2] + unresolvedCount,
+            unresolvedCount,
+        ]
+    }
 }
 
 actor SuperThumbnailQueueStore {
+    struct CachedTransition: Sendable, Equatable {
+        let previousSuccessAttempt: Int?
+        let removedFailure: Bool
+    }
+
     static let shared = SuperThumbnailQueueStore()
 
     private struct ItemState: Codable {
@@ -37,6 +55,7 @@ actor SuperThumbnailQueueStore {
     private struct SessionState: Codable {
         var queue: [String: ItemState] = [:]
         var results: [String: ResultState] = [:]
+        var cachedItems: [String: String]? = nil
     }
 
     private typealias Sessions = [String: SessionState]
@@ -63,8 +82,14 @@ actor SuperThumbnailQueueStore {
             guard let item = currentItems[itemID] else { return false }
             return state.signature == signature(for: item)
         }
+        session.cachedItems = session.cachedItems?.filter { itemID, signature in
+            guard let item = currentItems[itemID] else { return false }
+            return signature == self.signature(for: item)
+        }
         for item in items
-        where session.queue[item.id] == nil && session.results[item.id] == nil {
+        where session.queue[item.id] == nil
+            && session.results[item.id] == nil
+            && session.cachedItems?[item.id] == nil {
             session.queue[item.id] = ItemState(
                 signature: signature(for: item),
                 nextAttempt: 0
@@ -89,13 +114,28 @@ actor SuperThumbnailQueueStore {
         }
     }
 
-    func markCached(_ item: RemoteFileItem, sessionKey: String) {
+    @discardableResult
+    func markCached(
+        _ item: RemoteFileItem,
+        sessionKey: String
+    ) -> CachedTransition {
+        var previousSuccessAttempt: Int?
+        var removedFailure = false
         updateSession(sessionKey) { session in
+            previousSuccessAttempt = session.results[item.id]?.successAttempt
+            removedFailure = session.results[item.id]?.failure != nil
             session.queue[item.id] = nil
-            if session.results[item.id]?.failure != nil {
-                session.results[item.id] = nil
-            }
+            var cachedItems = session.cachedItems ?? [:]
+            cachedItems[item.id] = signature(for: item)
+            session.cachedItems = cachedItems
+            // One file belongs to exactly one report category. Once its
+            // thumbnail is observed in cache it is no longer a stage result.
+            session.results[item.id] = nil
         }
+        return CachedTransition(
+            previousSuccessAttempt: previousSuccessAttempt,
+            removedFailure: removedFailure
+        )
     }
 
     func recordSuccess(
@@ -105,6 +145,7 @@ actor SuperThumbnailQueueStore {
     ) {
         updateSession(sessionKey) { session in
             session.queue[item.id] = nil
+            session.cachedItems?[item.id] = nil
             session.results[item.id] = ResultState(
                 signature: signature(for: item),
                 successAttempt: min(max(attempt, 0), 2),
@@ -132,6 +173,7 @@ actor SuperThumbnailQueueStore {
                 signature: signature(for: item),
                 nextAttempt: 2
             )
+            session.cachedItems?[item.id] = nil
             session.results[item.id] = ResultState(
                 signature: signature(for: item),
                 successAttempt: nil,
@@ -158,7 +200,8 @@ actor SuperThumbnailQueueStore {
             failures: failures.sorted {
                 $0.name.localizedStandardCompare($1.name) == .orderedAscending
             },
-            pendingCount: session.queue.count
+            pendingCount: session.queue.count,
+            cachedCount: session.cachedItems?.count ?? 0
         )
     }
 

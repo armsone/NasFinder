@@ -815,7 +815,7 @@ private struct NetworkLocationCard: View {
                         HStack(spacing: 6) {
                             Text(connection.name)
                                 .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.primary)
                                 .lineLimit(2)
 
                             if isPreferred {

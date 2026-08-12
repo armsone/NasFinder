@@ -202,6 +202,30 @@ actor SynologyFileService: RemoteFileService {
         for item: RemoteFileItem,
         size: RemoteThumbnailSize
     ) async throws -> Data? {
+        try await thumbnailData(
+            for: item,
+            size: size,
+            maximumByteCount: nil
+        )
+    }
+
+    func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        maximumByteCount: Int
+    ) async throws -> Data? {
+        try await thumbnailData(
+            for: item,
+            size: size,
+            maximumByteCount: Optional(maximumByteCount)
+        )
+    }
+
+    private func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        maximumByteCount: Int?
+    ) async throws -> Data? {
         guard !item.isDirectory, item.isImage || item.isVideo else { return nil }
 
         return try await authenticatedRequest { sid in
@@ -217,7 +241,18 @@ actor SynologyFileService: RemoteFileService {
             ]) { _, new in new }
             var request = try self.request(script: "entry.cgi", parameters: parameters)
             request.timeoutInterval = Self.thumbnailRequestTimeout
-            let (data, response) = try await self.session.data(for: request)
+            let data: Data
+            let response: URLResponse
+            if let maximumByteCount {
+                let result = try await self.boundedData(
+                    for: request,
+                    maximumByteCount: maximumByteCount
+                )
+                data = result.0
+                response = result.1
+            } else {
+                (data, response) = try await self.session.data(for: request)
+            }
             try self.validateHTTP(response)
 
             let contentType = response.mimeType?.lowercased()
@@ -232,6 +267,22 @@ actor SynologyFileService: RemoteFileService {
 
             return data.isEmpty ? nil : data
         }
+    }
+
+    private func boundedData(
+        for request: URLRequest,
+        maximumByteCount: Int
+    ) async throws -> (Data, URLResponse) {
+        let (bytes, response) = try await session.bytes(for: request)
+        var data = Data()
+        data.reserveCapacity(min(max(maximumByteCount, 0), 256 * 1_024))
+        for try await byte in bytes {
+            guard data.count < maximumByteCount else {
+                throw RemoteThumbnailError.responseTooLarge
+            }
+            data.append(byte)
+        }
+        return (data, response)
     }
 
     func createFolder(

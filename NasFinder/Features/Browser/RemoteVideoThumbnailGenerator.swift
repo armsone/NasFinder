@@ -129,7 +129,8 @@ enum RemoteVideoThumbnailGenerator {
             )
         }
         let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
-        let key = "\(item.id)|\(version)|\(item.size ?? -1)|\(size.rawValue)"
+        let budgetID = ObjectIdentifier(trafficBudget)
+        let key = "\(item.id)|\(version)|\(item.size ?? -1)|\(size.rawValue)|\(budgetID)"
         return try await coordinator.value(for: key) {
             try await generateUncoordinated(
                 for: item,
@@ -458,6 +459,12 @@ actor RemoteVideoThumbnailTrafficBudget {
     }
 
     static let shared = RemoteVideoThumbnailTrafficBudget()
+    static let cellularShared = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 24 * 1_024 * 1_024,
+        maximumItemBytes: 4 * 1_024 * 1_024,
+        minimumLeaseBytes: defaultMinimumLeaseBytes,
+        maximumTotalBytes: 24 * 1_024 * 1_024
+    )
     static let completeFileMaximumItemBytes = 128 * 1_024 * 1_024
     static let completeFileFastPass = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
@@ -497,27 +504,41 @@ actor RemoteVideoThumbnailTrafficBudget {
     private let maximumFolderBytes: Int
     private let maximumItemBytes: Int
     private let minimumLeaseBytes: Int
+    private let maximumTotalBytes: Int?
     private var folders: [String: FolderState] = [:]
+    private var totalTransferredBytes = 0
 
     init(
         maximumFolderBytes: Int = defaultMaximumFolderBytes,
         maximumItemBytes: Int = defaultMaximumItemBytes,
-        minimumLeaseBytes: Int = defaultMinimumLeaseBytes
+        minimumLeaseBytes: Int = defaultMinimumLeaseBytes,
+        maximumTotalBytes: Int? = nil
     ) {
         self.maximumFolderBytes = max(maximumFolderBytes, 0)
         self.maximumItemBytes = max(maximumItemBytes, 0)
         self.minimumLeaseBytes = max(minimumLeaseBytes, 1)
+        self.maximumTotalBytes = maximumTotalBytes.map { max($0, 0) }
     }
 
     func lease(for item: RemoteFileItem) -> Lease? {
         let folderKey = Self.folderKey(for: item)
         var state = folders[folderKey] ?? FolderState()
         let reservedBytes = state.reservations.values.reduce(0, +)
-        let availableBytes = max(
+        let folderAvailableBytes = max(
             maximumFolderBytes - state.transferredBytes - reservedBytes,
             0
         )
-        let grantedBytes = min(maximumItemBytes, availableBytes)
+        let allReservedBytes = folders.values.reduce(0) {
+            $0 + $1.reservations.values.reduce(0, +)
+        }
+        let totalAvailableBytes = maximumTotalBytes.map {
+            max($0 - totalTransferredBytes - allReservedBytes, 0)
+        } ?? Int.max
+        let grantedBytes = min(
+            maximumItemBytes,
+            folderAvailableBytes,
+            totalAvailableBytes
+        )
         guard grantedBytes >= minimumLeaseBytes else { return nil }
 
         let identifier = UUID()
@@ -535,8 +556,19 @@ actor RemoteVideoThumbnailTrafficBudget {
               let reservedBytes = state.reservations.removeValue(
                   forKey: lease.identifier
               ) else { return }
-        state.transferredBytes += min(max(transferredBytes, 0), reservedBytes)
+        let chargedBytes = min(max(transferredBytes, 0), reservedBytes)
+        state.transferredBytes += chargedBytes
+        totalTransferredBytes += chargedBytes
         folders[lease.folderKey] = state
+    }
+
+    func hasCapacity() -> Bool {
+        guard let maximumTotalBytes else { return true }
+        let reservedBytes = folders.values.reduce(0) {
+            $0 + $1.reservations.values.reduce(0, +)
+        }
+        return maximumTotalBytes - totalTransferredBytes - reservedBytes
+            >= minimumLeaseBytes
     }
 
     func transferredBytes(for item: RemoteFileItem) -> Int {
@@ -554,6 +586,7 @@ actor RemoteVideoThumbnailTrafficBudget {
                 reservations: state.reservations
             )
         }
+        totalTransferredBytes = 0
     }
 
     private static func folderKey(for item: RemoteFileItem) -> String {

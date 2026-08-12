@@ -191,7 +191,8 @@ struct FileBrowserView: View {
     @State private var isRequestingCoverFlowOrientation = false
     @State private var coverFlowEnteredFromPoster = false
     @State private var suppressAutomaticCoverFlowUntil = Date.distantPast
-    @State private var hasSuperThumbnailsInCurrentFolder = false
+    @State private var ownsAutomaticThumbnailPreheat = false
+    @State private var automaticThumbnailRestartTask: Task<Void, Never>?
 
     @MainActor
     init(
@@ -362,6 +363,10 @@ struct FileBrowserView: View {
             )
         }
         .onAppear {
+            if storedLayoutStyle == LayoutStyle.coverFlow.rawValue {
+                storedLayoutStyle = LayoutStyle.largeThumbnails.rawValue
+                coverFlowEnteredFromPoster = false
+            }
             trafficTracker.reset()
             thumbnailActivity.beginNewSession()
             connectionStore.rememberBrowserLocation(
@@ -381,8 +386,8 @@ struct FileBrowserView: View {
         .task {
             await RemoteThumbnailDiskCache.shared.clearTransientFailures()
             await viewModel.load()
-            await refreshSuperThumbnailAvailability()
             guard !Task.isCancelled, !viewModel.items.isEmpty else { return }
+            ownsAutomaticThumbnailPreheat = true
             thumbnailPreheater.start(
                 rootItems: viewModel.items,
                 rootPath: viewModel.path,
@@ -479,6 +484,9 @@ struct FileBrowserView: View {
             }
         }
         .onDisappear {
+            ownsAutomaticThumbnailPreheat = false
+            automaticThumbnailRestartTask?.cancel()
+            automaticThumbnailRestartTask = nil
             shareCoordinator.cancelPreparation()
             thumbnailPreheater.cancel()
             if isRequestingCoverFlowOrientation {
@@ -489,6 +497,11 @@ struct FileBrowserView: View {
         .onChange(of: scenePhase, initial: true) { _, phase in
             thumbnailPreheater.updateAppIsActive(phase == .active)
         }
+        .modifier(
+            ThumbnailNetworkChangeModifier(
+                onChange: restartAutomaticThumbnailPreheatingForNetworkChange
+            )
+        )
         .onChange(of: viewModel.items.map(\.id)) { _, visibleIDs in
             selectedItemIDs.formIntersection(visibleIDs)
             if isSelecting, viewModel.items.isEmpty {
@@ -529,14 +542,6 @@ struct FileBrowserView: View {
                     )
                 }
 
-                if thumbnailPreheater.isRunning {
-                    ThumbnailPreheatProgressBanner(preheater: thumbnailPreheater)
-                } else if let status = thumbnailPreheater.statusMessage {
-                    FileOperationStatusBanner(
-                        message: status,
-                        onDismiss: thumbnailPreheater.dismissStatus
-                    )
-                }
             }
             .padding()
             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -581,31 +586,11 @@ struct FileBrowserView: View {
     }
 
     private var layoutStyle: LayoutStyle {
-        let stored = LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
-        if stored == .coverFlow, !hasSuperThumbnailsInCurrentFolder {
-            return .largeThumbnails
-        }
-        return stored
+        LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
     }
 
     private var availableLayoutStyles: [LayoutStyle] {
-        LayoutStyle.allCases.filter {
-            $0 != .coverFlow || hasSuperThumbnailsInCurrentFolder
-        }
-    }
-
-    @MainActor
-    private func refreshSuperThumbnailAvailability() async {
-        let keys = Set(
-            viewModel.items
-                .filter(\.isVideo)
-                .flatMap(RemoteThumbnailCacheKey.allRemoteDataKeys)
-        )
-        let isAvailable = await SuperThumbnailCache.shared.containsAnyData(
-            forKeys: keys
-        )
-        guard !Task.isCancelled else { return }
-        hasSuperThumbnailsInCurrentFolder = isAvailable
+        LayoutStyle.allCases.filter { $0 != .coverFlow }
     }
 
     private func updateCoverFlowOrientation(for style: LayoutStyle) {
@@ -624,8 +609,7 @@ struct FileBrowserView: View {
     private func handleDeviceOrientationChange(_ orientation: UIDeviceOrientation) {
         guard Date.now >= suppressAutomaticCoverFlowUntil else { return }
         if orientation.isLandscape,
-           layoutStyle == .largeThumbnails,
-           hasSuperThumbnailsInCurrentFolder {
+           layoutStyle == .largeThumbnails {
             coverFlowEnteredFromPoster = true
             storedLayoutStyle = LayoutStyle.coverFlow.rawValue
         } else if orientation.isPortrait,
@@ -641,6 +625,7 @@ struct FileBrowserView: View {
         recursively: Bool,
         generationMode: RemoteVideoThumbnailGenerationMode = .bounded
     ) {
+        ownsAutomaticThumbnailPreheat = false
         if item.isDirectory {
             Task {
                 do {
@@ -652,6 +637,8 @@ struct FileBrowserView: View {
                         recursively: recursively,
                         requiresExternalPower: recursively
                             || generationMode == .completeFile,
+                        allowsConstrainedRun: ThumbnailPreheatPolicy
+                            .allowsConstrainedNetwork(for: generationMode),
                         generationMode: generationMode,
                         service: viewModel.service
                     )
@@ -666,9 +653,37 @@ struct FileBrowserView: View {
             rootItems: [item],
             rootPath: viewModel.path,
             recursively: false,
+            allowsConstrainedRun: ThumbnailPreheatPolicy
+                .allowsConstrainedNetwork(for: generationMode),
             generationMode: generationMode,
             service: viewModel.service
         )
+    }
+
+    private func restartAutomaticThumbnailPreheatingForNetworkChange() {
+        guard ownsAutomaticThumbnailPreheat,
+              !viewModel.items.isEmpty else { return }
+        automaticThumbnailRestartTask?.cancel()
+        thumbnailPreheater.cancel()
+        automaticThumbnailRestartTask = Task { @MainActor in
+            while thumbnailPreheater.isRunning {
+                guard !Task.isCancelled else { return }
+                await Task.yield()
+            }
+            guard !Task.isCancelled,
+                  ownsAutomaticThumbnailPreheat,
+                  !viewModel.items.isEmpty else { return }
+            thumbnailPreheater.start(
+                rootItems: viewModel.items,
+                rootPath: viewModel.path,
+                recursively: false,
+                requiresExternalPower: false,
+                allowsConstrainedRun: true,
+                generationMode: .bounded,
+                service: viewModel.service
+            )
+            automaticThumbnailRestartTask = nil
+        }
     }
 
     private var sortOptions: FileBrowserSortOptions {
@@ -829,11 +844,13 @@ struct FileBrowserView: View {
         await RemoteVideoThumbnailTrafficBudget.sftpShared.reset()
         thumbnailActivity.beginNewSession()
         thumbnailReloadVersion &+= 1
+        ownsAutomaticThumbnailPreheat = true
         thumbnailPreheater.start(
             rootItems: viewModel.items,
             rootPath: viewModel.path,
             recursively: false,
             requiresExternalPower: false,
+            allowsConstrainedRun: true,
             service: viewModel.service
         )
     }
@@ -988,10 +1005,10 @@ struct FileBrowserView: View {
         VStack(spacing: 0) {
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
-                    Color.white
+                    Color(uiColor: .separator).opacity(0.38)
 
                     if thumbnailActivity.isActive {
-                        Color.black
+                        SkyBreezeTheme.accent
                             .frame(
                                 width: geometry.size.width
                                     * thumbnailActivity.fractionCompleted
@@ -1003,7 +1020,7 @@ struct FileBrowserView: View {
                     }
                 }
             }
-            .frame(height: 2)
+            .frame(height: 3)
 
             if let limitMessage = thumbnailActivity.limitMessage {
                 Text(limitMessage)
@@ -1266,21 +1283,14 @@ struct FileBrowserView: View {
                 if thumbnailPreheater.isRunning {
                     CompactPanelButton(title: "생성 중지", systemImage: "stop.circle", tint: .red) {
                         performContextPanelAction {
+                            ownsAutomaticThumbnailPreheat = false
+                            automaticThumbnailRestartTask?.cancel()
+                            automaticThumbnailRestartTask = nil
                             thumbnailPreheater.cancel()
                         }
                     }
-                } else if item.isDirectory {
-                    CompactPanelButton(title: "현재 폴더 썸네일", systemImage: "photo.stack") {
-                        performContextPanelAction {
-                            startThumbnailPreheating(for: item, recursively: false)
-                        }
-                    }
-                    CompactPanelButton(title: "하위 폴더 썸네일", systemImage: "folder.badge.gearshape") {
-                        performContextPanelAction {
-                            startThumbnailPreheating(for: item, recursively: true)
-                        }
-                    }
-                } else if ThumbnailPreheatPolicy.canGenerate(
+                } else if !item.isDirectory,
+                          ThumbnailPreheatPolicy.canGenerate(
                     item: item,
                     connectionKind: viewModel.service.connection.kind,
                     supportsRangeStreaming: viewModel.service.supportsRangeStreaming
@@ -2405,6 +2415,20 @@ private extension RemoteOperationPhase {
         case .deleting: "삭제 중"
         case .rollingBack: "복구 중"
         case .completed: "완료"
+        }
+    }
+}
+
+private struct ThumbnailNetworkChangeModifier: ViewModifier {
+    let onChange: () -> Void
+
+    func body(content: Content) -> some View {
+        content.onReceive(
+            NotificationCenter.default.publisher(
+                for: .thumbnailNetworkPathDidChange
+            )
+        ) { _ in
+            onChange()
         }
     }
 }

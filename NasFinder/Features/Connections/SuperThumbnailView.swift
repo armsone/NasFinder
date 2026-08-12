@@ -105,9 +105,8 @@ struct SuperThumbnailView: View {
     @State private var isAssessingCompactJob = false
     @State private var compactAssessmentID = UUID()
     @State private var screenAwakeActivityID = UUID()
-    @State private var resumeSelection: SuperThumbnailSelection?
-    @State private var previousReport: SuperThumbnailSessionReport?
-    @State private var isConfirmingResume = false
+    @State private var reportSelection: SuperThumbnailSelection?
+    @State private var isShowingReport = false
     @AppStorage("superThumbnail.lastConnectionID.v1") private var lastConnectionID = ""
     @AppStorage("superThumbnail.lastPath.v1") private var lastPath = ""
     @AppStorage("superThumbnail.lastTitle.v1") private var lastTitle = ""
@@ -149,7 +148,6 @@ struct SuperThumbnailView: View {
                 hasPendingSession = false
                 assessCompactJob(for: selected)
                 isSelectingFolder = false
-                Task { await loadPreviousReport(for: selected) }
             }
             .environmentObject(connectionStore)
         }
@@ -186,19 +184,17 @@ struct SuperThumbnailView: View {
         } message: {
             Text(preparationError ?? "")
         }
-        .alert("이전 Super Thumbnail 결과", isPresented: $isConfirmingResume) {
-            Button("미완료 다시 진행") {
-                resumePreviousWork()
+        .navigationDestination(isPresented: $isShowingReport) {
+            if let reportSelection {
+                SuperThumbnailReportView(
+                    selection: reportSelection,
+                    onSelect: { selectPreviousFolder(reportSelection) },
+                    onResume: { resumePreviousWork(reportSelection) }
+                )
             }
-            Button("나중에", role: .cancel) {}
-        } message: {
-            Text(previousReportText)
         }
         .task(id: connectionStore.connections.count) {
             await refreshStatistics()
-            if let recent = historySelections.first {
-                await loadPreviousReport(for: recent)
-            }
         }
         .onAppear {
             ScreenAwakeController.shared.beginForcedActivity(screenAwakeActivityID)
@@ -255,7 +251,7 @@ struct SuperThumbnailView: View {
             )
         }
         .font(.caption2)
-        .foregroundStyle(.tertiary)
+        .foregroundStyle(.secondary)
         .padding(.horizontal, 4)
     }
 
@@ -279,7 +275,7 @@ struct SuperThumbnailView: View {
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.caption.bold())
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                 }
                 .padding(14)
                 .background(
@@ -290,7 +286,7 @@ struct SuperThumbnailView: View {
             .buttonStyle(.plain)
             Text("하위 폴더 포함 · 완료된 항목은 다시 만들지 않음")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .padding(.leading, 4)
             if !historySelections.isEmpty {
                 historyPanel
@@ -302,7 +298,7 @@ struct SuperThumbnailView: View {
         VStack(alignment: .leading, spacing: 7) {
             Text("최근 작업")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .padding(.leading, 4)
             ScrollView(.vertical, showsIndicators: historySelections.count > 3) {
                 LazyVStack(spacing: 7) {
@@ -325,10 +321,8 @@ struct SuperThumbnailView: View {
         index: Int
     ) -> some View {
         Button {
-            selection = previous
-            saveSelection(previous)
-            assessCompactJob(for: previous)
-            Task { await loadPreviousReport(for: previous) }
+            reportSelection = previous
+            isShowingReport = true
         } label: {
             HStack(spacing: 11) {
                 Image(systemName: index == 0 ? "clock.fill" : "clock")
@@ -346,13 +340,13 @@ struct SuperThumbnailView: View {
                         .lineLimit(1)
                     Text(previous.path)
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
-                Text(selection == previous ? "선택됨" : "이어하기")
+                Text("보고서")
                     .font(.caption2.weight(.medium))
-                    .foregroundStyle(historyTint(for: index).opacity(0.82))
+                    .foregroundStyle(.secondary)
                     .padding(.horizontal, 9)
                     .padding(.vertical, 5)
                     .background(
@@ -477,7 +471,7 @@ struct SuperThumbnailView: View {
     }
 
     private var primaryInk: Color {
-        Color.primary.opacity(0.76)
+        Color.primary
     }
 
     private var errorBinding: Binding<Bool> {
@@ -531,20 +525,7 @@ struct SuperThumbnailView: View {
         }
     }
 
-    private func loadPreviousReport(
-        for selected: SuperThumbnailSelection
-    ) async {
-        let report = await SuperThumbnailQueueStore.shared.report(
-            sessionKey: queueSessionKey(for: selected)
-        )
-        guard let report, report.hasWorkToResume else { return }
-        resumeSelection = selected
-        previousReport = report
-        isConfirmingResume = true
-    }
-
-    private func resumePreviousWork() {
-        guard let resumeSelection else { return }
+    private func resumePreviousWork(_ resumeSelection: SuperThumbnailSelection) {
         selection = resumeSelection
         saveSelection(resumeSelection)
         hasPendingSession = true
@@ -559,22 +540,12 @@ struct SuperThumbnailView: View {
         )
     }
 
-    private func queueSessionKey(
-        for selection: SuperThumbnailSelection
-    ) -> String {
-        "\(selection.connection.id.uuidString)|\(selection.path)"
-    }
-
-    private var previousReportText: String {
-        guard let report = previousReport else { return "" }
-        let counts = normalizedReportCounts(report.successCounts)
-        return "이전 결과: 총 \(report.successfulCount)개 성공 · "
-            + "5초 \(counts[0])개 · 20초 \(counts[1])개 · 40초 \(counts[2])개"
-            + "\n미완료 \(max(report.pendingCount, report.failures.count))개부터 다시 진행합니다."
-    }
-
-    private func normalizedReportCounts(_ counts: [Int]) -> [Int] {
-        (0..<3).map { counts.indices.contains($0) ? counts[$0] : 0 }
+    private func selectPreviousFolder(
+        _ previousSelection: SuperThumbnailSelection
+    ) {
+        selection = previousSelection
+        saveSelection(previousSelection)
+        assessCompactJob(for: previousSelection)
     }
 
     private func saveSelection(_ selection: SuperThumbnailSelection) {
@@ -720,6 +691,210 @@ struct SuperThumbnailView: View {
     }
 }
 
+private struct SuperThumbnailReportView: View {
+    @Environment(\.dismiss) private var dismiss
+    let selection: SuperThumbnailSelection
+    let onSelect: () -> Void
+    let onResume: () -> Void
+    @State private var report: SuperThumbnailSessionReport?
+    @State private var isLoading = true
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(spacing: 10) {
+                    SuperThumbnailMark(compact: true)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("작업 보고서")
+                            .font(.headline.weight(.medium))
+                        Label(selection.title, systemImage: "folder.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                        Text(selection.path)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+
+                if let report {
+                    reportSummary(report)
+                    reportActions(report)
+                    if !report.failures.isEmpty {
+                        failureSummary(report.failures)
+                    }
+                } else if isLoading {
+                    ProgressView("보고서 불러오는 중…")
+                        .frame(maxWidth: .infinity, minHeight: 180)
+                } else {
+                    ContentUnavailableView(
+                        "저장된 보고서 없음",
+                        systemImage: "doc.text.magnifyingglass",
+                        description: Text("이 폴더의 Super Thumbnail 기록이 없습니다.")
+                    )
+                    selectFolderButton
+                }
+            }
+            .padding(18)
+        }
+        .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
+        .navigationTitle("Super Thumbnail")
+        .navigationBarTitleDisplayMode(.inline)
+        .task(id: selection.id) {
+            isLoading = true
+            report = await SuperThumbnailQueueStore.shared.report(
+                sessionKey: selection.id
+            )
+            isLoading = false
+        }
+    }
+
+    @ViewBuilder
+    private func reportActions(_ report: SuperThumbnailSessionReport) -> some View {
+        VStack(spacing: 10) {
+            if report.hasWorkToResume {
+                Button {
+                    dismiss()
+                    onResume()
+                } label: {
+                    Label("미완료 다시 진행", systemImage: "arrow.clockwise")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+            }
+            selectFolderButton
+        }
+    }
+
+    private var selectFolderButton: some View {
+        Button {
+            dismiss()
+            onSelect()
+        } label: {
+            Label("이 폴더 선택", systemImage: "folder.badge.checkmark")
+                .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.large)
+    }
+
+    private func reportSummary(
+        _ report: SuperThumbnailSessionReport
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("총계")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Text("\(report.totalCount)개")
+                    .font(.title3.monospacedDigit())
+            }
+            if report.cachedCount > 0 {
+                HStack {
+                    Text("이미 완료")
+                    Spacer()
+                    Text("\(report.cachedCount)개")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            Divider()
+            stageRow(
+                seconds: 5,
+                success: count(report.successCounts, at: 0),
+                remaining: count(report.remainingCounts, at: 0)
+            )
+            stageRow(
+                seconds: 20,
+                success: count(report.successCounts, at: 1),
+                remaining: count(report.remainingCounts, at: 1)
+            )
+            stageRow(
+                seconds: 40,
+                success: count(report.successCounts, at: 2),
+                remaining: count(report.remainingCounts, at: 2)
+            )
+        }
+        .padding(15)
+        .background(
+            SkyBreezeTheme.thumbnailSurface,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+    }
+
+    private func stageRow(
+        seconds: Int,
+        success: Int,
+        remaining: Int
+    ) -> some View {
+        HStack {
+            Text("\(seconds)초")
+                .font(.subheadline.monospacedDigit().weight(.medium))
+            Spacer()
+            Text("성공 \(success)")
+            Text("남음 \(remaining)")
+                .foregroundStyle(remaining == 0 ? Color.secondary : Color.primary)
+        }
+        .font(.caption.monospacedDigit())
+    }
+
+    private func failureSummary(
+        _ failures: [SuperThumbnailFailureRecord]
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("미완료 파일")
+                .font(.subheadline.weight(.medium))
+            ForEach(failures) { failure in
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(failure.name)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    HStack(spacing: 8) {
+                        Text(failure.fileExtension.isEmpty ? "기타" : failure.fileExtension)
+                        Text(failure.fileSize.map(formattedBytes) ?? "크기 미상")
+                        Text(failure.durationSeconds.map(formattedDuration) ?? "길이 미상")
+                    }
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    Text(failure.reason)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                if failure.id != failures.last?.id { Divider() }
+            }
+        }
+        .padding(15)
+        .background(
+            SkyBreezeTheme.thumbnailSurface,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+    }
+
+    private func count(_ values: [Int], at index: Int) -> Int {
+        values.indices.contains(index) ? values[index] : 0
+    }
+
+    private func formattedBytes(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    private func formattedDuration(_ seconds: TimeInterval) -> String {
+        let totalSeconds = max(Int(seconds.rounded()), 0)
+        return String(
+            format: "%02d:%02d:%02d",
+            totalSeconds / 3_600,
+            (totalSeconds % 3_600) / 60,
+            totalSeconds % 60
+        )
+    }
+}
+
 private struct SuperThumbnailProgressView: View {
     @ObservedObject var preheater: ThumbnailPreheater
     let folderTitle: String
@@ -737,7 +912,7 @@ private struct SuperThumbnailProgressView: View {
                         SuperThumbnailMark(compact: true)
                         Text("Super Processing")
                             .font(.subheadline.weight(.medium))
-                            .foregroundStyle(Color.primary.opacity(0.72))
+                            .foregroundStyle(.primary)
                     }
                     .frame(maxWidth: .infinity, alignment: .center)
 
@@ -830,7 +1005,7 @@ private struct SuperThumbnailProgressView: View {
                 .tint(Color.blue.opacity(0.72))
             Text("\(preheater.completedCount) / \(preheater.totalCount)")
                 .font(.title3.monospacedDigit().weight(.regular))
-                .foregroundStyle(Color.primary.opacity(0.70))
+                .foregroundStyle(.primary)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 13)
@@ -857,7 +1032,7 @@ private struct SuperThumbnailProgressView: View {
             }
         }
         .font(.subheadline)
-        .foregroundStyle(Color.primary.opacity(0.70))
+        .foregroundStyle(.primary)
         .frame(maxWidth: .infinity, minHeight: 38, maxHeight: 38)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(filename)
@@ -867,7 +1042,7 @@ private struct SuperThumbnailProgressView: View {
         VStack(spacing: 3) {
             Text("\(value)")
                 .font(.headline.monospacedDigit().weight(.medium))
-                .foregroundStyle(Color.primary.opacity(0.76))
+                .foregroundStyle(.primary)
             Text(title).font(.caption2).foregroundStyle(.secondary)
         }
     }
@@ -882,7 +1057,7 @@ private struct SuperThumbnailProgressView: View {
             Spacer()
             Text(formattedETA)
                 .font(.headline.monospacedDigit().weight(.medium))
-                .foregroundStyle(Color.primary.opacity(0.76))
+                .foregroundStyle(.primary)
         }
         .padding(14)
         .background(
@@ -1096,23 +1271,35 @@ private struct SuperThumbnailProgressView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("처리 결과")
                 .font(.subheadline.weight(.medium))
-                .foregroundStyle(Color.primary.opacity(0.72))
+                .foregroundStyle(.primary)
 
             VStack(spacing: 10) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("성공 총계")
+                    Text("총계")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
-                    Text("\(normalizedSuccessCounts.reduce(0, +))개")
+                    Text("\(preheater.totalCount)개")
                         .font(.title3.monospacedDigit().weight(.regular))
-                        .foregroundStyle(Color.primary.opacity(0.72))
+                        .foregroundStyle(.primary)
                 }
                 Divider().opacity(0.65)
                 HStack(spacing: 0) {
-                    successMetric(seconds: 5, count: normalizedSuccessCounts[0])
-                    successMetric(seconds: 20, count: normalizedSuccessCounts[1])
-                    successMetric(seconds: 40, count: normalizedSuccessCounts[2])
+                    stageMetric(
+                        seconds: 5,
+                        success: normalizedSuccessCounts[0],
+                        remaining: completionRemainingCounts[0]
+                    )
+                    stageMetric(
+                        seconds: 20,
+                        success: normalizedSuccessCounts[1],
+                        remaining: completionRemainingCounts[1]
+                    )
+                    stageMetric(
+                        seconds: 40,
+                        success: normalizedSuccessCounts[2],
+                        remaining: completionRemainingCounts[2]
+                    )
                 }
             }
             .padding(12)
@@ -1142,14 +1329,23 @@ private struct SuperThumbnailProgressView: View {
         )
     }
 
-    private func successMetric(seconds: Int, count: Int) -> some View {
+    private func stageMetric(
+        seconds: Int,
+        success: Int,
+        remaining: Int
+    ) -> some View {
         VStack(spacing: 3) {
             Text("\(seconds)초")
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
-            Text("\(count)개")
+                .foregroundStyle(.secondary)
+            Text("성공 \(success)")
                 .font(.subheadline.monospacedDigit().weight(.regular))
-                .foregroundStyle(Color.primary.opacity(0.68))
+                .foregroundStyle(.primary)
+            Text("남음 \(remaining)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(
+                    remaining == 0 ? Color.secondary : Color.primary
+                )
         }
         .frame(maxWidth: .infinity)
     }
@@ -1160,6 +1356,20 @@ private struct SuperThumbnailProgressView: View {
                 ? preheater.successAttemptCounts[index]
                 : 0
         }
+    }
+
+    private var completionRemainingCounts: [Int] {
+        let unresolved = max(
+            preheater.totalCount
+                - preheater.cachedCount
+                - normalizedSuccessCounts.reduce(0, +),
+            0
+        )
+        return [
+            normalizedSuccessCounts[1] + normalizedSuccessCounts[2] + unresolved,
+            normalizedSuccessCounts[2] + unresolved,
+            unresolved,
+        ]
     }
 
     private var failureSummaryText: String {
@@ -1236,7 +1446,7 @@ private struct SuperThumbnailProgressView: View {
     ) -> some View {
         Text(text)
             .font(isHeader ? .caption2.weight(.medium) : .caption2)
-            .foregroundStyle(isHeader ? Color.secondary : Color.primary.opacity(0.68))
+            .foregroundStyle(isHeader ? Color.secondary : Color.primary)
             .lineLimit(1)
             .truncationMode(.middle)
             .frame(width: width, alignment: .leading)
@@ -1307,7 +1517,7 @@ private struct SuperThumbnailCoverCard: View {
 
             Text(filename)
                 .font(.caption2)
-                .foregroundStyle(Color.primary.opacity(0.62))
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)
                 .allowsTightening(true)

@@ -155,6 +155,16 @@ final class RemotePreviewStateTests: XCTestCase {
             ThumbnailPreheater.maximumSynologyDataBytes,
             256 * 1_024 * 1_024
         )
+        XCTAssertEqual(
+            ThumbnailPreheater.maximumCellularDataBytes,
+            24 * 1_024 * 1_024
+        )
+        XCTAssertTrue(
+            ThumbnailPreheatPolicy.allowsConstrainedNetwork(for: .bounded)
+        )
+        XCTAssertFalse(
+            ThumbnailPreheatPolicy.allowsConstrainedNetwork(for: .completeFile)
+        )
         XCTAssertFalse(
             CompatibilityVideoThumbnailAttemptPolicy.usesPlayerSnapshotFirst(
                 for: .synology
@@ -169,6 +179,79 @@ final class RemotePreviewStateTests: XCTestCase {
             CompatibilityVideoThumbnailAttemptPolicy.seekFallbackDelay,
             .seconds(2)
         )
+    }
+
+    func testSuperThumbnailReportShowsSuccessAndRemainingByStage() {
+        let report = SuperThumbnailSessionReport(
+            successCounts: [10, 30, 2],
+            failures: [
+                SuperThumbnailFailureRecord(
+                    itemID: "failed",
+                    name: "failed.mkv",
+                    fileExtension: "MKV",
+                    fileSize: 1_024,
+                    durationSeconds: 60,
+                    reason: "timeout"
+                ),
+            ],
+            pendingCount: 1,
+            cachedCount: 50
+        )
+
+        XCTAssertEqual(report.totalCount, 93)
+        XCTAssertEqual(report.remainingCounts, [33, 3, 1])
+        XCTAssertTrue(report.hasWorkToResume)
+    }
+
+    func testSuperThumbnailCachedItemDoesNotDuplicateSuccessfulResult() async {
+        let suiteName = "SuperThumbnailQueueStoreTests.\(UUID().uuidString)"
+        defer {
+            UserDefaults(suiteName: suiteName)?
+                .removePersistentDomain(forName: suiteName)
+        }
+        let store = SuperThumbnailQueueStore(
+            userDefaults: UserDefaults(suiteName: suiteName)!
+        )
+        let item = remoteItem(
+            connectionID: UUID(),
+            path: "/share/movie.mkv"
+        )
+        _ = await store.attempts(for: [item], sessionKey: "session")
+        await store.recordSuccess(item, sessionKey: "session", attempt: 0)
+        let transition = await store.markCached(
+            item,
+            sessionKey: "session"
+        )
+
+        let report = await store.report(sessionKey: "session")
+        XCTAssertEqual(transition.previousSuccessAttempt, 0)
+        XCTAssertFalse(transition.removedFailure)
+        XCTAssertEqual(report?.successCounts, [0, 0, 0])
+        XCTAssertEqual(report?.cachedCount, 1)
+        XCTAssertEqual(report?.totalCount, 1)
+    }
+
+    func testTrafficMeasuringServiceForwardsBoundedThumbnailLimit() async throws {
+        let probe = BoundedThumbnailProbe()
+        let base = BoundedThumbnailProbeService(probe: probe)
+        let tracker = PageNetworkTrafficTracker()
+        let service = TrafficMeasuringRemoteFileService(
+            base: base,
+            tracker: tracker
+        )
+        let item = remoteItem(
+            connectionID: base.connection.id,
+            path: "/share/movie.mkv"
+        )
+
+        _ = try await service.thumbnailData(
+            for: item,
+            size: .small,
+            maximumByteCount: 4_096
+        )
+
+        let forwardedLimit = await probe.maximumByteCount
+        XCTAssertEqual(forwardedLimit, 4_096)
     }
 
     func testCompatibilityRemoteStreamSupportsBoundedReadsAndSeeking() async throws {
@@ -1406,4 +1489,43 @@ private enum StallingPreviewBehavior: Sendable {
 private enum StallingPreviewTestError: Error {
     case didNotStart
     case didNotProgress
+}
+
+private actor BoundedThumbnailProbe {
+    private(set) var maximumByteCount: Int?
+
+    func record(_ value: Int) {
+        maximumByteCount = value
+    }
+}
+
+private struct BoundedThumbnailProbeService: RemoteFileService {
+    let connection = RemoteConnection(
+        name: "Bounded thumbnail probe",
+        kind: .synology,
+        host: "probe.invalid",
+        username: "tester"
+    )
+    let probe: BoundedThumbnailProbe
+
+    func list(directory path: String?) async throws -> [RemoteFileItem] { [] }
+    func download(_ item: RemoteFileItem) async throws -> URL {
+        throw NasFinderError.invalidResponse
+    }
+    func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize
+    ) async throws -> Data? {
+        XCTFail("Unbounded thumbnail API must not be used")
+        return nil
+    }
+    func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        maximumByteCount: Int
+    ) async throws -> Data? {
+        await probe.record(maximumByteCount)
+        return Data(count: min(maximumByteCount, 64))
+    }
+    func testConnection() async throws {}
 }

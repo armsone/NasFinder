@@ -142,6 +142,22 @@ final class TrafficMeasuringRemoteFileService: RemoteFileService, @unchecked Sen
         return data
     }
 
+    func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        maximumByteCount: Int
+    ) async throws -> Data? {
+        let data = try await base.thumbnailData(
+            for: item,
+            size: size,
+            maximumByteCount: maximumByteCount
+        )
+        if let data {
+            await tracker.recordDownload(Int64(data.count))
+        }
+        return data
+    }
+
     func testConnection() async throws {
         try await base.testConnection()
     }
