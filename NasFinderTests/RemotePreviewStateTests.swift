@@ -1178,6 +1178,34 @@ final class RemotePreviewStateTests: XCTestCase {
         XCTAssertEqual(viewModel.photoAdvanceInterval, .tenSeconds)
     }
 
+    func testPhotoSlideshowOffersOneSecondAndKeepsDimmedControlsInteractive() {
+        XCTAssertEqual(PhotoAdvanceInterval.allCases.first, .oneSecond)
+        XCTAssertEqual(PhotoAdvanceInterval.oneSecond.title, "1초")
+        XCTAssertEqual(
+            RemotePreviewInteractionPolicy.controlsOpacity(
+                controlsAreVisible: false,
+                isPhoto: true,
+                isPlaying: true
+            ),
+            0.10
+        )
+        XCTAssertTrue(
+            RemotePreviewInteractionPolicy.controlsAcceptInput(
+                controlsAreVisible: false,
+                isPhoto: true,
+                isPlaying: true
+            )
+        )
+        XCTAssertEqual(
+            RemotePreviewInteractionPolicy.controlsOpacity(
+                controlsAreVisible: false,
+                isPhoto: false,
+                isPlaying: true
+            ),
+            0
+        )
+    }
+
     func testManualNavigationAutoplaysWhileAutomaticNavigationPreservesPause() {
         let recorder = StallingPreviewRecorder()
         let service = StallingPreviewService(recorder: recorder)

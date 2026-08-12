@@ -6,9 +6,27 @@ import UIKit
 
 enum RemotePreviewInteractionPolicy {
     static let controlsAutoHideDelay: Duration = .milliseconds(2_500)
+    static let photoSlideshowDimmedControlsOpacity = 0.10
 
     static func shouldTogglePlaybackOnSingleTap(controlsAreVisible: Bool) -> Bool {
         controlsAreVisible
+    }
+
+    static func controlsOpacity(
+        controlsAreVisible: Bool,
+        isPhoto: Bool,
+        isPlaying: Bool
+    ) -> Double {
+        if controlsAreVisible { return 1 }
+        return isPhoto && isPlaying ? photoSlideshowDimmedControlsOpacity : 0
+    }
+
+    static func controlsAcceptInput(
+        controlsAreVisible: Bool,
+        isPhoto: Bool,
+        isPlaying: Bool
+    ) -> Bool {
+        controlsAreVisible || (isPhoto && isPlaying)
     }
 }
 
@@ -135,7 +153,9 @@ struct RemotePreviewView: View {
         }
         .onChange(of: viewModel.currentItem.id) { _, _ in
             resetVideoTransform()
-            revealControls()
+            if !viewModel.currentItem.isImage || !viewModel.isPlaying {
+                revealControls()
+            }
             updateScreenAwakeActivity()
         }
         .onReceive(
@@ -376,8 +396,20 @@ struct RemotePreviewView: View {
         .padding(.leading, max(safeAreaInsets.leading, 8) + 8)
         .padding(.trailing, max(safeAreaInsets.trailing, 8) + 8)
         .ignoresSafeArea()
-        .opacity(areControlsVisible ? 1 : 0)
-        .allowsHitTesting(areControlsVisible)
+        .opacity(
+            RemotePreviewInteractionPolicy.controlsOpacity(
+                controlsAreVisible: areControlsVisible,
+                isPhoto: viewModel.currentItem.isImage,
+                isPlaying: viewModel.isPlaying
+            )
+        )
+        .allowsHitTesting(
+            RemotePreviewInteractionPolicy.controlsAcceptInput(
+                controlsAreVisible: areControlsVisible,
+                isPhoto: viewModel.currentItem.isImage,
+                isPlaying: viewModel.isPlaying
+            )
+        )
         .animation(.easeInOut(duration: 0.2), value: areControlsVisible)
     }
 
@@ -880,6 +912,7 @@ enum PreviewPlaybackMode: String, CaseIterable, Identifiable {
 }
 
 enum PhotoAdvanceInterval: Int, CaseIterable, Identifiable {
+    case oneSecond = 1
     case twoSeconds = 2
     case threeSeconds = 3
     case fiveSeconds = 5
