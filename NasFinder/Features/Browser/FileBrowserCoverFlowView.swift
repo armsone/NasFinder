@@ -122,7 +122,7 @@ struct FileBrowserCoverFlowView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .padding(
                     .bottom,
-                    cardBaseWidth(for: proxy.size) * 0.18 + 20
+                    reflectionReserve(for: proxy.size)
                 )
                 .contentShape(Rectangle())
                 .gesture(flowGesture(step: step))
@@ -169,7 +169,15 @@ struct FileBrowserCoverFlowView: View {
         let emphasis = max(1 - absoluteDistance, 0)
         let isSelected = index == selectedIndex
         let cornerRadius = 13 + emphasis * 5
-        let scaleValue = scale(for: absoluteDistance)
+        let scaleValue = scale(
+            for: absoluteDistance,
+            baseWidth: baseWidth,
+            availableHeight: availableSize.height
+        )
+        let sidePush = horizontalPush(
+            for: distance,
+            baseWidth: baseWidth
+        )
         let reflectionHeight = baseHeight * 0.18
 
         RemoteThumbnailView(
@@ -220,7 +228,7 @@ struct FileBrowserCoverFlowView: View {
             perspective: 0.74
         )
         .offset(
-            x: distance * step,
+            x: distance * step + sidePush,
             y: 0
         )
         .opacity(opacity(for: absoluteDistance))
@@ -317,9 +325,50 @@ struct FileBrowserCoverFlowView: View {
         min(max(position, 0), CGFloat(max(items.count - 1, 0)))
     }
 
-    private func scale(for distance: CGFloat) -> CGFloat {
-        guard distance > 1 else { return 1.08 - 0.16 * distance }
-        return max(0.60, 0.92 - 0.08 * (distance - 1))
+    private func scale(
+        for distance: CGFloat,
+        baseWidth: CGFloat,
+        availableHeight: CGFloat
+    ) -> CGFloat {
+        let surroundingScale: CGFloat
+        if distance <= 1 {
+            surroundingScale = 1.08 - 0.16 * distance
+        } else {
+            surroundingScale = max(0.60, 0.92 - 0.08 * (distance - 1))
+        }
+        let emphasis = max(1 - distance, 0)
+        let boostedScale = surroundingScale * (1 + 0.24 * emphasis)
+        let usableImageHeight = max(
+            availableHeight
+                - (baseWidth * 1.34 * 0.18 + 20)
+                - 16
+                - 8,
+            baseWidth
+        )
+        let centralScaleCap = min(
+            1.34,
+            min(usableImageHeight, 400) / max(baseWidth, 1)
+        )
+        return max(
+            surroundingScale,
+            min(boostedScale, centralScaleCap)
+        )
+    }
+
+    private func horizontalPush(
+        for distance: CGFloat,
+        baseWidth: CGFloat
+    ) -> CGFloat {
+        guard distance != 0 else { return 0 }
+        let emphasis = max(1 - abs(distance), 0)
+        return (distance < 0 ? -1 : 1)
+            * baseWidth
+            * 0.13
+            * (1 - emphasis)
+    }
+
+    private func reflectionReserve(for size: CGSize) -> CGFloat {
+        cardBaseWidth(for: size) * 1.34 * 0.18 + 20
     }
 
     private func opacity(for distance: CGFloat) -> Double {

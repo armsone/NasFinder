@@ -255,13 +255,26 @@ struct FileBrowserView: View {
             )
         )
         .toolbar {
-            ToolbarItem(placement: .principal) {
+            ToolbarItem(placement: .topBarLeading) {
                 if layoutStyle == .coverFlow {
                     Text(title)
                         .font(.subheadline.weight(.medium))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.primary)
                         .lineLimit(1)
-                } else {
+                        .truncationMode(.middle)
+                        .frame(
+                            maxWidth: min(
+                                UIScreen.main.bounds.width * 0.42,
+                                300
+                            ),
+                            alignment: .leading
+                        )
+                        .allowsHitTesting(false)
+                }
+            }
+
+            ToolbarItem(placement: .principal) {
+                if layoutStyle != .coverFlow {
                     Button(action: dashboardAction) {
                         FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
                     }
