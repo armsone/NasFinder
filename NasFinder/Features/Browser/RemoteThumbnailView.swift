@@ -211,6 +211,10 @@ private final class RemoteThumbnailLoader: ObservableObject {
         negativeCacheExpirations.removeAll()
     }
 
+    static func clearTransientFailures() {
+        negativeCacheExpirations.removeAll()
+    }
+
     func invalidateForStoredThumbnail() {
         if let loadedCacheKey {
             Self.negativeCacheExpirations.removeValue(forKey: loadedCacheKey)
@@ -691,6 +695,20 @@ actor RemoteThumbnailDiskCache {
         await RemoteVideoThumbnailTrafficBudget.shared.reset()
         await RemoteVideoThumbnailTrafficBudget.sftpShared.reset()
         await RemoteThumbnailLoader.clearInMemoryCaches()
+    }
+
+    func removeData(for items: [RemoteFileItem]) async {
+        generation &+= 1
+        for item in items {
+            for key in RemoteThumbnailCacheKey.allRemoteDataKeys(for: item) {
+                try? fileManager.removeItem(at: fileURL(forKey: key))
+            }
+        }
+        await RemoteThumbnailLoader.clearInMemoryCaches()
+    }
+
+    func clearTransientFailures() async {
+        await RemoteThumbnailLoader.clearTransientFailures()
     }
 
     private func fileURL(forKey key: String) -> URL {

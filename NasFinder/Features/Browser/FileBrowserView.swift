@@ -346,7 +346,10 @@ struct FileBrowserView: View {
                 title: title
             )
         }
-        .task { await viewModel.load() }
+        .task {
+            await RemoteThumbnailDiskCache.shared.clearTransientFailures()
+            await viewModel.load()
+        }
         .overlay(alignment: .bottom) {
             VStack(spacing: 8) {
                 if shareCoordinator.isPreparing {
@@ -696,6 +699,7 @@ struct FileBrowserView: View {
     private func refreshCurrentPage() async {
         guard !operationCoordinator.isBusy else { return }
         await CompatibilityRemoteVideoThumbnailGenerator.cancelAll()
+        await RemoteThumbnailDiskCache.shared.removeData(for: viewModel.items)
 
         await viewModel.reloadAfterCurrentLoad()
         await RemoteVideoThumbnailTrafficBudget.shared.reset()
