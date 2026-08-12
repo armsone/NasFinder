@@ -18,6 +18,8 @@ enum CompatibilityVideoFormatPolicy {
 }
 
 enum CompatibilityVideoThumbnailAttemptPolicy {
+    static let seekFallbackDelay: Duration = .seconds(2)
+
     static func usesPlayerSnapshotFirst(for connectionKind: ConnectionKind) -> Bool {
         connectionKind == .synology
     }
@@ -991,6 +993,8 @@ private final class CompatibilityVideoPlayerSnapshotOperation {
         var didSeek = false
         var didRequestSnapshot = false
         let targetPosition = Double(position)
+        var playbackStartedAt: ContinuousClock.Instant?
+        var lastSeekAt: ContinuousClock.Instant?
 
         while clock.now < deadline, !Task.isCancelled {
             guard let player else { return }
@@ -1002,11 +1006,26 @@ private final class CompatibilityVideoPlayerSnapshotOperation {
                 return
             }
             if player.isPlaying {
-                if !didSeek {
+                if playbackStartedAt == nil {
+                    playbackStartedAt = clock.now
+                }
+                let canSeek = (player.media?.length.value?.doubleValue ?? 0) > 0
+                if canSeek,
+                   !didRequestSnapshot,
+                   lastSeekAt.map({ $0.duration(to: clock.now) >= .milliseconds(400) })
+                        ?? true {
                     player.position = targetPosition
                     didSeek = true
-                } else if !didRequestSnapshot,
-                          player.position >= max(targetPosition - 0.04, 0) {
+                    lastSeekAt = clock.now
+                }
+                let reachedTarget = didSeek
+                    && player.position >= max(targetPosition - 0.04, 0)
+                let seekFallbackElapsed = playbackStartedAt.map {
+                    $0.duration(to: clock.now)
+                        >= CompatibilityVideoThumbnailAttemptPolicy.seekFallbackDelay
+                } ?? false
+                if !didRequestSnapshot,
+                   reachedTarget || seekFallbackElapsed {
                     let url = FileManager.default.temporaryDirectory
                         .appending(path: UUID().uuidString)
                         .appendingPathExtension("png")

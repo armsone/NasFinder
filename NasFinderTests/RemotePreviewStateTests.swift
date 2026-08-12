@@ -165,6 +165,10 @@ final class RemotePreviewStateTests: XCTestCase {
                 for: .sftp
             )
         )
+        XCTAssertEqual(
+            CompatibilityVideoThumbnailAttemptPolicy.seekFallbackDelay,
+            .seconds(2)
+        )
     }
 
     func testCompatibilityRemoteStreamSupportsBoundedReadsAndSeeking() async throws {
