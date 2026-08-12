@@ -5,8 +5,22 @@ import SwiftUI
 import UIKit
 
 enum RemotePreviewInteractionPolicy {
+    static let controlsAutoHideDelay: Duration = .milliseconds(2_500)
+
     static func shouldTogglePlaybackOnSingleTap(controlsAreVisible: Bool) -> Bool {
         controlsAreVisible
+    }
+}
+
+enum RemoteVideoPlaybackSource: Equatable {
+    case partial
+    case completeFile
+
+    var title: String {
+        switch self {
+        case .partial: "부분 재생"
+        case .completeFile: "전체 파일"
+        }
     }
 }
 
@@ -288,23 +302,33 @@ struct RemotePreviewView: View {
                     .tint(.white)
                 if viewModel.streamedVideoByteCount > 0 {
                     Text(
-                        "Range \(ByteCountFormatter.string(fromByteCount: viewModel.streamedVideoByteCount, countStyle: .file)) 수신"
+                        "부분 재생 • \(ByteCountFormatter.string(fromByteCount: viewModel.streamedVideoByteCount, countStyle: .file)) 수신"
                     )
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.white.opacity(0.72))
                 }
             }
 
-            Text(
-                viewModel.currentItem.isVideo && viewModel.downloadProgress == nil
-                    ? "영상을 준비하는 중…"
-                    : "원격 파일을 내려받는 중…"
-            )
+            Text(remoteLoadingDescription)
             .foregroundStyle(.white.opacity(0.7))
         }
         .padding(.horizontal, 28)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityElement(children: .combine)
+    }
+
+    private var remoteLoadingDescription: String {
+        guard viewModel.currentItem.isVideo else {
+            return "원격 파일을 내려받는 중…"
+        }
+        switch viewModel.videoPlaybackSource {
+        case .partial:
+            return "부분 데이터로 재생을 준비하는 중…"
+        case .completeFile:
+            return "전체 파일을 내려받는 중…"
+        case nil:
+            return "영상을 준비하는 중…"
+        }
     }
 
     private func downloadProgressDescription(_ progress: RemoteDownloadProgress) -> String {
@@ -451,10 +475,15 @@ struct RemotePreviewView: View {
         if let compatibilityPlayer = viewModel.compatibilityPlayer {
             CompatibilityVideoProgressBar(
                 player: compatibilityPlayer,
+                sourceLabel: viewModel.videoPlaybackSource?.title,
                 compact: compact
             )
         } else if let player = viewModel.player {
-            SharedVideoProgressBar(player: player, compact: compact)
+            SharedVideoProgressBar(
+                player: player,
+                sourceLabel: viewModel.videoPlaybackSource?.title,
+                compact: compact
+            )
         }
     }
 
@@ -747,7 +776,7 @@ struct RemotePreviewView: View {
         withAnimation(.easeInOut(duration: 0.2)) { areControlsVisible = true }
         guard viewModel.isPlaying else { return }
         controlsHideTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(1_500))
+            try? await Task.sleep(for: RemotePreviewInteractionPolicy.controlsAutoHideDelay)
             guard !Task.isCancelled, viewModel.isPlaying else { return }
             withAnimation(.easeInOut(duration: 0.2)) { areControlsVisible = false }
         }
@@ -847,6 +876,7 @@ final class RemotePreviewViewModel: ObservableObject {
     @Published private(set) var isPreparingVideo = false
     @Published private(set) var downloadProgress: RemoteDownloadProgress?
     @Published private(set) var streamedVideoByteCount: Int64 = 0
+    @Published private(set) var videoPlaybackSource: RemoteVideoPlaybackSource?
     @Published private(set) var isPlaying = true
     @Published private(set) var playbackMode: PreviewPlaybackMode = .repeatAll
     @Published private(set) var photoAdvanceInterval: PhotoAdvanceInterval
@@ -947,6 +977,7 @@ final class RemotePreviewViewModel: ObservableObject {
         image = nil
         downloadProgress = nil
         streamedVideoByteCount = 0
+        videoPlaybackSource = nil
         loadedVideoDurationSeconds = nil
         defer {
             cancelActiveDownload(generation: generation)
@@ -969,6 +1000,7 @@ final class RemotePreviewViewModel: ObservableObject {
                     supportsRangeStreaming: service.supportsRangeStreaming,
                     fileSize: requestedItem.size
                 ) == .rangeStreaming {
+                videoPlaybackSource = .partial
                 await CompatibilityRemoteVideoThumbnailGenerator.cancelAll()
                 try Task.checkCancellation()
                 let newPlayer = try CompatibilityVideoPlayer(
@@ -1003,6 +1035,7 @@ final class RemotePreviewViewModel: ObservableObject {
                     supportsRangeStreaming: service.supportsRangeStreaming,
                     fileSize: requestedItem.size
                ) == .rangeStreaming {
+                videoPlaybackSource = .partial
                 streamingLoader?.cancel()
                 let loader = RemoteVideoStreamingLoader(
                     item: requestedItem,
@@ -1026,6 +1059,9 @@ final class RemotePreviewViewModel: ObservableObject {
             }
 
             let url: URL
+            if requestedItem.isVideo {
+                videoPlaybackSource = .completeFile
+            }
             if let cachedURL = downloadedURLs[requestedItem.id],
                FileManager.default.fileExists(atPath: cachedURL.path) {
                 url = cachedURL
@@ -1281,6 +1317,7 @@ final class RemotePreviewViewModel: ObservableObject {
         isLoading = false
         isPreparingVideo = false
         downloadProgress = nil
+        videoPlaybackSource = nil
     }
 
     private func move(to index: Int) {

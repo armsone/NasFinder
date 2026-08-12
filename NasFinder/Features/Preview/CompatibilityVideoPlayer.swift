@@ -411,6 +411,62 @@ final class CompatibilityPlaybackWatchdog {
     }
 }
 
+private enum CompatibilityVideoPlayerCommandExecutor {
+    private static let queue = DispatchQueue(
+        label: "com.armsone.nasfinder.vlc-player-commands",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+
+    static func play(_ player: VLCMediaPlayer) -> CompatibilityVideoPlayerCommand {
+        let command = CompatibilityVideoPlayerCommand(player: player, action: .play)
+        queue.async { command.execute() }
+        return command
+    }
+
+    static func stop(_ player: VLCMediaPlayer) {
+        let command = CompatibilityVideoPlayerCommand(player: player, action: .stop)
+        queue.async { command.execute() }
+    }
+}
+
+private final class CompatibilityVideoPlayerCommand: @unchecked Sendable {
+    enum Action {
+        case play
+        case stop
+    }
+
+    private let player: VLCMediaPlayer
+    private let action: Action
+    private let lock = NSLock()
+    private var isCancelled = false
+
+    init(player: VLCMediaPlayer, action: Action) {
+        self.player = player
+        self.action = action
+    }
+
+    func execute() {
+        lock.lock()
+        let shouldExecute = !isCancelled
+        lock.unlock()
+        guard shouldExecute else { return }
+
+        switch action {
+        case .play:
+            player.play()
+        case .stop:
+            player.stop()
+        }
+    }
+
+    func cancel() {
+        lock.lock()
+        isCancelled = true
+        lock.unlock()
+    }
+}
+
 @MainActor
 final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayerDelegate {
     @Published private(set) var currentSeconds = 0.0
@@ -421,6 +477,7 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
     private let inputStream: CompatibilityRemoteInputStream?
     private var didStartPlayback = false
     private var isStopping = false
+    private var pendingPlayCommand: CompatibilityVideoPlayerCommand?
 
     var onPlaybackEnded: (() -> Void)?
     var onReady: (() -> Void)?
@@ -473,7 +530,8 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
     func play() {
         SharedMediaAudioSession.activatePlayback()
         isStopping = false
-        mediaPlayer.play()
+        pendingPlayCommand?.cancel()
+        pendingPlayCommand = CompatibilityVideoPlayerCommandExecutor.play(mediaPlayer)
     }
 
     func pause() {
@@ -496,14 +554,17 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
     }
 
     func stop() {
+        guard !isStopping else { return }
         isStopping = true
+        pendingPlayCommand?.cancel()
+        pendingPlayCommand = nil
         mediaPlayer.delegate = nil
         // VLC waits for its synchronous input callback to return while stopping.
         // Cancel a blocked NAS range read first so dismissal never waits for the
         // remote timeout on the main actor.
         inputStream?.close()
-        mediaPlayer.stop()
         mediaPlayer.drawable = nil
+        CompatibilityVideoPlayerCommandExecutor.stop(mediaPlayer)
     }
 
     var usesRemoteStream: Bool { inputStream != nil }
@@ -575,6 +636,7 @@ struct CompatibilityVideoPlayerSurface: UIViewRepresentable {
 
 struct CompatibilityVideoProgressBar: View {
     @ObservedObject var player: CompatibilityVideoPlayer
+    var sourceLabel: String?
     var compact = false
 
     var body: some View {
@@ -582,18 +644,27 @@ struct CompatibilityVideoProgressBar: View {
             Text(formattedTime(player.currentSeconds))
                 .frame(width: compact ? 34 : 42, alignment: .trailing)
 
-            Slider(
-                value: Binding(
-                    get: { min(player.currentSeconds, sliderMaximum) },
-                    set: { player.seek(to: $0) }
-                ),
-                in: 0...sliderMaximum
-            )
-            .tint(.white)
-            .accessibilityLabel("재생 위치")
-            .accessibilityValue(
-                "\(formattedTime(player.currentSeconds)) / \(formattedTime(player.durationSeconds))"
-            )
+            VStack(spacing: -4) {
+                if let sourceLabel {
+                    Text(sourceLabel)
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.48))
+                        .lineLimit(1)
+                }
+
+                Slider(
+                    value: Binding(
+                        get: { min(player.currentSeconds, sliderMaximum) },
+                        set: { player.seek(to: $0) }
+                    ),
+                    in: 0...sliderMaximum
+                )
+                .tint(.white)
+                .accessibilityLabel("재생 위치")
+                .accessibilityValue(
+                    "\(formattedTime(player.currentSeconds)) / \(formattedTime(player.durationSeconds))"
+                )
+            }
 
             Text(formattedTime(player.durationSeconds))
                 .frame(width: compact ? 34 : 42, alignment: .leading)

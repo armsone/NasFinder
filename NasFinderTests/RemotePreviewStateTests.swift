@@ -5,6 +5,15 @@ import XCTest
 
 @MainActor
 final class RemotePreviewStateTests: XCTestCase {
+    func testPlaybackSourceLabelsAndControlsAutoHideDelay() {
+        XCTAssertEqual(RemoteVideoPlaybackSource.partial.title, "부분 재생")
+        XCTAssertEqual(RemoteVideoPlaybackSource.completeFile.title, "전체 파일")
+        XCTAssertEqual(
+            RemotePreviewInteractionPolicy.controlsAutoHideDelay,
+            .milliseconds(2_500)
+        )
+    }
+
     func testCompatibilityFormatPolicyKeepsMP4AndMOVOnAVPlayer() {
         let connectionID = UUID()
         for filename in ["movie.mp4", "clip.mov", "recording.m4v"] {
@@ -359,6 +368,28 @@ final class RemotePreviewStateTests: XCTestCase {
             closingStartedAt.duration(to: clock.now),
             .seconds(1)
         )
+    }
+
+    func testStoppingCompatibilityPlayerReturnsWhileRemoteReadIsStalled() async throws {
+        let service = StallingRangeVideoService()
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/stalled.avi",
+            name: "stalled.avi",
+            kind: .file,
+            size: 1_024 * 1_024,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let player = try CompatibilityVideoPlayer(item: item, service: service)
+        player.play()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let clock = ContinuousClock()
+        let stopStartedAt = clock.now
+        player.stop()
+
+        XCTAssertLessThan(stopStartedAt.duration(to: clock.now), .milliseconds(250))
     }
 
     func testCompatibilityPlaybackWatchdogReportsNoProgress() async {

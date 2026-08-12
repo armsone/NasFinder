@@ -87,6 +87,9 @@ enum FileBrowserOrientationController {
 }
 
 struct FileBrowserCoverFlowView: View {
+    private let sideCardScale: CGFloat = 0.80
+    private let visibleCardCountPerSide = 7
+
     let items: [RemoteFileItem]
     let service: any RemoteFileService
     let thumbnailReloadVersion: Int
@@ -142,8 +145,11 @@ struct FileBrowserCoverFlowView: View {
 
     private var visibleIndices: [Int] {
         guard !items.isEmpty else { return [] }
-        let lower = max(selectedIndex - 5, items.startIndex)
-        let upper = min(selectedIndex + 5, items.index(before: items.endIndex))
+        let lower = max(selectedIndex - visibleCardCountPerSide, items.startIndex)
+        let upper = min(
+            selectedIndex + visibleCardCountPerSide,
+            items.index(before: items.endIndex)
+        )
         return Array(lower...upper).sorted {
             abs($0 - selectedIndex) > abs($1 - selectedIndex)
         }
@@ -341,7 +347,7 @@ struct FileBrowserCoverFlowView: View {
         }
         let focus = max(1 - distance, 0)
         let easedFocus = smoothstep(focus)
-        let sideSide = baseWidth * surroundingScale
+        let sideSide = baseWidth * surroundingScale * sideCardScale
         return sideSide + (centralTarget - sideSide) * easedFocus
     }
 
@@ -353,7 +359,7 @@ struct FileBrowserCoverFlowView: View {
         guard distance != 0 else { return 0 }
         let travel = smoothstep(min(max(abs(distance), 0), 1))
         let fullPush = max(
-            (centralTarget - baseWidth * 0.92) / 2 + 18,
+            (centralTarget - baseWidth * 0.92 * sideCardScale) / 2 + 18,
             44
         )
         return (distance < 0 ? -1 : 1)
@@ -385,7 +391,7 @@ struct FileBrowserCoverFlowView: View {
 
     private func opacity(for distance: CGFloat) -> Double {
         if distance > 5 {
-            return max(0, Double(6 - distance) * 0.425)
+            return max(0, Double(8 - distance) * 0.14)
         }
         return max(0.16, 1 - Double(distance) * 0.115)
     }

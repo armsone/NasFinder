@@ -65,6 +65,7 @@ final class SharedVideoPlayerSurfaceView: UIView {
 
 struct SharedVideoProgressBar: View {
     let player: AVPlayer
+    var sourceLabel: String?
     var compact = false
 
     @State private var currentSeconds = 0.0
@@ -76,18 +77,27 @@ struct SharedVideoProgressBar: View {
             Text(formattedTime(currentSeconds))
                 .frame(width: compact ? 34 : 42, alignment: .trailing)
 
-            Slider(
-                value: Binding(
-                    get: { min(currentSeconds, sliderMaximum) },
-                    set: { seek(to: $0) }
-                ),
-                in: 0...sliderMaximum
-            )
-            .tint(.white)
-            .accessibilityLabel("재생 위치")
-            .accessibilityValue(
-                "\(formattedTime(currentSeconds)) / \(formattedTime(durationSeconds))"
-            )
+            VStack(spacing: -4) {
+                if let sourceLabel {
+                    Text(sourceLabel)
+                        .font(.system(size: 8, weight: .medium))
+                        .foregroundStyle(.white.opacity(0.48))
+                        .lineLimit(1)
+                }
+
+                Slider(
+                    value: Binding(
+                        get: { min(currentSeconds, sliderMaximum) },
+                        set: { seek(to: $0) }
+                    ),
+                    in: 0...sliderMaximum
+                )
+                .tint(.white)
+                .accessibilityLabel("재생 위치")
+                .accessibilityValue(
+                    "\(formattedTime(currentSeconds)) / \(formattedTime(durationSeconds))"
+                )
+            }
 
             Text(formattedTime(durationSeconds))
                 .frame(width: compact ? 34 : 42, alignment: .leading)
