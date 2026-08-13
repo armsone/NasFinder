@@ -38,7 +38,6 @@
 			<key>UIDocumentPickerModes</key>
 			<array>
 				<string>UIDocumentPickerModeImport</string>
-				<string>UIDocumentPickerModeOpen</string>
 			</array>
 			<key>UIDocumentPickerSupportedFileTypes</key>
 			<array>
