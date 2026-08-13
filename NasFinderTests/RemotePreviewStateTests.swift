@@ -1481,6 +1481,84 @@ final class RemotePreviewStateTests: XCTestCase {
             contentTypeIdentifier: nil
         )
     }
+
+    func testSuperThumbnailCancelImmediatelyAcknowledgesAndStopsWork() async throws {
+        let service = CancellationResistantThumbnailListService()
+        let folder = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/share/folder",
+            name: "folder",
+            kind: .folder,
+            size: nil,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let preheater = ThumbnailPreheater()
+
+        preheater.start(
+            rootItems: [folder],
+            rootPath: "/share",
+            recursively: true,
+            requiresExternalPower: false,
+            generationMode: .completeFile,
+            service: service
+        )
+        XCTAssertTrue(preheater.isRunning)
+        XCTAssertFalse(preheater.isCancellationRequested)
+
+        let listingDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while !(await service.hasStartedListing),
+              ContinuousClock.now < listingDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let didStartListing = await service.hasStartedListing
+        XCTAssertTrue(didStartListing)
+
+        preheater.cancel()
+        XCTAssertTrue(preheater.isCancellationRequested)
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while preheater.isRunning, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(preheater.isRunning)
+        XCTAssertFalse(preheater.isCancellationRequested)
+        XCTAssertEqual(preheater.statusMessage, "썸네일 미리 생성을 중지했습니다.")
+        let cancelRequestCount = await service.cancelRequestCount
+        XCTAssertEqual(cancelRequestCount, 1)
+    }
+}
+
+private actor CancellationResistantThumbnailListService: RemoteFileService {
+    let connection = RemoteConnection(
+        name: "Cancellation test",
+        kind: .synology,
+        host: "cancel.invalid",
+        username: "tester"
+    )
+    private var blockingTask: Task<Void, Error>?
+    private(set) var cancelRequestCount = 0
+    private(set) var hasStartedListing = false
+
+    func list(directory path: String?) async throws -> [RemoteFileItem] {
+        hasStartedListing = true
+        let blockingTask = Task<Void, Error> {
+            try await Task.sleep(for: .seconds(30))
+        }
+        self.blockingTask = blockingTask
+        try await blockingTask.value
+        return []
+    }
+
+    func cancelPendingThumbnailWork() {
+        cancelRequestCount += 1
+        blockingTask?.cancel()
+        blockingTask = nil
+    }
+
+    func download(_ item: RemoteFileItem) async throws -> URL {
+        throw RemoteFileOperationError.unsupported(operation: .copy)
+    }
 }
 
 private struct ThumbnailRoutingTestService: RemoteFileService {

@@ -112,6 +112,7 @@ final class ThumbnailPreheater: ObservableObject {
     static let maximumSFTPDataBytes: Int64 = 18_000_000
 
     @Published private(set) var isRunning = false
+    @Published private(set) var isCancellationRequested = false
     @Published private(set) var completedCount = 0
     @Published private(set) var totalCount = 0
     @Published private(set) var generatedCount = 0
@@ -144,6 +145,7 @@ final class ThumbnailPreheater: ObservableObject {
     @Published var errorMessage: String?
 
     private var task: Task<Void, Never>?
+    private var cancelConnectionWork: (@Sendable () async -> Void)?
     private var appIsActive = true
     private var etaEstimator = ThumbnailETAEstimator()
     private let screenAwakeActivityID = UUID()
@@ -192,7 +194,12 @@ final class ThumbnailPreheater: ObservableObject {
         }
 
         resetProgress()
+        isCancellationRequested = false
         isRunning = true
+        cancelConnectionWork = {
+            await service.cancelPendingThumbnailWork()
+            await CompatibilityRemoteVideoThumbnailGenerator.cancelAll()
+        }
         ScreenAwakeController.shared.beginActivity(screenAwakeActivityID)
         task = Task { @MainActor [weak self] in
             guard let self else { return }
@@ -210,7 +217,12 @@ final class ThumbnailPreheater: ObservableObject {
     }
 
     func cancel() {
+        guard isRunning, !isCancellationRequested else { return }
+        isCancellationRequested = true
+        pauseReason = "진행 중인 작업을 안전하게 중단하고 있습니다."
         task?.cancel()
+        let cancelConnectionWork = cancelConnectionWork
+        Task { await cancelConnectionWork?() }
     }
 
     func dismissStatus() {
@@ -236,6 +248,8 @@ final class ThumbnailPreheater: ObservableObject {
             currentItemStartedAt = nil
             pauseReason = nil
             workPhase = nil
+            isCancellationRequested = false
+            cancelConnectionWork = nil
             task = nil
         }
 

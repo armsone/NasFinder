@@ -103,6 +103,9 @@ protocol RemoteFileService: Sendable {
         size: RemoteThumbnailSize,
         maximumByteCount: Int
     ) async throws -> Data?
+    /// Cancels connection work that may outlive an individual thumbnail task,
+    /// such as a shared authentication refresh.
+    func cancelPendingThumbnailWork() async
     func testConnection() async throws
 
     func createFolder(
@@ -198,6 +201,8 @@ extension RemoteFileService {
         }
         return data
     }
+
+    func cancelPendingThumbnailWork() async {}
 
     func testConnection() async throws {
         _ = try await list(directory: connection.normalizedRootPath)

@@ -100,6 +100,10 @@ final class TrafficMeasuringRemoteFileService: RemoteFileService, @unchecked Sen
         try await base.list(directory: path)
     }
 
+    func cancelPendingThumbnailWork() async {
+        await base.cancelPendingThumbnailWork()
+    }
+
     func download(_ item: RemoteFileItem) async throws -> URL {
         try await download(item) { _ in }
     }

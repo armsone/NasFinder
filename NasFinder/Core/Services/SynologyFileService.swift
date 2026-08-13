@@ -49,6 +49,11 @@ actor SynologyFileService: RemoteFileService {
         }
     }
 
+    func cancelPendingThumbnailWork() {
+        sessionLoginTask?.cancel()
+        sessionLoginTask = nil
+    }
+
     func list(directory path: String?) async throws -> [RemoteFileItem] {
         let targetPath = path ?? connection.normalizedRootPath
         return try await authenticatedRequest { sid in

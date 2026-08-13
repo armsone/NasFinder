@@ -1238,7 +1238,17 @@ private struct SuperThumbnailProgressView: View {
                 Group {
                     if preheater.isRunning {
                         Button(role: .destructive, action: onCancel) {
-                            Text("작업 중단")
+                            HStack(spacing: 8) {
+                                if preheater.isCancellationRequested {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                                Text(
+                                    preheater.isCancellationRequested
+                                        ? "중단하는 중…"
+                                        : "작업 중단"
+                                )
+                            }
                                 .font(.subheadline.weight(.medium))
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 54)
@@ -1246,6 +1256,7 @@ private struct SuperThumbnailProgressView: View {
                         }
                         .buttonStyle(.bordered)
                         .buttonBorderShape(.roundedRectangle(radius: 14))
+                        .disabled(preheater.isCancellationRequested)
                     } else {
                         Button(action: onClose) {
                             Text("완료")
