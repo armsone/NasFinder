@@ -16,6 +16,7 @@
 		C30000000000000000000001 /* NasFinderWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = C30000000000000000000003 /* NasFinderWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		F60000000000000000000001 /* NasFinderDocumentPicker.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F60000000000000000000004 /* NasFinderDocumentPicker.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		F60000000000000000000002 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = F60000000000000000000023 /* Citadel */; };
+		G70000000000000000000001 /* NasFinderDocumentPickerSupport.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = G70000000000000000000003 /* NasFinderDocumentPickerSupport.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -54,6 +55,13 @@
 			remoteGlobalIDString = F60000000000000000000010;
 			remoteInfo = NasFinderDocumentPicker;
 		};
+		G70000000000000000000002 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = G70000000000000000000007;
+			remoteInfo = NasFinderDocumentPickerSupport;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -67,6 +75,7 @@
 				B20000000000000000000001 /* NasFinderShare.appex in Embed App Extensions */,
 				C30000000000000000000001 /* NasFinderWidget.appex in Embed App Extensions */,
 				F60000000000000000000001 /* NasFinderDocumentPicker.appex in Embed App Extensions */,
+				G70000000000000000000001 /* NasFinderDocumentPickerSupport.appex in Embed App Extensions */,
 			);
 			name = "Embed App Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -80,6 +89,7 @@
 		B20000000000000000000003 /* NasFinderShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NasFinderShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C30000000000000000000003 /* NasFinderWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NasFinderWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		F60000000000000000000004 /* NasFinderDocumentPicker.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NasFinderDocumentPicker.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		G70000000000000000000003 /* NasFinderDocumentPickerSupport.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NasFinderDocumentPickerSupport.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -124,6 +134,13 @@
 				Info.plist,
 			);
 			target = F60000000000000000000010 /* NasFinderDocumentPicker */;
+		};
+		G70000000000000000000004 /* Exceptions for "NasFinderDocumentPickerSupport" folder in "NasFinderDocumentPickerSupport" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = G70000000000000000000007 /* NasFinderDocumentPickerSupport */;
 		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
@@ -207,6 +224,18 @@
 			path = NasFinderDocumentPicker;
 			sourceTree = "<group>";
 		};
+		G70000000000000000000005 /* NasFinderDocumentPickerSupport */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				G70000000000000000000004 /* Exceptions for "NasFinderDocumentPickerSupport" folder in "NasFinderDocumentPickerSupport" target */,
+			);
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = NasFinderDocumentPickerSupport;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -257,6 +286,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		G70000000000000000000006 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -269,6 +305,7 @@
 				C30000000000000000000005 /* NasFinderWidget */,
 				A10000000000000000000005 /* NasFinderFileProvider */,
 				F60000000000000000000007 /* NasFinderDocumentPicker */,
+				G70000000000000000000005 /* NasFinderDocumentPickerSupport */,
 				A10000000000000000000006 /* NasFinderTests */,
 				A10000000000000000000003 /* Products */,
 			);
@@ -283,6 +320,7 @@
 				B20000000000000000000003 /* NasFinderShare.appex */,
 				C30000000000000000000003 /* NasFinderWidget.appex */,
 				F60000000000000000000004 /* NasFinderDocumentPicker.appex */,
+				G70000000000000000000003 /* NasFinderDocumentPickerSupport.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -306,6 +344,7 @@
 				B20000000000000000000014 /* PBXTargetDependency */,
 				C3000000000000000000000A /* PBXTargetDependency */,
 				F60000000000000000000014 /* PBXTargetDependency */,
+				G7000000000000000000000A /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A10000000000000000000004 /* NasFinder */,
@@ -436,6 +475,28 @@
 			productReference = F60000000000000000000004 /* NasFinderDocumentPicker.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		G70000000000000000000007 /* NasFinderDocumentPickerSupport */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = G7000000000000000000000D /* Build configuration list for PBXNativeTarget "NasFinderDocumentPickerSupport" */;
+			buildPhases = (
+				G70000000000000000000009 /* Sources */,
+				G70000000000000000000006 /* Frameworks */,
+				G70000000000000000000008 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				G70000000000000000000005 /* NasFinderDocumentPickerSupport */,
+			);
+			name = NasFinderDocumentPickerSupport;
+			packageProductDependencies = (
+			);
+			productName = NasFinderDocumentPickerSupport;
+			productReference = G70000000000000000000003 /* NasFinderDocumentPickerSupport.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -465,6 +526,9 @@
 					F60000000000000000000010 = {
 						CreatedOnToolsVersion = 26.0;
 					};
+					G70000000000000000000007 = {
+						CreatedOnToolsVersion = 26.0;
+					};
 				};
 			};
 			buildConfigurationList = A10000000000000000000024 /* Build configuration list for PBXProject "NasFinder" */;
@@ -492,6 +556,7 @@
 				B20000000000000000000010 /* NasFinderShare */,
 				C30000000000000000000009 /* NasFinderWidget */,
 				F60000000000000000000010 /* NasFinderDocumentPicker */,
+				G70000000000000000000007 /* NasFinderDocumentPickerSupport */,
 			);
 		};
 /* End PBXProject section */
@@ -533,6 +598,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		F60000000000000000000013 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		G70000000000000000000008 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -584,6 +656,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		G70000000000000000000009 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -615,6 +694,12 @@
 			platformFilter = ios;
 			target = F60000000000000000000010 /* NasFinderDocumentPicker */;
 			targetProxy = F60000000000000000000003 /* PBXContainerItemProxy */;
+		};
+		G7000000000000000000000A /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = ios;
+			target = G70000000000000000000007 /* NasFinderDocumentPickerSupport */;
+			targetProxy = G70000000000000000000002 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1080,6 +1165,60 @@
 			};
 			name = Release;
 		};
+		G7000000000000000000000B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = NasFinderDocumentPickerSupport/NasFinderDocumentPickerSupport.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 202608121535;
+				DEVELOPMENT_TEAM = T7B4EPLHPK;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NasFinderDocumentPickerSupport/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.documentpicker.fileprovider;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		G7000000000000000000000C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = NasFinderDocumentPickerSupport/NasFinderDocumentPickerSupport.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 202608121535;
+				DEVELOPMENT_TEAM = T7B4EPLHPK;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NasFinderDocumentPickerSupport/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.documentpicker.fileprovider;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1142,6 +1281,15 @@
 			buildConfigurations = (
 				F60000000000000000000020 /* Debug */,
 				F60000000000000000000021 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		G7000000000000000000000D /* Build configuration list for PBXNativeTarget "NasFinderDocumentPickerSupport" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				G7000000000000000000000B /* Debug */,
+				G7000000000000000000000C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
