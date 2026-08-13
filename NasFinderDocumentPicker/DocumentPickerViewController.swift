@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 @available(iOS, deprecated: 14.0, message: "Compatibility UI for document import hosts")
 final class NasFinderDocumentPickerViewController: UIDocumentPickerExtensionViewController {
@@ -167,6 +168,35 @@ final class DocumentPickerModel: ObservableObject {
         errorMessage = nil
     }
 
+    func thumbnailData(
+        for item: ProviderRemoteNode,
+        size: ProviderThumbnailSize
+    ) async -> Data? {
+        guard !item.isDirectory,
+              Self.supportsThumbnail(filename: item.name),
+              let context = selectedConnection else { return nil }
+        let key = ProviderThumbnailCache.key(
+            for: item,
+            connectionID: context.connection.id,
+            size: size
+        )
+        let cache = ProviderThumbnailCache()
+        if let cached = cache.data(forKey: key) { return cached }
+
+        do {
+            let data = try await DocumentPickerThumbnailRequestLimiter.shared.withPermit {
+                try Task.checkCancellation()
+                return try await context.backend.thumbnail(path: item.path, size: size)
+            }
+            guard let data else { return nil }
+            try Task.checkCancellation()
+            cache.store(data, forKey: key)
+            return data
+        } catch {
+            return nil
+        }
+    }
+
     func cancelDownload() {
         operationTask?.cancel()
         operationTask = nil
@@ -282,10 +312,45 @@ final class DocumentPickerModel: ObservableObject {
         if description.isEmpty { return "파일을 불러오지 못했습니다." }
         return description
     }
+
+    private static func supportsThumbnail(filename: String) -> Bool {
+        let type = UTType(filenameExtension: (filename as NSString).pathExtension)
+        return type?.conforms(to: .image) == true
+            || type?.conforms(to: .movie) == true
+            || type?.conforms(to: .video) == true
+    }
+}
+
+private enum DocumentPickerLayoutStyle: String, CaseIterable, Identifiable {
+    case list
+    case smallThumbnails
+    case largeThumbnails
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .list: "자세히"
+        case .smallThumbnails: "작은 썸네일"
+        case .largeThumbnails: "포스터"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .list: "list.bullet"
+        case .smallThumbnails: "square.grid.3x3"
+        case .largeThumbnails: "square.grid.2x2"
+        }
+    }
 }
 
 private struct DocumentPickerRootView: View {
     @ObservedObject var model: DocumentPickerModel
+    @AppStorage(
+        "documentPickerLayoutStyle",
+        store: UserDefaults(suiteName: NasFinderFileProviderIdentifiers.appGroup)
+    ) private var storedLayoutStyle = DocumentPickerLayoutStyle.smallThumbnails.rawValue
 
     var body: some View {
         NavigationStack {
@@ -308,6 +373,20 @@ private struct DocumentPickerRootView: View {
                                 .font(.headline)
                         }
                         .accessibilityLabel("이전")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Menu {
+                            ForEach(DocumentPickerLayoutStyle.allCases) { style in
+                                Button {
+                                    storedLayoutStyle = style.rawValue
+                                } label: {
+                                    Label(style.title, systemImage: style.systemImage)
+                                }
+                            }
+                        } label: {
+                            Image(systemName: layoutStyle.systemImage)
+                        }
+                        .accessibilityLabel("보기 방식")
                     }
                 }
             }
@@ -387,48 +466,186 @@ private struct DocumentPickerRootView: View {
     }
 
     private var fileList: some View {
-        List(model.items, id: \.path) { item in
-            Button {
-                Task { await model.select(item) }
-            } label: {
-                HStack(spacing: 14) {
-                    Image(systemName: item.isDirectory ? "folder.fill" : icon(for: item.name))
-                        .font(.title3)
-                        .foregroundStyle(item.isDirectory ? Color.accentColor : Color.secondary)
-                        .frame(width: 32)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(item.name)
-                            .lineLimit(2)
-                            .foregroundStyle(.primary)
-                        if let size = item.size, !item.isDirectory {
-                            Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+        Group {
+            switch layoutStyle {
+            case .list:
+                List(model.items, id: \.path) { item in
+                    pickerItemButton(item, style: .list)
+                }
+            case .smallThumbnails, .largeThumbnails:
+                ScrollView {
+                    LazyVGrid(columns: gridColumns, spacing: layoutStyle == .largeThumbnails ? 18 : 13) {
+                        ForEach(model.items, id: \.path) { item in
+                            pickerItemButton(item, style: layoutStyle)
                         }
                     }
-                    Spacer()
-                    Image(systemName: item.isDirectory ? "chevron.right" : "arrow.down.circle")
-                        .foregroundStyle(item.isDirectory ? Color.secondary : Color.accentColor)
+                    .padding(16)
                 }
-                .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
         }
         .refreshable { await model.retry() }
     }
 
-    private func icon(for filename: String) -> String {
-        let ext = (filename as NSString).pathExtension.lowercased()
-        if ["jpg", "jpeg", "png", "gif", "heic", "heif", "webp"].contains(ext) {
-            return "photo"
+    private var layoutStyle: DocumentPickerLayoutStyle {
+        DocumentPickerLayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
+    }
+
+    private var gridColumns: [GridItem] {
+        let minimum: CGFloat = layoutStyle == .largeThumbnails ? 148 : 88
+        return [GridItem(.adaptive(minimum: minimum, maximum: minimum * 1.35), spacing: 12)]
+    }
+
+    private func pickerItemButton(
+        _ item: ProviderRemoteNode,
+        style: DocumentPickerLayoutStyle
+    ) -> some View {
+        Button {
+            Task { await model.select(item) }
+        } label: {
+            DocumentPickerItemView(item: item, model: model, style: style)
         }
-        if ["mp4", "mov", "mkv", "avi", "wmv", "mpg", "mpeg", "m4v"].contains(ext) {
+        .buttonStyle(.plain)
+    }
+
+}
+
+private struct DocumentPickerItemView: View {
+    let item: ProviderRemoteNode
+    @ObservedObject var model: DocumentPickerModel
+    let style: DocumentPickerLayoutStyle
+
+    var body: some View {
+        if style == .list {
+            HStack(spacing: 12) {
+                preview(side: 56, size: .small, cornerRadius: 9)
+                metadata
+                Spacer(minLength: 8)
+                Image(systemName: item.isDirectory ? "chevron.right" : "arrow.down.circle")
+                    .foregroundStyle(item.isDirectory ? Color.secondary : Color.accentColor)
+            }
+            .contentShape(Rectangle())
+        } else {
+            VStack(alignment: .leading, spacing: style == .largeThumbnails ? 9 : 6) {
+                preview(
+                    side: style == .largeThumbnails ? 180 : 104,
+                    size: style == .largeThumbnails ? .medium : .small,
+                    cornerRadius: style == .largeThumbnails ? 15 : 11
+                )
+                metadata
+            }
+            .contentShape(Rectangle())
+        }
+    }
+
+    private var metadata: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(item.name)
+                .font(style == .largeThumbnails ? .headline : (style == .list ? .body : .caption))
+                .fontWeight(style == .largeThumbnails ? .semibold : .regular)
+                .lineLimit(2)
+                .foregroundStyle(.primary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let size = item.size, !item.isDirectory {
+                Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func preview(
+        side: CGFloat,
+        size: ProviderThumbnailSize,
+        cornerRadius: CGFloat
+    ) -> some View {
+        DocumentPickerThumbnailView(item: item, model: model, requestedSize: size)
+            .aspectRatio(1, contentMode: .fit)
+            .frame(maxWidth: style == .list ? side : .infinity)
+            .frame(width: style == .list ? side : nil, height: style == .list ? side : nil)
+            .background(Color(uiColor: .secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+            }
+    }
+}
+
+private struct DocumentPickerThumbnailView: View {
+    let item: ProviderRemoteNode
+    @ObservedObject var model: DocumentPickerModel
+    let requestedSize: ProviderThumbnailSize
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: placeholderIcon)
+                    .resizable()
+                    .scaledToFit()
+                    .foregroundStyle(item.isDirectory ? Color.accentColor : Color.secondary)
+                    .padding(item.isDirectory ? 12 : 22)
+            }
+        }
+        .clipped()
+        .task(id: "\(item.path)|\(requestedSize.rawValue)") {
+            guard !item.isDirectory else { return }
+            if let data = await model.thumbnailData(for: item, size: requestedSize),
+               !Task.isCancelled {
+                image = UIImage(data: data)
+            }
+        }
+    }
+
+    private var placeholderIcon: String {
+        if item.isDirectory { return "folder.fill" }
+        let type = UTType(filenameExtension: (item.name as NSString).pathExtension)
+        if type?.conforms(to: .image) == true { return "photo" }
+        if type?.conforms(to: .movie) == true || type?.conforms(to: .video) == true {
             return "film"
         }
-        if ["mp3", "m4a", "wav", "flac", "aac"].contains(ext) {
-            return "waveform"
-        }
+        if type?.conforms(to: .audio) == true { return "waveform" }
         return "doc"
+    }
+}
+
+private actor DocumentPickerThumbnailRequestLimiter {
+    static let shared = DocumentPickerThumbnailRequestLimiter(maximumConcurrentRequests: 3)
+
+    private let maximumConcurrentRequests: Int
+    private var activeRequests = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(maximumConcurrentRequests: Int) {
+        self.maximumConcurrentRequests = max(1, maximumConcurrentRequests)
+    }
+
+    func withPermit<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        try Task.checkCancellation()
+        if activeRequests < maximumConcurrentRequests {
+            activeRequests += 1
+        } else {
+            await withCheckedContinuation { continuation in
+                waiters.append(continuation)
+            }
+        }
+        defer { release() }
+        try Task.checkCancellation()
+        return try await operation()
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            activeRequests = max(0, activeRequests - 1)
+        } else {
+            waiters.removeFirst().resume()
+        }
     }
 }
 

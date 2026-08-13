@@ -38,6 +38,16 @@ struct ProviderThumbnailCache {
         }
     }
 
+    static func key(
+        for node: ProviderRemoteNode,
+        connectionID: UUID,
+        size: ProviderThumbnailSize
+    ) -> String {
+        let itemID = "\(connectionID.uuidString):\(node.path)"
+        let version = node.modifiedAt?.timeIntervalSince1970 ?? 0
+        return "\(itemID)|\(version)|\(node.size ?? -1)|\(size.rawValue)"
+    }
+
     private func fileURL(forKey key: String, directoryURL: URL) -> URL {
         let digest = SHA256.hash(data: Data(key.utf8))
         let filename = digest.map { String(format: "%02x", $0) }.joined()

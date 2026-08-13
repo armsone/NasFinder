@@ -292,7 +292,7 @@ actor NasFinderFileProviderStorage {
               Self.supportsThumbnail(filename: node.name) else { return nil }
 
         let size = Self.thumbnailSize(for: requestedSize)
-        let key = Self.thumbnailCacheKey(
+        let key = ProviderThumbnailCache.key(
             for: node,
             connectionID: context.connection.id,
             size: size
@@ -514,16 +514,6 @@ actor NasFinderFileProviderStorage {
         if maximumDimension <= 128 { return .small }
         if maximumDimension <= 512 { return .medium }
         return .large
-    }
-
-    private static func thumbnailCacheKey(
-        for node: ProviderRemoteNode,
-        connectionID: UUID,
-        size: ProviderThumbnailSize
-    ) -> String {
-        let itemID = "\(connectionID.uuidString):\(node.path)"
-        let version = node.modifiedAt?.timeIntervalSince1970 ?? 0
-        return "\(itemID)|\(version)|\(node.size ?? -1)|\(size.rawValue)"
     }
 
     private static func appending(_ name: String, to directory: String) -> String {
