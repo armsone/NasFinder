@@ -8,6 +8,8 @@ if [[ $# -ne 1 || -z "$1" ]]; then
 fi
 
 device_identifier="$1"
+test_only="${TEST_ONLY:-}"
+full_tests="${FULL_TESTS:-0}"
 repository_root="$(git rev-parse --show-toplevel)"
 cd "$repository_root"
 
@@ -20,14 +22,33 @@ project="NasFinder.xcodeproj"
 scheme="NasFinder"
 bundle_identifier="com.armsone.nasfinder"
 
-echo "[1/5] Running the complete test suite on device $device_identifier at $verified_sha"
+test_arguments=()
+if [[ "$full_tests" == "1" ]]; then
+    echo "[1/5] Running the complete test suite on device $device_identifier at $verified_sha"
+elif [[ -n "$test_only" ]]; then
+    IFS=',' read -r -a test_selectors <<< "$test_only"
+    for selector in "${test_selectors[@]}"; do
+        [[ -n "$selector" ]] || continue
+        test_arguments+=("-only-testing:$selector")
+    done
+    [[ ${#test_arguments[@]} -gt 0 ]] || {
+        echo "error: TEST_ONLY에 하나 이상의 테스트 선택자를 지정해 주세요." >&2
+        exit 2
+    }
+    echo "[1/5] Running related device tests: $test_only"
+else
+    echo "error: 관련 테스트는 TEST_ONLY=<target/test>로, 전체 테스트는 FULL_TESTS=1로 지정해 주세요." >&2
+    exit 2
+fi
+
 xcodebuild -quiet \
     -project "$project" \
     -scheme "$scheme" \
     -destination "id=$device_identifier" \
     -derivedDataPath "$derived_data-device-tests" \
     -allowProvisioningUpdates \
-    test
+    test \
+    "${test_arguments[@]}"
 
 [[ "$(git rev-parse HEAD)" == "$verified_sha" ]] || {
     echo "error: 테스트 중 HEAD가 변경됐습니다." >&2
