@@ -4,6 +4,7 @@ import UIKit
 enum FileBrowserCoverFlowPolicy {
     static let visibleCardCountPerSide = 7
     static let preloadCardCountPerSide = visibleCardCountPerSide + 1
+    static let maximumMomentumCards: CGFloat = 3
 
     static func preloadIndices(
         itemCount: Int,
@@ -21,11 +22,30 @@ enum FileBrowserCoverFlowPolicy {
 
     static func restingIndex(
         itemCount: Int,
-        scrollPosition: CGFloat
+        scrollPosition: CGFloat,
+        translation: CGFloat = 0,
+        predictedEndTranslation: CGFloat = 0,
+        cardStep: CGFloat = 1
     ) -> Int? {
         guard itemCount > 0 else { return nil }
+        let safeStep = max(cardStep, 1)
+        let projectedExtraTranslation = predictedEndTranslation - translation
+        var momentum = -projectedExtraTranslation / safeStep
+
+        // UIKit's prediction can occasionally point opposite to the actual
+        // finger movement at the end of a slow drag. Momentum must only carry
+        // the cards in the direction the user was already moving them.
+        let dragDirection = -translation
+        if dragDirection == 0 || momentum * dragDirection < 0 {
+            momentum = 0
+        }
+        momentum = min(
+            max(momentum, -maximumMomentumCards),
+            maximumMomentumCards
+        )
+        let projectedPosition = scrollPosition + momentum
         return min(
-            max(Int(scrollPosition.rounded()), 0),
+            max(Int(projectedPosition.rounded()), 0),
             itemCount - 1
         )
     }
@@ -331,10 +351,13 @@ struct FileBrowserCoverFlowView: View {
                     )
                 }
             }
-            .onEnded { _ in
+            .onEnded { value in
                 let target = FileBrowserCoverFlowPolicy.restingIndex(
                     itemCount: items.count,
-                    scrollPosition: scrollPosition
+                    scrollPosition: scrollPosition,
+                    translation: value.translation.width,
+                    predictedEndTranslation: value.predictedEndTranslation.width,
+                    cardStep: step
                 ) ?? selectedIndex
                 isDragging = false
                 settle(at: target)

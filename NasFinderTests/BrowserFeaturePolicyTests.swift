@@ -37,7 +37,7 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         )
     }
 
-    func testCoverFlowStopsAtTheCardUnderTheFingerWithoutProjectedMomentum() {
+    func testCoverFlowSlowDragStopsAtTheCardUnderTheFinger() {
         XCTAssertEqual(
             FileBrowserCoverFlowPolicy.restingIndex(
                 itemCount: 30,
@@ -64,6 +64,62 @@ final class BrowserFeaturePolicyTests: XCTestCase {
                 itemCount: 0,
                 scrollPosition: 0
             )
+        )
+    }
+
+    func testCoverFlowMomentumContinuesInTheSwipeDirection() {
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 10.2,
+                translation: -80,
+                predictedEndTranslation: -170,
+                cardStep: 60
+            ),
+            12
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 10.8,
+                translation: 80,
+                predictedEndTranslation: 170,
+                cardStep: 60
+            ),
+            9
+        )
+    }
+
+    func testCoverFlowMomentumIsCappedAndNeverReverses() {
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 10,
+                translation: -40,
+                predictedEndTranslation: -900,
+                cardStep: 60
+            ),
+            13
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 10.2,
+                translation: -80,
+                predictedEndTranslation: -20,
+                cardStep: 60
+            ),
+            10
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 28.8,
+                translation: -80,
+                predictedEndTranslation: -800,
+                cardStep: 60
+            ),
+            29
         )
     }
 
