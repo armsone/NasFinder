@@ -151,6 +151,8 @@ struct AddConnectionView: View {
                     Text(securityFootnote)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(SkyBreezeBackground())
             .navigationTitle(editingConnection == nil ? "연결 추가" : "연결 수정")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

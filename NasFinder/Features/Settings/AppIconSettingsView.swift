@@ -197,13 +197,13 @@ struct SettingsSectionHeader: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            Spacer(minLength: 0)
             Image(systemName: systemImage)
             Text(title)
+            Spacer(minLength: 0)
         }
         .font(.footnote.weight(.medium))
         .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -217,7 +217,7 @@ struct SettingsPanelDescription: View {
     var body: some View {
         Text(text)
             .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

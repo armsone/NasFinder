@@ -74,6 +74,8 @@ private struct ThumbnailCacheSettingsView: View {
                 Text("원본 영상과 받은 파일은 삭제하지 않습니다.")
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(SkyBreezeBackground())
         .navigationTitle("썸네일 캐시")
         .navigationBarTitleDisplayMode(.inline)
         .task {

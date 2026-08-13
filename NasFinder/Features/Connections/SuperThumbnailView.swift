@@ -179,18 +179,18 @@ struct SuperThumbnailView: View {
             )
             .interactiveDismissDisabled(preheater.isRunning)
         }
-        .alert("Reset Super Thumbnail?", isPresented: $isConfirmingReset) {
-            Button("Reset", role: .destructive) {
+        .alert("Super Thumbnail을 초기화할까요?", isPresented: $isConfirmingReset) {
+            Button("초기화", role: .destructive) {
                 Task {
                     await SuperThumbnailCache.shared.reset()
                     await refreshStatistics()
                 }
             }
-            Button("Cancel", role: .cancel) {}
+            Button("취소", role: .cancel) {}
         } message: {
             Text(
                 "Super Cache \(formatted(statistics.cacheBytes))와 "
-                    + "Network Usage 기록을 초기화합니다. Original Video는 삭제하지 않습니다."
+                    + "누적 네트워크 사용 기록을 초기화합니다. 원본 영상은 삭제하지 않습니다."
             )
         }
         .alert("Super Thumbnail을 시작할 수 없습니다", isPresented: errorBinding) {
@@ -273,12 +273,12 @@ struct SuperThumbnailView: View {
     private var statisticsGrid: some View {
         HStack(spacing: 16) {
             Label(
-                "Network \(formatted(statistics.lifetimeNetworkBytes))",
+                "네트워크 \(formatted(statistics.lifetimeNetworkBytes))",
                 systemImage: "network"
             )
             Spacer()
             Label(
-                "Cache \(formatted(statistics.cacheBytes))",
+                "캐시 \(formatted(statistics.cacheBytes))",
                 systemImage: "internaldrive"
             )
         }
@@ -1391,7 +1391,7 @@ private struct SuperThumbnailProgressView: View {
         VStack(spacing: 6) {
             HStack(spacing: 7) {
                 Image(systemName: "rectangle.stack")
-                Text("Overflow")
+                Text("미리보기")
                 Spacer()
                 Image(
                     systemName: isOverflowExpanded
@@ -1425,7 +1425,7 @@ private struct SuperThumbnailProgressView: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Overflow")
+        .accessibilityLabel("미리보기")
         .accessibilityHint(
             isOverflowExpanded ? "탭하여 숨기기" : "탭하여 보기"
         )
@@ -1494,7 +1494,7 @@ private struct SuperThumbnailProgressView: View {
             preheater.currentItemTransferredBytes
         )
         let total = formattedRangeMegabytes(preheater.currentItemTotalBytes)
-        return "Range \(current) / \(total)"
+        return "범위 \(current) / \(total)"
     }
 
     private func formattedRangeMegabytes(_ bytes: Int64) -> String {
@@ -1890,9 +1890,9 @@ private struct SuperThumbnailFolderPickerView: View {
             Group {
                 if connectionStore.connections.isEmpty {
                     ContentUnavailableView(
-                        "No NAS Connections",
+                        "연결된 NAS가 없습니다",
                         systemImage: "externaldrive.badge.plus",
-                        description: Text("먼저 Dashboard에서 NAS Connection을 추가해 주세요.")
+                        description: Text("먼저 첫 화면에서 NAS 연결을 추가해 주세요.")
                     )
                 } else {
                     List(connectionStore.connections) { connection in
@@ -1915,13 +1915,15 @@ private struct SuperThumbnailFolderPickerView: View {
                             }
                         }
                     }
+                    .scrollContentBackground(.hidden)
                 }
             }
-            .navigationTitle("Select NAS")
+            .background(SkyBreezeBackground())
+            .navigationTitle("NAS 선택")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button("취소") { dismiss() }
                 }
             }
         }
@@ -1946,9 +1948,9 @@ private struct SuperThumbnailConnectionRoot: View {
                     onSelect: onSelect
                 )
             } else if didResolve {
-                ContentUnavailableView("Credentials Required", systemImage: "key.slash")
+                ContentUnavailableView("로그인 정보가 필요합니다", systemImage: "key.slash")
             } else {
-                ProgressView("Connecting…")
+                ProgressView("연결하는 중…")
             }
         }
         .task { resolve() }
@@ -1992,10 +1994,10 @@ private struct SuperThumbnailFolderBrowser: View {
     var body: some View {
         Group {
             if viewModel.isLoading && viewModel.items.isEmpty {
-                ProgressView("Loading Folders…")
+                ProgressView("폴더를 불러오는 중…")
             } else if let error = viewModel.errorMessage, viewModel.items.isEmpty {
                 ContentUnavailableView(
-                    "Folder Unavailable",
+                    "폴더를 열 수 없습니다",
                     systemImage: "wifi.exclamationmark",
                     description: Text(error)
                 )
@@ -2013,6 +2015,8 @@ private struct SuperThumbnailFolderBrowser: View {
                             .foregroundStyle(.primary)
                     }
                 }
+                .scrollContentBackground(.hidden)
+                .background(SkyBreezeBackground())
             }
         }
         .navigationTitle(currentTitle)
@@ -2027,7 +2031,7 @@ private struct SuperThumbnailFolderBrowser: View {
                     )
                 )
             } label: {
-                Label("Select This Folder", systemImage: "checkmark.circle.fill")
+                Label("이 폴더 선택", systemImage: "checkmark.circle.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(.borderedProminent)

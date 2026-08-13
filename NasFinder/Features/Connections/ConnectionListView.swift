@@ -120,8 +120,8 @@ struct ConnectionListView: View {
 
     @ViewBuilder
     private var dashboardSections: some View {
-        networkSection
         myFilesSection
+        networkSection
         storageSection
         settingsSection
     }
@@ -492,13 +492,13 @@ struct ConnectionListView: View {
 
     private func sectionHeader(_ title: String, systemImage: String) -> some View {
         HStack(spacing: 3) {
-            Spacer(minLength: 0)
             Image(systemName: systemImage)
             Text(title)
+            Spacer(minLength: 0)
         }
             .font(.footnote.weight(.medium))
             .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var errorBinding: Binding<Bool> {
@@ -565,13 +565,13 @@ private struct WebNetworkLocationRow: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 2)
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Image(systemName: "arrow.right")
                 .font(.body.weight(.medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 44, height: 54)
+                .frame(width: 44, height: 48)
                 .contentShape(Rectangle())
                 .accessibilityHidden(true)
         }
@@ -840,13 +840,13 @@ private struct NetworkLocationCard: View {
 
                         Text(connection.host)
                             .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
 
                     Spacer(minLength: 0)
                 }
-                .padding(.vertical, 6)
+                .padding(.vertical, 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }

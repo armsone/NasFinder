@@ -305,20 +305,30 @@ struct SkyBreezeBackground: View {
                 .frame(width: size.width * 1.35, height: size.height * 0.46)
                 .offset(x: -size.width * 0.18, y: size.height * 0.58)
             Image(systemName: "wind")
-                .font(.system(size: min(size.width * 0.20, 86), weight: .ultraLight))
+                .font(
+                    .system(
+                        size: max(min(size.width * 0.20, 86), 1),
+                        weight: .ultraLight
+                    )
+                )
                 .foregroundStyle(.white.opacity(0.24))
                 .offset(x: size.width * 0.24, y: 112)
         default:
             Image(systemName: "cloud.fill")
-                .font(.system(size: min(size.width * 0.42, 190)))
+                .font(.system(size: max(min(size.width * 0.42, 190), 1)))
                 .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.06 : 0.38))
                 .offset(x: size.width * 0.28, y: 34)
             Image(systemName: "cloud.fill")
-                .font(.system(size: min(size.width * 0.24, 110)))
+                .font(.system(size: max(min(size.width * 0.24, 110), 1)))
                 .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.04 : 0.24))
                 .offset(x: -size.width * 0.34, y: 122)
             Image(systemName: "wind")
-                .font(.system(size: min(size.width * 0.20, 86), weight: .ultraLight))
+                .font(
+                    .system(
+                        size: max(min(size.width * 0.20, 86), 1),
+                        weight: .ultraLight
+                    )
+                )
                 .foregroundStyle(SkyBreezeTheme.accent.opacity(0.10))
                 .offset(x: size.width * 0.24, y: 210)
         }

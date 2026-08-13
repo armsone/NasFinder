@@ -129,53 +129,43 @@ struct AppSettingsView: View {
                 EdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 8)
             )
 
-            VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    Spacer()
-                    Text("낮")
-                        .frame(width: 38)
-                    Text("밤")
-                        .frame(width: 38)
-                }
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.tertiary)
-                .padding(.bottom, 4)
+            SettingsPanelDescription(
+                selectedTheme == .system
+                    ? "iPhone의 라이트·다크 모드에 맞춰 자동으로 바뀝니다."
+                    : "선택한 테마는 앱을 다시 열어도 유지됩니다."
+            )
 
-                ForEach(Array(colors.enumerated()), id: \.element.id) { index, role in
-                    if index > 0 {
-                        Divider()
-                    }
-
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(role.name)
-                                .font(.subheadline)
-                                .foregroundStyle(.primary)
-                            Text(role.description)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-
-                        Spacer(minLength: 8)
-                        paletteSwatch(role.lightColor, modeName: "낮")
-                        paletteSwatch(role.darkColor, modeName: "밤")
-                    }
-                    .padding(.vertical, 7)
-                    .accessibilityElement(children: .combine)
-                }
-
-                Divider()
-                SettingsPanelDescription(
-                    selectedTheme == .system
-                        ? "iPhone의 라이트·다크 모드에 맞춰 자동으로 바뀝니다."
-                        : "선택한 테마는 앱을 다시 열어도 유지됩니다."
-                )
-                .padding(.top, 8)
+            DisclosureGroup("테마 색상 정보") {
+                themeColorDetails
             }
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
         } header: {
             SettingsSectionHeader(title: "테마", systemImage: "paintpalette")
         }
+    }
+
+    private var themeColorDetails: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(colors.enumerated()), id: \.element.id) { index, role in
+                if index > 0 { Divider() }
+                HStack(spacing: 10) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(role.name)
+                            .foregroundStyle(.primary)
+                        Text(role.description)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    paletteSwatch(role.lightColor, modeName: "낮")
+                    paletteSwatch(role.darkColor, modeName: "밤")
+                }
+                .padding(.vertical, 7)
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .padding(.top, 8)
     }
 
     private func themeCard(_ theme: AppThemePreference) -> some View {

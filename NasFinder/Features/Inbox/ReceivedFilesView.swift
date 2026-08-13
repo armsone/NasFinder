@@ -58,11 +58,13 @@ struct ReceivedFilesView: View {
                     }
                 }
                 .listStyle(.plain)
+                .scrollContentBackground(.hidden)
                 .refreshable {
                     reloadInbox()
                 }
             }
         }
+        .background(SkyBreezeBackground())
         .navigationTitle("받은 파일")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -75,10 +77,6 @@ struct ReceivedFilesView: View {
                             isSelecting = true
                         }
                     }
-                }
-
-                Button("새로 고침", systemImage: "arrow.clockwise") {
-                    reloadInbox()
                 }
             }
         }
