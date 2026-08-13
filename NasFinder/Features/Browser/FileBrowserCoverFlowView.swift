@@ -253,9 +253,9 @@ struct FileBrowserCoverFlowView: View {
             centralTarget: centralTarget
         )
         let maximumReflectionHeight: CGFloat = usesDarkBackground
-            ? (emphasis > 0 ? 42 : 30)
-            : 18
-        let reflectionRatio: CGFloat = usesDarkBackground ? 0.14 : 0.08
+            ? (emphasis > 0 ? 44 : 32)
+            : 20
+        let reflectionRatio: CGFloat = usesDarkBackground ? 0.15 : 0.10
         let reflectionHeight = min(renderedSide * reflectionRatio, maximumReflectionHeight)
         let totalHeight = renderedSide + 2 + reflectionHeight
         let centerY = baseline - renderedSide + totalHeight / 2
@@ -444,9 +444,9 @@ struct FileBrowserCoverFlowView: View {
         let topClearance = safeAreaTop + 56
         return max(
             min(
-                max(baseWidth * 1.22, size.width * 0.34),
+                max(baseWidth * 1.26, size.width * 0.38),
                 baseline - topClearance,
-                432
+                460
             ),
             1
         )
@@ -472,8 +472,8 @@ struct FileBrowserCoverFlowView: View {
 
     private var floorGlowColors: [Color] {
         usesDarkBackground
-            ? [.white.opacity(0.10), .white.opacity(0.025), .clear]
-            : [.black.opacity(0.045), .clear]
+            ? [.white.opacity(0.13), .white.opacity(0.035), .clear]
+            : [.black.opacity(0.060), .clear]
     }
 
     private func cardBorderColor(emphasis: CGFloat) -> Color {
@@ -484,8 +484,8 @@ struct FileBrowserCoverFlowView: View {
 
     private func reflectionOpacity(emphasis: CGFloat) -> Double {
         usesDarkBackground
-            ? 0.18 + Double(emphasis) * 0.12
-            : 0.12 + Double(emphasis) * 0.10
+            ? 0.22 + Double(emphasis) * 0.14
+            : 0.16 + Double(emphasis) * 0.12
     }
 
     private func cardShadowColor(emphasis: CGFloat) -> Color {
