@@ -3,6 +3,7 @@ import SwiftUI
 struct AddConnectionView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: ConnectionStore
+    @AppStorage("connections.lastKind.v1") private var lastKindRawValue = ConnectionKind.synology.rawValue
 
     @State private var kind: ConnectionKind = .synology
     @State private var name = ""
@@ -20,6 +21,8 @@ struct AddConnectionView: View {
     @State private var errorMessage: String?
     @State private var testedConfiguration: ConnectionTestConfiguration?
     @State private var didLoadStoredCredential = false
+    @State private var didApplyRememberedKind = false
+    @State private var shouldSaveAfterHostKeyTrust = false
 
     private let editingConnection: RemoteConnection?
 
@@ -41,13 +44,18 @@ struct AddConnectionView: View {
         NavigationStack {
             Form {
                 Section("연결 방식") {
-                    Picker("종류", selection: $kind) {
+                    LazyVGrid(
+                        columns: Array(
+                            repeating: GridItem(.flexible(), spacing: 8),
+                            count: 3
+                        ),
+                        spacing: 8
+                    ) {
                         ForEach(ConnectionKind.allCases) { kind in
-                            Label(kind.title, systemImage: kind.systemImage)
-                                .tag(kind)
+                            connectionKindButton(kind)
                         }
                     }
-                    .pickerStyle(.navigationLink)
+                    .padding(.vertical, 2)
 
                     Text(kind.subtitle)
                         .font(.footnote)
@@ -127,7 +135,7 @@ struct AddConnectionView: View {
                         Task { await testConnection() }
                     } label: {
                         HStack {
-                            Text("연결 테스트")
+                            Text("연결만 확인")
                             Spacer()
                             if isTesting { ProgressView() }
                         }
@@ -150,13 +158,22 @@ struct AddConnectionView: View {
                     Button("취소") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("저장") {
-                        Task { await save() }
+                    Button {
+                        Task { await connectAndSave() }
+                    } label: {
+                        if isTesting || isSaving {
+                            ProgressView()
+                        } else {
+                            Text(editingConnection == nil ? "연결" : "저장")
+                        }
                     }
-                    .disabled(!canSave || isSaving || isTesting)
+                    .disabled(!isValid || isSaving || isTesting)
                 }
             }
             .onChange(of: kind) { _, newKind in
+                if editingConnection == nil {
+                    lastKindRawValue = newKind.rawValue
+                }
                 port = newKind.defaultPort
                 rootPath = newKind.defaultRootPath
                 usesTLS = true
@@ -177,6 +194,7 @@ struct AddConnectionView: View {
                 resetTestStatus()
             }
             .task {
+                applyRememberedKindIfNeeded()
                 loadStoredCredentialIfNeeded()
             }
             .alert("연결 오류", isPresented: errorBinding) {
@@ -186,12 +204,17 @@ struct AddConnectionView: View {
             }
             .alert("SSH 서버 키 확인", isPresented: hostKeyAlertBinding, presenting: pendingHostKey) { pending in
                 Button("취소", role: .cancel) {
+                    shouldSaveAfterHostKeyTrust = false
                     pendingHostKey = nil
                 }
                 Button(pending.isChangedKey ? "새 키 신뢰" : "이 키 신뢰") {
+                    let saveAfterTrust = shouldSaveAfterHostKeyTrust
                     trustedHostKey = pending.hostKey
+                    shouldSaveAfterHostKeyTrust = false
                     pendingHostKey = nil
-                    Task { await testConnection() }
+                    Task {
+                        await testConnection(saveOnSuccess: saveAfterTrust)
+                    }
                 }
             } message: { pending in
                 Text("\(pending.errorDescription ?? "서버 키를 확인해 주세요.")\n\n\(pending.fingerprint)")
@@ -233,6 +256,43 @@ struct AddConnectionView: View {
         case .ftp:
             return "ipTIME 공유기 USB 저장장치와 ipDISK는 FTP를 사용합니다. FTP 암호화가 없으므로 로컬 네트워크나 VPN 안에서만 사용하세요."
         }
+    }
+
+    private func connectionKindButton(_ candidate: ConnectionKind) -> some View {
+        let isSelected = kind == candidate
+        return Button {
+            kind = candidate
+        } label: {
+            VStack(spacing: 5) {
+                Image(systemName: candidate.systemImage)
+                    .font(.body.weight(.medium))
+                Text(candidate.compactTitle)
+                    .font(.caption.weight(isSelected ? .semibold : .regular))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            .frame(maxWidth: .infinity, minHeight: 48)
+            .background(
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .fill(
+                        isSelected
+                            ? Color.accentColor.opacity(0.12)
+                            : Color(uiColor: .secondarySystemGroupedBackground)
+                    )
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                    .stroke(
+                        isSelected ? Color.accentColor.opacity(0.45) : .clear,
+                        lineWidth: 1
+                    )
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(candidate.title) 연결 방식")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     private var draftConnection: RemoteConnection {
@@ -289,7 +349,7 @@ struct AddConnectionView: View {
     }
 
     @MainActor
-    private func testConnection() async {
+    private func testConnection(saveOnSuccess: Bool = false) async {
         isTesting = true
         testMessage = nil
         testedConfiguration = nil
@@ -306,16 +366,22 @@ struct AddConnectionView: View {
             guard attemptedConfiguration == currentTestConfiguration else { return }
             testMessage = "연결되었습니다."
             testedConfiguration = attemptedConfiguration
+            shouldSaveAfterHostKeyTrust = false
             if kind == .sftp {
                 SFTPConnectionDiagnostics.recordConnectionTestSucceeded()
             } else if kind == .synology {
                 SynologyConnectionDiagnostics.recordConnectionTestSucceeded()
             }
+            if saveOnSuccess {
+                await save()
+            }
         } catch let trust as SFTPHostKeyTrustRequired {
             guard attemptedConfiguration == currentTestConfiguration else { return }
+            shouldSaveAfterHostKeyTrust = saveOnSuccess
             pendingHostKey = trust
         } catch {
             guard attemptedConfiguration == currentTestConfiguration else { return }
+            shouldSaveAfterHostKeyTrust = false
             if kind == .sftp {
                 let diagnostic = SFTPConnectionDiagnostics.diagnostic(
                     for: error,
@@ -333,6 +399,18 @@ struct AddConnectionView: View {
             } else {
                 errorMessage = error.localizedDescription
             }
+        }
+    }
+
+    @MainActor
+    private func connectAndSave() async {
+        if AddConnectionFlowPolicy.requiresConnectionTest(
+            testedConfiguration: testedConfiguration,
+            currentConfiguration: currentTestConfiguration
+        ) {
+            await testConnection(saveOnSuccess: true)
+        } else {
+            await save()
         }
     }
 
@@ -366,6 +444,16 @@ struct AddConnectionView: View {
         }
     }
 
+    private func applyRememberedKindIfNeeded() {
+        guard !didApplyRememberedKind else { return }
+        didApplyRememberedKind = true
+        guard editingConnection == nil,
+              let rememberedKind = ConnectionKind(rawValue: lastKindRawValue) else {
+            return
+        }
+        kind = rememberedKind
+    }
+
     private var hostKeyAlertBinding: Binding<Bool> {
         Binding(
             get: { pendingHostKey != nil },
@@ -383,6 +471,7 @@ struct AddConnectionView: View {
     private func resetTestStatus() {
         testMessage = nil
         testedConfiguration = nil
+        shouldSaveAfterHostKeyTrust = false
     }
 
     private func synchronizeAddressComponents() {
@@ -434,7 +523,16 @@ struct AddConnectionView: View {
     }
 }
 
-private struct ConnectionTestConfiguration: Equatable {
+enum AddConnectionFlowPolicy {
+    static func requiresConnectionTest(
+        testedConfiguration: ConnectionTestConfiguration?,
+        currentConfiguration: ConnectionTestConfiguration
+    ) -> Bool {
+        testedConfiguration != currentConfiguration
+    }
+}
+
+struct ConnectionTestConfiguration: Equatable {
     let kind: ConnectionKind
     let host: String
     let port: Int
@@ -443,4 +541,16 @@ private struct ConnectionTestConfiguration: Equatable {
     let rootPath: String
     let usesTLS: Bool
     let trustedHostKey: String?
+}
+
+private extension ConnectionKind {
+    var compactTitle: String {
+        switch self {
+        case .synology: "Synology"
+        case .sftp: "SFTP"
+        case .smb: "SMB"
+        case .webDAV: "WebDAV"
+        case .ftp: "FTP"
+        }
+    }
 }

@@ -250,6 +250,50 @@ final class ConnectionTests: XCTestCase {
         XCTAssertEqual(settings, SynologyAddressSettings(port: 5000, usesTLS: false))
     }
 
+    func testAddConnectionTestsOnlyWhenCurrentInputsHaveNotBeenVerified() {
+        let current = ConnectionTestConfiguration(
+            kind: .smb,
+            host: "router.local",
+            port: 445,
+            username: "user",
+            password: "password",
+            rootPath: "/",
+            usesTLS: false,
+            trustedHostKey: nil
+        )
+
+        XCTAssertTrue(
+            AddConnectionFlowPolicy.requiresConnectionTest(
+                testedConfiguration: nil,
+                currentConfiguration: current
+            )
+        )
+        XCTAssertFalse(
+            AddConnectionFlowPolicy.requiresConnectionTest(
+                testedConfiguration: current,
+                currentConfiguration: current
+            )
+        )
+
+        var changed = current
+        changed = ConnectionTestConfiguration(
+            kind: changed.kind,
+            host: changed.host,
+            port: changed.port,
+            username: changed.username,
+            password: "new-password",
+            rootPath: changed.rootPath,
+            usesTLS: changed.usesTLS,
+            trustedHostKey: changed.trustedHostKey
+        )
+        XCTAssertTrue(
+            AddConnectionFlowPolicy.requiresConnectionTest(
+                testedConfiguration: current,
+                currentConfiguration: changed
+            )
+        )
+    }
+
     func testSynologyTLSToggleSwitchesOnlyStandardImplicitPorts() {
         XCTAssertEqual(
             ConnectionKind.synologyPortAfterTLSToggle(
