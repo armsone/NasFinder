@@ -29,6 +29,8 @@ enum ThumbnailPreheatPolicy {
             return item.isVideo
                 && supportsRangeStreaming
                 && item.size.map { $0 > 0 } == true
+        case .dropbox, .oneDrive, .googleDrive:
+            return false
         }
     }
 
@@ -861,6 +863,8 @@ final class ThumbnailPreheater: ObservableObject {
                     && ($0.isVideo
                         || (includesGenericImages && $0.isImage))
             }
+        case .dropbox, .oneDrive, .googleDrive:
+            return []
         }
     }
 

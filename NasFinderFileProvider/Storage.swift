@@ -43,6 +43,9 @@ enum NasFinderFileProviderIdentifiers {
 enum ProviderConnectionKind: String, Codable, Sendable {
     case synology
     case sftp
+    case smb
+    case webDAV
+    case ftp
 }
 
 struct ProviderConnection: Codable, Sendable {
@@ -65,6 +68,9 @@ struct ProviderConnection: Codable, Sendable {
             return trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
         case .sftp:
             return trimmed.isEmpty ? "." : trimmed
+        case .smb, .webDAV, .ftp:
+            guard !trimmed.isEmpty, trimmed != "/" else { return "/" }
+            return trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
         }
     }
 }
@@ -163,6 +169,8 @@ actor NasFinderFileProviderStorage {
                     connection: connection,
                     password: password
                 )
+            case .smb, .webDAV, .ftp:
+                throw NasFinderFileProviderErrors.unsupportedConnection
             }
             return Context(connection: connection, backend: backend)
         }
@@ -689,6 +697,15 @@ enum NasFinderFileProviderErrors {
         CocoaError(
             .fileReadUnknown,
             userInfo: [NSLocalizedDescriptionKey: "The NasFinder connection settings are incomplete."]
+        )
+    }
+
+    static var unsupportedConnection: Error {
+        CocoaError(
+            .featureUnsupported,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Open this location in NasFinder. Files integration is not available for this connection type yet."
+            ]
         )
     }
 }

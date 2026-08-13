@@ -41,10 +41,13 @@ final class ConnectionStore: ObservableObject {
     }
 
     func credential(for connection: RemoteConnection) throws -> RemoteCredential {
-        guard let credential = try credentialStore.credential(for: connection.id) else {
-            throw NasFinderError.credentialsMissing
+        if let credential = try credentialStore.credential(for: connection.id) {
+            return credential
         }
-        return credential
+        if let cloudCredential = try credentialStore.cloudCredential(for: connection.id) {
+            return RemoteCredential(password: "", cloudCredential: cloudCredential)
+        }
+        throw NasFinderError.credentialsMissing
     }
 
     func add(_ connection: RemoteConnection, password: String) async throws {
@@ -57,6 +60,21 @@ final class ConnectionStore: ObservableObject {
         } catch {
             lastErrorMessage = "Files 앱 위치를 추가하지 못했습니다: \(error.localizedDescription)"
         }
+    }
+
+    func add(_ connection: RemoteConnection, oauthCredential: OAuthCredential) async throws {
+        try credentialStore.save(.oauth(oauthCredential), for: connection.id)
+        connections.append(connection)
+        persist()
+    }
+
+    func update(_ connection: RemoteConnection, oauthCredential: OAuthCredential) async throws {
+        guard let index = connections.firstIndex(where: { $0.id == connection.id }) else {
+            throw NasFinderError.invalidResponse
+        }
+        try credentialStore.save(.oauth(oauthCredential), for: connection.id)
+        connections[index] = connection
+        persist()
     }
 
     var preferredConnection: RemoteConnection? {
@@ -207,8 +225,15 @@ final class ConnectionStore: ObservableObject {
     private func restoreMissingFileProviderDomains() async {
         do {
             let existing = try await FileProviderDomainCoordinator.domainIdentifiers()
-            for connection in connections where !existing.contains(connection.id.uuidString) {
+            for connection in connections
+            where connection.kind.supportsFileProvider
+                && !existing.contains(connection.id.uuidString) {
                 try await FileProviderDomainCoordinator.add(connection)
+            }
+            for connection in connections
+            where !connection.kind.supportsFileProvider
+                && existing.contains(connection.id.uuidString) {
+                try await FileProviderDomainCoordinator.remove(connection)
             }
         } catch {
             lastErrorMessage = "Files 앱 위치를 복구하지 못했습니다: \(error.localizedDescription)"
@@ -286,6 +311,7 @@ enum FileProviderDomainCoordinator {
     }
 
     static func add(_ connection: RemoteConnection) async throws {
+        guard connection.kind.supportsFileProvider else { return }
         let identifier = NSFileProviderDomainIdentifier(rawValue: connection.id.uuidString)
         let domain = NSFileProviderDomain(identifier: identifier, displayName: connection.name)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in

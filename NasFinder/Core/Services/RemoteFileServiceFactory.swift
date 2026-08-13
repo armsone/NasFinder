@@ -16,6 +16,8 @@ enum RemoteFileServiceFactory {
             WebDAVFileService(connection: connection, credential: credential)
         case .ftp:
             FTPFileService(connection: connection, credential: credential)
+        case .dropbox, .oneDrive, .googleDrive:
+            CloudDriveFileService(connection: connection, credential: credential)
         }
     }
 }

@@ -1104,6 +1104,9 @@ private extension ConnectionKind {
         case .smb: "SMB"
         case .webDAV: "WebDAV"
         case .ftp: "FTP"
+        case .dropbox: "Dropbox"
+        case .oneDrive: "OneDrive"
+        case .googleDrive: "Google Drive"
         }
     }
 }

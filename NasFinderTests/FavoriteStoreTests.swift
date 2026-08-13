@@ -99,6 +99,51 @@ final class FavoriteStoreTests: XCTestCase {
         XCTAssertTrue(FavoriteStore(defaults: defaults).items.isEmpty)
     }
 
+    func testFavoritePreservesCloudIdentityAndReadsLegacyPayload() throws {
+        let connectionID = UUID()
+        let cloudItem = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/old-name.mov",
+            remoteIdentifier: "drive-item-7",
+            parentRemoteIdentifier: "drive-root",
+            revisionIdentifier: "rev-3",
+            name: "old-name.mov",
+            kind: .file,
+            size: 99,
+            modifiedAt: nil,
+            contentTypeIdentifier: "public.movie"
+        )
+        let favorite = FavoriteItem(item: cloudItem)
+        let decoded = try JSONDecoder().decode(
+            FavoriteItem.self,
+            from: JSONEncoder().encode(favorite)
+        )
+
+        XCTAssertEqual(decoded.remoteItem.remoteIdentifier, "drive-item-7")
+        XCTAssertEqual(decoded.remoteItem.parentRemoteIdentifier, "drive-root")
+        XCTAssertEqual(decoded.remoteItem.revisionIdentifier, "rev-3")
+        XCTAssertEqual(decoded.id, cloudItem.id)
+
+        let legacyJSON = """
+        {
+          "connectionID": "\(connectionID.uuidString)",
+          "path": "/legacy.mov",
+          "name": "legacy.mov",
+          "kind": "file",
+          "size": 1,
+          "contentTypeIdentifier": "public.movie",
+          "addedAt": 0
+        }
+        """
+        let legacy = try JSONDecoder().decode(
+            FavoriteItem.self,
+            from: Data(legacyJSON.utf8)
+        )
+
+        XCTAssertNil(legacy.remoteIdentifier)
+        XCTAssertEqual(legacy.id, "\(connectionID.uuidString):/legacy.mov")
+    }
+
     func testFavoriteSupportsFoldersAndKeepsInsertionOrder() throws {
         let suiteName = "FavoriteStoreTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

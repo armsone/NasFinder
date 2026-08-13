@@ -6,6 +6,9 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
     case smb
     case webDAV
     case ftp
+    case dropbox
+    case oneDrive
+    case googleDrive
 
     var id: Self { self }
 
@@ -16,6 +19,9 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .smb: "SMB"
         case .webDAV: "WebDAV"
         case .ftp: "FTP"
+        case .dropbox: "Dropbox"
+        case .oneDrive: "OneDrive"
+        case .googleDrive: "Google Drive"
         }
     }
 
@@ -26,6 +32,9 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .smb: "ipTIME·Windows·NAS의 SMB 2 파일 공유"
         case .webDAV: "ipTIME NAS와 일반 WebDAV 서버"
         case .ftp: "ipTIME 공유기·NAS·일반 FTP 서버"
+        case .dropbox: "Dropbox 계정의 파일과 폴더"
+        case .oneDrive: "Microsoft 계정의 OneDrive 파일"
+        case .googleDrive: "Google 계정의 Drive 파일"
         }
     }
 
@@ -36,6 +45,9 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .smb: "externaldrive.badge.wifi"
         case .webDAV: "globe.badge.chevron.backward"
         case .ftp: "arrow.up.arrow.down.square"
+        case .dropbox: "shippingbox.fill"
+        case .oneDrive: "cloud.fill"
+        case .googleDrive: "triangle.fill"
         }
     }
 
@@ -46,6 +58,7 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .smb: 445
         case .webDAV: 9800
         case .ftp: 21
+        case .dropbox, .oneDrive, .googleDrive: 443
         }
     }
 
@@ -76,6 +89,87 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .smb: "/"
         case .webDAV: "/"
         case .ftp: "/"
+        case .dropbox, .oneDrive, .googleDrive: "/"
+        }
+    }
+
+    /// The File Provider extension currently has concrete backends only for
+    /// Synology and SFTP. Other connection kinds remain available inside the
+    /// app, but must not be registered as broken locations in Files.
+    var supportsFileProvider: Bool {
+        switch self {
+        case .synology, .sftp:
+            true
+        case .smb, .webDAV, .ftp, .dropbox, .oneDrive, .googleDrive:
+            false
+        }
+    }
+
+    var isOAuthCloud: Bool {
+        switch self {
+        case .dropbox, .oneDrive, .googleDrive: true
+        default: false
+        }
+    }
+
+    var oauthProvider: OAuthProvider? {
+        switch self {
+        case .dropbox: .dropbox
+        case .oneDrive: .microsoft
+        case .googleDrive: .google
+        default: nil
+        }
+    }
+}
+
+enum WebDAVConnectionPreset: String, CaseIterable, Identifiable, Sendable {
+    case generic
+    case nextcloud
+    case ownCloud
+    case koofr
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .generic: "일반 WebDAV"
+        case .nextcloud: "Nextcloud"
+        case .ownCloud: "ownCloud"
+        case .koofr: "Koofr"
+        }
+    }
+
+    var defaultHost: String? {
+        switch self {
+        case .koofr: "app.koofr.net"
+        case .generic, .nextcloud, .ownCloud: nil
+        }
+    }
+
+    var defaultPort: Int { 443 }
+
+    func rootPath(username: String) -> String {
+        switch self {
+        case .generic:
+            return "/"
+        case .nextcloud, .ownCloud:
+            let trimmed = username.trimmingCharacters(in: .whitespacesAndNewlines)
+            return "/remote.php/dav/files/\(trimmed)"
+        case .koofr:
+            return "/dav/Koofr"
+        }
+    }
+
+    var credentialGuidance: String {
+        switch self {
+        case .generic:
+            "외부 연결은 HTTPS와 서비스에서 발급한 앱 비밀번호를 권장합니다."
+        case .nextcloud:
+            "Nextcloud 사용자 이름과 개인 보안 설정에서 만든 앱 비밀번호를 사용하세요."
+        case .ownCloud:
+            "ownCloud 사용자 이름과 앱 비밀번호를 사용하세요. 서버 버전에 따라 관리자가 WebDAV 접근을 허용해야 합니다."
+        case .koofr:
+            "Koofr 계정 이메일과 Koofr에서 생성한 앱 전용 비밀번호를 사용하세요."
         }
     }
 }
@@ -111,18 +205,16 @@ struct RemoteConnection: Identifiable, Codable, Hashable, Sendable {
         self.port = port ?? kind.defaultPort
         self.username = username.trimmingCharacters(in: .whitespacesAndNewlines)
         self.rootPath = rootPath ?? kind.defaultRootPath
-        self.usesTLS = (kind == .synology || kind == .webDAV) ? usesTLS : false
+        self.usesTLS = (kind == .synology || kind == .webDAV || kind.isOAuthCloud) ? usesTLS : false
         self.trustedHostKey = kind == .sftp ? trustedHostKey : nil
         self.createdAt = createdAt
     }
 
     var normalizedRootPath: String {
-        guard kind == .synology || kind == .webDAV || kind == .smb || kind == .ftp else {
-            let trimmed = rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if kind == .sftp {
             return trimmed.isEmpty ? "." : trimmed
         }
-
-        let trimmed = rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != "/" else { return "/" }
         return trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
     }
@@ -139,10 +231,18 @@ struct RemoteConnection: Identifiable, Codable, Hashable, Sendable {
             "\(usesTLS ? "https" : "http")://\(host):\(port)"
         case .ftp:
             "ftp://\(host):\(port)"
+        case .dropbox, .oneDrive, .googleDrive:
+            username.isEmpty ? kind.title : username
         }
     }
 }
 
 struct RemoteCredential: Equatable, Sendable {
     var password: String
+    var cloudCredential: CloudCredential?
+
+    init(password: String, cloudCredential: CloudCredential? = nil) {
+        self.password = password
+        self.cloudCredential = cloudCredential
+    }
 }

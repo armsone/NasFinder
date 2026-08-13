@@ -823,6 +823,9 @@ private extension ConnectionKind {
         case .smb: "M"
         case .webDAV: "W"
         case .ftp: "F"
+        case .dropbox: "D"
+        case .oneDrive: "O"
+        case .googleDrive: "G"
         }
     }
 
@@ -840,6 +843,9 @@ private extension ConnectionKind {
         case .smb: "SMB"
         case .webDAV: "WebDAV"
         case .ftp: "FTP"
+        case .dropbox: "Dropbox"
+        case .oneDrive: "OneDrive"
+        case .googleDrive: "Google Drive"
         }
     }
 }

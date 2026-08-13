@@ -107,6 +107,129 @@ final class ConnectionTests: XCTestCase {
         XCTAssertEqual(connection.port, 22)
     }
 
+    func testOnlyImplementedBackendsAdvertiseFileProviderSupport() {
+        XCTAssertTrue(ConnectionKind.synology.supportsFileProvider)
+        XCTAssertTrue(ConnectionKind.sftp.supportsFileProvider)
+        XCTAssertFalse(ConnectionKind.smb.supportsFileProvider)
+        XCTAssertFalse(ConnectionKind.webDAV.supportsFileProvider)
+        XCTAssertFalse(ConnectionKind.ftp.supportsFileProvider)
+        XCTAssertFalse(ConnectionKind.dropbox.supportsFileProvider)
+        XCTAssertFalse(ConnectionKind.oneDrive.supportsFileProvider)
+        XCTAssertFalse(ConnectionKind.googleDrive.supportsFileProvider)
+    }
+
+    func testOAuthCloudKindsMapToExpectedProviders() {
+        XCTAssertEqual(ConnectionKind.dropbox.oauthProvider, .dropbox)
+        XCTAssertEqual(ConnectionKind.oneDrive.oauthProvider, .microsoft)
+        XCTAssertEqual(ConnectionKind.googleDrive.oauthProvider, .google)
+        XCTAssertNil(ConnectionKind.synology.oauthProvider)
+        XCTAssertTrue(ConnectionKind.dropbox.isOAuthCloud)
+        XCTAssertFalse(ConnectionKind.webDAV.isOAuthCloud)
+    }
+
+    func testPublicOAuthConfigurationsUseRegisteredCallbacks() throws {
+        let dropbox = try CloudOAuthConfiguration.configuration(for: .dropbox)
+        XCTAssertEqual(dropbox.clientID, "yrvp63r1yokddm1")
+        XCTAssertEqual(dropbox.redirectURI, "db-yrvp63r1yokddm1://2/token")
+
+        let microsoft = try CloudOAuthConfiguration.configuration(for: .microsoft)
+        XCTAssertEqual(microsoft.clientID, "d16cf65e-ea78-4f75-a55f-f8888c5f10a0")
+        XCTAssertEqual(microsoft.redirectURI, "msauth.com.armsone.nasfinder://auth")
+        XCTAssertTrue(microsoft.scopes.contains("Files.ReadWrite"))
+        XCTAssertFalse(microsoft.scopes.contains("Files.ReadWrite.All"))
+    }
+
+    func testCloudRemoteIdentifierSurvivesPathChanges() {
+        let connectionID = UUID()
+        let original = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/Photos/old.jpg",
+            remoteIdentifier: "cloud-file-42",
+            parentRemoteIdentifier: "folder-1",
+            revisionIdentifier: "etag-1",
+            name: "old.jpg",
+            kind: .file,
+            size: 10,
+            modifiedAt: nil,
+            contentTypeIdentifier: "public.jpeg"
+        )
+        let renamed = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/Photos/new.jpg",
+            remoteIdentifier: "cloud-file-42",
+            parentRemoteIdentifier: "folder-1",
+            revisionIdentifier: "etag-2",
+            name: "new.jpg",
+            kind: .file,
+            size: 10,
+            modifiedAt: nil,
+            contentTypeIdentifier: "public.jpeg"
+        )
+
+        XCTAssertEqual(original.id, renamed.id)
+        XCTAssertEqual(original.id, "\(connectionID.uuidString):remote:cloud-file-42")
+    }
+
+    func testLegacyRemoteItemIdentityRemainsPathBased() {
+        let connectionID = UUID()
+        let item = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/share/photo.jpg",
+            name: "photo.jpg",
+            kind: .file,
+            size: nil,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+
+        XCTAssertEqual(item.id, "\(connectionID.uuidString):/share/photo.jpg")
+    }
+
+    func testCloudCredentialsRoundTripWithoutChangingPasswordStorage() throws {
+        let connectionID = UUID()
+        let store = KeychainCredentialStore()
+        defer { try? store.remove(for: connectionID) }
+        let password = RemoteCredential(password: "legacy-password")
+        let oauth = CloudCredential.oauth(
+            OAuthCredential(
+                provider: .dropbox,
+                accessToken: "access-token",
+                refreshToken: "refresh-token",
+                expirationDate: Date(timeIntervalSince1970: 1_800_000_000),
+                accountIdentifier: "account-42",
+                grantedScopes: ["files.content.read", "files.content.write"]
+            )
+        )
+
+        try store.save(password, for: connectionID)
+        try store.save(oauth, for: connectionID)
+
+        XCTAssertEqual(try store.credential(for: connectionID), password)
+        XCTAssertEqual(try store.cloudCredential(for: connectionID), oauth)
+
+        try store.remove(for: connectionID)
+        XCTAssertNil(try store.credential(for: connectionID))
+        XCTAssertNil(try store.cloudCredential(for: connectionID))
+    }
+
+    func testTemporaryS3CredentialRoundTrip() throws {
+        let connectionID = UUID()
+        let store = KeychainCredentialStore()
+        defer { try? store.remove(for: connectionID) }
+        let credential = CloudCredential.s3(
+            S3Credential(
+                accessKeyID: "ACCESSKEY",
+                secretAccessKey: "secret",
+                sessionToken: "session",
+                expirationDate: Date(timeIntervalSince1970: 1_800_000_000)
+            )
+        )
+
+        try store.save(credential, for: connectionID)
+
+        XCTAssertEqual(try store.cloudCredential(for: connectionID), credential)
+    }
+
     func testSFTPRootPathTrimsWhitespace() {
         let connection = RemoteConnection(
             name: "Server",
@@ -353,6 +476,21 @@ final class ConnectionTests: XCTestCase {
         XCTAssertEqual(ConnectionKind.smb.defaultPort, 445)
         XCTAssertEqual(ConnectionKind.webDAV.defaultPort, 9800)
         XCTAssertEqual(ConnectionKind.ftp.defaultPort, 21)
+    }
+
+    func testWebDAVCloudPresetsProduceDocumentedConnectionSettings() {
+        XCTAssertEqual(
+            WebDAVConnectionPreset.nextcloud.rootPath(username: "alice"),
+            "/remote.php/dav/files/alice"
+        )
+        XCTAssertEqual(
+            WebDAVConnectionPreset.ownCloud.rootPath(username: " alice "),
+            "/remote.php/dav/files/alice"
+        )
+        XCTAssertEqual(WebDAVConnectionPreset.koofr.defaultHost, "app.koofr.net")
+        XCTAssertEqual(WebDAVConnectionPreset.koofr.defaultPort, 443)
+        XCTAssertEqual(WebDAVConnectionPreset.koofr.rootPath(username: "ignored"), "/dav/Koofr")
+        XCTAssertNil(WebDAVConnectionPreset.nextcloud.defaultHost)
     }
 
     func testNetworkDriveFactorySelectsMatchingDriver() {

@@ -30,6 +30,36 @@
 				<string>public.audiovisual-content</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>Dropbox OAuth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>db-yrvp63r1yokddm1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>Microsoft OAuth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>msauth.com.armsone.nasfinder</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>Google OAuth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.747776487519-62dfscj170itd8b6qt3slfk9r7f68moc</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>
@@ -90,6 +120,8 @@
 	<string>NasFinder가 같은 네트워크의 NAS 또는 SFTP 서버에 연결하려면 로컬 네트워크 접근이 필요합니다.</string>
 	<key>NasFinderKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)com.armsone.nasfinder.shared</string>
+	<key>NasFinderGoogleClientID</key>
+	<string>747776487519-62dfscj170itd8b6qt3slfk9r7f68moc.apps.googleusercontent.com</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -3,6 +3,7 @@ import SwiftUI
 struct AddConnectionView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var store: ConnectionStore
+    @StateObject private var oauthAuthorizer = CloudOAuthAuthorizer()
     @AppStorage("connections.lastKind.v1") private var lastKindRawValue = ConnectionKind.synology.rawValue
 
     @State private var kind: ConnectionKind = .synology
@@ -13,6 +14,7 @@ struct AddConnectionView: View {
     @State private var password = ""
     @State private var rootPath = ConnectionKind.synology.defaultRootPath
     @State private var usesTLS = true
+    @State private var webDAVPreset: WebDAVConnectionPreset = .generic
     @State private var trustedHostKey: String?
     @State private var pendingHostKey: SFTPHostKeyTrustRequired?
     @State private var isTesting = false
@@ -42,115 +44,7 @@ struct AddConnectionView: View {
 
     var body: some View {
         NavigationStack {
-            Form {
-                Section("연결 방식") {
-                    LazyVGrid(
-                        columns: Array(
-                            repeating: GridItem(.flexible(), spacing: 8),
-                            count: 3
-                        ),
-                        spacing: 8
-                    ) {
-                        ForEach(ConnectionKind.allCases) { kind in
-                            connectionKindButton(kind)
-                        }
-                    }
-                    .padding(.vertical, 2)
-
-                    Text(kind.subtitle)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-
-                Section("서버") {
-                    TextField("표시 이름 (예: 우리집 NAS)", text: $name)
-                    TextField("호스트 (예: nas.example.com)", text: $host)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .keyboardType(.URL)
-                    if let addressValidationMessage {
-                        Label(addressValidationMessage, systemImage: "exclamationmark.triangle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                    LabeledContent("포트") {
-                        TextField(
-                            String(kind.defaultPort),
-                            value: $port,
-                            format: .number.grouping(.never)
-                        )
-                            .keyboardType(.numberPad)
-                            .multilineTextAlignment(.trailing)
-                            .disabled(parsedServerAddress?.explicitPort != nil)
-                    }
-
-                    if parsedServerAddress?.explicitPort != nil {
-                        Text("서버 주소에 포트가 포함되어 있어 해당 포트를 사용합니다.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    } else if kind == .synology {
-                        Text("DSM 기본 포트: HTTPS 5001 · HTTP 5000. SFTP 포트 22와는 다릅니다.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    if kind == .synology,
-                       (parsedServerAddress?.explicitPort ?? port) == ConnectionKind.sftp.defaultPort {
-                        Label(
-                            "22번은 SFTP 포트입니다. Synology 연결에는 DSM HTTPS 5001, HTTP 5000 또는 DSM에서 지정한 웹 포트를 입력하세요.",
-                            systemImage: "exclamationmark.triangle.fill"
-                        )
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                    }
-
-                    if kind == .synology || kind == .webDAV {
-                        Toggle("HTTPS 사용", isOn: $usesTLS)
-                            .disabled(parsedServerAddress?.inferredTLS != nil)
-                        if parsedServerAddress?.inferredTLS != nil {
-                            Text("주소의 http:// 또는 https:// 표시에 맞춰 보안 연결 설정을 사용합니다.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    LabeledContent("시작 위치") {
-                        TextField(rootPathPlaceholder, text: $rootPath)
-                            .textInputAutocapitalization(.never)
-                            .autocorrectionDisabled()
-                            .multilineTextAlignment(.trailing)
-                    }
-                }
-
-                Section("로그인") {
-                    TextField("사용자 이름", text: $username)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                    SecureField("비밀번호", text: $password)
-                        .textContentType(.password)
-                }
-
-                Section {
-                    Button {
-                        Task { await testConnection() }
-                    } label: {
-                        HStack {
-                            Text("연결만 확인")
-                            Spacer()
-                            if isTesting { ProgressView() }
-                        }
-                    }
-                    .disabled(!isValid || isTesting || isSaving)
-
-                    if let testMessage {
-                        Label(testMessage, systemImage: "checkmark.circle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(.green)
-                    }
-                } footer: {
-                    Text(securityFootnote)
-                }
-            }
+            connectionForm
             .scrollContentBackground(.hidden)
             .background(SkyBreezeBackground())
             .navigationTitle(editingConnection == nil ? "연결 추가" : "연결 수정")
@@ -160,16 +54,18 @@ struct AddConnectionView: View {
                     Button("취소") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button {
-                        Task { await connectAndSave() }
-                    } label: {
-                        if isTesting || isSaving {
-                            ProgressView()
-                        } else {
-                            Text(editingConnection == nil ? "연결" : "저장")
+                    if !kind.isOAuthCloud {
+                        Button {
+                            Task { await connectAndSave() }
+                        } label: {
+                            if isTesting || isSaving {
+                                ProgressView()
+                            } else {
+                                Text(editingConnection == nil ? "연결" : "저장")
+                            }
                         }
+                        .disabled(!isValid || isSaving || isTesting)
                     }
-                    .disabled(!isValid || isSaving || isTesting)
                 }
             }
             .onChange(of: kind) { _, newKind in
@@ -179,6 +75,7 @@ struct AddConnectionView: View {
                 port = newKind.defaultPort
                 rootPath = newKind.defaultRootPath
                 usesTLS = true
+                webDAVPreset = .generic
                 trustedHostKey = nil
                 testMessage = nil
                 synchronizeAddressComponents()
@@ -188,12 +85,18 @@ struct AddConnectionView: View {
                 serverIdentityChanged()
             }
             .onChange(of: port) { _, _ in serverIdentityChanged() }
-            .onChange(of: username) { _, _ in resetTestStatus() }
+            .onChange(of: username) { oldValue, newValue in
+                synchronizeWebDAVRootPath(from: oldValue, to: newValue)
+                resetTestStatus()
+            }
             .onChange(of: password) { _, _ in resetTestStatus() }
             .onChange(of: rootPath) { _, _ in resetTestStatus() }
             .onChange(of: usesTLS) { oldValue, newValue in
                 synchronizeStandardSynologyPort(fromTLS: oldValue, toTLS: newValue)
                 resetTestStatus()
+            }
+            .onChange(of: webDAVPreset) { _, newValue in
+                applyWebDAVPreset(newValue)
             }
             .task {
                 applyRememberedKindIfNeeded()
@@ -202,7 +105,7 @@ struct AddConnectionView: View {
             .alert("연결 오류", isPresented: errorBinding) {
                 Button("확인", role: .cancel) { errorMessage = nil }
             } message: {
-                Text(errorMessage ?? "")
+                Text(currentErrorMessage)
             }
             .alert("SSH 서버 키 확인", isPresented: hostKeyAlertBinding, presenting: pendingHostKey) { pending in
                 Button("취소", role: .cancel) {
@@ -224,8 +127,163 @@ struct AddConnectionView: View {
         }
     }
 
+    private var connectionForm: some View {
+        Form {
+            connectionKindSection
+            if kind.isOAuthCloud {
+                cloudAccountSection
+            } else {
+                serverSection
+                passwordSection
+                connectionTestSection
+            }
+        }
+    }
+
+    private var connectionKindSection: some View {
+        Section("연결 방식") {
+            LazyVGrid(columns: connectionKindColumns, spacing: 8) {
+                ForEach(ConnectionKind.allCases) { candidate in
+                    connectionKindButton(candidate)
+                }
+            }
+            .padding(.vertical, 2)
+
+            Text(kind.subtitle)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+
+            if kind == .webDAV {
+                Picker("클라우드 서비스", selection: $webDAVPreset) {
+                    ForEach(WebDAVConnectionPreset.allCases) { preset in
+                        Text(preset.title).tag(preset)
+                    }
+                }
+            }
+        }
+    }
+
+    private var connectionKindColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+    }
+
+    private var cloudAccountSection: some View {
+        Section {
+            Button {
+                Task { await connectCloud() }
+            } label: {
+                HStack {
+                    Label("\(kind.title)로 계속", systemImage: kind.systemImage)
+                    Spacer()
+                    if isSaving { ProgressView() }
+                }
+            }
+            .disabled(isSaving)
+        } header: {
+            Text("계정")
+        } footer: {
+            Text("로그인 토큰은 이 iPhone의 키체인에만 저장됩니다. NasFinder는 계정 비밀번호를 보거나 저장하지 않습니다.")
+        }
+    }
+
+    private var serverSection: some View {
+        Section("서버") {
+            TextField("표시 이름 (예: 우리집 NAS)", text: $name)
+            TextField("호스트 (예: nas.example.com)", text: $host)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+            if let addressValidationMessage {
+                Label(addressValidationMessage, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+            LabeledContent("포트") {
+                TextField(String(kind.defaultPort), value: $port, format: .number.grouping(.never))
+                    .keyboardType(.numberPad)
+                    .multilineTextAlignment(.trailing)
+                    .disabled(parsedServerAddress?.explicitPort != nil)
+            }
+
+            if parsedServerAddress?.explicitPort != nil {
+                Text("서버 주소에 포트가 포함되어 있어 해당 포트를 사용합니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else if kind == .synology {
+                Text("DSM 기본 포트: HTTPS 5001 · HTTP 5000. SFTP 포트 22와는 다릅니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            if kind == .synology,
+               (parsedServerAddress?.explicitPort ?? port) == ConnectionKind.sftp.defaultPort {
+                Label(
+                    "22번은 SFTP 포트입니다. Synology 연결에는 DSM HTTPS 5001, HTTP 5000 또는 DSM에서 지정한 웹 포트를 입력하세요.",
+                    systemImage: "exclamationmark.triangle.fill"
+                )
+                .font(.caption)
+                .foregroundStyle(.orange)
+            }
+
+            if kind == .synology || kind == .webDAV {
+                Toggle("HTTPS 사용", isOn: $usesTLS)
+                    .disabled(parsedServerAddress?.inferredTLS != nil)
+                if parsedServerAddress?.inferredTLS != nil {
+                    Text("주소의 http:// 또는 https:// 표시에 맞춰 보안 연결 설정을 사용합니다.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            LabeledContent("시작 위치") {
+                TextField(rootPathPlaceholder, text: $rootPath)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .multilineTextAlignment(.trailing)
+            }
+        }
+    }
+
+    private var passwordSection: some View {
+        Section("로그인") {
+            TextField("사용자 이름", text: $username)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+            SecureField("비밀번호", text: $password)
+                .textContentType(.password)
+        }
+    }
+
+    private var connectionTestSection: some View {
+        Section {
+            Button {
+                Task { await testConnection() }
+            } label: {
+                HStack {
+                    Text("연결만 확인")
+                    Spacer()
+                    if isTesting { ProgressView() }
+                }
+            }
+            .disabled(!isValid || isTesting || isSaving)
+
+            if let testMessage {
+                Label(testMessage, systemImage: "checkmark.circle.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.green)
+            }
+        } footer: {
+            Text(securityFootnote)
+        }
+    }
+
+    private var currentErrorMessage: String {
+        errorMessage ?? ""
+    }
+
     private var isValid: Bool {
-        parsedServerAddress != nil
+        if kind.isOAuthCloud { return true }
+        return parsedServerAddress != nil
             && !username.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             && !password.isEmpty
             && (1...65_535).contains(port)
@@ -252,11 +310,16 @@ struct AddConnectionView: View {
         case .smb:
             return "ipTIME에서는 Windows 파일공유(SMB)를 켜세요. 시작 위치가 ‘/’이면 사용 가능한 공유 폴더를 먼저 보여줍니다. SMB 2.0 이상을 사용합니다."
         case .webDAV:
+            if webDAVPreset != .generic {
+                return webDAVPreset.credentialGuidance
+            }
             return usesTLS
-                ? "ipTIME NAS의 WebDAV 서비스를 켠 뒤 공유 폴더 권한을 지정하세요. 외부 연결은 HTTPS 또는 VPN을 권장합니다."
-                : "HTTP WebDAV는 같은 로컬 네트워크에서만 사용하세요. ipTIME NAS의 기본 WebDAV 포트는 모델 설정에 따라 80 또는 9800입니다."
+                ? "WebDAV 공유 폴더 권한을 지정하세요. \(webDAVPreset.credentialGuidance)"
+                : "HTTP WebDAV는 같은 로컬 네트워크에서만 사용하세요."
         case .ftp:
             return "ipTIME 공유기 USB 저장장치와 ipDISK는 FTP를 사용합니다. FTP 암호화가 없으므로 로컬 네트워크나 VPN 안에서만 사용하세요."
+        case .dropbox, .oneDrive, .googleDrive:
+            return "로그인 토큰은 iPhone 키체인에 저장됩니다."
         }
     }
 
@@ -339,7 +402,7 @@ struct AddConnectionView: View {
         case .synology: "/photo"
         case .sftp: "예: ."
         case .smb: "/ 또는 /공유이름"
-        case .webDAV, .ftp: "/"
+        case .webDAV, .ftp, .dropbox, .oneDrive, .googleDrive: "/"
         }
     }
 
@@ -417,6 +480,41 @@ struct AddConnectionView: View {
     }
 
     @MainActor
+    private func connectCloud() async {
+        guard let provider = kind.oauthProvider else { return }
+        isSaving = true
+        errorMessage = nil
+        defer { isSaving = false }
+        do {
+            let credential = try await oauthAuthorizer.authorize(provider: provider)
+            let connection = RemoteConnection(
+                id: editingConnection?.id ?? UUID(),
+                name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? kind.title : name,
+                kind: kind,
+                host: provider.rawValue,
+                port: 443,
+                username: kind.title,
+                rootPath: "/",
+                usesTLS: true,
+                createdAt: editingConnection?.createdAt ?? .now
+            )
+            let service = CloudDriveFileService(
+                connection: connection,
+                credential: RemoteCredential(password: "", cloudCredential: .oauth(credential))
+            )
+            try await service.testConnection()
+            if editingConnection == nil {
+                try await store.add(connection, oauthCredential: credential)
+            } else {
+                try await store.update(connection, oauthCredential: credential)
+            }
+            dismiss()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    @MainActor
     private func save() async {
         guard testedConfiguration == currentTestConfiguration else {
             errorMessage = "연결 정보가 바뀌었습니다. 연결 테스트를 다시 실행해 주세요."
@@ -439,6 +537,7 @@ struct AddConnectionView: View {
     private func loadStoredCredentialIfNeeded() {
         guard !didLoadStoredCredential, let editingConnection else { return }
         didLoadStoredCredential = true
+        guard !editingConnection.kind.isOAuthCloud else { return }
         do {
             password = try store.credential(for: editingConnection).password
         } catch {
@@ -501,6 +600,27 @@ struct AddConnectionView: View {
         }
     }
 
+    private func applyWebDAVPreset(_ preset: WebDAVConnectionPreset) {
+        guard kind == .webDAV, preset != .generic else { return }
+        if let defaultHost = preset.defaultHost {
+            host = defaultHost
+        }
+        port = preset.defaultPort
+        usesTLS = true
+        rootPath = preset.rootPath(username: username)
+        if name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            name = preset.title
+        }
+        resetTestStatus()
+    }
+
+    private func synchronizeWebDAVRootPath(from oldUsername: String, to newUsername: String) {
+        guard kind == .webDAV,
+              webDAVPreset == .nextcloud || webDAVPreset == .ownCloud,
+              rootPath == webDAVPreset.rootPath(username: oldUsername) else { return }
+        rootPath = webDAVPreset.rootPath(username: newUsername)
+    }
+
     private func synchronizeStandardSynologyPort(fromTLS oldValue: Bool, toTLS newValue: Bool) {
         guard kind == .synology else { return }
         port = ConnectionKind.synologyPortAfterTLSToggle(
@@ -553,6 +673,9 @@ private extension ConnectionKind {
         case .smb: "SMB"
         case .webDAV: "WebDAV"
         case .ftp: "FTP"
+        case .dropbox: "Dropbox"
+        case .oneDrive: "OneDrive"
+        case .googleDrive: "Google"
         }
     }
 }
