@@ -1204,6 +1204,23 @@ final class RemotePreviewStateTests: XCTestCase {
             ),
             0
         )
+        let startedAt = Date(timeIntervalSinceReferenceDate: 100)
+        XCTAssertEqual(
+            RemotePreviewInteractionPolicy.slideshowProgress(
+                startedAt: startedAt,
+                intervalSeconds: 4,
+                now: startedAt.addingTimeInterval(1)
+            ),
+            0.25
+        )
+        XCTAssertEqual(
+            RemotePreviewInteractionPolicy.slideshowProgress(
+                startedAt: startedAt,
+                intervalSeconds: 4,
+                now: startedAt.addingTimeInterval(10)
+            ),
+            1
+        )
     }
 
     func testManualNavigationAutoplaysWhileAutomaticNavigationPreservesPause() {

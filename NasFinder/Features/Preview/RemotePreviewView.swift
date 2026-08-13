@@ -28,6 +28,16 @@ enum RemotePreviewInteractionPolicy {
     ) -> Bool {
         controlsAreVisible || (isPhoto && isPlaying)
     }
+
+    static func slideshowProgress(
+        startedAt: Date?,
+        intervalSeconds: Int,
+        now: Date
+    ) -> CGFloat {
+        guard let startedAt, intervalSeconds > 0 else { return 0 }
+        let elapsed = max(now.timeIntervalSince(startedAt), 0)
+        return min(max(elapsed / Double(intervalSeconds), 0), 1)
+    }
 }
 
 enum RemotePreviewVerticalDragMode: Equatable {
@@ -113,6 +123,11 @@ struct RemotePreviewView: View {
                     viewportSize: geometry.size
                 )
 
+                if viewModel.currentItem.isImage, viewModel.isPlaying {
+                    photoSlideshowEdgeControls(safeAreaInsets: geometry.safeAreaInsets)
+                    photoSlideshowProgress
+                }
+
                 if let seekText = viewModel.seekHUDText {
                     seekHUD(text: seekText)
                         .transition(.scale.combined(with: .opacity))
@@ -149,6 +164,11 @@ struct RemotePreviewView: View {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     areControlsVisible = true
                 }
+            }
+        }
+        .onChange(of: viewModel.image != nil) { _, isLoaded in
+            if isLoaded, viewModel.currentItem.isImage, viewModel.isPlaying {
+                dimControlsForSlideshow()
             }
         }
         .onChange(of: viewModel.currentItem.id) { _, _ in
@@ -240,6 +260,14 @@ struct RemotePreviewView: View {
                     onDismiss: { dismiss() },
                     onNavigate: { offset in
                         viewModel.navigate(by: offset)
+                    },
+                    onSingleTap: {
+                        guard viewModel.isPlaying else {
+                            revealControls()
+                            return
+                        }
+                        viewModel.togglePlayback()
+                        revealControls()
                     }
                 )
             } else {
@@ -411,6 +439,70 @@ struct RemotePreviewView: View {
             )
         )
         .animation(.easeInOut(duration: 0.2), value: areControlsVisible)
+    }
+
+    private func photoSlideshowEdgeControls(safeAreaInsets: EdgeInsets) -> some View {
+        HStack {
+            photoSlideshowEdgeButton(
+                systemImage: "chevron.left",
+                accessibilityLabel: "이전 사진"
+            ) {
+                viewModel.navigate(by: -1, autoplay: true)
+            }
+
+            Spacer()
+
+            photoSlideshowEdgeButton(
+                systemImage: "chevron.right",
+                accessibilityLabel: "다음 사진"
+            ) {
+                viewModel.navigate(by: 1, autoplay: true)
+            }
+        }
+        .padding(.horizontal, max(max(safeAreaInsets.leading, safeAreaInsets.trailing), 12) + 10)
+        .padding(.bottom, max(safeAreaInsets.bottom, 8) + 72)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .ignoresSafeArea()
+    }
+
+    private func photoSlideshowEdgeButton(
+        systemImage: String,
+        accessibilityLabel: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 19, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.86))
+                .frame(width: 46, height: 46)
+                .background(.black.opacity(0.28), in: Circle())
+                .overlay {
+                    Circle().stroke(.white.opacity(0.18), lineWidth: 0.75)
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var photoSlideshowProgress: some View {
+        TimelineView(.animation(minimumInterval: 1.0 / 30.0, paused: !viewModel.isPlaying)) { context in
+            GeometryReader { geometry in
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(.black)
+                    Rectangle()
+                        .fill(.white)
+                        .frame(
+                            width: geometry.size.width
+                                * viewModel.photoAdvanceProgress(at: context.date)
+                        )
+                }
+            }
+        }
+        .frame(height: 2)
+        .frame(maxHeight: .infinity, alignment: .bottom)
+        .ignoresSafeArea(edges: .bottom)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 
     private func topBar(showsPosition: Bool) -> some View {
@@ -839,6 +931,14 @@ struct RemotePreviewView: View {
             withAnimation(.easeInOut(duration: 0.2)) { areControlsVisible = false }
         }
     }
+
+    private func dimControlsForSlideshow() {
+        controlsHideTask?.cancel()
+        controlsHideTask = nil
+        withAnimation(.easeInOut(duration: 0.2)) {
+            areControlsVisible = false
+        }
+    }
 }
 
 enum RemotePreviewContentKind: Equatable {
@@ -939,6 +1039,7 @@ final class RemotePreviewViewModel: ObservableObject {
     @Published private(set) var isPlaying = true
     @Published private(set) var playbackMode: PreviewPlaybackMode = .repeatAll
     @Published private(set) var photoAdvanceInterval: PhotoAdvanceInterval
+    @Published private(set) var photoAdvanceStartedAt: Date?
     @Published private(set) var seekHUDText: String?
     @Published var errorMessage: String?
 
@@ -974,6 +1075,16 @@ final class RemotePreviewViewModel: ObservableObject {
     var currentItem: RemoteFileItem { items[currentIndex] }
     var itemsCount: Int { items.count }
     var hasVideoPlayer: Bool { player != nil || compatibilityPlayer != nil }
+
+    func photoAdvanceProgress(at date: Date) -> CGFloat {
+        guard currentItem.isImage,
+              isPlaying else { return 0 }
+        return RemotePreviewInteractionPolicy.slideshowProgress(
+            startedAt: photoAdvanceStartedAt,
+            intervalSeconds: photoAdvanceInterval.rawValue,
+            now: date
+        )
+    }
 
     init(
         items: [RemoteFileItem],
@@ -1245,6 +1356,7 @@ final class RemotePreviewViewModel: ObservableObject {
             } else {
                 photoAdvanceTask?.cancel()
                 photoAdvanceTask = nil
+                photoAdvanceStartedAt = nil
             }
         }
     }
@@ -1347,6 +1459,7 @@ final class RemotePreviewViewModel: ObservableObject {
         isPlaying = false
         photoAdvanceTask?.cancel()
         photoAdvanceTask = nil
+        photoAdvanceStartedAt = nil
         seekHUDDismissTask?.cancel()
         seekHUDDismissTask = nil
         seekHUDText = nil
@@ -1407,6 +1520,7 @@ final class RemotePreviewViewModel: ObservableObject {
         streamingLoader = nil
         photoAdvanceTask?.cancel()
         photoAdvanceTask = nil
+        photoAdvanceStartedAt = nil
         seekHUDDismissTask?.cancel()
         seekHUDDismissTask = nil
         seekHUDText = nil
@@ -1720,6 +1834,7 @@ final class RemotePreviewViewModel: ObservableObject {
         guard currentItem.isImage, image != nil, isPlaying else { return }
         let expectedItemID = currentItem.id
         let interval = photoAdvanceInterval
+        photoAdvanceStartedAt = Date()
 
         photoAdvanceTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(interval.rawValue))

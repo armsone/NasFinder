@@ -167,7 +167,7 @@ struct FileBrowserCoverFlowView: View {
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .contentShape(Rectangle())
-            .gesture(flowGesture(step: step))
+            .simultaneousGesture(flowGesture(step: step))
         }
         .background(coverFlowBackground)
         .animation(.easeInOut(duration: 0.20), value: usesDarkBackground)
