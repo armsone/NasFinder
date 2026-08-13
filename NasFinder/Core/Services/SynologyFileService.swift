@@ -882,7 +882,8 @@ actor SynologyFileService: RemoteFileService {
 
                 var request = try self.multipartRequest(
                     boundary: multipart.boundary,
-                    contentLength: multipart.contentLength
+                    contentLength: multipart.contentLength,
+                    sessionID: sid
                 )
                 request.timeoutInterval = 3_600
                 await context.report(
@@ -1496,9 +1497,21 @@ actor SynologyFileService: RemoteFileService {
 
     private func multipartRequest(
         boundary: String,
-        contentLength: Int64
+        contentLength: Int64,
+        sessionID: String
     ) throws -> URLRequest {
-        var request = URLRequest(url: try endpointURL(script: "entry.cgi"))
+        let endpoint = try endpointURL(script: "entry.cgi")
+        guard var components = URLComponents(
+            url: endpoint,
+            resolvingAgainstBaseURL: false
+        ) else {
+            throw URLError(.badURL)
+        }
+        components.queryItems = [URLQueryItem(name: "_sid", value: sessionID)]
+        guard let authenticatedEndpoint = components.url else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: authenticatedEndpoint)
         request.httpMethod = "POST"
         request.setValue(
             "multipart/form-data; boundary=\(boundary)",

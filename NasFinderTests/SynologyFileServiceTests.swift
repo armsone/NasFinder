@@ -662,6 +662,7 @@ final class SynologyFileServiceTests: XCTestCase {
 
         XCTAssertEqual(result.succeeded.first?.destinationPath, "/share/uploads/테스트.txt")
         let request = try XCTUnwrap(multipartRequest.values)
+        XCTAssertEqual(request.queryFields["_sid"], "test-sid")
         let contentLength = try XCTUnwrap(Int(request.headers["Content-Length"] ?? ""))
         XCTAssertEqual(contentLength, request.body.count)
 
@@ -676,6 +677,63 @@ final class SynologyFileServiceTests: XCTestCase {
         )
         XCTAssertLessThan(payloadRange.lowerBound, boundaryRange.lowerBound)
         XCTAssertEqual(request.body[payloadRange], payload[...])
+    }
+
+    func testExpiredUploadSessionRelogsInAndRetriesMultipartRequest() async throws {
+        let fixture = SynologyAPIFixture()
+        let loginCount = LockedBox(0)
+        let uploadCount = LockedBox(0)
+        let service = fixture.makeService { request in
+            if request.contentType.hasPrefix("multipart/form-data") {
+                let count = uploadCount.withLock {
+                    $0 += 1
+                    return $0
+                }
+                let sid = request.queryFields["_sid"]
+                if count == 1 {
+                    XCTAssertEqual(sid, "expired-sid")
+                    return .json(#"{"success":false,"error":{"code":119}}"#)
+                }
+                XCTAssertEqual(sid, "replacement-sid")
+                return .json(#"{"success":true}"#)
+            }
+            let fields = request.formFields
+            switch (fields["api"], fields["method"]) {
+            case ("SYNO.API.Auth", "login"):
+                let count = loginCount.withLock {
+                    $0 += 1
+                    return $0
+                }
+                let sid = count == 1 ? "expired-sid" : "replacement-sid"
+                return .json(#"{"success":true,"data":{"sid":"\#(sid)"}}"#)
+            case ("SYNO.FileStation.List", "list"):
+                return .json(#"{"success":true,"data":{"files":[]}}"#)
+            default:
+                throw SynologyMockError.unexpectedRequest(fields)
+            }
+        }
+        defer { fixture.unregister() }
+
+        let localURL = FileManager.default.temporaryDirectory
+            .appending(path: "NasFinder-Synology-Expired-Upload-\(UUID().uuidString).jpg")
+        XCTAssertTrue(
+            FileManager.default.createFile(
+                atPath: localURL.path,
+                contents: Data("thumbnail".utf8)
+            )
+        )
+        defer { try? FileManager.default.removeItem(at: localURL) }
+
+        _ = try await service.upload(
+            localURL: localURL,
+            to: "/share/uploads",
+            preferredName: "thumbnail.jpg",
+            conflictPolicy: .fail,
+            context: RemoteOperationContext()
+        )
+
+        XCTAssertEqual(loginCount.values, 2)
+        XCTAssertEqual(uploadCount.values, 2)
     }
 
     func testUploadKeepBothChoosesAvailableNameWithoutOverwrite() async throws {
@@ -943,6 +1001,18 @@ private struct SynologyRecordedRequest: Sendable {
         guard contentType.hasPrefix("application/x-www-form-urlencoded") else { return [:] }
         var components = URLComponents()
         components.percentEncodedQuery = String(data: body, encoding: .utf8)
+        return Dictionary(
+            uniqueKeysWithValues: (components.queryItems ?? []).map {
+                ($0.name, $0.value ?? "")
+            }
+        )
+    }
+
+    var queryFields: [String: String] {
+        guard let components = URLComponents(
+            url: url,
+            resolvingAgainstBaseURL: false
+        ) else { return [:] }
         return Dictionary(
             uniqueKeysWithValues: (components.queryItems ?? []).map {
                 ($0.name, $0.value ?? "")
