@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import CoreVideo
+import UIKit
 import XCTest
 @testable import NasFinder
 
@@ -364,6 +365,104 @@ final class RemotePreviewStateTests: XCTestCase {
         XCTAssertEqual(report?.vaultFailedCount, 0)
         XCTAssertEqual(report?.vaultLastVerifiedAt, verifiedAt)
         XCTAssertFalse(report?.hasWorkToResume == true)
+    }
+
+    func testSuperThumbnailResumeUsesOnlyUnfinishedStoredItems() async {
+        let suiteName = "SuperThumbnailResumeItemsTests.\(UUID().uuidString)"
+        defer {
+            UserDefaults(suiteName: suiteName)?
+                .removePersistentDomain(forName: suiteName)
+        }
+        let store = SuperThumbnailQueueStore(
+            userDefaults: UserDefaults(suiteName: suiteName)!
+        )
+        let connectionID = UUID()
+        let uploaded = remoteItem(connectionID: connectionID, path: "/share/uploaded.mkv")
+        let pendingUpload = remoteItem(connectionID: connectionID, path: "/share/pending.mkv")
+        let failedThumbnail = remoteItem(connectionID: connectionID, path: "/share/failed.mkv")
+        let items = [uploaded, pendingUpload, failedThumbnail]
+
+        _ = await store.attempts(for: items, sessionKey: "session")
+        for item in [uploaded, pendingUpload] {
+            _ = await store.markCached(item, sessionKey: "session")
+        }
+        await store.recordFailure(
+            failedThumbnail,
+            sessionKey: "session",
+            durationSeconds: nil,
+            reason: "timeout"
+        )
+        await store.prepareVault(for: items, sessionKey: "session")
+        await store.markVaultPending(uploaded, sessionKey: "session")
+        await store.markVaultPending(pendingUpload, sessionKey: "session")
+        await store.recordVaultResult(
+            storedItemIDs: [uploaded.id],
+            attemptedItemIDs: [uploaded.id, pendingUpload.id],
+            errorDescription: "upload failed",
+            sessionKey: "session"
+        )
+
+        let resumed = await store.resumeItems(
+            sessionKey: "session",
+            connectionID: connectionID
+        )
+
+        XCTAssertEqual(
+            Set(resumed.map(\.id)),
+            Set([pendingUpload.id, failedThumbnail.id])
+        )
+
+        let failureOnlySuiteName = "SuperThumbnailResumeFailureOnlyTests.\(UUID().uuidString)"
+        defer {
+            UserDefaults(suiteName: failureOnlySuiteName)?
+                .removePersistentDomain(forName: failureOnlySuiteName)
+        }
+        let failureOnlyStore = SuperThumbnailQueueStore(
+            userDefaults: UserDefaults(suiteName: failureOnlySuiteName)!
+        )
+        _ = await failureOnlyStore.attempts(
+            for: [failedThumbnail],
+            sessionKey: "failure-only"
+        )
+        await failureOnlyStore.recordFailure(
+            failedThumbnail,
+            sessionKey: "failure-only",
+            durationSeconds: nil,
+            reason: "timeout"
+        )
+        let failureOnlyResume = await failureOnlyStore.resumeItems(
+            sessionKey: "failure-only",
+            connectionID: connectionID
+        )
+        XCTAssertEqual(failureOnlyResume.map(\.id), [failedThumbnail.id])
+    }
+
+    func testVaultUploadCanReuseAutomaticThumbnailCache() async throws {
+        let testRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: testRoot) }
+        let superCache = SuperThumbnailCache(
+            directoryURL: testRoot.appendingPathComponent("super", isDirectory: true),
+            userDefaults: UserDefaults(suiteName: UUID().uuidString)!
+        )
+        let automaticCache = RemoteThumbnailDiskCache(
+            directoryURL: testRoot.appendingPathComponent("automatic", isDirectory: true),
+            userDefaultsSuiteName: UUID().uuidString
+        )
+        let item = remoteItem(connectionID: UUID(), path: "/share/cached.mkv")
+        let imageData = try XCTUnwrap(
+            UIImage(systemName: "photo")?.pngData()
+        )
+        let key = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
+        await automaticCache.store(imageData, forKey: key)
+
+        let restored = await ThumbnailPreheater.localThumbnailDataForVault(
+            for: item,
+            superCache: superCache,
+            automaticCache: automaticCache
+        )
+
+        XCTAssertEqual(restored, imageData)
     }
 
     func testSuperThumbnailResumePrioritizesPreviousFailuresThenEarlierStages() {
@@ -1552,9 +1651,11 @@ final class RemotePreviewStateTests: XCTestCase {
 
         preheater.cancel()
         XCTAssertTrue(preheater.isCancellationRequested)
+        XCTAssertFalse(preheater.isRunning)
+        XCTAssertEqual(preheater.statusMessage, "썸네일 미리 생성을 중지했습니다.")
 
         let deadline = ContinuousClock.now.advanced(by: .seconds(1))
-        while preheater.isRunning, ContinuousClock.now < deadline {
+        while preheater.isCancellationRequested, ContinuousClock.now < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertFalse(preheater.isRunning)

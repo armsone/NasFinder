@@ -122,27 +122,30 @@ actor SuperThumbnailQueueStore {
         for items: [RemoteFileItem],
         sessionKey: String,
         allObservedItems: [RemoteFileItem]? = nil,
-        mediaScope: SuperThumbnailMediaScope = .videosAndPhotos
+        mediaScope: SuperThumbnailMediaScope = .videosAndPhotos,
+        preservesUnobservedItems: Bool = false
     ) -> [String: Int] {
         var sessions = load()
         var session = sessions[sessionKey] ?? SessionState()
         let observedItems = allObservedItems ?? items
         let currentItems = Dictionary(uniqueKeysWithValues: observedItems.map { ($0.id, $0) })
-        session.queue = session.queue.filter { itemID, state in
-            guard let item = currentItems[itemID] else { return false }
-            return state.signature == signature(for: item)
-        }
-        session.results = session.results.filter { itemID, state in
-            guard let item = currentItems[itemID] else { return false }
-            return state.signature == signature(for: item)
-        }
-        session.cachedItems = session.cachedItems?.filter { itemID, signature in
-            guard let item = currentItems[itemID] else { return false }
-            return signature == self.signature(for: item)
-        }
-        session.vaultItems = session.vaultItems?.filter { itemID, state in
-            guard let item = currentItems[itemID] else { return false }
-            return state.signature == signature(for: item)
+        if !preservesUnobservedItems {
+            session.queue = session.queue.filter { itemID, state in
+                guard let item = currentItems[itemID] else { return false }
+                return state.signature == signature(for: item)
+            }
+            session.results = session.results.filter { itemID, state in
+                guard let item = currentItems[itemID] else { return false }
+                return state.signature == signature(for: item)
+            }
+            session.cachedItems = session.cachedItems?.filter { itemID, signature in
+                guard let item = currentItems[itemID] else { return false }
+                return signature == self.signature(for: item)
+            }
+            session.vaultItems = session.vaultItems?.filter { itemID, state in
+                guard let item = currentItems[itemID] else { return false }
+                return state.signature == signature(for: item)
+            }
         }
         for item in items
         where session.queue[item.id] == nil
@@ -162,15 +165,18 @@ actor SuperThumbnailQueueStore {
     func prepareVault(
         for items: [RemoteFileItem],
         sessionKey: String,
-        allObservedItems: [RemoteFileItem]? = nil
+        allObservedItems: [RemoteFileItem]? = nil,
+        preservesUnobservedItems: Bool = false
     ) {
         updateSession(sessionKey) { session in
             var vaultItems = session.vaultItems ?? [:]
             let observedItems = allObservedItems ?? items
             let currentItems = Dictionary(uniqueKeysWithValues: observedItems.map { ($0.id, $0) })
-            vaultItems = vaultItems.filter { itemID, state in
-                guard let item = currentItems[itemID] else { return false }
-                return state.signature == signature(for: item)
+            if !preservesUnobservedItems {
+                vaultItems = vaultItems.filter { itemID, state in
+                    guard let item = currentItems[itemID] else { return false }
+                    return state.signature == signature(for: item)
+                }
             }
             for item in items where vaultItems[item.id] == nil {
                 vaultItems[item.id] = VaultItemState(
@@ -400,6 +406,37 @@ actor SuperThumbnailQueueStore {
         load()[sessionKey]?.mediaScope
     }
 
+    func resumeItems(
+        sessionKey: String,
+        connectionID: UUID
+    ) -> [RemoteFileItem] {
+        guard let session = load()[sessionKey] else { return [] }
+        var itemIDs = Set(session.queue.keys)
+        itemIDs.formUnion(session.results.compactMap { itemID, state in
+            state.failure == nil ? nil : itemID
+        })
+        if let vaultItems = session.vaultItems {
+            itemIDs.formUnion(vaultItems.compactMap { itemID, state in
+                state.status == .uploaded ? nil : itemID
+            })
+        }
+        return itemIDs.compactMap { itemID in
+            let signature = session.queue[itemID]?.signature
+                ?? session.results[itemID]?.signature
+                ?? session.cachedItems?[itemID]
+                ?? session.vaultItems?[itemID]?.signature
+            guard let signature else { return nil }
+            return remoteItem(
+                itemID: itemID,
+                signature: signature,
+                connectionID: connectionID
+            )
+        }
+        .sorted { lhs, rhs in
+            lhs.path.localizedStandardCompare(rhs.path) == .orderedAscending
+        }
+    }
+
     func reset() {
         userDefaults.removeObject(forKey: Self.storageKey)
     }
@@ -418,6 +455,32 @@ actor SuperThumbnailQueueStore {
     private func signature(for item: RemoteFileItem) -> String {
         let modified = item.modifiedAt?.timeIntervalSince1970 ?? 0
         return "\(item.id)|\(item.size ?? -1)|\(modified)"
+    }
+
+    private func remoteItem(
+        itemID: String,
+        signature: String,
+        connectionID: UUID
+    ) -> RemoteFileItem? {
+        let itemPrefix = "\(connectionID.uuidString):"
+        guard itemID.hasPrefix(itemPrefix),
+              signature.hasPrefix("\(itemID)|") else { return nil }
+        let path = String(itemID.dropFirst(itemPrefix.count))
+        let metadata = signature.dropFirst(itemID.count + 1).split(separator: "|", maxSplits: 1)
+        guard metadata.count == 2 else { return nil }
+        let storedSize = Int64(String(metadata[0]))
+        let modifiedInterval = TimeInterval(String(metadata[1]))
+        return RemoteFileItem(
+            connectionID: connectionID,
+            path: path,
+            name: (path as NSString).lastPathComponent,
+            kind: .file,
+            size: storedSize == -1 ? nil : storedSize,
+            modifiedAt: modifiedInterval.flatMap {
+                $0 == 0 ? nil : Date(timeIntervalSince1970: $0)
+            },
+            contentTypeIdentifier: nil
+        )
     }
 
     private func parentDirectory(of path: String) -> String {

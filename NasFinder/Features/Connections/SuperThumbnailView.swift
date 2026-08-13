@@ -167,7 +167,12 @@ struct SuperThumbnailView: View {
                 preheater: preheater,
                 folderTitle: selection?.title ?? "Selected Folder",
                 sessionKey: selection?.id ?? "",
-                onCancel: preheater.cancel,
+                onCancel: {
+                    preheater.cancel()
+                    hasPendingSession = true
+                    isShowingProgress = false
+                    Task { await refreshStatistics() }
+                },
                 onClose: {
                     hasPendingSession = preheater.completedCount < preheater.totalCount
                         || preheater.failedCount > 0
@@ -525,6 +530,7 @@ struct SuperThumbnailView: View {
             && (hasStandardConditions || compactJobAssessment != nil)
             && !isAssessingCompactJob
             && !preheater.isRunning
+            && !preheater.isCancellationRequested
     }
 
     private var hasStandardConditions: Bool {
@@ -619,15 +625,24 @@ struct SuperThumbnailView: View {
                     connection: selection.connection,
                     credential: credential
                 )
-                let items = try await service.list(directory: selection.path)
-                    .filter {
-                        RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name)
-                    }
                 let savedReport = resumeExistingVault
                     ? await SuperThumbnailQueueStore.shared.report(
                         sessionKey: selection.id
                     )
                     : nil
+                let savedResumeItems = resumeExistingVault
+                    ? await SuperThumbnailQueueStore.shared.resumeItems(
+                        sessionKey: selection.id,
+                        connectionID: selection.connection.id
+                    )
+                    : []
+                let resumesSavedItems = !savedResumeItems.isEmpty
+                let items = resumesSavedItems
+                    ? savedResumeItems
+                    : try await service.list(directory: selection.path)
+                        .filter {
+                            RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name)
+                        }
                 let runScope = SuperThumbnailMediaScope.videosAndPhotos
                 let shouldUseVault = nasVaultEnabled
                     || savedReport?.vaultFolders.isEmpty == false
@@ -638,11 +653,12 @@ struct SuperThumbnailView: View {
                 preheater.start(
                     rootItems: items,
                     rootPath: selection.path,
-                    recursively: true,
+                    recursively: !resumesSavedItems,
                     requiresExternalPower: true,
                     allowsConstrainedRun: allowsConstrainedRun,
                     generationMode: .completeFile,
                     mediaScope: runScope,
+                    preservesUnobservedSessionItems: resumesSavedItems,
                     vaultOptions: SuperThumbnailVaultOptions(
                         isEnabled: shouldUseVault,
                         timing: vaultTiming

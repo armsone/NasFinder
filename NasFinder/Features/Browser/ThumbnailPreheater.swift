@@ -181,13 +181,14 @@ final class ThumbnailPreheater: ObservableObject {
         allowsConstrainedRun: Bool = false,
         generationMode: RemoteVideoThumbnailGenerationMode = .bounded,
         mediaScope: SuperThumbnailMediaScope = .videosAndPhotos,
+        preservesUnobservedSessionItems: Bool = false,
         vaultOptions: SuperThumbnailVaultOptions = .init(
             isEnabled: false,
             timing: .later
         ),
         service: any RemoteFileService
     ) {
-        guard !isRunning else { return }
+        guard task == nil else { return }
         let requiresExternalPower = powerOverride
             ?? ThumbnailPreheatPolicy.requiresExternalPower(
                 rootItems: rootItems,
@@ -221,6 +222,7 @@ final class ThumbnailPreheater: ObservableObject {
                 allowsConstrainedRun: allowsConstrainedRun,
                 generationMode: generationMode,
                 mediaScope: mediaScope,
+                preservesUnobservedSessionItems: preservesUnobservedSessionItems,
                 vaultOptions: vaultOptions,
                 service: service
             )
@@ -230,7 +232,13 @@ final class ThumbnailPreheater: ObservableObject {
     func cancel() {
         guard isRunning, !isCancellationRequested else { return }
         isCancellationRequested = true
-        pauseReason = "진행 중인 작업을 안전하게 중단하고 있습니다."
+        isRunning = false
+        statusMessage = "썸네일 미리 생성을 중지했습니다."
+        pauseReason = nil
+        currentItemName = nil
+        currentItemStartedAt = nil
+        currentItemTransferredBytes = 0
+        currentItemTotalBytes = 0
         task?.cancel()
         let cancelConnectionWork = cancelConnectionWork
         Task { await cancelConnectionWork?() }
@@ -248,6 +256,7 @@ final class ThumbnailPreheater: ObservableObject {
         allowsConstrainedRun: Bool,
         generationMode: RemoteVideoThumbnailGenerationMode,
         mediaScope: SuperThumbnailMediaScope,
+        preservesUnobservedSessionItems: Bool,
         vaultOptions: SuperThumbnailVaultOptions,
         service: any RemoteFileService
     ) async {
@@ -317,7 +326,8 @@ final class ThumbnailPreheater: ObservableObject {
                     for: candidates,
                     sessionKey: queueSessionKey,
                     allObservedItems: completeRunItems,
-                    mediaScope: mediaScope
+                    mediaScope: mediaScope,
+                    preservesUnobservedItems: preservesUnobservedSessionItems
                 )
                 : [:]
             if generationMode == .completeFile,
@@ -338,7 +348,8 @@ final class ThumbnailPreheater: ObservableObject {
                 await SuperThumbnailQueueStore.shared.prepareVault(
                     for: candidates,
                     sessionKey: queueSessionKey,
-                    allObservedItems: completeRunItems
+                    allObservedItems: completeRunItems,
+                    preservesUnobservedItems: preservesUnobservedSessionItems
                 )
                 await refreshVaultProgress(sessionKey: queueSessionKey)
             }
@@ -424,6 +435,14 @@ final class ThumbnailPreheater: ObservableObject {
             let recoveryWorkCount = recoveryQueue.count
             var didFlushResumeUploads = false
             var workIndex = 0
+            if preservesUnobservedSessionItems, usesVault {
+                workPhase = "NAS Vault 미완료 업로드"
+                await applyVaultResult(
+                    await vaultRun.finish(localData: Self.localSuperThumbnailData),
+                    sessionKey: queueSessionKey
+                )
+                didFlushResumeUploads = true
+            }
             workPhase = recoveryWorkCount > 0
                 ? "실패한 썸네일 다시 만들기"
                 : (usesVault ? "NAS Vault 미완료 업로드" : "썸네일 만들기")
@@ -1043,14 +1062,26 @@ final class ThumbnailPreheater: ObservableObject {
 
     private static let localSuperThumbnailData:
         @Sendable (RemoteFileItem) async -> Data? = { item in
-            for key in RemoteThumbnailCacheKey.allRemoteDataKeys(for: item) {
-                if let data = await SuperThumbnailCache.shared.data(forKey: key),
-                   UIImage(data: data) != nil {
-                    return data
-                }
-            }
-            return nil
+            await localThumbnailDataForVault(for: item)
         }
+
+    static func localThumbnailDataForVault(
+        for item: RemoteFileItem,
+        superCache: SuperThumbnailCache = .shared,
+        automaticCache: RemoteThumbnailDiskCache = .shared
+    ) async -> Data? {
+        for key in RemoteThumbnailCacheKey.allRemoteDataKeys(for: item) {
+            if let data = await superCache.data(forKey: key),
+               UIImage(data: data) != nil {
+                return data
+            }
+            if let data = await automaticCache.data(forKey: key),
+               UIImage(data: data) != nil {
+                return data
+            }
+        }
+        return nil
+    }
 
     private func applyVaultResult(
         _ result: SuperThumbnailVaultStoreResult,
