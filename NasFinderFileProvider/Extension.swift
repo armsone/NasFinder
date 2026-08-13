@@ -2,10 +2,18 @@ import FileProvider
 import Foundation
 import UniformTypeIdentifiers
 
-final class NasFinderFileProviderExtension: NSObject, NSFileProviderReplicatedExtension,
+final class NasFinderFileProviderExtension: NSFileProviderExtension, NSFileProviderReplicatedExtension,
     NSFileProviderThumbnailing {
     private let storage: NasFinderFileProviderStorage
     private let manager: NSFileProviderManager
+
+    override init() {
+        manager = .default
+        storage = NasFinderFileProviderStorage(
+            domainIdentifier: NSFileProviderDomainIdentifier("legacy-document-picker")
+        )
+        super.init()
+    }
 
     required init(domain: NSFileProviderDomain) {
         guard let manager = NSFileProviderManager(for: domain) else {
@@ -14,6 +22,32 @@ final class NasFinderFileProviderExtension: NSObject, NSFileProviderReplicatedEx
         self.manager = manager
         self.storage = NasFinderFileProviderStorage(domainIdentifier: domain.identifier)
         super.init()
+    }
+
+    override func providePlaceholder(
+        at url: URL,
+        completionHandler: @escaping (Error?) -> Void
+    ) {
+        completionHandler(CocoaError(.fileNoSuchFile))
+    }
+
+    override func startProvidingItem(
+        at url: URL,
+        completionHandler: @escaping (Error?) -> Void
+    ) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            completionHandler(CocoaError(.fileNoSuchFile))
+            return
+        }
+        completionHandler(nil)
+    }
+
+    override func stopProvidingItem(at url: URL) {
+        // The document-picker host owns the lifetime of this local working copy.
+    }
+
+    override func itemChanged(at url: URL) {
+        // Picker imports never write host edits back without an explicit upload.
     }
 
     func invalidate() {}
@@ -74,7 +108,7 @@ final class NasFinderFileProviderExtension: NSObject, NSFileProviderReplicatedEx
         return progress
     }
 
-    func fetchThumbnails(
+    override func fetchThumbnails(
         for itemIdentifiers: [NSFileProviderItemIdentifier],
         requestedSize size: CGSize,
         perThumbnailCompletionHandler: @escaping (
