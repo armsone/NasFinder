@@ -1,5 +1,10 @@
 import Foundation
 
+enum SuperThumbnailMediaScope: String, Codable, Sendable, CaseIterable {
+    case videosOnly
+    case videosAndPhotos
+}
+
 struct SuperThumbnailFailureRecord: Codable, Identifiable, Sendable, Equatable {
     let itemID: String
     let name: String
@@ -13,13 +18,15 @@ struct SuperThumbnailFailureRecord: Codable, Identifiable, Sendable, Equatable {
 
 struct SuperThumbnailSessionReport: Sendable, Equatable {
     let successCounts: [Int]
+    var photoSuccessCount: Int = 0
     let failures: [SuperThumbnailFailureRecord]
     let pendingCount: Int
     let cachedCount: Int
     var vaultFolders: [SuperThumbnailVaultFolderReport] = []
     var vaultLastVerifiedAt: Date? = nil
+    var mediaScope: SuperThumbnailMediaScope = .videosOnly
 
-    var successfulCount: Int { successCounts.reduce(0, +) }
+    var successfulCount: Int { successCounts.reduce(0, +) + photoSuccessCount }
     var vaultUploadedCount: Int { vaultFolders.reduce(0) { $0 + $1.uploadedCount } }
     var vaultPendingCount: Int { vaultFolders.reduce(0) { $0 + $1.pendingCount } }
     var vaultFailedCount: Int { vaultFolders.reduce(0) { $0 + $1.failedCount } }
@@ -61,6 +68,7 @@ struct SuperThumbnailVaultFolderReport: Identifiable, Sendable, Equatable {
 actor SuperThumbnailQueueStore {
     struct CachedTransition: Sendable, Equatable {
         let previousSuccessAttempt: Int?
+        let removedPhotoSuccess: Bool
         let removedFailure: Bool
     }
 
@@ -74,6 +82,7 @@ actor SuperThumbnailQueueStore {
     private struct ResultState: Codable {
         let signature: String
         var successAttempt: Int?
+        var photoSuccess: Bool? = nil
         var failure: SuperThumbnailFailureRecord?
     }
 
@@ -97,6 +106,7 @@ actor SuperThumbnailQueueStore {
         var cachedItems: [String: String]? = nil
         var vaultItems: [String: VaultItemState]? = nil
         var vaultLastVerifiedAt: Date? = nil
+        var mediaScope: SuperThumbnailMediaScope? = nil
     }
 
     private typealias Sessions = [String: SessionState]
@@ -110,11 +120,14 @@ actor SuperThumbnailQueueStore {
 
     func attempts(
         for items: [RemoteFileItem],
-        sessionKey: String
+        sessionKey: String,
+        allObservedItems: [RemoteFileItem]? = nil,
+        mediaScope: SuperThumbnailMediaScope = .videosOnly
     ) -> [String: Int] {
         var sessions = load()
         var session = sessions[sessionKey] ?? SessionState()
-        let currentItems = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+        let observedItems = allObservedItems ?? items
+        let currentItems = Dictionary(uniqueKeysWithValues: observedItems.map { ($0.id, $0) })
         session.queue = session.queue.filter { itemID, state in
             guard let item = currentItems[itemID] else { return false }
             return state.signature == signature(for: item)
@@ -140,6 +153,7 @@ actor SuperThumbnailQueueStore {
                 nextAttempt: 0
             )
         }
+        session.mediaScope = mediaScope
         sessions[sessionKey] = session
         save(sessions)
         return session.queue.mapValues { min(max($0.nextAttempt, 0), 2) }
@@ -147,11 +161,13 @@ actor SuperThumbnailQueueStore {
 
     func prepareVault(
         for items: [RemoteFileItem],
-        sessionKey: String
+        sessionKey: String,
+        allObservedItems: [RemoteFileItem]? = nil
     ) {
         updateSession(sessionKey) { session in
             var vaultItems = session.vaultItems ?? [:]
-            let currentItems = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+            let observedItems = allObservedItems ?? items
+            let currentItems = Dictionary(uniqueKeysWithValues: observedItems.map { ($0.id, $0) })
             vaultItems = vaultItems.filter { itemID, state in
                 guard let item = currentItems[itemID] else { return false }
                 return state.signature == signature(for: item)
@@ -253,9 +269,11 @@ actor SuperThumbnailQueueStore {
         sessionKey: String
     ) -> CachedTransition {
         var previousSuccessAttempt: Int?
+        var removedPhotoSuccess = false
         var removedFailure = false
         updateSession(sessionKey) { session in
             previousSuccessAttempt = session.results[item.id]?.successAttempt
+            removedPhotoSuccess = session.results[item.id]?.photoSuccess == true
             removedFailure = session.results[item.id]?.failure != nil
             session.queue[item.id] = nil
             var cachedItems = session.cachedItems ?? [:]
@@ -267,6 +285,7 @@ actor SuperThumbnailQueueStore {
         }
         return CachedTransition(
             previousSuccessAttempt: previousSuccessAttempt,
+            removedPhotoSuccess: removedPhotoSuccess,
             removedFailure: removedFailure
         )
     }
@@ -282,6 +301,20 @@ actor SuperThumbnailQueueStore {
             session.results[item.id] = ResultState(
                 signature: signature(for: item),
                 successAttempt: min(max(attempt, 0), 2),
+                photoSuccess: false,
+                failure: nil
+            )
+        }
+    }
+
+    func recordPhotoSuccess(_ item: RemoteFileItem, sessionKey: String) {
+        updateSession(sessionKey) { session in
+            session.queue[item.id] = nil
+            session.cachedItems?[item.id] = nil
+            session.results[item.id] = ResultState(
+                signature: signature(for: item),
+                successAttempt: nil,
+                photoSuccess: true,
                 failure: nil
             )
         }
@@ -310,6 +343,7 @@ actor SuperThumbnailQueueStore {
             session.results[item.id] = ResultState(
                 signature: signature(for: item),
                 successAttempt: nil,
+                photoSuccess: false,
                 failure: record
             )
         }
@@ -318,6 +352,7 @@ actor SuperThumbnailQueueStore {
     func report(sessionKey: String) -> SuperThumbnailSessionReport? {
         guard let session = load()[sessionKey] else { return nil }
         var counts = [0, 0, 0]
+        var photoSuccessCount = 0
         var failures: [SuperThumbnailFailureRecord] = []
         for result in session.results.values {
             if let attempt = result.successAttempt,
@@ -327,6 +362,7 @@ actor SuperThumbnailQueueStore {
             if let failure = result.failure {
                 failures.append(failure)
             }
+            if result.photoSuccess == true { photoSuccessCount += 1 }
         }
         let vaultStates = session.vaultItems.map { Array($0.values) } ?? []
         let folderReports = Dictionary(grouping: vaultStates) {
@@ -348,14 +384,20 @@ actor SuperThumbnailQueueStore {
         .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
         return SuperThumbnailSessionReport(
             successCounts: counts,
+            photoSuccessCount: photoSuccessCount,
             failures: failures.sorted {
                 $0.name.localizedStandardCompare($1.name) == .orderedAscending
             },
             pendingCount: session.queue.count,
             cachedCount: session.cachedItems?.count ?? 0,
             vaultFolders: folderReports,
-            vaultLastVerifiedAt: session.vaultLastVerifiedAt
+            vaultLastVerifiedAt: session.vaultLastVerifiedAt,
+            mediaScope: session.mediaScope ?? .videosOnly
         )
+    }
+
+    func mediaScope(sessionKey: String) -> SuperThumbnailMediaScope? {
+        load()[sessionKey]?.mediaScope
     }
 
     func reset() {

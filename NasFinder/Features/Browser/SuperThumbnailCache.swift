@@ -53,6 +53,7 @@ actor SuperThumbnailCache {
                 withIntermediateDirectories: true
             )
             try data.write(to: fileURL(forKey: key), options: .atomic)
+            await FileProviderThumbnailCache.shared.store(data, forKey: key)
             await MainActor.run {
                 NotificationCenter.default.post(
                     name: .superThumbnailCacheDidChange,
@@ -93,6 +94,7 @@ actor SuperThumbnailCache {
     func reset() async {
         generation &+= 1
         try? fileManager.removeItem(at: directoryURL)
+        await FileProviderThumbnailCache.shared.removeAll()
         userDefaults.removeObject(forKey: Self.networkUsageKey)
         await RemoteVideoThumbnailTrafficBudget.completeFileShared.reset()
         await RemoteVideoThumbnailTrafficBudget.completeFileFastPass.reset()

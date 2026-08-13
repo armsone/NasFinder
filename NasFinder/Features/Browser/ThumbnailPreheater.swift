@@ -127,6 +127,8 @@ final class ThumbnailPreheater: ObservableObject {
     @Published private(set) var failedItemNames: [String] = []
     @Published private(set) var failedItems: [SuperThumbnailFailureRecord] = []
     @Published private(set) var successAttemptCounts = [0, 0, 0]
+    @Published private(set) var photoSuccessCount = 0
+    @Published private(set) var currentItemIsPhoto = false
     @Published private(set) var transferredBytes: Int64 = 0
     @Published private(set) var currentItemTransferredBytes: Int64 = 0
     @Published private(set) var currentItemTotalBytes: Int64 = 0
@@ -171,6 +173,7 @@ final class ThumbnailPreheater: ObservableObject {
         requiresExternalPower powerOverride: Bool? = nil,
         allowsConstrainedRun: Bool = false,
         generationMode: RemoteVideoThumbnailGenerationMode = .bounded,
+        mediaScope: SuperThumbnailMediaScope = .videosOnly,
         vaultOptions: SuperThumbnailVaultOptions = .init(
             isEnabled: false,
             timing: .later
@@ -210,6 +213,7 @@ final class ThumbnailPreheater: ObservableObject {
                 requiresExternalPower: requiresExternalPower,
                 allowsConstrainedRun: allowsConstrainedRun,
                 generationMode: generationMode,
+                mediaScope: mediaScope,
                 vaultOptions: vaultOptions,
                 service: service
             )
@@ -236,6 +240,7 @@ final class ThumbnailPreheater: ObservableObject {
         requiresExternalPower: Bool,
         allowsConstrainedRun: Bool,
         generationMode: RemoteVideoThumbnailGenerationMode,
+        mediaScope: SuperThumbnailMediaScope,
         vaultOptions: SuperThumbnailVaultOptions,
         service: any RemoteFileService
     ) async {
@@ -246,6 +251,7 @@ final class ThumbnailPreheater: ObservableObject {
             currentItemTransferredBytes = 0
             currentItemTotalBytes = 0
             currentItemStartedAt = nil
+            currentItemIsPhoto = false
             pauseReason = nil
             workPhase = nil
             isCancellationRequested = false
@@ -261,9 +267,15 @@ final class ThumbnailPreheater: ObservableObject {
                 allowsConstrainedRun: allowsConstrainedRun,
                 service: service
             )
+            let completeRunItems = collectedCandidates.filter { $0.isVideo || $0.isImage }
             let candidates = generationMode == .completeFile
-                ? collectedCandidates.filter(\.isVideo)
+                ? completeRunItems.filter {
+                    $0.isVideo || (mediaScope == .videosAndPhotos && $0.isImage)
+                }
                 : collectedCandidates
+            if generationMode == .completeFile, candidates.isEmpty {
+                throw ThumbnailPreheatError.noEligibleMedia
+            }
             let vaultRun = SuperThumbnailVaultRun(
                 options: generationMode == .completeFile
                     ? vaultOptions
@@ -294,7 +306,9 @@ final class ThumbnailPreheater: ObservableObject {
             let savedAttempts = generationMode == .completeFile
                 ? await SuperThumbnailQueueStore.shared.attempts(
                     for: candidates,
-                    sessionKey: queueSessionKey
+                    sessionKey: queueSessionKey,
+                    allObservedItems: completeRunItems,
+                    mediaScope: mediaScope
                 )
                 : [:]
             if generationMode == .completeFile,
@@ -304,6 +318,7 @@ final class ThumbnailPreheater: ObservableObject {
                 successAttemptCounts = normalizedSuccessCounts(
                     savedReport.successCounts
                 )
+                photoSuccessCount = savedReport.photoSuccessCount
                 failedItems = savedReport.failures
                 failedItemNames = savedReport.failures.map {
                     "\($0.name) · \($0.reason)"
@@ -313,7 +328,8 @@ final class ThumbnailPreheater: ObservableObject {
             if usesVault {
                 await SuperThumbnailQueueStore.shared.prepareVault(
                     for: candidates,
-                    sessionKey: queueSessionKey
+                    sessionKey: queueSessionKey,
+                    allObservedItems: completeRunItems
                 )
                 await refreshVaultProgress(sessionKey: queueSessionKey)
             }
@@ -348,6 +364,9 @@ final class ThumbnailPreheater: ObservableObject {
                                 successAttemptCounts[previousAttempt] - 1,
                                 0
                             )
+                        }
+                        if transition.removedPhotoSuccess {
+                            photoSuccessCount = max(photoSuccessCount - 1, 0)
                         }
                         if transition.removedFailure {
                             failedItems.removeAll { $0.itemID == item.id }
@@ -443,8 +462,9 @@ final class ThumbnailPreheater: ObservableObject {
                 currentItemTransferredBytes = 0
                 currentItemTotalBytes = 0
                 currentItemStartedAt = nil
+                currentItemIsPhoto = item.isImage
                 currentItemAttempt = work.attempt
-                currentItemTimeLimit = superThumbnailTimeLimit(
+                currentItemTimeLimit = item.isImage ? 12 : superThumbnailTimeLimit(
                     for: work.attempt,
                     generationMode: generationMode
                 )
@@ -509,9 +529,9 @@ final class ThumbnailPreheater: ObservableObject {
 
                 currentItemStartedAt = Date()
                 if generationMode == .completeFile {
-                    currentItemTotalBytes = Int64(
-                        superThumbnailMaximumBytes(for: work.attempt)
-                    )
+                    currentItemTotalBytes = Int64(item.isImage
+                        ? 4 * 1_024 * 1_024
+                        : superThumbnailMaximumBytes(for: work.attempt))
                 }
 
                 let estimatedBytes = estimatedTransferBytes(for: item, service: service)
@@ -567,17 +587,28 @@ final class ThumbnailPreheater: ObservableObject {
                         generatedCount += 1
                         didCompleteThumbnail = true
                         if generationMode == .completeFile {
-                            successAttemptCounts[work.attempt] += 1
+                            if item.isImage {
+                                photoSuccessCount += 1
+                            } else {
+                                successAttemptCounts[work.attempt] += 1
+                            }
                             failedItems.removeAll { $0.itemID == item.id }
                             failedItemNames = failedItems.map {
                                 "\($0.name) · \($0.reason)"
                             }
                             failedCount = failedItems.count
-                            await SuperThumbnailQueueStore.shared.recordSuccess(
-                                item,
-                                sessionKey: queueSessionKey,
-                                attempt: work.attempt
-                            )
+                            if item.isImage {
+                                await SuperThumbnailQueueStore.shared.recordPhotoSuccess(
+                                    item,
+                                    sessionKey: queueSessionKey
+                                )
+                            } else {
+                                await SuperThumbnailQueueStore.shared.recordSuccess(
+                                    item,
+                                    sessionKey: queueSessionKey,
+                                    attempt: work.attempt
+                                )
+                            }
                         }
                         if generationMode == .completeFile {
                             appendRecentThumbnail(
@@ -613,6 +644,7 @@ final class ThumbnailPreheater: ObservableObject {
                     transferredBytes = max(transferredBytes, Int64(usedBytes))
                 } catch {
                     if generationMode == .completeFile,
+                       !item.isImage,
                        work.attempt < 2 {
                         enqueueForNextPass(
                             SuperThumbnailWorkItem(
@@ -710,6 +742,7 @@ final class ThumbnailPreheater: ObservableObject {
                 currentItemTransferredBytes = 0
                 currentItemTotalBytes = 0
                 currentItemStartedAt = nil
+                currentItemIsPhoto = false
                 updateQueueCounts(workQueue, from: workIndex)
 
                 if reachedDataLimit { break }
@@ -819,7 +852,7 @@ final class ThumbnailPreheater: ObservableObject {
         attempt: Int = 0,
         usesCellularBudget: Bool = false
     ) async throws -> ThumbnailPreheatPayload? {
-        if generationMode != .completeFile,
+        if (generationMode != .completeFile || item.isImage),
            !RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
                for: item,
                service: service
@@ -1203,10 +1236,12 @@ final class ThumbnailPreheater: ObservableObject {
         failedItemNames = []
         failedItems = []
         successAttemptCounts = [0, 0, 0]
+        photoSuccessCount = 0
         transferredBytes = 0
         currentItemTransferredBytes = 0
         currentItemTotalBytes = 0
         currentItemName = nil
+        currentItemIsPhoto = false
         currentItemStartedAt = nil
         currentItemAttempt = 0
         currentItemTimeLimit = 5
@@ -1486,6 +1521,7 @@ private enum ThumbnailPreheatError: LocalizedError {
     case powerRequired
     case appInactive
     case lowBattery
+    case noEligibleMedia
 
     var errorDescription: String? {
         switch self {
@@ -1497,6 +1533,8 @@ private enum ThumbnailPreheatError: LocalizedError {
             "NasFinder가 화면에 열려 있을 때만 썸네일을 미리 만들 수 있습니다."
         case .lowBattery:
             "배터리가 20% 이하라서 Super Thumbnail 작업을 취소했습니다."
+        case .noEligibleMedia:
+            "이 폴더에서 현재 설정으로 처리할 영상이나 사진을 찾지 못했습니다."
         }
     }
 }

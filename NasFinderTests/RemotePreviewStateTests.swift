@@ -264,10 +264,46 @@ final class RemotePreviewStateTests: XCTestCase {
 
         let report = await store.report(sessionKey: "session")
         XCTAssertEqual(transition.previousSuccessAttempt, 0)
+        XCTAssertFalse(transition.removedPhotoSuccess)
         XCTAssertFalse(transition.removedFailure)
         XCTAssertEqual(report?.successCounts, [0, 0, 0])
         XCTAssertEqual(report?.cachedCount, 1)
         XCTAssertEqual(report?.totalCount, 1)
+    }
+
+    func testSuperThumbnailPhotoScopeAndResultSurviveVideoOnlyObservation() async {
+        let suiteName = "SuperThumbnailPhotoScopeTests.\(UUID().uuidString)"
+        defer {
+            UserDefaults(suiteName: suiteName)?
+                .removePersistentDomain(forName: suiteName)
+        }
+        let store = SuperThumbnailQueueStore(
+            userDefaults: UserDefaults(suiteName: suiteName)!
+        )
+        let connectionID = UUID()
+        let video = remoteItem(connectionID: connectionID, path: "/share/movie.mkv")
+        let photo = remoteItem(connectionID: connectionID, path: "/share/photo.heic")
+
+        _ = await store.attempts(
+            for: [video, photo],
+            sessionKey: "session",
+            allObservedItems: [video, photo],
+            mediaScope: .videosAndPhotos
+        )
+        await store.recordPhotoSuccess(photo, sessionKey: "session")
+
+        _ = await store.attempts(
+            for: [video],
+            sessionKey: "session",
+            allObservedItems: [video, photo],
+            mediaScope: .videosOnly
+        )
+        let report = await store.report(sessionKey: "session")
+
+        XCTAssertEqual(report?.photoSuccessCount, 1)
+        XCTAssertEqual(report?.mediaScope, .videosOnly)
+        XCTAssertEqual(report?.pendingCount, 1)
+        XCTAssertEqual(report?.totalCount, 2)
     }
 
     func testSuperThumbnailVaultResumeReportPersistsFolderUploadProgress() async {

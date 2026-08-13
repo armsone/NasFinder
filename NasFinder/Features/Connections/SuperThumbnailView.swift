@@ -120,6 +120,8 @@ struct SuperThumbnailView: View {
     @AppStorage("superThumbnail.folderHistory.v1") private var folderHistoryJSON = ""
     @AppStorage("superThumbnail.hasPendingSession.v1") private var hasPendingSession = false
     @AppStorage("superThumbnail.nasVaultEnabled.v1") private var nasVaultEnabled = true
+    @AppStorage("superThumbnail.mediaScope.v1")
+    private var mediaScopeRaw = SuperThumbnailMediaScope.videosAndPhotos.rawValue
     @AppStorage("superThumbnail.nasVaultTiming.v1")
     private var nasVaultTimingRaw = SuperThumbnailVaultTiming.now.rawValue
 
@@ -128,6 +130,7 @@ struct SuperThumbnailView: View {
             VStack(spacing: 16) {
                 folderSelection
                 hero
+                mediaScopeOptions
                 vaultOptions
                 requirements
                 startButton
@@ -256,7 +259,7 @@ struct SuperThumbnailView: View {
             SuperThumbnailMark()
                 .scaleEffect(0.44)
                 .frame(width: 40, height: 40)
-            Text("선택한 폴더의 영상 썸네일을 미리 만듭니다.")
+            Text("선택한 폴더의 영상과 사진 썸네일을 미리 만듭니다.")
                 .font(.system(size: 15))
                 .foregroundStyle(.secondary)
                 .lineSpacing(2)
@@ -285,6 +288,54 @@ struct SuperThumbnailView: View {
         .font(.caption2)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 4)
+    }
+
+    private var mediaScopeOptions: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("처리 범위")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("처리 범위", selection: $mediaScopeRaw) {
+                Text("영상 + 사진").tag(SuperThumbnailMediaScope.videosAndPhotos.rawValue)
+                Text("영상만").tag(SuperThumbnailMediaScope.videosOnly.rawValue)
+            }
+            .pickerStyle(.segmented)
+            .disabled(!supportsPhotoThumbnails)
+            .onChange(of: mediaScopeRaw) { _, _ in
+                if let selection { assessCompactJob(for: selection) }
+            }
+
+            Text(mediaScopeDescription)
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(
+            SkyBreezeTheme.thumbnailSurface,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+    }
+
+    private var mediaScope: SuperThumbnailMediaScope {
+        SuperThumbnailMediaScope(rawValue: mediaScopeRaw) ?? .videosAndPhotos
+    }
+
+    private var effectiveMediaScope: SuperThumbnailMediaScope {
+        supportsPhotoThumbnails ? mediaScope : .videosOnly
+    }
+
+    private var supportsPhotoThumbnails: Bool {
+        selection?.connection.kind == .synology
+    }
+
+    private var mediaScopeDescription: String {
+        guard selection != nil else { return "Synology 연결은 사진 미리보기도 처리합니다." }
+        guard supportsPhotoThumbnails else {
+            return "이 연결은 작은 사진 미리보기를 제공하지 않아 영상만 처리합니다."
+        }
+        if mediaScope == .videosOnly { return "영상 파일만 처리합니다." }
+        if !hasWiFi { return "사진은 원본을 받지 않고 Wi‑Fi 연결 후 처리합니다." }
+        return "사진 원본 대신 NAS가 제공하는 작은 미리보기만 사용합니다."
     }
 
     private var vaultOptions: some View {
@@ -522,7 +573,8 @@ struct SuperThumbnailView: View {
 
     private var canStart: Bool {
         selection != nil
-            && (hasStandardConditions || compactJobAssessment != nil)
+            && (hasStandardConditions
+                || (effectiveMediaScope == .videosOnly && compactJobAssessment != nil))
             && !isAssessingCompactJob
             && !preheater.isRunning
     }
@@ -537,6 +589,9 @@ struct SuperThumbnailView: View {
 
     private var requirementSummary: String {
         if selection == nil { return "먼저 처리할 폴더를 선택하세요." }
+        if effectiveMediaScope == .videosAndPhotos, !hasStandardConditions {
+            return "사진 처리를 위해 Wi‑Fi 연결과 충전을 기다립니다."
+        }
         if hasStandardConditions { return "시작할 준비가 됐습니다." }
         if let compactJobAssessment {
             return "소규모 작업 · 영상 \(compactJobAssessment.videoCount)개 · "
@@ -573,7 +628,8 @@ struct SuperThumbnailView: View {
         guard let selection, canStart else { return }
         launchProcessing(
             selection: selection,
-            allowsConstrainedRun: usesCompactOverride
+            allowsConstrainedRun: usesCompactOverride,
+            resumeExistingVault: hasPendingSession
         )
     }
 
@@ -627,6 +683,17 @@ struct SuperThumbnailView: View {
                         sessionKey: selection.id
                     )
                     : nil
+                let savedScope = resumeExistingVault
+                    ? await SuperThumbnailQueueStore.shared.mediaScope(
+                        sessionKey: selection.id
+                    )
+                    : nil
+                let runScope = selection.connection.kind == .synology
+                    ? (savedScope ?? effectiveMediaScope)
+                    : .videosOnly
+                if resumeExistingVault, mediaScopeRaw != runScope.rawValue {
+                    mediaScopeRaw = runScope.rawValue
+                }
                 let shouldUseVault = nasVaultEnabled
                     || savedReport?.vaultFolders.isEmpty == false
                 if shouldUseVault != nasVaultEnabled {
@@ -640,6 +707,7 @@ struct SuperThumbnailView: View {
                     requiresExternalPower: true,
                     allowsConstrainedRun: allowsConstrainedRun,
                     generationMode: .completeFile,
+                    mediaScope: runScope,
                     vaultOptions: SuperThumbnailVaultOptions(
                         isEnabled: shouldUseVault,
                         timing: vaultTiming
@@ -745,6 +813,7 @@ struct SuperThumbnailView: View {
                 }
                 guard compactAssessmentID == assessmentID,
                       selection == self.selection else { return }
+                guard videoCount > 0 else { return }
                 compactJobAssessment = CompactJobAssessment(
                     videoCount: videoCount,
                     totalBytes: totalBytes
@@ -972,6 +1041,15 @@ private struct SuperThumbnailReportView: View {
                     Text("이미 완료")
                     Spacer()
                     Text("\(report.cachedCount)개")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+            if report.photoSuccessCount > 0 {
+                HStack {
+                    Text("사진 미리보기")
+                    Spacer()
+                    Text("성공 \(report.photoSuccessCount)개")
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1494,7 +1572,9 @@ private struct SuperThumbnailProgressView: View {
             preheater.currentItemTransferredBytes
         )
         let total = formattedRangeMegabytes(preheater.currentItemTotalBytes)
-        return "범위 \(current) / \(total)"
+        return preheater.currentItemIsPhoto
+            ? "미리보기 \(current) / \(total)"
+            : "범위 \(current) / \(total)"
     }
 
     private func formattedRangeMegabytes(_ bytes: Int64) -> String {
@@ -1550,6 +1630,7 @@ private struct SuperThumbnailProgressView: View {
     }
 
     private var currentPassTitle: String {
+        if preheater.currentItemIsPhoto { return "사진 미리보기" }
         switch preheater.currentItemAttempt {
         case 0: return "빠른 처리"
         case 1: return "재시도"
@@ -1574,6 +1655,16 @@ private struct SuperThumbnailProgressView: View {
                         .foregroundStyle(.primary)
                 }
                 Divider().opacity(0.65)
+                if preheater.photoSuccessCount > 0 {
+                    HStack {
+                        Text("사진 미리보기")
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Text("성공 \(preheater.photoSuccessCount)")
+                            .monospacedDigit()
+                    }
+                    .font(.caption)
+                }
                 HStack(spacing: 0) {
                     stageMetric(
                         seconds: 5,
@@ -1693,6 +1784,7 @@ private struct SuperThumbnailProgressView: View {
         let unresolved = max(
             preheater.totalCount
                 - preheater.cachedCount
+                - preheater.photoSuccessCount
                 - normalizedSuccessCounts.reduce(0, +),
             0
         )

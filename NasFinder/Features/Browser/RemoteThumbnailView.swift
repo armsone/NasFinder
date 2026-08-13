@@ -787,6 +787,7 @@ actor RemoteThumbnailDiskCache {
                 withIntermediateDirectories: true
             )
             try data.write(to: fileURL(forKey: key), options: .atomic)
+            await FileProviderThumbnailCache.shared.store(data, forKey: key)
             pruneIfNeeded()
             if notifyObservers {
                 await MainActor.run {

@@ -2,7 +2,8 @@ import FileProvider
 import Foundation
 import UniformTypeIdentifiers
 
-final class NasFinderFileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
+final class NasFinderFileProviderExtension: NSObject, NSFileProviderReplicatedExtension,
+    NSFileProviderThumbnailing {
     private let storage: NasFinderFileProviderStorage
     private let manager: NSFileProviderManager
 
@@ -68,6 +69,50 @@ final class NasFinderFileProviderExtension: NSObject, NSFileProviderReplicatedEx
                 completionHandler.value(nil, nil, error)
             }
             progress.completedUnitCount = 1
+        }
+        progress.cancellationHandler = { task.cancel() }
+        return progress
+    }
+
+    func fetchThumbnails(
+        for itemIdentifiers: [NSFileProviderItemIdentifier],
+        requestedSize size: CGSize,
+        perThumbnailCompletionHandler: @escaping (
+            NSFileProviderItemIdentifier,
+            Data?,
+            Error?
+        ) -> Void,
+        completionHandler: @escaping (Error?) -> Void
+    ) -> Progress {
+        let progress = Progress(totalUnitCount: Int64(itemIdentifiers.count))
+        let perThumbnailCompletionHandler = ProviderSendableBox(
+            perThumbnailCompletionHandler
+        )
+        let completionHandler = ProviderSendableBox(completionHandler)
+        let task = Task { [storage] in
+            do {
+                for identifier in itemIdentifiers {
+                    try Task.checkCancellation()
+                    do {
+                        let data = try await storage.thumbnail(
+                            for: identifier,
+                            requestedSize: size
+                        )
+                        try Task.checkCancellation()
+                        perThumbnailCompletionHandler.value(identifier, data, nil)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        perThumbnailCompletionHandler.value(identifier, nil, error)
+                    }
+                    progress.completedUnitCount += 1
+                }
+                completionHandler.value(nil)
+            } catch {
+                completionHandler.value(
+                    CocoaError(.userCancelled)
+                )
+            }
         }
         progress.cancellationHandler = { task.cancel() }
         return progress

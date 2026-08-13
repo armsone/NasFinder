@@ -81,6 +81,7 @@ protocol ProviderRemoteBackend: Sendable {
     var supportsMutations: Bool { get }
     func list(directory: String) async throws -> [ProviderRemoteNode]
     func download(path: String, to destinationURL: URL) async throws
+    func thumbnail(path: String, size: ProviderThumbnailSize) async throws -> Data?
     func createFolder(path: String) async throws
     func upload(localURL: URL, to path: String) async throws
     func rename(from sourcePath: String, to destinationPath: String) async throws
@@ -89,6 +90,7 @@ protocol ProviderRemoteBackend: Sendable {
 
 extension ProviderRemoteBackend {
     var supportsMutations: Bool { false }
+    func thumbnail(path: String, size: ProviderThumbnailSize) async throws -> Data? { nil }
     func createFolder(path: String) async throws { throw NasFinderFileProviderErrors.readOnly }
     func upload(localURL: URL, to path: String) async throws { throw NasFinderFileProviderErrors.readOnly }
     func rename(from sourcePath: String, to destinationPath: String) async throws {
@@ -97,6 +99,12 @@ extension ProviderRemoteBackend {
     func delete(path: String, isDirectory: Bool) async throws {
         throw NasFinderFileProviderErrors.readOnly
     }
+}
+
+enum ProviderThumbnailSize: String, Sendable {
+    case small
+    case medium
+    case large
 }
 
 struct ProviderSnapshot: @unchecked Sendable {
@@ -132,6 +140,7 @@ actor NasFinderFileProviderStorage {
     }
 
     private let contextResult: Result<Context, Error>
+    private let thumbnailCache = ProviderThumbnailCache()
     private var identifiersByAnchor: [Data: Set<String>] = [:]
 
     init(domainIdentifier: NSFileProviderDomainIdentifier) {
@@ -253,6 +262,39 @@ actor NasFinderFileProviderStorage {
         try await context.backend.download(path: remotePath, to: destinationURL)
         try Task.checkCancellation()
         return (destinationURL, item)
+    }
+
+    func thumbnail(
+        for identifier: NSFileProviderItemIdentifier,
+        requestedSize: CGSize
+    ) async throws -> Data? {
+        try Task.checkCancellation()
+        let context = try contextResult.get()
+        guard let path = NasFinderFileProviderIdentifiers.remotePath(for: identifier),
+              let parentPath = Self.parentPath(
+                of: path,
+                rootedAt: context.connection.normalizedRootPath
+              ) else { return nil }
+        let nodes = try await context.backend.list(directory: parentPath)
+        guard let node = nodes.first(where: { $0.path == path }),
+              !node.isDirectory,
+              Self.supportsThumbnail(filename: node.name) else { return nil }
+
+        let size = Self.thumbnailSize(for: requestedSize)
+        let key = Self.thumbnailCacheKey(
+            for: node,
+            connectionID: context.connection.id,
+            size: size
+        )
+        if let cached = thumbnailCache.data(forKey: key) { return cached }
+
+        try Task.checkCancellation()
+        guard let data = try await context.backend.thumbnail(path: path, size: size) else {
+            return nil
+        }
+        try Task.checkCancellation()
+        thumbnailCache.store(data, forKey: key)
+        return data
     }
 
     func create(
@@ -447,6 +489,30 @@ actor NasFinderFileProviderStorage {
             throw NasFinderFileProviderErrors.invalidConfiguration
         }
         return trimmed
+    }
+
+    private static func supportsThumbnail(filename: String) -> Bool {
+        let type = UTType(filenameExtension: (filename as NSString).pathExtension)
+        return type?.conforms(to: .image) == true
+            || type?.conforms(to: .movie) == true
+            || type?.conforms(to: .video) == true
+    }
+
+    private static func thumbnailSize(for requestedSize: CGSize) -> ProviderThumbnailSize {
+        let maximumDimension = max(requestedSize.width, requestedSize.height)
+        if maximumDimension <= 128 { return .small }
+        if maximumDimension <= 512 { return .medium }
+        return .large
+    }
+
+    private static func thumbnailCacheKey(
+        for node: ProviderRemoteNode,
+        connectionID: UUID,
+        size: ProviderThumbnailSize
+    ) -> String {
+        let itemID = "\(connectionID.uuidString):\(node.path)"
+        let version = node.modifiedAt?.timeIntervalSince1970 ?? 0
+        return "\(itemID)|\(version)|\(node.size ?? -1)|\(size.rawValue)"
     }
 
     private static func appending(_ name: String, to directory: String) -> String {

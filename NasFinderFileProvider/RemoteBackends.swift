@@ -92,6 +92,28 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
         }
     }
 
+    func thumbnail(path: String, size: ProviderThumbnailSize) async throws -> Data? {
+        try await authenticatedRequest { sid in
+            let parameters = self.commonParameters(
+                api: "SYNO.FileStation.Thumb",
+                version: "2",
+                method: "get",
+                sid: sid
+            ).merging([
+                "path": path,
+                "size": size.rawValue,
+                "rotate": "0"
+            ]) { _, new in new }
+            var request = try self.request(script: "entry.cgi", parameters: parameters)
+            request.timeoutInterval = 12
+            let (data, response) = try await self.session.data(for: request)
+            try self.validateHTTP(response)
+            guard data.count <= 4 * 1_024 * 1_024 else { return nil }
+            if self.isJSONResponse(response) { return nil }
+            return data.isEmpty ? nil : data
+        }
+    }
+
     private func authenticatedRequest<T: Sendable>(
         _ operation: (String) async throws -> T
     ) async throws -> T {
