@@ -31,6 +31,19 @@ enum FileBrowserCoverFlowPolicy {
     }
 }
 
+enum FileBrowserCoverFlowBackground: String, CaseIterable, Identifiable {
+    case light
+    case dark
+
+    var id: String { rawValue }
+    var title: String { self == .light ? "흰색" : "검정" }
+    var usesDarkBackground: Bool { self == .dark }
+
+    init(usesDarkBackground: Bool) {
+        self = usesDarkBackground ? .dark : .light
+    }
+}
+
 struct FileBrowserNavigationAppearanceModifier: ViewModifier {
     let isCoverFlow: Bool
 
@@ -138,12 +151,7 @@ struct FileBrowserCoverFlowView: View {
             ZStack {
                 Rectangle()
                     .fill(coverFlowBackground)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        withAnimation(.easeInOut(duration: 0.20)) {
-                            usesDarkBackground.toggle()
-                        }
-                    }
+                    .allowsHitTesting(false)
 
                 LinearGradient(
                     colors: floorGlowColors,

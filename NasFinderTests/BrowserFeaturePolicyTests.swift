@@ -3,6 +3,23 @@ import XCTest
 
 @MainActor
 final class BrowserFeaturePolicyTests: XCTestCase {
+    func testCoverFlowBackgroundChoicesMapToStoredBoolean() {
+        XCTAssertFalse(
+            FileBrowserCoverFlowBackground.light.usesDarkBackground
+        )
+        XCTAssertTrue(
+            FileBrowserCoverFlowBackground.dark.usesDarkBackground
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowBackground(usesDarkBackground: false),
+            .light
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowBackground(usesDarkBackground: true),
+            .dark
+        )
+    }
+
     func testCoverFlowPreloadsAroundLiveDragPosition() {
         XCTAssertEqual(
             FileBrowserCoverFlowPolicy.preloadIndices(

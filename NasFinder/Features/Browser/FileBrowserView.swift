@@ -868,6 +868,25 @@ struct FileBrowserView: View {
                     }
                 }
 
+                if layoutStyle == .coverFlow {
+                    CompactPanelOptionRow(title: "배경") {
+                        HStack(spacing: 4) {
+                            ForEach(FileBrowserCoverFlowBackground.allCases) { background in
+                                CompactPanelOptionButton(
+                                    title: background.title,
+                                    isSelected: background.usesDarkBackground
+                                        == coverFlowUsesDarkBackground
+                                ) {
+                                    withAnimation(.easeInOut(duration: 0.20)) {
+                                        coverFlowUsesDarkBackground =
+                                            background.usesDarkBackground
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Divider()
                     .overlay(Color(uiColor: .separator).opacity(0.32))
                     .padding(.vertical, 6)
