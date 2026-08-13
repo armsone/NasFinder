@@ -503,10 +503,7 @@ actor NasFinderFileProviderStorage {
     }
 
     private static func supportsThumbnail(filename: String) -> Bool {
-        let type = UTType(filenameExtension: (filename as NSString).pathExtension)
-        return type?.conforms(to: .image) == true
-            || type?.conforms(to: .movie) == true
-            || type?.conforms(to: .video) == true
+        ProviderThumbnailCache.supportsThumbnail(filename: filename)
     }
 
     private static func thumbnailSize(for requestedSize: CGSize) -> ProviderThumbnailSize {

@@ -358,6 +358,7 @@ final class ThumbnailPreheater: ObservableObject {
                 for item in candidates {
                     var cachedData = await cachedThumbnailData(for: item)
                     if cachedData == nil,
+                       !preservesUnobservedSessionItems,
                        let restored = await vaultRun.restoredData(for: item),
                        UIImage(data: restored) != nil {
                         cachedData = restored
@@ -400,7 +401,18 @@ final class ThumbnailPreheater: ObservableObject {
                                 item,
                                 sessionKey: queueSessionKey
                             )
-                            await vaultRun.registerCompleted(item)
+                            if preservesUnobservedSessionItems {
+                                workPhase = "NAS Vault 미완료 업로드"
+                                await applyVaultResult(
+                                    await vaultRun.uploadAvailable(
+                                        item,
+                                        localData: Self.localSuperThumbnailData
+                                    ),
+                                    sessionKey: queueSessionKey
+                                )
+                            } else {
+                                await vaultRun.registerCompleted(item)
+                            }
                         }
                     } else {
                         pendingCandidates.append(item)
@@ -433,16 +445,8 @@ final class ThumbnailPreheater: ObservableObject {
             }
             var workQueue = recoveryQueue + regularQueue
             let recoveryWorkCount = recoveryQueue.count
-            var didFlushResumeUploads = false
             var workIndex = 0
-            if preservesUnobservedSessionItems, usesVault {
-                workPhase = "NAS Vault 미완료 업로드"
-                await applyVaultResult(
-                    await vaultRun.finish(localData: Self.localSuperThumbnailData),
-                    sessionKey: queueSessionKey
-                )
-                didFlushResumeUploads = true
-            }
+            var didFlushResumeUploads = false
             workPhase = recoveryWorkCount > 0
                 ? "실패한 썸네일 다시 만들기"
                 : (usesVault ? "NAS Vault 미완료 업로드" : "썸네일 만들기")
@@ -783,7 +787,7 @@ final class ThumbnailPreheater: ObservableObject {
                     sessionKey: queueSessionKey
                 )
                 try Task.checkCancellation()
-                if usesVault {
+                if usesVault, !preservesUnobservedSessionItems {
                     do {
                         workPhase = "전체 파일과 NAS Vault 확인"
                         let storedItemIDs = try await vaultRun.verifyStoredItemIDs()

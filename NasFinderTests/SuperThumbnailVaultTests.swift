@@ -49,6 +49,29 @@ final class SuperThumbnailVaultTests: XCTestCase {
         XCTAssertEqual(countAfterFinish, 2)
     }
 
+    func testResumeUploadsCachedThumbnailImmediately() async throws {
+        let storage = VaultTestStorage()
+        let service = VaultTestService(storage: storage)
+        let items = makeItems(connectionID: service.connection.id)
+        let run = SuperThumbnailVaultRun(
+            options: .init(isEnabled: true, timing: .now),
+            items: items,
+            service: service
+        )
+        let available = items[0]
+        let expected = Data("cached-before-resume".utf8)
+
+        let result = await run.uploadAvailable(
+            available,
+            localData: { item in item.id == available.id ? expected : nil }
+        )
+
+        XCTAssertTrue(result.didAttempt)
+        XCTAssertEqual(result.storedItemIDs, Set([available.id]))
+        let storedCount = await storage.vaultFileCount()
+        XCTAssertEqual(storedCount, 1)
+    }
+
     func testAnotherConnectionCanRestoreSameFileFromNASVault() async throws {
         let storage = VaultTestStorage()
         let writer = VaultTestService(storage: storage)

@@ -370,6 +370,15 @@ actor SuperThumbnailVaultRun {
         return result
     }
 
+    func uploadAvailable(
+        _ item: RemoteFileItem,
+        localData: @Sendable (RemoteFileItem) async -> Data?
+    ) async -> SuperThumbnailVaultStoreResult {
+        guard options.isEnabled, options.timing == .now else { return .empty }
+        registerCompleted(item)
+        return await storeFolderWithRetry([item], localData: localData)
+    }
+
     func finish(
         localData: @Sendable (RemoteFileItem) async -> Data?
     ) async -> SuperThumbnailVaultStoreResult {

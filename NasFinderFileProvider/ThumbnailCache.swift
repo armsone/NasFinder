@@ -3,6 +3,16 @@ import Foundation
 import ImageIO
 
 struct ProviderThumbnailCache {
+    private static let supportedImageExtensions: Set<String> = [
+        "avif", "arw", "bmp", "cr2", "cr3", "dng", "gif", "heic", "heif",
+        "ico", "jpe", "jpeg", "jpg", "nef", "orf", "png", "raf", "raw",
+        "rw2", "tif", "tiff", "webp",
+    ]
+    private static let supportedVideoExtensions: Set<String> = [
+        "3g2", "3gp", "asf", "avi", "flv", "m2ts", "m4v", "mkv", "mov",
+        "mpe", "mpeg", "mpg", "mp4", "mts", "ogv", "qt", "ts", "vob",
+        "webm", "wmv",
+    ]
     private let fileManager = FileManager.default
     private let directoryURL: URL?
 
@@ -46,6 +56,12 @@ struct ProviderThumbnailCache {
         let itemID = "\(connectionID.uuidString):\(node.path)"
         let version = node.modifiedAt?.timeIntervalSince1970 ?? 0
         return "\(itemID)|\(version)|\(node.size ?? -1)|\(size.rawValue)"
+    }
+
+    static func supportsThumbnail(filename: String) -> Bool {
+        let filenameExtension = (filename as NSString).pathExtension.lowercased()
+        return supportedImageExtensions.contains(filenameExtension)
+            || supportedVideoExtensions.contains(filenameExtension)
     }
 
     private func fileURL(forKey key: String, directoryURL: URL) -> URL {
