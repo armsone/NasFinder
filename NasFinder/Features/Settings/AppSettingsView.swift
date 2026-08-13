@@ -3,6 +3,12 @@ import SwiftUI
 struct AppSettingsView: View {
     let connectionCount: Int
     @ObservedObject private var screenAwakeController = ScreenAwakeController.shared
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
+    private var selectedTheme: AppThemePreference {
+        .resolved(selectedThemeRawValue)
+    }
 
     var body: some View {
         List {
@@ -93,6 +99,19 @@ struct AppSettingsView: View {
 
     private var themePaletteSection: some View {
         Section {
+            ScrollView(.horizontal) {
+                HStack(spacing: 10) {
+                    ForEach(AppThemePreference.allCases) { theme in
+                        themeCard(theme)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            .scrollIndicators(.hidden)
+            .listRowInsets(
+                EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
+            )
+
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
                     Spacer()
@@ -131,12 +150,104 @@ struct AppSettingsView: View {
 
                 Divider()
                 SettingsPanelDescription(
-                    "표시 색은 iPhone의 라이트·다크 모드에 맞춰 자동으로 바뀝니다."
+                    selectedTheme == .system
+                        ? "iPhone의 라이트·다크 모드에 맞춰 자동으로 바뀝니다."
+                        : "선택한 테마는 앱을 다시 열어도 유지됩니다."
                 )
                 .padding(.top, 8)
             }
         } header: {
-            SettingsSectionHeader(title: "테마 색 구성", systemImage: "paintpalette")
+            SettingsSectionHeader(title: "테마", systemImage: "paintpalette")
+        }
+    }
+
+    private func themeCard(_ theme: AppThemePreference) -> some View {
+        let isSelected = selectedTheme == theme
+        return Button {
+            withAnimation(.easeInOut(duration: 0.20)) {
+                selectedThemeRawValue = theme.rawValue
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Image(systemName: theme.systemImage)
+                    Spacer(minLength: 10)
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                    }
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(themePreviewForeground(theme))
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(theme.title)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(themePreviewForeground(theme))
+                        .lineLimit(1)
+                    Text(theme.shortDescription)
+                        .font(.caption2)
+                        .foregroundStyle(themePreviewForeground(theme).opacity(0.72))
+                        .lineLimit(1)
+                }
+            }
+            .padding(12)
+            .frame(width: 132, height: 84, alignment: .leading)
+            .background(themePreview(theme), in: RoundedRectangle(cornerRadius: 14))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(
+                        isSelected ? SkyBreezeTheme.accent : Color.secondary.opacity(0.18),
+                        lineWidth: isSelected ? 1.5 : 0.5
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(theme.title) 테마")
+        .accessibilityValue(isSelected ? "선택됨" : "선택 안 됨")
+    }
+
+    private func themePreview(_ theme: AppThemePreference) -> LinearGradient {
+        switch theme {
+        case .system:
+            LinearGradient(
+                colors: [.white.opacity(0.96), .black.opacity(0.18)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .day:
+            LinearGradient(
+                colors: [Color(red: 0.72, green: 0.91, blue: 1), .white],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .night:
+            LinearGradient(
+                colors: [Color(red: 0.06, green: 0.15, blue: 0.21), .black],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .digitalRain:
+            LinearGradient(
+                colors: [Color(red: 0.02, green: 0.16, blue: 0.13), .black],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .windyMeadow:
+            LinearGradient(
+                colors: [
+                    Color(red: 0.28, green: 0.76, blue: 0.96),
+                    Color(red: 0.73, green: 0.84, blue: 0.38),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+    }
+
+    private func themePreviewForeground(_ theme: AppThemePreference) -> Color {
+        switch theme {
+        case .night, .digitalRain: .white
+        default: Color(red: 0.10, green: 0.15, blue: 0.16)
         }
     }
 

@@ -8,6 +8,12 @@ struct NasFinderApp: App {
     @StateObject private var favoriteStore = FavoriteStore()
     @StateObject private var browserFavoritesStore = BrowserFavoritesStore()
     @StateObject private var screenAwakeController = ScreenAwakeController.shared
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
+    private var selectedTheme: AppThemePreference {
+        .resolved(selectedThemeRawValue)
+    }
 
     var body: some Scene {
         WindowGroup {
@@ -17,6 +23,7 @@ struct NasFinderApp: App {
                 .environmentObject(favoriteStore)
                 .environmentObject(browserFavoritesStore)
                 .tint(SkyBreezeTheme.accent)
+                .preferredColorScheme(selectedTheme.preferredColorScheme)
                 .task {
                     browserFavoritesStore.importPendingSharedArchives()
                     inboxStore.reload()
