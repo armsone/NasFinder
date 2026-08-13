@@ -237,7 +237,8 @@ enum ThemeServicePalette {
     ) -> Color {
         let palette = colors(for: theme)
         let stableIndex = identifier.utf8.reduce(0) { ($0 &* 31) &+ Int($1) }
-        return palette[stableIndex.magnitude % UInt(palette.count)]
+        let index = Int(stableIndex.magnitude % UInt(palette.count))
+        return palette[index]
     }
 }
 
