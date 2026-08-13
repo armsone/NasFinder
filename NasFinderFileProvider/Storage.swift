@@ -46,9 +46,6 @@ enum ProviderConnectionKind: String, Codable, Sendable {
     case smb
     case webDAV
     case ftp
-    case dropbox
-    case oneDrive
-    case googleDrive
 }
 
 struct ProviderConnection: Codable, Sendable {
@@ -71,7 +68,7 @@ struct ProviderConnection: Codable, Sendable {
             return trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
         case .sftp:
             return trimmed.isEmpty ? "." : trimmed
-        case .smb, .webDAV, .ftp, .dropbox, .oneDrive, .googleDrive:
+        case .smb, .webDAV, .ftp:
             guard !trimmed.isEmpty, trimmed != "/" else { return "/" }
             return trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
         }
@@ -172,7 +169,7 @@ actor NasFinderFileProviderStorage {
                     connection: connection,
                     password: password
                 )
-            case .smb, .webDAV, .ftp, .dropbox, .oneDrive, .googleDrive:
+            case .smb, .webDAV, .ftp:
                 throw NasFinderFileProviderErrors.unsupportedConnection
             }
             return Context(connection: connection, backend: backend)
@@ -586,7 +583,7 @@ private enum ProviderFileVisibilityPolicy {
     }
 }
 
-struct SharedKeychainCredentialReader {
+private struct SharedKeychainCredentialReader {
     private enum LookupResult {
         case success(String)
         case failure(OSStatus)
