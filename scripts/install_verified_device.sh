@@ -50,6 +50,11 @@ xcodebuild -quiet \
     test \
     "${test_arguments[@]}"
 
+# Device test products include the full VLCKit framework and can consume
+# several gigabytes. They are no longer needed once the selected tests pass;
+# release them before producing the separately signed install build.
+rm -rf "$derived_data-device-tests"
+
 [[ "$(git rev-parse HEAD)" == "$verified_sha" ]] || {
     echo "error: 테스트 중 HEAD가 변경됐습니다." >&2
     exit 1
