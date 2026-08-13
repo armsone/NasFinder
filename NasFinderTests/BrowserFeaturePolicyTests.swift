@@ -248,6 +248,40 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         XCTAssertEqual(NasFinderBrowserSessionStore.retentionInterval, 1_800)
     }
 
+    func testSuperThumbnailIncludesPhotosOnlyOnUnmeteredWiFi() {
+        let video = item(name: "movie.mkv")
+        let photo = item(name: "photo.heic")
+
+        XCTAssertTrue(
+            SuperThumbnailMediaPolicy.includes(
+                video,
+                includeImages: true,
+                isUnmeteredWiFi: false
+            )
+        )
+        XCTAssertTrue(
+            SuperThumbnailMediaPolicy.includes(
+                photo,
+                includeImages: true,
+                isUnmeteredWiFi: true
+            )
+        )
+        XCTAssertFalse(
+            SuperThumbnailMediaPolicy.includes(
+                photo,
+                includeImages: true,
+                isUnmeteredWiFi: false
+            )
+        )
+        XCTAssertFalse(
+            SuperThumbnailMediaPolicy.includes(
+                photo,
+                includeImages: false,
+                isUnmeteredWiFi: true
+            )
+        )
+    }
+
     private func item(
         name: String,
         size: Int64? = nil,

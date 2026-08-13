@@ -2,6 +2,16 @@ import Foundation
 import Network
 import UIKit
 
+enum SuperThumbnailMediaPolicy {
+    static func includes(
+        _ item: RemoteFileItem,
+        includeImages: Bool,
+        isUnmeteredWiFi: Bool
+    ) -> Bool {
+        item.isVideo || (includeImages && isUnmeteredWiFi && item.isImage)
+    }
+}
+
 extension Notification.Name {
     static let thumbnailNetworkPathDidChange = Notification.Name(
         "thumbnailNetworkPathDidChange"
@@ -171,6 +181,7 @@ final class ThumbnailPreheater: ObservableObject {
         requiresExternalPower powerOverride: Bool? = nil,
         allowsConstrainedRun: Bool = false,
         generationMode: RemoteVideoThumbnailGenerationMode = .bounded,
+        includesImagesInCompleteRun: Bool = false,
         vaultOptions: SuperThumbnailVaultOptions = .init(
             isEnabled: false,
             timing: .later
@@ -210,6 +221,7 @@ final class ThumbnailPreheater: ObservableObject {
                 requiresExternalPower: requiresExternalPower,
                 allowsConstrainedRun: allowsConstrainedRun,
                 generationMode: generationMode,
+                includesImagesInCompleteRun: includesImagesInCompleteRun,
                 vaultOptions: vaultOptions,
                 service: service
             )
@@ -236,6 +248,7 @@ final class ThumbnailPreheater: ObservableObject {
         requiresExternalPower: Bool,
         allowsConstrainedRun: Bool,
         generationMode: RemoteVideoThumbnailGenerationMode,
+        includesImagesInCompleteRun: Bool,
         vaultOptions: SuperThumbnailVaultOptions,
         service: any RemoteFileService
     ) async {
@@ -262,7 +275,14 @@ final class ThumbnailPreheater: ObservableObject {
                 service: service
             )
             let candidates = generationMode == .completeFile
-                ? collectedCandidates.filter(\.isVideo)
+                ? collectedCandidates.filter {
+                    SuperThumbnailMediaPolicy.includes(
+                        $0,
+                        includeImages: includesImagesInCompleteRun,
+                        isUnmeteredWiFi: ThumbnailNetworkMonitor.shared
+                            .isUnmeteredWiFi
+                    )
+                }
                 : collectedCandidates
             let vaultRun = SuperThumbnailVaultRun(
                 options: generationMode == .completeFile
@@ -819,7 +839,7 @@ final class ThumbnailPreheater: ObservableObject {
         attempt: Int = 0,
         usesCellularBudget: Bool = false
     ) async throws -> ThumbnailPreheatPayload? {
-        if generationMode != .completeFile,
+        if (generationMode != .completeFile || item.isImage),
            !RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
                for: item,
                service: service

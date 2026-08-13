@@ -79,6 +79,7 @@ private struct SuperThumbnailSelection: Equatable {
 
 private struct CompactJobAssessment: Equatable {
     let videoCount: Int
+    let photoCount: Int
     let totalBytes: Int64
 }
 
@@ -120,6 +121,7 @@ struct SuperThumbnailView: View {
     @AppStorage("superThumbnail.folderHistory.v1") private var folderHistoryJSON = ""
     @AppStorage("superThumbnail.hasPendingSession.v1") private var hasPendingSession = false
     @AppStorage("superThumbnail.nasVaultEnabled.v1") private var nasVaultEnabled = true
+    @AppStorage("superThumbnail.includePhotos.v1") private var includePhotos = true
     @AppStorage("superThumbnail.nasVaultTiming.v1")
     private var nasVaultTimingRaw = SuperThumbnailVaultTiming.now.rawValue
 
@@ -128,6 +130,7 @@ struct SuperThumbnailView: View {
             VStack(spacing: 16) {
                 folderSelection
                 hero
+                mediaScope
                 vaultOptions
                 requirements
                 startButton
@@ -285,6 +288,34 @@ struct SuperThumbnailView: View {
         .font(.caption2)
         .foregroundStyle(.secondary)
         .padding(.horizontal, 4)
+    }
+
+    private var mediaScope: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("처리 범위")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Picker("처리 범위", selection: $includePhotos) {
+                Text("영상 + 사진").tag(true)
+                Text("영상만").tag(false)
+            }
+            .pickerStyle(.segmented)
+            .onChange(of: includePhotos) { _, _ in
+                if let selection { assessCompactJob(for: selection) }
+            }
+            Text(
+                includePhotos
+                    ? "사진은 NAS가 제공하는 작은 미리보기만 사용하며, 셀룰러에서는 건너뜁니다."
+                    : "영상 파일만 처리합니다."
+            )
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .background(
+            SkyBreezeTheme.thumbnailSurface,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
     }
 
     private var vaultOptions: some View {
@@ -539,7 +570,9 @@ struct SuperThumbnailView: View {
         if selection == nil { return "먼저 처리할 폴더를 선택하세요." }
         if hasStandardConditions { return "시작할 준비가 됐습니다." }
         if let compactJobAssessment {
-            return "소규모 작업 · 영상 \(compactJobAssessment.videoCount)개 · "
+            let mediaCount = compactJobAssessment.videoCount
+                + compactJobAssessment.photoCount
+            return "소규모 작업 · 미디어 \(mediaCount)개 · "
                 + formatted(compactJobAssessment.totalBytes)
         }
         if isAssessingCompactJob { return "폴더를 확인하고 있습니다." }
@@ -640,6 +673,7 @@ struct SuperThumbnailView: View {
                     requiresExternalPower: true,
                     allowsConstrainedRun: allowsConstrainedRun,
                     generationMode: .completeFile,
+                    includesImagesInCompleteRun: includePhotos,
                     vaultOptions: SuperThumbnailVaultOptions(
                         isEnabled: shouldUseVault,
                         timing: vaultTiming
@@ -725,8 +759,11 @@ struct SuperThumbnailView: View {
                 var pendingPaths = [selection.path]
                 var visitedPaths = Set<String>()
                 var videoCount = 0
+                var photoCount = 0
                 var totalBytes: Int64 = 0
                 let maximumBytes: Int64 = 1_024 * 1_024 * 1_024
+                let includesPhotosInAssessment = includePhotos
+                    && ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
 
                 while let path = pendingPaths.first {
                     pendingPaths.removeFirst()
@@ -736,17 +773,20 @@ struct SuperThumbnailView: View {
                             RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name)
                         }
                     pendingPaths.append(contentsOf: children.filter(\.isDirectory).map(\.path))
-                    for video in children where video.isVideo {
-                        guard let size = video.size, size >= 0 else { return }
-                        videoCount += 1
+                    for item in children where item.isVideo
+                        || (includesPhotosInAssessment && item.isImage) {
+                        guard let size = item.size, size >= 0 else { return }
+                        if item.isVideo { videoCount += 1 } else { photoCount += 1 }
                         totalBytes += size
-                        guard videoCount < 20, totalBytes <= maximumBytes else { return }
+                        guard videoCount + photoCount < 20,
+                              totalBytes <= maximumBytes else { return }
                     }
                 }
                 guard compactAssessmentID == assessmentID,
                       selection == self.selection else { return }
                 compactJobAssessment = CompactJobAssessment(
                     videoCount: videoCount,
+                    photoCount: photoCount,
                     totalBytes: totalBytes
                 )
             } catch {
