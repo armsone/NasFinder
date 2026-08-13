@@ -25,6 +25,7 @@ struct NasFinderApp: App {
                 .tint(SkyBreezeTheme.accent)
                 .preferredColorScheme(selectedTheme.preferredColorScheme)
                 .task {
+                    await FileProviderThumbnailCache.shared.migrateExistingCachesIfNeeded()
                     browserFavoritesStore.importPendingSharedArchives()
                     inboxStore.reload()
                 }
