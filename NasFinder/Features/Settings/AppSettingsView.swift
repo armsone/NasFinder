@@ -13,9 +13,9 @@ struct AppSettingsView: View {
 
     var body: some View {
         List {
+            themePaletteSection
             AppIconPickerSection(compact: true)
             screenAwakeSection
-            themePaletteSection
             filesAppIntegrationSection
             openSourceSection
         }
@@ -59,74 +59,30 @@ struct AppSettingsView: View {
         }
     }
 
-    private let colors: [ThemeColorRole] = [
-        ThemeColorRole(
-            name: "주요 글자",
-            description: "이름과 핵심 정보",
-            lightColor: Color(red: 0.11, green: 0.11, blue: 0.12),
-            darkColor: Color(red: 0.95, green: 0.95, blue: 0.97)
-        ),
-        ThemeColorRole(
-            name: "보조 글자",
-            description: "패널 아이콘과 보조 정보",
-            lightColor: Color(red: 0.43, green: 0.43, blue: 0.44),
-            darkColor: Color(red: 0.68, green: 0.68, blue: 0.70)
-        ),
-        ThemeColorRole(
-            name: "설명",
-            description: "조용한 안내와 메타 정보",
-            lightColor: Color(red: 0.55, green: 0.55, blue: 0.58),
-            darkColor: Color(red: 0.55, green: 0.55, blue: 0.58)
-        ),
-        ThemeColorRole(
-            name: "선택",
-            description: "Apple 시스템 파란색",
-            lightColor: Color(red: 0.00, green: 0.48, blue: 1.00),
-            darkColor: Color(red: 0.04, green: 0.52, blue: 1.00)
-        ),
-        ThemeColorRole(
-            name: "NAS",
-            description: "Synology 네트워크 위치",
-            lightColor: Color(red: 0.00, green: 0.48, blue: 1.00),
-            darkColor: Color(red: 0.04, green: 0.52, blue: 1.00)
-        ),
-        ThemeColorRole(
-            name: "SFTP",
-            description: "SFTP 네트워크 위치",
-            lightColor: Color(red: 0.20, green: 0.68, blue: 0.31),
-            darkColor: Color(red: 0.19, green: 0.82, blue: 0.35)
-        ),
-        ThemeColorRole(
-            name: "Browser",
-            description: "WWW 네트워크 위치",
-            lightColor: Color(red: 1.00, green: 0.58, blue: 0.00),
-            darkColor: Color(red: 1.00, green: 0.62, blue: 0.04)
-        ),
-        ThemeColorRole(
-            name: "삭제",
-            description: "위험하거나 되돌리기 어려운 동작",
-            lightColor: Color(red: 1.00, green: 0.23, blue: 0.19),
-            darkColor: Color(red: 1.00, green: 0.27, blue: 0.23)
-        ),
-        ThemeColorRole(
-            name: "패널 표면",
-            description: "라이트·다크 모드 적응형 배경",
-            lightColor: Color(red: 0.95, green: 0.95, blue: 0.97),
-            darkColor: Color(red: 0.11, green: 0.11, blue: 0.12)
-        ),
-    ]
-
     private var themePaletteSection: some View {
         Section {
-            HStack(spacing: 6) {
-                ForEach(AppThemePreference.allCases) { theme in
-                    themeCard(theme)
-                        .frame(maxWidth: .infinity)
+            GeometryReader { geometry in
+                let spacing: CGFloat = 8
+                let cardWidth = (geometry.size.width - spacing * 2) / 3
+                VStack(spacing: spacing) {
+                    HStack(spacing: spacing) {
+                        ForEach(Array(AppThemePreference.allCases.prefix(3))) { theme in
+                            themeCard(theme)
+                                .frame(width: cardWidth)
+                        }
+                    }
+                    HStack(spacing: spacing) {
+                        ForEach(Array(AppThemePreference.allCases.dropFirst(3))) { theme in
+                            themeCard(theme)
+                                .frame(width: cardWidth)
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
                 }
             }
-            .padding(.vertical, 2)
+            .frame(height: 216)
             .listRowInsets(
-                EdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 8)
+                EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
             )
 
             SettingsPanelDescription(
@@ -135,37 +91,9 @@ struct AppSettingsView: View {
                     : "선택한 테마는 앱을 다시 열어도 유지됩니다."
             )
 
-            DisclosureGroup("테마 색상 정보") {
-                themeColorDetails
-            }
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
         } header: {
             SettingsSectionHeader(title: "테마", systemImage: "paintpalette")
         }
-    }
-
-    private var themeColorDetails: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(colors.enumerated()), id: \.element.id) { index, role in
-                if index > 0 { Divider() }
-                HStack(spacing: 10) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(role.name)
-                            .foregroundStyle(.primary)
-                        Text(role.description)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    paletteSwatch(role.lightColor, modeName: "낮")
-                    paletteSwatch(role.darkColor, modeName: "밤")
-                }
-                .padding(.vertical, 7)
-                .accessibilityElement(children: .combine)
-            }
-        }
-        .padding(.top, 8)
     }
 
     private func themeCard(_ theme: AppThemePreference) -> some View {
@@ -175,32 +103,25 @@ struct AppSettingsView: View {
                 selectedThemeRawValue = theme.rawValue
             }
         } label: {
-            VStack(spacing: 6) {
-                HStack(spacing: 2) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
                     Image(systemName: theme.systemImage)
-                        .font(.caption)
+                        .font(.caption.weight(.medium))
                     Spacer(minLength: 0)
                     if isSelected {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.caption2)
+                            .font(.caption)
                     }
                 }
                 .foregroundStyle(themePreviewForeground(theme))
 
-                if theme == .digitalRain || theme == .windyMeadow {
-                    Text(theme.title)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(themePreviewForeground(theme))
-                        .lineLimit(1)
-                        .fixedSize()
-                        .rotationEffect(.degrees(-90))
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                } else {
-                    Text(theme.title)
-                        .font(.caption2.weight(.medium))
-                        .foregroundStyle(themePreviewForeground(theme))
-                        .lineLimit(1)
-                }
+                Spacer(minLength: 0)
+
+                Text(theme.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themePreviewForeground(theme))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.68)
 
                 HStack(spacing: 3) {
                     ForEach(Array(ThemeServicePalette.colors(for: theme).prefix(4).enumerated()), id: \.offset) { _, color in
@@ -208,8 +129,8 @@ struct AppSettingsView: View {
                     }
                 }
             }
-            .padding(7)
-            .frame(height: 112)
+            .padding(9)
+            .frame(height: 104)
             .background {
                 ThemePreviewBackground(theme: theme)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -280,16 +201,6 @@ struct AppSettingsView: View {
         }
     }
 
-    private func paletteSwatch(_ color: Color, modeName: String) -> some View {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(color)
-            .frame(width: 38, height: 28)
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(.separator.opacity(0.55), lineWidth: 0.5)
-            }
-            .accessibilityLabel("\(modeName) 모드 색상")
-    }
 }
 
 private struct ThemePreviewBackground: View {
@@ -364,13 +275,4 @@ private struct SettingsIntegrationStep: View {
         }
         .accessibilityElement(children: .combine)
     }
-}
-
-private struct ThemeColorRole: Identifiable {
-    let name: String
-    let description: String
-    let lightColor: Color
-    let darkColor: Color
-
-    var id: String { name }
 }

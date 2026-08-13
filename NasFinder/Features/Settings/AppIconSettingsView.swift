@@ -102,36 +102,48 @@ struct AppIconPickerSection: View {
                         spacing: 16
                     ) {
                         ForEach(AppIconChoice.allCases) { icon in
-                            VStack(spacing: 10) {
-                                Image(icon.previewAssetName)
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(width: iconSide, height: iconSide)
-                                    .clipShape(RoundedRectangle(cornerRadius: iconCornerRadius, style: .continuous))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: iconCornerRadius, style: .continuous)
+                            Button {
+                                select(icon)
+                            } label: {
+                                VStack(spacing: 8) {
+                                    Image(icon.previewAssetName)
+                                        .resizable()
+                                        .scaledToFit()
+                                        .frame(width: iconSide, height: iconSide)
+                                        .clipShape(
+                                            RoundedRectangle(
+                                                cornerRadius: iconCornerRadius,
+                                                style: .continuous
+                                            )
+                                        )
+                                        .overlay {
+                                            RoundedRectangle(
+                                                cornerRadius: iconCornerRadius,
+                                                style: .continuous
+                                            )
                                             .stroke(.primary.opacity(0.08), lineWidth: 1)
-                                    }
-                                    .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                                        }
+                                        .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
 
-                                Button {
-                                    select(icon)
-                                } label: {
-                                    Group {
+                                    HStack(spacing: 4) {
+                                        Text(icon.title)
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.8)
                                         if pendingIcon == icon {
-                                            ProgressView()
-                                        } else {
-                                            Text(selectedIcon == icon ? "선택됨" : "선택")
+                                            ProgressView().controlSize(.mini)
+                                        } else if selectedIcon == icon {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundStyle(.tint)
                                         }
                                     }
                                     .font(.caption.weight(.medium))
                                     .frame(maxWidth: .infinity)
                                 }
-                                .buttonStyle(.bordered)
-                                .disabled(isChangingIcon || selectedIcon == icon)
                             }
+                            .buttonStyle(.plain)
+                            .disabled(isChangingIcon || selectedIcon == icon)
                             .frame(maxWidth: .infinity)
-                            .accessibilityElement(children: .contain)
+                            .contentShape(Rectangle())
                             .accessibilityLabel("\(icon.title) 아이콘")
                             .accessibilityValue(selectedIcon == icon ? "선택됨" : "선택되지 않음")
                         }
