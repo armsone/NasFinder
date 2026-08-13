@@ -270,6 +270,89 @@ final class RemotePreviewStateTests: XCTestCase {
         XCTAssertEqual(report?.totalCount, 1)
     }
 
+    func testSuperThumbnailVaultResumeReportPersistsFolderUploadProgress() async {
+        let suiteName = "SuperThumbnailVaultResumeTests.\(UUID().uuidString)"
+        defer {
+            UserDefaults(suiteName: suiteName)?
+                .removePersistentDomain(forName: suiteName)
+        }
+        let store = SuperThumbnailQueueStore(
+            userDefaults: UserDefaults(suiteName: suiteName)!
+        )
+        let connectionID = UUID()
+        let first = remoteItem(
+            connectionID: connectionID,
+            path: "/share/movies/first.mkv"
+        )
+        let second = remoteItem(
+            connectionID: connectionID,
+            path: "/share/movies/second.mkv"
+        )
+        let third = remoteItem(
+            connectionID: connectionID,
+            path: "/share/photos/third.mov"
+        )
+        let items = [first, second, third]
+
+        _ = await store.attempts(for: items, sessionKey: "session")
+        for item in items {
+            _ = await store.markCached(item, sessionKey: "session")
+        }
+        await store.prepareVault(for: items, sessionKey: "session")
+        await store.markVaultPending(first, sessionKey: "session")
+        await store.markVaultPending(second, sessionKey: "session")
+        await store.recordVaultResult(
+            storedItemIDs: [first.id],
+            attemptedItemIDs: [first.id, second.id],
+            errorDescription: "upload failed",
+            sessionKey: "session"
+        )
+
+        var report = await store.report(sessionKey: "session")
+        XCTAssertEqual(report?.vaultUploadedCount, 1)
+        XCTAssertEqual(report?.vaultFailedCount, 1)
+        XCTAssertEqual(report?.vaultWaitingThumbnailCount, 1)
+        XCTAssertTrue(report?.hasWorkToResume == true)
+        XCTAssertEqual(report?.vaultFolders.count, 2)
+
+        await store.markVaultPending(third, sessionKey: "session")
+        let verifiedAt = Date(timeIntervalSince1970: 1_234)
+        await store.recordVaultVerification(
+            storedItemIDs: Set(items.map(\.id)),
+            verifiedAt: verifiedAt,
+            sessionKey: "session"
+        )
+        report = await store.report(sessionKey: "session")
+        XCTAssertEqual(report?.vaultUploadedCount, 3)
+        XCTAssertEqual(report?.vaultPendingCount, 0)
+        XCTAssertEqual(report?.vaultFailedCount, 0)
+        XCTAssertEqual(report?.vaultLastVerifiedAt, verifiedAt)
+        XCTAssertFalse(report?.hasWorkToResume == true)
+    }
+
+    func testSuperThumbnailResumePrioritizesPreviousFailuresThenEarlierStages() {
+        let connectionID = UUID()
+        let newItem = remoteItem(connectionID: connectionID, path: "/new.mkv")
+        let retryItem = remoteItem(connectionID: connectionID, path: "/retry.mkv")
+        let failedItem = remoteItem(connectionID: connectionID, path: "/failed.mkv")
+        let recoveryItem = remoteItem(connectionID: connectionID, path: "/recovery.mkv")
+
+        let ordered = SuperThumbnailResumePolicy.orderedCandidates(
+            [newItem, retryItem, failedItem, recoveryItem],
+            savedAttempts: [
+                retryItem.id: 1,
+                failedItem.id: 2,
+                recoveryItem.id: 2,
+            ],
+            previousFailureIDs: [failedItem.id]
+        )
+
+        XCTAssertEqual(
+            ordered.map(\.id),
+            [failedItem.id, newItem.id, retryItem.id, recoveryItem.id]
+        )
+    }
+
     func testTrafficMeasuringServiceForwardsBoundedThumbnailLimit() async throws {
         let probe = BoundedThumbnailProbe()
         let base = BoundedThumbnailProbeService(probe: probe)

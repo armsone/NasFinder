@@ -163,10 +163,13 @@ struct SuperThumbnailView: View {
             SuperThumbnailProgressView(
                 preheater: preheater,
                 folderTitle: selection?.title ?? "Selected Folder",
+                sessionKey: selection?.id ?? "",
                 onCancel: preheater.cancel,
                 onClose: {
                     hasPendingSession = preheater.completedCount < preheater.totalCount
                         || preheater.failedCount > 0
+                        || preheater.vaultPendingCount > 0
+                        || preheater.vaultFailedCount > 0
                     isShowingProgress = false
                     Task { await refreshStatistics() }
                 }
@@ -606,7 +609,8 @@ struct SuperThumbnailView: View {
 
     private func launchProcessing(
         selection: SuperThumbnailSelection,
-        allowsConstrainedRun: Bool
+        allowsConstrainedRun: Bool,
+        resumeExistingVault: Bool = false
     ) {
         isPreparing = true
         hasPendingSession = true
@@ -624,6 +628,16 @@ struct SuperThumbnailView: View {
                     .filter {
                         RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name)
                     }
+                let savedReport = resumeExistingVault
+                    ? await SuperThumbnailQueueStore.shared.report(
+                        sessionKey: selection.id
+                    )
+                    : nil
+                let shouldUseVault = nasVaultEnabled
+                    || savedReport?.vaultFolders.isEmpty == false
+                if shouldUseVault != nasVaultEnabled {
+                    nasVaultEnabled = shouldUseVault
+                }
                 isShowingProgress = true
                 preheater.start(
                     rootItems: items,
@@ -633,7 +647,7 @@ struct SuperThumbnailView: View {
                     allowsConstrainedRun: allowsConstrainedRun,
                     generationMode: .completeFile,
                     vaultOptions: SuperThumbnailVaultOptions(
-                        isEnabled: nasVaultEnabled,
+                        isEnabled: shouldUseVault,
                         timing: vaultTiming
                     ),
                     service: service
@@ -650,12 +664,13 @@ struct SuperThumbnailView: View {
         hasPendingSession = true
         guard hasStandardConditions else {
             assessCompactJob(for: resumeSelection)
-            preparationError = "이전 미완료 작업을 계속하려면 Wi‑Fi와 충전 연결이 필요합니다."
+            preparationError = "Wi‑Fi 연결과 충전을 기다립니다."
             return
         }
         launchProcessing(
             selection: resumeSelection,
-            allowsConstrainedRun: false
+            allowsConstrainedRun: false,
+            resumeExistingVault: true
         )
     }
 
@@ -840,6 +855,9 @@ private struct SuperThumbnailReportView: View {
 
                 if let report {
                     reportSummary(report)
+                    if !report.vaultFolders.isEmpty {
+                        vaultSummary(report)
+                    }
                     reportActions(report)
                     if !report.failures.isEmpty {
                         failureSummary(report.failures)
@@ -878,7 +896,7 @@ private struct SuperThumbnailReportView: View {
                     dismiss()
                     onResume()
                 } label: {
-                    Label("미완료 다시 진행", systemImage: "arrow.clockwise")
+                    Label("미완료부터 이어서 진행", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
@@ -960,6 +978,70 @@ private struct SuperThumbnailReportView: View {
         .font(.caption.monospacedDigit())
     }
 
+    private func vaultSummary(
+        _ report: SuperThumbnailSessionReport
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 11) {
+            HStack {
+                Label("NAS Vault", systemImage: "externaldrive.fill")
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                Text("보관 \(report.vaultUploadedCount) · 대기 \(report.vaultPendingCount) · 실패 \(report.vaultFailedCount)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+            Text(
+                "이어하기 순서 · 생성 실패 \(report.failures.count) → "
+                    + "업로드 미완료 \(report.vaultPendingCount + report.vaultFailedCount) → "
+                    + "신규·변경 \(max(report.pendingCount - report.failures.count, 0)) → 전체 확인"
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            ForEach(report.vaultFolders) { folder in
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text((folder.path as NSString).lastPathComponent.isEmpty
+                        ? folder.path
+                        : (folder.path as NSString).lastPathComponent)
+                        .font(.caption.weight(.medium))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    HStack(spacing: 10) {
+                        Text("보관 \(folder.uploadedCount)/\(folder.totalCount)")
+                        if folder.waitingThumbnailCount > 0 {
+                            Text("생성 대기 \(folder.waitingThumbnailCount)")
+                        }
+                        if folder.pendingCount > 0 {
+                            Text("업로드 대기 \(folder.pendingCount)")
+                        }
+                        if folder.failedCount > 0 {
+                            Text("실패 \(folder.failedCount)")
+                        }
+                    }
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    if let errorDescription = folder.errorDescription {
+                        Text(errorDescription)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+            }
+            if let verifiedAt = report.vaultLastVerifiedAt {
+                Text("마지막 전체 확인 · \(verifiedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(15)
+        .background(
+            SkyBreezeTheme.thumbnailSurface,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+    }
+
     private func failureSummary(
         _ failures: [SuperThumbnailFailureRecord]
     ) -> some View {
@@ -1016,11 +1098,13 @@ private struct SuperThumbnailReportView: View {
 private struct SuperThumbnailProgressView: View {
     @ObservedObject var preheater: ThumbnailPreheater
     let folderTitle: String
+    let sessionKey: String
     let onCancel: () -> Void
     let onClose: () -> Void
     @State private var screenAwakeActivityID = UUID()
     @State private var isOverflowExpanded = true
     @State private var isFailurePanelExpanded = false
+    @State private var vaultReport: SuperThumbnailSessionReport?
 
     var body: some View {
         NavigationStack {
@@ -1046,6 +1130,13 @@ private struct SuperThumbnailProgressView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .center)
 
+                    if let workPhase = preheater.workPhase {
+                        Text(workPhase)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center)
+                    }
+
                     if let pauseReason = preheater.pauseReason {
                         Text(pauseReason)
                             .font(.caption)
@@ -1067,12 +1158,25 @@ private struct SuperThumbnailProgressView: View {
                         progressMetric("Already Done", preheater.cachedCount)
                         progressMetric("Failed", preheater.failedCount)
                     }
-                    if preheater.vaultRestoredCount > 0 || preheater.vaultStoredCount > 0 {
+                    if preheater.vaultRestoredCount > 0
+                        || preheater.vaultStoredCount > 0
+                        || preheater.vaultPendingCount > 0
+                        || preheater.vaultFailedCount > 0 {
                         Text(
                             "NAS Vault · 가져옴 \(preheater.vaultRestoredCount) · "
-                                + "보관 \(preheater.vaultStoredCount)"
+                                + "보관 확인 \(preheater.vaultStoredCount) · "
+                                + "대기 \(preheater.vaultPendingCount) · "
+                                + "실패 \(preheater.vaultFailedCount)"
                         )
                         .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
+                    if let verifiedAt = preheater.vaultLastVerifiedAt {
+                        Text(
+                            "NAS Vault 전체 확인 · "
+                                + verifiedAt.formatted(date: .omitted, time: .shortened)
+                        )
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
                     }
                     if let vaultErrorMessage = preheater.vaultErrorMessage {
@@ -1126,6 +1230,12 @@ private struct SuperThumbnailProgressView: View {
             }
             .onDisappear {
                 ScreenAwakeController.shared.finishForcedActivity(screenAwakeActivityID)
+            }
+            .task(id: preheater.isRunning) {
+                guard !preheater.isRunning, !sessionKey.isEmpty else { return }
+                vaultReport = await SuperThumbnailQueueStore.shared.report(
+                    sessionKey: sessionKey
+                )
             }
         }
     }
@@ -1439,6 +1549,49 @@ private struct SuperThumbnailProgressView: View {
                 Color.blue.opacity(0.035),
                 in: RoundedRectangle(cornerRadius: 12, style: .continuous)
             )
+
+            if let vaultReport, !vaultReport.vaultFolders.isEmpty {
+                Divider()
+                VStack(alignment: .leading, spacing: 9) {
+                    HStack {
+                        Label("NAS Vault", systemImage: "externaldrive.fill")
+                            .font(.caption.weight(.medium))
+                        Spacer()
+                        Text(
+                            "보관 \(vaultReport.vaultUploadedCount) · "
+                                + "대기 \(vaultReport.vaultPendingCount) · "
+                                + "실패 \(vaultReport.vaultFailedCount)"
+                        )
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
+                    ForEach(vaultReport.vaultFolders) { folder in
+                        HStack(spacing: 8) {
+                            Text((folder.path as NSString).lastPathComponent)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer()
+                            Text("\(folder.uploadedCount)/\(folder.totalCount)")
+                            if folder.pendingCount > 0 {
+                                Text("대기 \(folder.pendingCount)")
+                            }
+                            if folder.failedCount > 0 {
+                                Text("실패 \(folder.failedCount)")
+                            }
+                        }
+                        .font(.caption2.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
+                    if let verifiedAt = vaultReport.vaultLastVerifiedAt {
+                        Text(
+                            "마지막 전체 확인 · "
+                                + verifiedAt.formatted(date: .abbreviated, time: .shortened)
+                        )
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+            }
 
             if !preheater.failedItems.isEmpty {
                 Divider()

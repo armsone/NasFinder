@@ -44,6 +44,23 @@ private struct SuperThumbnailWorkItem {
     let attempt: Int
 }
 
+enum SuperThumbnailResumePolicy {
+    static func orderedCandidates(
+        _ candidates: [RemoteFileItem],
+        savedAttempts: [String: Int],
+        previousFailureIDs: Set<String>
+    ) -> [RemoteFileItem] {
+        let failed = candidates.filter { previousFailureIDs.contains($0.id) }
+        let regular = (0...2).flatMap { attempt in
+            candidates.filter {
+                !previousFailureIDs.contains($0.id)
+                    && min(max(savedAttempts[$0.id] ?? 0, 0), 2) == attempt
+            }
+        }
+        return failed + regular
+    }
+}
+
 final class ThumbnailNetworkMonitor: @unchecked Sendable {
     static let shared = ThumbnailNetworkMonitor()
 
@@ -101,6 +118,9 @@ final class ThumbnailPreheater: ObservableObject {
     @Published private(set) var cachedCount = 0
     @Published private(set) var vaultRestoredCount = 0
     @Published private(set) var vaultStoredCount = 0
+    @Published private(set) var vaultPendingCount = 0
+    @Published private(set) var vaultFailedCount = 0
+    @Published private(set) var vaultLastVerifiedAt: Date?
     @Published private(set) var vaultErrorMessage: String?
     @Published private(set) var failedCount = 0
     @Published private(set) var failedItemNames: [String] = []
@@ -118,6 +138,7 @@ final class ThumbnailPreheater: ObservableObject {
     @Published private(set) var queuedRecoveryCount = 0
     @Published private(set) var estimatedTimeRemaining: TimeInterval?
     @Published private(set) var pauseReason: String?
+    @Published private(set) var workPhase: String?
     @Published private(set) var recentGeneratedThumbnails: [GeneratedThumbnailPreview] = []
     @Published var statusMessage: String?
     @Published var errorMessage: String?
@@ -214,6 +235,7 @@ final class ThumbnailPreheater: ObservableObject {
             currentItemTotalBytes = 0
             currentItemStartedAt = nil
             pauseReason = nil
+            workPhase = nil
             task = nil
         }
 
@@ -254,6 +276,7 @@ final class ThumbnailPreheater: ObservableObject {
             var appliedMaximumDataBytes = maximumDataBytes
 
             let queueSessionKey = "\(service.connection.id.uuidString)|\(rootPath)"
+            let usesVault = generationMode == .completeFile && vaultOptions.isEnabled
             let savedAttempts = generationMode == .completeFile
                 ? await SuperThumbnailQueueStore.shared.attempts(
                     for: candidates,
@@ -272,6 +295,13 @@ final class ThumbnailPreheater: ObservableObject {
                     "\($0.name) · \($0.reason)"
                 }
                 failedCount = failedItems.count
+            }
+            if usesVault {
+                await SuperThumbnailQueueStore.shared.prepareVault(
+                    for: candidates,
+                    sessionKey: queueSessionKey
+                )
+                await refreshVaultProgress(sessionKey: queueSessionKey)
             }
             var pendingCandidates: [RemoteFileItem] = []
             if generationMode == .completeFile {
@@ -312,10 +342,13 @@ final class ThumbnailPreheater: ObservableObject {
                             }
                             failedCount = failedItems.count
                         }
-                        applyVaultResult(await vaultRun.markCompleted(
-                            item,
-                            localData: Self.localSuperThumbnailData
-                        ))
+                        if usesVault {
+                            await SuperThumbnailQueueStore.shared.markVaultPending(
+                                item,
+                                sessionKey: queueSessionKey
+                            )
+                            await vaultRun.registerCompleted(item)
+                        }
                     } else {
                         pendingCandidates.append(item)
                     }
@@ -323,20 +356,50 @@ final class ThumbnailPreheater: ObservableObject {
             } else {
                 pendingCandidates = candidates
             }
-            var workQueue: [SuperThumbnailWorkItem] = (0...2).flatMap {
-                attempt -> [SuperThumbnailWorkItem] in
-                pendingCandidates.compactMap {
-                    item -> SuperThumbnailWorkItem? in
-                    let savedAttempt = savedAttempts[item.id] ?? 0
-                    guard savedAttempt == attempt else { return nil }
-                    return SuperThumbnailWorkItem(item: item, attempt: attempt)
-                }
+            let previousFailureIDs = Set(failedItems.map(\.itemID))
+            let orderedCandidates = SuperThumbnailResumePolicy.orderedCandidates(
+                pendingCandidates,
+                savedAttempts: savedAttempts,
+                previousFailureIDs: previousFailureIDs
+            )
+            let recoveryCandidates = orderedCandidates.prefix {
+                previousFailureIDs.contains($0.id)
             }
+            let regularCandidates = orderedCandidates.dropFirst(recoveryCandidates.count)
+            let recoveryQueue = recoveryCandidates.map {
+                SuperThumbnailWorkItem(
+                    item: $0,
+                    attempt: savedAttempts[$0.id] ?? 2
+                )
+            }
+            let regularQueue: [SuperThumbnailWorkItem] = regularCandidates.map { item in
+                SuperThumbnailWorkItem(
+                    item: item,
+                    attempt: min(max(savedAttempts[item.id] ?? 0, 0), 2)
+                )
+            }
+            var workQueue = recoveryQueue + regularQueue
+            let recoveryWorkCount = recoveryQueue.count
+            var didFlushResumeUploads = false
             var workIndex = 0
+            workPhase = recoveryWorkCount > 0
+                ? "실패한 썸네일 다시 만들기"
+                : (usesVault ? "NAS Vault 미완료 업로드" : "썸네일 만들기")
             updateQueueCounts(workQueue, from: workIndex)
             var reachedDataLimit = false
             var reachedPreviouslyUsedDataLimit = false
             while workIndex < workQueue.count {
+                if usesVault,
+                   !didFlushResumeUploads,
+                   workIndex >= recoveryWorkCount {
+                    didFlushResumeUploads = true
+                    workPhase = "NAS Vault 미완료 업로드"
+                    await applyVaultResult(
+                        await vaultRun.finish(localData: Self.localSuperThumbnailData),
+                        sessionKey: queueSessionKey
+                    )
+                    workPhase = "신규·변경 파일 처리"
+                }
                 let work = workQueue[workIndex]
                 workIndex += 1
                 let item = work.item
@@ -396,10 +459,23 @@ final class ThumbnailPreheater: ObservableObject {
                             name: item.name,
                             data: cachedThumbnailData
                         )
-                        applyVaultResult(await vaultRun.markCompleted(
-                            item,
-                            localData: Self.localSuperThumbnailData
-                        ))
+                        if usesVault {
+                            await SuperThumbnailQueueStore.shared.markVaultPending(
+                                item,
+                                sessionKey: queueSessionKey
+                            )
+                        }
+                        if workIndex <= recoveryWorkCount {
+                            await vaultRun.registerCompleted(item)
+                        } else {
+                            await applyVaultResult(
+                                await vaultRun.markCompleted(
+                                    item,
+                                    localData: Self.localSuperThumbnailData
+                                ),
+                                sessionKey: queueSessionKey
+                            )
+                        }
                     }
                     estimatedTimeRemaining = etaEstimator.totalEstimate(
                         for: workQueue.dropFirst(workIndex).map { $0.item },
@@ -442,6 +518,7 @@ final class ThumbnailPreheater: ObservableObject {
                     generationMode: generationMode
                 )
                 var deferredForLater = false
+                var didCompleteThumbnail = false
 
                 do {
                     if let payload = try await thumbnailData(
@@ -474,6 +551,7 @@ final class ThumbnailPreheater: ObservableObject {
                             )
                         }
                         generatedCount += 1
+                        didCompleteThumbnail = true
                         if generationMode == .completeFile {
                             successAttemptCounts[work.attempt] += 1
                             failedItems.removeAll { $0.itemID == item.id }
@@ -596,11 +674,24 @@ final class ThumbnailPreheater: ObservableObject {
                     generationMode: generationMode
                 )
                 completedCount += 1
-                if generationMode == .completeFile {
-                    applyVaultResult(await vaultRun.markCompleted(
-                        item,
-                        localData: Self.localSuperThumbnailData
-                    ))
+                if generationMode == .completeFile, didCompleteThumbnail {
+                    if usesVault {
+                        await SuperThumbnailQueueStore.shared.markVaultPending(
+                            item,
+                            sessionKey: queueSessionKey
+                        )
+                    }
+                    if workIndex <= recoveryWorkCount {
+                        await vaultRun.registerCompleted(item)
+                    } else {
+                        await applyVaultResult(
+                            await vaultRun.markCompleted(
+                                item,
+                                localData: Self.localSuperThumbnailData
+                            ),
+                            sessionKey: queueSessionKey
+                        )
+                    }
                 }
                 currentItemTransferredBytes = 0
                 currentItemTotalBytes = 0
@@ -611,11 +702,30 @@ final class ThumbnailPreheater: ObservableObject {
             }
 
             if generationMode == .completeFile {
-                applyVaultResult(await vaultRun.finish(
-                    localData: Self.localSuperThumbnailData
-                ))
+                if usesVault { workPhase = "NAS Vault 미완료 업로드" }
+                await applyVaultResult(
+                    await vaultRun.finish(localData: Self.localSuperThumbnailData),
+                    sessionKey: queueSessionKey
+                )
                 try Task.checkCancellation()
+                if usesVault {
+                    do {
+                        workPhase = "전체 파일과 NAS Vault 확인"
+                        let storedItemIDs = try await vaultRun.verifyStoredItemIDs()
+                        let verifiedAt = Date()
+                        await SuperThumbnailQueueStore.shared.recordVaultVerification(
+                            storedItemIDs: storedItemIDs,
+                            verifiedAt: verifiedAt,
+                            sessionKey: queueSessionKey
+                        )
+                        vaultLastVerifiedAt = verifiedAt
+                        await refreshVaultProgress(sessionKey: queueSessionKey)
+                    } catch {
+                        vaultErrorMessage = "전체 확인 대기 · \(error.localizedDescription)"
+                    }
+                }
             }
+            workPhase = nil
 
             let limitText = service.connection.kind == .sftp
                 && appliedMaximumDataBytes == Self.maximumSFTPDataBytes
@@ -832,11 +942,30 @@ final class ThumbnailPreheater: ObservableObject {
             return nil
         }
 
-    private func applyVaultResult(_ result: SuperThumbnailVaultStoreResult) {
+    private func applyVaultResult(
+        _ result: SuperThumbnailVaultStoreResult,
+        sessionKey: String
+    ) async {
         vaultStoredCount += result.storedCount
         if result.didAttempt {
             vaultErrorMessage = result.errorDescription
+            await SuperThumbnailQueueStore.shared.recordVaultResult(
+                storedItemIDs: result.storedItemIDs,
+                attemptedItemIDs: result.attemptedItemIDs,
+                errorDescription: result.errorDescription,
+                sessionKey: sessionKey
+            )
+            await refreshVaultProgress(sessionKey: sessionKey)
         }
+    }
+
+    private func refreshVaultProgress(sessionKey: String) async {
+        guard let report = await SuperThumbnailQueueStore.shared.report(
+            sessionKey: sessionKey
+        ) else { return }
+        vaultPendingCount = report.vaultPendingCount
+        vaultFailedCount = report.vaultFailedCount
+        vaultLastVerifiedAt = report.vaultLastVerifiedAt
     }
 
     private func normalizedSuccessCounts(_ counts: [Int]) -> [Int] {
@@ -1052,6 +1181,9 @@ final class ThumbnailPreheater: ObservableObject {
         cachedCount = 0
         vaultRestoredCount = 0
         vaultStoredCount = 0
+        vaultPendingCount = 0
+        vaultFailedCount = 0
+        vaultLastVerifiedAt = nil
         vaultErrorMessage = nil
         failedCount = 0
         failedItemNames = []
@@ -1068,6 +1200,7 @@ final class ThumbnailPreheater: ObservableObject {
         queuedRetryCount = 0
         queuedRecoveryCount = 0
         pauseReason = nil
+        workPhase = nil
         estimatedTimeRemaining = nil
         recentGeneratedThumbnails = []
         statusMessage = nil

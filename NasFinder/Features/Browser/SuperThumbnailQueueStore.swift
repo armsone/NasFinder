@@ -16,9 +16,22 @@ struct SuperThumbnailSessionReport: Sendable, Equatable {
     let failures: [SuperThumbnailFailureRecord]
     let pendingCount: Int
     let cachedCount: Int
+    var vaultFolders: [SuperThumbnailVaultFolderReport] = []
+    var vaultLastVerifiedAt: Date? = nil
 
     var successfulCount: Int { successCounts.reduce(0, +) }
-    var hasWorkToResume: Bool { pendingCount > 0 || !failures.isEmpty }
+    var vaultUploadedCount: Int { vaultFolders.reduce(0) { $0 + $1.uploadedCount } }
+    var vaultPendingCount: Int { vaultFolders.reduce(0) { $0 + $1.pendingCount } }
+    var vaultFailedCount: Int { vaultFolders.reduce(0) { $0 + $1.failedCount } }
+    var vaultWaitingThumbnailCount: Int {
+        vaultFolders.reduce(0) { $0 + $1.waitingThumbnailCount }
+    }
+    var hasWorkToResume: Bool {
+        pendingCount > 0
+            || !failures.isEmpty
+            || vaultPendingCount > 0
+            || vaultFailedCount > 0
+    }
     var unresolvedCount: Int { max(pendingCount, failures.count) }
     var totalCount: Int { cachedCount + successfulCount + unresolvedCount }
     var remainingCounts: [Int] {
@@ -31,6 +44,18 @@ struct SuperThumbnailSessionReport: Sendable, Equatable {
             unresolvedCount,
         ]
     }
+}
+
+struct SuperThumbnailVaultFolderReport: Identifiable, Sendable, Equatable {
+    let path: String
+    let totalCount: Int
+    let uploadedCount: Int
+    let waitingThumbnailCount: Int
+    let pendingCount: Int
+    let failedCount: Int
+    let errorDescription: String?
+
+    var id: String { path }
 }
 
 actor SuperThumbnailQueueStore {
@@ -52,10 +77,26 @@ actor SuperThumbnailQueueStore {
         var failure: SuperThumbnailFailureRecord?
     }
 
+    private enum VaultStatus: String, Codable {
+        case waitingForThumbnail
+        case pendingUpload
+        case uploaded
+        case uploadFailed
+    }
+
+    private struct VaultItemState: Codable {
+        let signature: String
+        let folderPath: String
+        var status: VaultStatus
+        var errorDescription: String?
+    }
+
     private struct SessionState: Codable {
         var queue: [String: ItemState] = [:]
         var results: [String: ResultState] = [:]
         var cachedItems: [String: String]? = nil
+        var vaultItems: [String: VaultItemState]? = nil
+        var vaultLastVerifiedAt: Date? = nil
     }
 
     private typealias Sessions = [String: SessionState]
@@ -86,6 +127,10 @@ actor SuperThumbnailQueueStore {
             guard let item = currentItems[itemID] else { return false }
             return signature == self.signature(for: item)
         }
+        session.vaultItems = session.vaultItems?.filter { itemID, state in
+            guard let item = currentItems[itemID] else { return false }
+            return state.signature == signature(for: item)
+        }
         for item in items
         where session.queue[item.id] == nil
             && session.results[item.id] == nil
@@ -98,6 +143,94 @@ actor SuperThumbnailQueueStore {
         sessions[sessionKey] = session
         save(sessions)
         return session.queue.mapValues { min(max($0.nextAttempt, 0), 2) }
+    }
+
+    func prepareVault(
+        for items: [RemoteFileItem],
+        sessionKey: String
+    ) {
+        updateSession(sessionKey) { session in
+            var vaultItems = session.vaultItems ?? [:]
+            let currentItems = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
+            vaultItems = vaultItems.filter { itemID, state in
+                guard let item = currentItems[itemID] else { return false }
+                return state.signature == signature(for: item)
+            }
+            for item in items where vaultItems[item.id] == nil {
+                vaultItems[item.id] = VaultItemState(
+                    signature: signature(for: item),
+                    folderPath: parentDirectory(of: item.path),
+                    status: .waitingForThumbnail,
+                    errorDescription: nil
+                )
+            }
+            session.vaultItems = vaultItems
+        }
+    }
+
+    func markVaultPending(
+        _ item: RemoteFileItem,
+        sessionKey: String
+    ) {
+        updateSession(sessionKey) { session in
+            var vaultItems = session.vaultItems ?? [:]
+            let previous = vaultItems[item.id]
+            vaultItems[item.id] = VaultItemState(
+                signature: signature(for: item),
+                folderPath: parentDirectory(of: item.path),
+                status: previous?.status == .uploaded ? .uploaded : .pendingUpload,
+                errorDescription: nil
+            )
+            session.vaultItems = vaultItems
+        }
+    }
+
+    func recordVaultResult(
+        storedItemIDs: Set<String>,
+        attemptedItemIDs: Set<String>,
+        errorDescription: String?,
+        sessionKey: String
+    ) {
+        updateSession(sessionKey) { session in
+            guard var vaultItems = session.vaultItems else { return }
+            for itemID in attemptedItemIDs {
+                guard var state = vaultItems[itemID] else { continue }
+                if storedItemIDs.contains(itemID) {
+                    state.status = .uploaded
+                    state.errorDescription = nil
+                } else if errorDescription != nil {
+                    state.status = .uploadFailed
+                    state.errorDescription = errorDescription
+                } else {
+                    state.status = .pendingUpload
+                    state.errorDescription = nil
+                }
+                vaultItems[itemID] = state
+            }
+            session.vaultItems = vaultItems
+        }
+    }
+
+    func recordVaultVerification(
+        storedItemIDs: Set<String>,
+        verifiedAt: Date,
+        sessionKey: String
+    ) {
+        updateSession(sessionKey) { session in
+            guard var vaultItems = session.vaultItems else { return }
+            for (itemID, var state) in vaultItems {
+                if storedItemIDs.contains(itemID) {
+                    state.status = .uploaded
+                    state.errorDescription = nil
+                } else if state.status == .uploaded {
+                    state.status = .pendingUpload
+                    state.errorDescription = nil
+                }
+                vaultItems[itemID] = state
+            }
+            session.vaultItems = vaultItems
+            session.vaultLastVerifiedAt = verifiedAt
+        }
     }
 
     func deferItem(
@@ -195,13 +328,33 @@ actor SuperThumbnailQueueStore {
                 failures.append(failure)
             }
         }
+        let vaultStates = session.vaultItems.map { Array($0.values) } ?? []
+        let folderReports = Dictionary(grouping: vaultStates) {
+            $0.folderPath
+        }
+        .map { path, states in
+            SuperThumbnailVaultFolderReport(
+                path: path,
+                totalCount: states.count,
+                uploadedCount: states.lazy.filter { $0.status == .uploaded }.count,
+                waitingThumbnailCount: states.lazy.filter {
+                    $0.status == .waitingForThumbnail
+                }.count,
+                pendingCount: states.lazy.filter { $0.status == .pendingUpload }.count,
+                failedCount: states.lazy.filter { $0.status == .uploadFailed }.count,
+                errorDescription: states.lazy.compactMap(\.errorDescription).first
+            )
+        }
+        .sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
         return SuperThumbnailSessionReport(
             successCounts: counts,
             failures: failures.sorted {
                 $0.name.localizedStandardCompare($1.name) == .orderedAscending
             },
             pendingCount: session.queue.count,
-            cachedCount: session.cachedItems?.count ?? 0
+            cachedCount: session.cachedItems?.count ?? 0,
+            vaultFolders: folderReports,
+            vaultLastVerifiedAt: session.vaultLastVerifiedAt
         )
     }
 
@@ -223,6 +376,12 @@ actor SuperThumbnailQueueStore {
     private func signature(for item: RemoteFileItem) -> String {
         let modified = item.modifiedAt?.timeIntervalSince1970 ?? 0
         return "\(item.id)|\(item.size ?? -1)|\(modified)"
+    }
+
+    private func parentDirectory(of path: String) -> String {
+        let parent = (path as NSString).deletingLastPathComponent
+        if parent.isEmpty { return path.hasPrefix("/") ? "/" : "." }
+        return parent
     }
 
     private func load() -> Sessions {

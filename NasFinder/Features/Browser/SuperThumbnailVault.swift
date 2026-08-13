@@ -14,11 +14,19 @@ struct SuperThumbnailVaultOptions: Codable, Equatable, Sendable {
 }
 
 struct SuperThumbnailVaultStoreResult: Equatable, Sendable {
-    let storedCount: Int
+    let storedItemIDs: Set<String>
+    let attemptedItemIDs: Set<String>
     let errorDescription: String?
     let didAttempt: Bool
 
-    static let empty = Self(storedCount: 0, errorDescription: nil, didAttempt: false)
+    var storedCount: Int { storedItemIDs.count }
+
+    static let empty = Self(
+        storedItemIDs: [],
+        attemptedItemIDs: [],
+        errorDescription: nil,
+        didAttempt: false
+    )
 }
 
 actor SuperThumbnailVault {
@@ -56,7 +64,8 @@ actor SuperThumbnailVault {
     ) async -> SuperThumbnailVaultStoreResult {
         guard supportsVault(service), !items.isEmpty else { return .empty }
         let mediaDirectory = parentDirectory(of: items[0].path)
-        var storedCount = 0
+        let attemptedItemIDs = Set(items.map(\.id))
+        var storedItemIDs: Set<String> = []
         do {
             let vaultPath = try await ensureVaultDirectory(
                 in: mediaDirectory,
@@ -70,7 +79,7 @@ actor SuperThumbnailVault {
                 let name = filename(for: item)
                 let currentEntries = try await entries(in: vaultPath, service: service)
                 if currentEntries.contains(where: { $0.name == name }) {
-                    storedCount += 1
+                    storedItemIDs.insert(item.id)
                     continue
                 }
                 try await atomicallyUpload(
@@ -80,20 +89,46 @@ actor SuperThumbnailVault {
                     service: service
                 )
                 directoryEntries[listingKey(vaultPath, service: service)] = nil
-                storedCount += 1
+                storedItemIDs.insert(item.id)
             }
             return .init(
-                storedCount: storedCount,
+                storedItemIDs: storedItemIDs,
+                attemptedItemIDs: attemptedItemIDs,
                 errorDescription: nil,
                 didAttempt: true
             )
         } catch {
             return .init(
-                storedCount: storedCount,
+                storedItemIDs: storedItemIDs,
+                attemptedItemIDs: attemptedItemIDs,
                 errorDescription: vaultErrorDescription(error),
                 didAttempt: true
             )
         }
+    }
+
+    func storedItemIDs(
+        for items: [RemoteFileItem],
+        service: any RemoteFileService
+    ) async throws -> Set<String> {
+        guard supportsVault(service), !items.isEmpty else { return [] }
+        directoryEntries.removeAll()
+        var stored: Set<String> = []
+        for (directory, folderItems) in Dictionary(grouping: items, by: {
+            parentDirectory(of: $0.path)
+        }) {
+            try Task.checkCancellation()
+            let vaultPath = appending(Self.directoryName, to: directory)
+            let siblings = try await entries(in: directory, service: service)
+            guard siblings.contains(where: {
+                $0.name == Self.directoryName && $0.isDirectory
+            }) else { continue }
+            let names = Set(try await entries(in: vaultPath, service: service).map(\.name))
+            for item in folderItems where names.contains(filename(for: item)) {
+                stored.insert(item.id)
+            }
+        }
+        return stored
     }
 
     func invalidateListings() {
@@ -307,12 +342,17 @@ actor SuperThumbnailVaultRun {
         return await SuperThumbnailVault.shared.data(for: item, service: service)
     }
 
+    func registerCompleted(_ item: RemoteFileItem) {
+        guard options.isEnabled else { return }
+        completedItemIDs.insert(item.id)
+    }
+
     func markCompleted(
         _ item: RemoteFileItem,
         localData: @Sendable (RemoteFileItem) async -> Data?
     ) async -> SuperThumbnailVaultStoreResult {
         guard options.isEnabled else { return .empty }
-        completedItemIDs.insert(item.id)
+        registerCompleted(item)
         guard options.timing == .now else { return .empty }
         let folder = (item.path as NSString).deletingLastPathComponent
         guard !uploadedFolders.contains(folder),
@@ -334,27 +374,36 @@ actor SuperThumbnailVaultRun {
         localData: @Sendable (RemoteFileItem) async -> Data?
     ) async -> SuperThumbnailVaultStoreResult {
         guard options.isEnabled else { return .empty }
-        var count = 0
+        var storedItemIDs: Set<String> = []
+        var attemptedItemIDs: Set<String> = []
         var firstError: String?
         for (folder, items) in folderItems where !uploadedFolders.contains(folder) {
-            if options.timing == .now,
-               !items.allSatisfy({ completedItemIDs.contains($0.id) }) {
-                continue
-            }
             let result = await storeFolderWithRetry(
                 items.filter { completedItemIDs.contains($0.id) },
                 localData: localData
             )
-            count += result.storedCount
+            storedItemIDs.formUnion(result.storedItemIDs)
+            attemptedItemIDs.formUnion(result.attemptedItemIDs)
             firstError = firstError ?? result.errorDescription
-            if result.errorDescription == nil, result.didAttempt {
+            if result.errorDescription == nil,
+               result.didAttempt,
+               items.allSatisfy({ completedItemIDs.contains($0.id) }) {
                 uploadedFolders.insert(folder)
             }
         }
         return .init(
-            storedCount: count,
+            storedItemIDs: storedItemIDs,
+            attemptedItemIDs: attemptedItemIDs,
             errorDescription: firstError,
-            didAttempt: true
+            didAttempt: !attemptedItemIDs.isEmpty || firstError != nil
+        )
+    }
+
+    func verifyStoredItemIDs() async throws -> Set<String> {
+        guard options.isEnabled else { return [] }
+        return try await SuperThumbnailVault.shared.storedItemIDs(
+            for: folderItems.values.flatMap { $0 },
+            service: service
         )
     }
 
