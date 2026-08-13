@@ -6,6 +6,27 @@ final class NasFinderDocumentPickerViewController: UIDocumentPickerExtensionView
     private var hostingController: UIHostingController<DocumentPickerRootView>?
     private var model: DocumentPickerModel?
 
+    override var providerIdentifier: String {
+        "com.armsone.nasfinder.fileprovider"
+    }
+
+    override var documentStorageURL: URL? {
+        guard let containerURL = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: NasFinderFileProviderIdentifiers.appGroup
+        ) else {
+            return nil
+        }
+        let storageURL = containerURL.appendingPathComponent(
+            "File Provider Storage",
+            isDirectory: true
+        )
+        try? FileManager.default.createDirectory(
+            at: storageURL,
+            withIntermediateDirectories: true
+        )
+        return storageURL
+    }
+
     override func prepareForPresentation(in mode: UIDocumentPickerMode) {
         super.prepareForPresentation(in: mode)
 

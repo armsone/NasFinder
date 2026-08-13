@@ -33,8 +33,6 @@
 	<dict>
 		<key>NSExtensionAttributes</key>
 		<dict>
-			<key>NSExtensionFileProviderDocumentGroup</key>
-			<string>group.com.armsone.nasfinder</string>
 			<key>UIDocumentPickerModes</key>
 			<array>
 				<string>UIDocumentPickerModeImport</string>

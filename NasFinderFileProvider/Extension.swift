@@ -2,25 +2,36 @@ import FileProvider
 import Foundation
 import UniformTypeIdentifiers
 
-final class NasFinderFileProviderExtension: NSFileProviderExtension, NSFileProviderReplicatedExtension,
-    NSFileProviderThumbnailing {
+final class NasFinderFileProviderExtension: NSFileProviderExtension, NSFileProviderThumbnailing {
     private let storage: NasFinderFileProviderStorage
     private let manager: NSFileProviderManager
+
+    override var providerIdentifier: String {
+        "com.armsone.nasfinder.fileprovider"
+    }
+
+    override var documentStorageURL: URL {
+        guard let containerURL = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: NasFinderFileProviderIdentifiers.appGroup
+        ) else {
+            return super.documentStorageURL
+        }
+        let storageURL = containerURL.appendingPathComponent(
+            "File Provider Storage",
+            isDirectory: true
+        )
+        try? FileManager.default.createDirectory(
+            at: storageURL,
+            withIntermediateDirectories: true
+        )
+        return storageURL
+    }
 
     override init() {
         manager = .default
         storage = NasFinderFileProviderStorage(
             domainIdentifier: NSFileProviderDomainIdentifier("legacy-document-picker")
         )
-        super.init()
-    }
-
-    required init(domain: NSFileProviderDomain) {
-        guard let manager = NSFileProviderManager(for: domain) else {
-            fatalError("Unable to create an NSFileProviderManager for \(domain.identifier.rawValue)")
-        }
-        self.manager = manager
-        self.storage = NasFinderFileProviderStorage(domainIdentifier: domain.identifier)
         super.init()
     }
 
