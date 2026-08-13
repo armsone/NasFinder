@@ -1091,13 +1091,10 @@ private struct DeviceStorageSnapshot: Equatable {
 
 private extension ConnectionKind {
     var dashboardTint: Color {
-        switch self {
-        case .synology: SkyBreezeTheme.nasBlue
-        case .sftp: SkyBreezeTheme.sftpGreen
-        case .smb: .blue
-        case .webDAV: .cyan
-        case .ftp: .orange
-        }
+        ThemeServicePalette.color(
+            forServiceIdentifier: rawValue,
+            theme: .current
+        )
     }
 
     var dashboardLabel: String {

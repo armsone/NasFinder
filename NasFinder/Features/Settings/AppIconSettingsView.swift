@@ -4,6 +4,8 @@ import UIKit
 enum AppIconChoice: String, CaseIterable, Identifiable {
     case blueNAS
     case purpleNAS
+    case vibeCoder
+    case cyberVault
 
     var id: String { rawValue }
 
@@ -11,6 +13,8 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         switch self {
         case .blueNAS: "블루 NAS"
         case .purpleNAS: "퍼플 NAS"
+        case .vibeCoder: "바이브 코더"
+        case .cyberVault: "사이버 볼트"
         }
     }
 
@@ -18,6 +22,8 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         switch self {
         case .blueNAS: "AppIconDefaultPreview"
         case .purpleNAS: "AppIconAlternatePreview"
+        case .vibeCoder: "AppIconVibeCoderPreview"
+        case .cyberVault: "AppIconCyberVaultPreview"
         }
     }
 
@@ -25,11 +31,39 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         switch self {
         case .blueNAS: nil
         case .purpleNAS: "AppIconAlternate"
+        case .vibeCoder: "AppIconVibeCoder"
+        case .cyberVault: "AppIconCyberVault"
         }
     }
 
     static func current(alternateIconName: String?) -> AppIconChoice {
         allCases.first { $0.alternateIconName == alternateIconName } ?? .blueNAS
+    }
+
+    @MainActor
+    static func apply(
+        _ icon: AppIconChoice,
+        completion: @escaping (Error?) -> Void = { _ in }
+    ) {
+        guard UIApplication.shared.supportsAlternateIcons else {
+            completion(AppIconChangeError.unsupported)
+            return
+        }
+        guard current(alternateIconName: UIApplication.shared.alternateIconName) != icon else {
+            completion(nil)
+            return
+        }
+        UIApplication.shared.setAlternateIconName(icon.alternateIconName) { error in
+            Task { @MainActor in completion(error) }
+        }
+    }
+}
+
+private enum AppIconChangeError: LocalizedError {
+    case unsupported
+
+    var errorDescription: String? {
+        "이 기기에서는 대체 앱 아이콘을 지원하지 않습니다."
     }
 }
 
@@ -58,7 +92,14 @@ struct AppIconPickerSection: View {
         Group {
             Section {
                 VStack(spacing: 10) {
-                    HStack(alignment: .top, spacing: 16) {
+                    LazyVGrid(
+                        columns: [
+                            GridItem(.flexible(), spacing: 16, alignment: .top),
+                            GridItem(.flexible(), spacing: 16, alignment: .top),
+                        ],
+                        alignment: .center,
+                        spacing: 16
+                    ) {
                         ForEach(AppIconChoice.allCases) { icon in
                             VStack(spacing: 10) {
                                 Image(icon.previewAssetName)
@@ -137,15 +178,13 @@ struct AppIconPickerSection: View {
 
         isChangingIcon = true
         pendingIcon = icon
-        UIApplication.shared.setAlternateIconName(icon.alternateIconName) { error in
-            Task { @MainActor in
-                isChangingIcon = false
-                pendingIcon = nil
-                if let error {
-                    errorMessage = error.localizedDescription
-                } else {
-                    selectedIcon = icon
-                }
+        AppIconChoice.apply(icon) { error in
+            isChangingIcon = false
+            pendingIcon = nil
+            if let error {
+                errorMessage = error.localizedDescription
+            } else {
+                selectedIcon = icon
             }
         }
     }

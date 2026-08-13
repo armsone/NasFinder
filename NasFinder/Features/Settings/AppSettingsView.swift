@@ -5,6 +5,7 @@ struct AppSettingsView: View {
     @ObservedObject private var screenAwakeController = ScreenAwakeController.shared
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.system.rawValue
+    @State private var themeIconError: String?
 
     private var selectedTheme: AppThemePreference {
         .resolved(selectedThemeRawValue)
@@ -23,6 +24,24 @@ struct AppSettingsView: View {
         .background(SkyBreezeBackground())
         .navigationTitle("설정")
         .navigationBarTitleDisplayMode(.inline)
+        .onChange(of: selectedThemeRawValue, initial: true) { _, rawValue in
+            guard AppThemePreference.resolved(rawValue) == .digitalRain else { return }
+            AppIconChoice.apply(.vibeCoder) { error in
+                themeIconError = error?.localizedDescription
+            }
+        }
+        .alert("아이콘을 변경할 수 없습니다", isPresented: themeIconErrorBinding) {
+            Button("확인", role: .cancel) { themeIconError = nil }
+        } message: {
+            Text(themeIconError ?? "잠시 후 다시 시도해 주세요.")
+        }
+    }
+
+    private var themeIconErrorBinding: Binding<Bool> {
+        Binding(
+            get: { themeIconError != nil },
+            set: { if !$0 { themeIconError = nil } }
+        )
     }
 
     private var screenAwakeSection: some View {
@@ -99,17 +118,15 @@ struct AppSettingsView: View {
 
     private var themePaletteSection: some View {
         Section {
-            ScrollView(.horizontal) {
-                HStack(spacing: 10) {
-                    ForEach(AppThemePreference.allCases) { theme in
-                        themeCard(theme)
-                    }
+            HStack(spacing: 6) {
+                ForEach(AppThemePreference.allCases) { theme in
+                    themeCard(theme)
+                        .frame(maxWidth: .infinity)
                 }
-                .padding(.vertical, 2)
             }
-            .scrollIndicators(.hidden)
+            .padding(.vertical, 2)
             .listRowInsets(
-                EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
+                EdgeInsets(top: 10, leading: 8, bottom: 10, trailing: 8)
             )
 
             VStack(spacing: 0) {
@@ -168,33 +185,47 @@ struct AppSettingsView: View {
                 selectedThemeRawValue = theme.rawValue
             }
         } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
+            VStack(spacing: 6) {
+                HStack(spacing: 2) {
                     Image(systemName: theme.systemImage)
-                    Spacer(minLength: 10)
+                        .font(.caption)
+                    Spacer(minLength: 0)
                     if isSelected {
                         Image(systemName: "checkmark.circle.fill")
+                            .font(.caption2)
                     }
                 }
-                .font(.subheadline.weight(.medium))
                 .foregroundStyle(themePreviewForeground(theme))
 
-                VStack(alignment: .leading, spacing: 2) {
+                if theme == .digitalRain || theme == .windyMeadow {
                     Text(theme.title)
-                        .font(.subheadline.weight(.medium))
+                        .font(.caption2.weight(.semibold))
                         .foregroundStyle(themePreviewForeground(theme))
                         .lineLimit(1)
-                    Text(theme.shortDescription)
-                        .font(.caption2)
-                        .foregroundStyle(themePreviewForeground(theme).opacity(0.72))
+                        .fixedSize()
+                        .rotationEffect(.degrees(-90))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    Text(theme.title)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(themePreviewForeground(theme))
                         .lineLimit(1)
                 }
+
+                HStack(spacing: 3) {
+                    ForEach(Array(ThemeServicePalette.colors(for: theme).prefix(4).enumerated()), id: \.offset) { _, color in
+                        Circle().fill(color).frame(width: 5, height: 5)
+                    }
+                }
             }
-            .padding(12)
-            .frame(width: 132, height: 84, alignment: .leading)
-            .background(themePreview(theme), in: RoundedRectangle(cornerRadius: 14))
+            .padding(7)
+            .frame(height: 112)
+            .background {
+                ThemePreviewBackground(theme: theme)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
             .overlay {
-                RoundedRectangle(cornerRadius: 14)
+                RoundedRectangle(cornerRadius: 12)
                     .stroke(
                         isSelected ? SkyBreezeTheme.accent : Color.secondary.opacity(0.18),
                         lineWidth: isSelected ? 1.5 : 0.5
@@ -204,44 +235,6 @@ struct AppSettingsView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(theme.title) 테마")
         .accessibilityValue(isSelected ? "선택됨" : "선택 안 됨")
-    }
-
-    private func themePreview(_ theme: AppThemePreference) -> LinearGradient {
-        switch theme {
-        case .system:
-            LinearGradient(
-                colors: [.white.opacity(0.96), .black.opacity(0.18)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .day:
-            LinearGradient(
-                colors: [Color(red: 0.72, green: 0.91, blue: 1), .white],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .night:
-            LinearGradient(
-                colors: [Color(red: 0.06, green: 0.15, blue: 0.21), .black],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .digitalRain:
-            LinearGradient(
-                colors: [Color(red: 0.02, green: 0.16, blue: 0.13), .black],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .windyMeadow:
-            LinearGradient(
-                colors: [
-                    Color(red: 0.28, green: 0.76, blue: 0.96),
-                    Color(red: 0.73, green: 0.84, blue: 0.38),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        }
     }
 
     private func themePreviewForeground(_ theme: AppThemePreference) -> Color {
@@ -306,6 +299,60 @@ struct AppSettingsView: View {
                     .stroke(.separator.opacity(0.55), lineWidth: 0.5)
             }
             .accessibilityLabel("\(modeName) 모드 색상")
+    }
+}
+
+private struct ThemePreviewBackground: View {
+    let theme: AppThemePreference
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                gradient
+                if theme == .digitalRain {
+                    CodeRainDecoration(size: geometry.size)
+                        .opacity(0.92)
+                }
+            }
+        }
+    }
+
+    private var gradient: LinearGradient {
+        switch theme {
+        case .system:
+            LinearGradient(
+                colors: [.white.opacity(0.96), .black.opacity(0.18)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .day:
+            LinearGradient(
+                colors: [Color(red: 0.72, green: 0.91, blue: 1), .white],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .night:
+            LinearGradient(
+                colors: [Color(red: 0.06, green: 0.15, blue: 0.21), .black],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .digitalRain:
+            LinearGradient(
+                colors: [Color(red: 0.005, green: 0.05, blue: 0.045), .black],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .windyMeadow:
+            LinearGradient(
+                colors: [
+                    Color(red: 0.28, green: 0.76, blue: 0.96),
+                    Color(red: 0.73, green: 0.84, blue: 0.38),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
     }
 }
 

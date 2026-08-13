@@ -291,24 +291,30 @@ struct SuperThumbnailView: View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle(isOn: $nasVaultEnabled) {
                 Label("NAS에도 보관", systemImage: "externaldrive.fill")
-                    .font(.subheadline)
+                    .font(.subheadline.weight(.regular))
+                    .foregroundStyle(.primary.opacity(0.82))
             }
             .frame(minHeight: 36)
 
             if nasVaultEnabled {
                 Divider()
-                HStack {
+                HStack(spacing: 12) {
                     Text("보관 시점")
                         .font(.subheadline)
+                        .foregroundStyle(.secondary)
                     Spacer()
-                    Picker("보관 시점", selection: $nasVaultTimingRaw) {
-                        Text("폴더별 완료 즉시")
-                            .tag(SuperThumbnailVaultTiming.now.rawValue)
-                        Text("작업 완료 후 한 번에")
-                            .tag(SuperThumbnailVaultTiming.later.rawValue)
+                    Menu {
+                        Button("폴더별 완료 즉시") {
+                            nasVaultTimingRaw = SuperThumbnailVaultTiming.now.rawValue
+                        }
+                        Button("작업 완료 후 한 번에") {
+                            nasVaultTimingRaw = SuperThumbnailVaultTiming.later.rawValue
+                        }
+                    } label: {
+                        Text(vaultTiming == .now ? "즉시" : "나중에")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(SkyBreezeTheme.accent)
                     }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
                 }
                 .frame(minHeight: 36)
             }
@@ -346,7 +352,7 @@ struct SuperThumbnailView: View {
                         .foregroundStyle(SkyBreezeTheme.folderBlue)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(selection?.title ?? "처리할 폴더 선택")
-                            .font(.system(size: 17, weight: .semibold))
+                            .font(.system(size: 17, weight: .medium))
                             .foregroundStyle(primaryInk)
                         Text(selection?.path ?? "NAS 폴더를 선택하세요")
                             .font(.caption2)
@@ -406,10 +412,10 @@ struct SuperThumbnailView: View {
             HStack(spacing: 11) {
                 Image(systemName: index == 0 ? "clock.fill" : "clock")
                     .font(.caption)
-                    .foregroundStyle(historyTint(for: index).opacity(0.78))
+                    .foregroundStyle(.secondary)
                     .frame(width: 24, height: 24)
                     .background(
-                        historyTint(for: index).opacity(0.10),
+                        Color.secondary.opacity(0.08),
                         in: Circle()
                     )
                 VStack(alignment: .leading, spacing: 2) {
@@ -431,19 +437,15 @@ struct SuperThumbnailView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .background(
-                historyTint(for: index).opacity(index == 0 ? 0.055 : 0.035),
+                SkyBreezeTheme.thumbnailSurface,
                 in: RoundedRectangle(cornerRadius: 15, style: .continuous)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .stroke(historyTint(for: index).opacity(0.08), lineWidth: 1)
+                    .stroke(SkyBreezeTheme.thumbnailBorder, lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
-    }
-
-    private func historyTint(for index: Int) -> Color {
-        index == 0 ? Color.indigo : Color.teal
     }
 
     private var requirements: some View {
@@ -473,7 +475,6 @@ struct SuperThumbnailView: View {
         .buttonBorderShape(.roundedRectangle(radius: 14))
         .font(.body.weight(.medium))
         .disabled(!canStart || isPreparing)
-        .opacity(canStart || isPreparing ? 1 : 0.38)
     }
 
     private var resetLink: some View {
@@ -535,6 +536,7 @@ struct SuperThumbnailView: View {
     }
 
     private var requirementSummary: String {
+        if selection == nil { return "먼저 처리할 폴더를 선택하세요." }
         if hasStandardConditions { return "시작할 준비가 됐습니다." }
         if let compactJobAssessment {
             return "소규모 작업 · 영상 \(compactJobAssessment.videoCount)개 · "
@@ -1235,9 +1237,15 @@ private struct SuperThumbnailProgressView: View {
             .safeAreaInset(edge: .bottom) {
                 Group {
                     if preheater.isRunning {
-                        Button("작업 중단", role: .destructive, action: onCancel)
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
+                        Button(role: .destructive, action: onCancel) {
+                            Text("작업 중단")
+                                .font(.subheadline.weight(.medium))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 54)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.roundedRectangle(radius: 14))
                     } else {
                         Button(action: onClose) {
                             Text("완료")

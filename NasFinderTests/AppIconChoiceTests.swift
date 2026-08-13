@@ -15,4 +15,12 @@ struct AppIconChoiceTests {
     @Test func unknownIconFallsBackToDefault() {
         #expect(AppIconChoice.current(alternateIconName: "Unknown") == .blueNAS)
     }
+
+    @Test func cyberIconsUseRegisteredAssetNames() {
+        #expect(AppIconChoice.allCases.count == 4)
+        #expect(AppIconChoice.vibeCoder.alternateIconName == "AppIconVibeCoder")
+        #expect(AppIconChoice.cyberVault.alternateIconName == "AppIconCyberVault")
+        #expect(AppIconChoice.current(alternateIconName: "AppIconVibeCoder") == .vibeCoder)
+        #expect(AppIconChoice.current(alternateIconName: "AppIconCyberVault") == .cyberVault)
+    }
 }

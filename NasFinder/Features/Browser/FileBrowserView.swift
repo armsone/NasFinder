@@ -4,6 +4,12 @@ import UniformTypeIdentifiers
 
 typealias ReturnToDashboardAction = @MainActor @Sendable () -> Void
 
+enum FileBrowserDownloadPolicy {
+    static func downloadableItems(from items: [RemoteFileItem]) -> [RemoteFileItem] {
+        items.filter { !$0.isDirectory }
+    }
+}
+
 private struct ReturnToDashboardKey: EnvironmentKey {
     static let defaultValue: ReturnToDashboardAction = {}
 }
@@ -165,6 +171,7 @@ struct FileBrowserView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var favoriteStore: FavoriteStore
+    @EnvironmentObject private var inboxStore: SharedInboxStore
     @AppStorage("fileBrowserLayoutStyle") private var storedLayoutStyle = LayoutStyle.smallThumbnails.rawValue
     @AppStorage("fileBrowserSortField") private var storedSortField = FileBrowserSortField.name.rawValue
     @AppStorage("fileBrowserSortDirection") private var storedSortDirection = FileBrowserSortDirection.ascending.rawValue
@@ -195,6 +202,11 @@ struct FileBrowserView: View {
     @State private var suppressAutomaticCoverFlowUntil = Date.distantPast
     @State private var ownsAutomaticThumbnailPreheat = false
     @State private var automaticThumbnailRestartTask: Task<Void, Never>?
+    @State private var downloadTask: Task<Void, Never>?
+    @State private var downloadItemName: String?
+    @State private var downloadCompletedCount = 0
+    @State private var downloadTotalCount = 0
+    @State private var downloadErrorMessage: String?
 
     @MainActor
     init(
@@ -364,12 +376,14 @@ struct FileBrowserView: View {
                 shareCoordinator.errorMessage = nil
                 operationCoordinator.dismissError()
                 thumbnailPreheater.errorMessage = nil
+                downloadErrorMessage = nil
             }
         } message: {
             Text(
                 shareCoordinator.errorMessage
                     ?? operationCoordinator.errorMessage
                     ?? thumbnailPreheater.errorMessage
+                    ?? downloadErrorMessage
                     ?? viewModel.errorMessage
                     ?? ""
             )
@@ -439,6 +453,7 @@ struct FileBrowserView: View {
             automaticThumbnailRestartTask?.cancel()
             automaticThumbnailRestartTask = nil
             shareCoordinator.cancelPreparation()
+            cancelDownload()
             thumbnailPreheater.cancel()
             if isRequestingCoverFlowOrientation {
                 FileBrowserOrientationController.endCoverFlow()
@@ -634,6 +649,22 @@ struct FileBrowserView: View {
                     ) {
                         shareCoordinator.cancelPreparation()
                     }
+                }
+
+                if downloadTask != nil {
+                    FileOperationProgressBanner(
+                        title: "받은 파일에 저장 중…",
+                        progress: RemoteOperationProgress(
+                            operationID: UUID(),
+                            operation: .copy,
+                            phase: .reading,
+                            unit: .items,
+                            completedUnitCount: Int64(downloadCompletedCount),
+                            totalUnitCount: Int64(downloadTotalCount),
+                            currentPath: downloadItemName
+                        ),
+                        onCancel: cancelDownload
+                    )
                 }
 
                 if operationCoordinator.isWorking {
@@ -1398,6 +1429,13 @@ struct FileBrowserView: View {
                 }
 
                 if !item.isDirectory {
+                    CompactPanelButton(title: "받기", systemImage: "arrow.down.circle") {
+                        performContextPanelAction {
+                            downloadToInbox([item])
+                        }
+                    }
+                    .disabled(downloadTask != nil)
+
                     CompactPanelButton(title: "공유", systemImage: "square.and.arrow.up") {
                         performContextPanelAction {
                             guard canBeginUserPresentation else { return }
@@ -1529,6 +1567,14 @@ struct FileBrowserView: View {
                         shareCoordinator.prepare(items: files, using: viewModel.service)
                     }
                     .disabled(selectedFiles.isEmpty || shareCoordinator.isPreparing)
+
+                    selectionActionButton("받기", systemImage: "arrow.down.circle") {
+                        let files = selectedFiles
+                        guard !files.isEmpty else { return }
+                        downloadToInbox(files)
+                        endSelection()
+                    }
+                    .disabled(selectedFiles.isEmpty || downloadTask != nil)
                 }
                 .frame(maxWidth: .infinity)
             }
@@ -1628,12 +1674,16 @@ struct FileBrowserView: View {
                     shareCoordinator.errorMessage = nil
                     operationCoordinator.dismissError()
                     thumbnailPreheater.errorMessage = nil
+                    downloadErrorMessage = nil
                 }
             }
         )
     }
 
     private var errorTitle: String {
+        if downloadErrorMessage != nil {
+            return "파일을 받을 수 없습니다"
+        }
         if shareCoordinator.errorMessage != nil {
             return "파일을 공유할 수 없습니다"
         }
@@ -1658,7 +1708,7 @@ struct FileBrowserView: View {
     }
 
     private var selectionInteractionsAreBlocked: Bool {
-        shareCoordinator.isPreparing || operationCoordinator.isBusy
+        shareCoordinator.isPreparing || operationCoordinator.isBusy || downloadTask != nil
     }
 
     private var hasBlockingPresentation: Bool {
@@ -1674,7 +1724,47 @@ struct FileBrowserView: View {
         shareCoordinator.errorMessage != nil
             || operationCoordinator.errorMessage != nil
             || thumbnailPreheater.errorMessage != nil
+            || downloadErrorMessage != nil
             || (viewModel.errorMessage != nil && !viewModel.items.isEmpty)
+    }
+
+    private func downloadToInbox(_ items: [RemoteFileItem]) {
+        let files = FileBrowserDownloadPolicy.downloadableItems(from: items)
+        guard !files.isEmpty, downloadTask == nil else { return }
+        downloadCompletedCount = 0
+        downloadTotalCount = files.count
+        downloadErrorMessage = nil
+        downloadTask = Task { @MainActor in
+            do {
+                for item in files {
+                    try Task.checkCancellation()
+                    downloadItemName = item.name
+                    let url = try await viewModel.service.download(item)
+                    try Task.checkCancellation()
+                    _ = try await inboxStore.importDownloadedFile(
+                        at: url,
+                        originalFilename: item.name,
+                        contentTypeIdentifier: item.contentTypeIdentifier
+                    )
+                    downloadCompletedCount += 1
+                }
+                operationCoordinator.statusMessage = files.count == 1
+                    ? "받은 파일에 저장했습니다."
+                    : "파일 \(files.count)개를 받은 파일에 저장했습니다."
+            } catch is CancellationError {
+                // 사용자가 취소한 경우 완료된 파일은 그대로 보존합니다.
+            } catch {
+                downloadErrorMessage = "\(downloadItemName ?? "파일")을 받지 못했습니다: \(error.localizedDescription)"
+            }
+            downloadTask = nil
+            downloadItemName = nil
+        }
+    }
+
+    private func cancelDownload() {
+        downloadTask?.cancel()
+        downloadTask = nil
+        downloadItemName = nil
     }
 
     private var deleteConfirmationBinding: Binding<Bool> {

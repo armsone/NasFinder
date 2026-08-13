@@ -17,7 +17,7 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
         case .system: "자동"
         case .day: "낮"
         case .night: "밤"
-        case .digitalRain: "Digital Rain"
+        case .digitalRain: "Vibe Coder"
         case .windyMeadow: "Windy Meadow"
         }
     }
@@ -207,6 +207,67 @@ enum SkyBreezeTheme {
     }
 }
 
+enum ThemeServicePalette {
+    static func colors(for theme: AppThemePreference) -> [Color] {
+        switch theme {
+        case .digitalRain:
+            [
+                Color(red: 0.32, green: 1.00, blue: 0.76),
+                Color(red: 0.08, green: 0.72, blue: 0.64),
+                Color(red: 0.22, green: 0.82, blue: 0.92),
+                Color(red: 0.54, green: 0.95, blue: 0.70),
+            ]
+        case .windyMeadow:
+            [
+                Color(red: 0.12, green: 0.62, blue: 0.86),
+                Color(red: 0.38, green: 0.68, blue: 0.22),
+                Color(red: 0.96, green: 0.72, blue: 0.28),
+                Color(red: 0.52, green: 0.38, blue: 0.70),
+            ]
+        case .night:
+            [.blue, .green, .orange, .purple]
+        case .system, .day:
+            [.blue, .green, .orange, .indigo]
+        }
+    }
+
+    static func color(
+        forServiceIdentifier identifier: String,
+        theme: AppThemePreference
+    ) -> Color {
+        let palette = colors(for: theme)
+        let stableIndex = identifier.utf8.reduce(0) { ($0 &* 31) &+ Int($1) }
+        return palette[stableIndex.magnitude % UInt(palette.count)]
+    }
+}
+
+struct CodeRainDecoration: View {
+    let size: CGSize
+
+    private let columns = [
+        "10110", "01A9F", "11001", "0FF10", "10101", "01110",
+        "10C0D", "00111", "F0101", "11010", "0A011", "10100",
+    ]
+
+    var body: some View {
+        HStack(alignment: .top, spacing: max(size.width * 0.035, 8)) {
+            ForEach(Array(columns.enumerated()), id: \.offset) { index, value in
+                VStack(spacing: 0) {
+                    Text(String(value.prefix(1)))
+                        .foregroundStyle(Color(red: 0.74, green: 1, blue: 0.90))
+                        .shadow(color: SkyBreezeTheme.accent.opacity(0.85), radius: 4)
+                    Text(String(value.dropFirst()))
+                        .foregroundStyle(SkyBreezeTheme.accent.opacity(0.20))
+                }
+                .font(.system(size: max(min(size.width * 0.025, 11), 6), design: .monospaced))
+                .offset(y: CGFloat((index * 29) % 90) - 18)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .clipped()
+    }
+}
+
 struct SkyBreezeBackground: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -236,22 +297,7 @@ struct SkyBreezeBackground: View {
     private func themeDecoration(in size: CGSize) -> some View {
         switch selectedTheme {
         case .digitalRain:
-            HStack(spacing: max(size.width * 0.045, 14)) {
-                ForEach(0..<12, id: \.self) { column in
-                    Capsule()
-                        .fill(
-                            SkyBreezeTheme.accent.opacity(
-                                column.isMultiple(of: 3) ? 0.11 : 0.05
-                            )
-                        )
-                        .frame(
-                            width: 1,
-                            height: size.height * (column.isMultiple(of: 2) ? 0.72 : 0.46)
-                        )
-                        .offset(y: CGFloat((column * 37) % 130) - 50)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            CodeRainDecoration(size: size)
         case .windyMeadow:
             Ellipse()
                 .fill(Color(red: 0.43, green: 0.68, blue: 0.20).opacity(0.24))

@@ -16,6 +16,15 @@ final class AppThemePreferenceTests: XCTestCase {
         )
     }
 
+    func testVibeCoderTitleAndExtensibleServicePalette() {
+        XCTAssertEqual(AppThemePreference.digitalRain.title, "Vibe Coder")
+        XCTAssertEqual(ThemeServicePalette.colors(for: .digitalRain).count, 4)
+        _ = ThemeServicePalette.color(
+            forServiceIdentifier: "future.cloud.provider",
+            theme: .digitalRain
+        )
+    }
+
     func testThemeColorSchemesMatchTheirIntendedContrast() {
         XCTAssertNil(AppThemePreference.system.preferredColorScheme)
         XCTAssertEqual(AppThemePreference.day.preferredColorScheme, .light)
