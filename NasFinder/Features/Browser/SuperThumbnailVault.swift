@@ -16,8 +16,9 @@ struct SuperThumbnailVaultOptions: Codable, Equatable, Sendable {
 struct SuperThumbnailVaultStoreResult: Equatable, Sendable {
     let storedCount: Int
     let errorDescription: String?
+    let didAttempt: Bool
 
-    static let empty = Self(storedCount: 0, errorDescription: nil)
+    static let empty = Self(storedCount: 0, errorDescription: nil, didAttempt: false)
 }
 
 actor SuperThumbnailVault {
@@ -55,12 +56,12 @@ actor SuperThumbnailVault {
     ) async -> SuperThumbnailVaultStoreResult {
         guard supportsVault(service), !items.isEmpty else { return .empty }
         let mediaDirectory = parentDirectory(of: items[0].path)
+        var storedCount = 0
         do {
             let vaultPath = try await ensureVaultDirectory(
                 in: mediaDirectory,
                 service: service
             )
-            var storedCount = 0
             for item in items {
                 try Task.checkCancellation()
                 guard parentDirectory(of: item.path) == mediaDirectory,
@@ -81,11 +82,16 @@ actor SuperThumbnailVault {
                 directoryEntries[listingKey(vaultPath, service: service)] = nil
                 storedCount += 1
             }
-            return .init(storedCount: storedCount, errorDescription: nil)
+            return .init(
+                storedCount: storedCount,
+                errorDescription: nil,
+                didAttempt: true
+            )
         } catch {
             return .init(
-                storedCount: 0,
-                errorDescription: error.localizedDescription
+                storedCount: storedCount,
+                errorDescription: vaultErrorDescription(error),
+                didAttempt: true
             )
         }
     }
@@ -247,6 +253,13 @@ actor SuperThumbnailVault {
             + ".jpg"
     }
 
+    private func vaultErrorDescription(_ error: Error) -> String {
+        if RemoteRequestCancellation.isCancellation(error) {
+            return "업로드가 중단되어 자동 재시도 목록에 보관했습니다."
+        }
+        return error.localizedDescription
+    }
+
     private func parentDirectory(of path: String) -> String {
         let parent = (path as NSString).deletingLastPathComponent
         if parent.isEmpty { return path.hasPrefix("/") ? "/" : "." }
@@ -269,6 +282,8 @@ private enum SuperThumbnailVaultError: LocalizedError {
 }
 
 actor SuperThumbnailVaultRun {
+    private static let maximumUploadAttempts = 3
+    private static let retryDelay: Duration = .milliseconds(250)
     private let options: SuperThumbnailVaultOptions
     private let service: any RemoteFileService
     private let folderItems: [String: [RemoteFileItem]]
@@ -305,12 +320,14 @@ actor SuperThumbnailVaultRun {
               items.allSatisfy({ completedItemIDs.contains($0.id) }) else {
             return .empty
         }
-        uploadedFolders.insert(folder)
-        return await SuperThumbnailVault.shared.storeFolder(
+        let result = await storeFolderWithRetry(
             items,
-            service: service,
             localData: localData
         )
+        if result.errorDescription == nil, result.didAttempt {
+            uploadedFolders.insert(folder)
+        }
+        return result
     }
 
     func finish(
@@ -324,15 +341,45 @@ actor SuperThumbnailVaultRun {
                !items.allSatisfy({ completedItemIDs.contains($0.id) }) {
                 continue
             }
-            uploadedFolders.insert(folder)
-            let result = await SuperThumbnailVault.shared.storeFolder(
+            let result = await storeFolderWithRetry(
                 items.filter { completedItemIDs.contains($0.id) },
-                service: service,
                 localData: localData
             )
             count += result.storedCount
             firstError = firstError ?? result.errorDescription
+            if result.errorDescription == nil, result.didAttempt {
+                uploadedFolders.insert(folder)
+            }
         }
-        return .init(storedCount: count, errorDescription: firstError)
+        return .init(
+            storedCount: count,
+            errorDescription: firstError,
+            didAttempt: true
+        )
+    }
+
+    private func storeFolderWithRetry(
+        _ items: [RemoteFileItem],
+        localData: @Sendable (RemoteFileItem) async -> Data?
+    ) async -> SuperThumbnailVaultStoreResult {
+        var latestResult = SuperThumbnailVaultStoreResult.empty
+        for attempt in 1...Self.maximumUploadAttempts {
+            guard !Task.isCancelled else { return latestResult }
+            latestResult = await SuperThumbnailVault.shared.storeFolder(
+                items,
+                service: service,
+                localData: localData
+            )
+            guard latestResult.errorDescription != nil else { return latestResult }
+            guard attempt < Self.maximumUploadAttempts, !Task.isCancelled else {
+                return latestResult
+            }
+            do {
+                try await Task.sleep(for: Self.retryDelay)
+            } catch {
+                return latestResult
+            }
+        }
+        return latestResult
     }
 }

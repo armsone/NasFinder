@@ -15,11 +15,13 @@ final class SuperThumbnailVaultTests: XCTestCase {
 
         let first = await run.markCompleted(items[0]) { payloads[$0.id] }
         XCTAssertEqual(first.storedCount, 0)
+        XCTAssertFalse(first.didAttempt)
         let countAfterFirst = await storage.vaultFileCount()
         XCTAssertEqual(countAfterFirst, 0)
 
         let second = await run.markCompleted(items[1]) { payloads[$0.id] }
         XCTAssertEqual(second.storedCount, 2)
+        XCTAssertTrue(second.didAttempt)
         let countAfterSecond = await storage.vaultFileCount()
         XCTAssertEqual(countAfterSecond, 2)
     }
@@ -71,6 +73,29 @@ final class SuperThumbnailVaultTests: XCTestCase {
         XCTAssertEqual(restored, expected)
     }
 
+    func testNowRetriesCancelledUploadBeforeMarkingFolderStored() async throws {
+        let storage = VaultTestStorage(cancelledUploadCount: 1)
+        let service = VaultTestService(storage: storage)
+        let items = makeItems(connectionID: service.connection.id)
+        let run = SuperThumbnailVaultRun(
+            options: .init(isEnabled: true, timing: .now),
+            items: items,
+            service: service
+        )
+        let payloads = Dictionary(uniqueKeysWithValues: items.map { ($0.id, Data($0.name.utf8)) })
+
+        _ = await run.markCompleted(items[0]) { payloads[$0.id] }
+        let result = await run.markCompleted(items[1]) { payloads[$0.id] }
+
+        XCTAssertNil(result.errorDescription)
+        XCTAssertTrue(result.didAttempt)
+        XCTAssertEqual(result.storedCount, 2)
+        let uploadAttempts = await storage.uploadAttemptCount()
+        XCTAssertGreaterThanOrEqual(uploadAttempts, 3)
+        let storedCount = await storage.vaultFileCount()
+        XCTAssertEqual(storedCount, 2)
+    }
+
     func testRemovingNASVaultKeepsLocalPayloadAndDeletesOnlyVaultFiles() async throws {
         let storage = VaultTestStorage()
         let service = VaultTestService(storage: storage)
@@ -111,6 +136,12 @@ final class SuperThumbnailVaultTests: XCTestCase {
 private actor VaultTestStorage {
     private var directories: Set<String> = ["/media"]
     private var files: [String: Data] = [:]
+    private var cancelledUploadCount: Int
+    private var uploadAttempts = 0
+
+    init(cancelledUploadCount: Int = 0) {
+        self.cancelledUploadCount = cancelledUploadCount
+    }
 
     func list(_ path: String, connectionID: UUID) -> [RemoteFileItem] {
         let prefix = path == "/" ? "/" : "\(path)/"
@@ -131,6 +162,14 @@ private actor VaultTestStorage {
 
     func createDirectory(_ path: String) { directories.insert(path) }
     func store(_ data: Data, path: String) { files[path] = data }
+    func beginUpload() throws {
+        uploadAttempts += 1
+        if cancelledUploadCount > 0 {
+            cancelledUploadCount -= 1
+            throw CancellationError()
+        }
+    }
+    func uploadAttemptCount() -> Int { uploadAttempts }
     func data(at path: String) -> Data? { files[path] }
     func remove(_ path: String) { files[path] = nil; directories.remove(path) }
     func rename(from: String, to: String) { files[to] = files.removeValue(forKey: from) }
@@ -212,6 +251,7 @@ private struct VaultTestService: RemoteFileService, Sendable {
         conflictPolicy: RemoteConflictPolicy,
         context: RemoteOperationContext
     ) async throws -> RemoteOperationResult {
+        try await storage.beginUpload()
         let name = preferredName ?? localURL.lastPathComponent
         let path = "\(directoryPath)/\(name)"
         await storage.store(try Data(contentsOf: localURL), path: path)

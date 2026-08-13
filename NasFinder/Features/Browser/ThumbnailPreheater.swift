@@ -614,6 +614,7 @@ final class ThumbnailPreheater: ObservableObject {
                 applyVaultResult(await vaultRun.finish(
                     localData: Self.localSuperThumbnailData
                 ))
+                try Task.checkCancellation()
             }
 
             let limitText = service.connection.kind == .sftp
@@ -833,8 +834,8 @@ final class ThumbnailPreheater: ObservableObject {
 
     private func applyVaultResult(_ result: SuperThumbnailVaultStoreResult) {
         vaultStoredCount += result.storedCount
-        if let errorDescription = result.errorDescription {
-            vaultErrorMessage = errorDescription
+        if result.didAttempt {
+            vaultErrorMessage = result.errorDescription
         }
     }
 

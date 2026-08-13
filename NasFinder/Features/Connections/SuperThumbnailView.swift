@@ -954,9 +954,8 @@ private struct SuperThumbnailReportView: View {
             Text("\(seconds)초")
                 .font(.subheadline.monospacedDigit().weight(.medium))
             Spacer()
+            Text("시도 \(success + remaining)")
             Text("성공 \(success)")
-            Text("남음 \(remaining)")
-                .foregroundStyle(remaining == 0 ? Color.secondary : Color.primary)
         }
         .font(.caption.monospacedDigit())
     }
@@ -1471,14 +1470,12 @@ private struct SuperThumbnailProgressView: View {
             Text("\(seconds)초")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
+            Text("시도 \(success + remaining)")
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
             Text("성공 \(success)")
                 .font(.subheadline.monospacedDigit().weight(.regular))
                 .foregroundStyle(.primary)
-            Text("남음 \(remaining)")
-                .font(.caption2.monospacedDigit())
-                .foregroundStyle(
-                    remaining == 0 ? Color.secondary : Color.primary
-                )
         }
         .frame(maxWidth: .infinity)
     }
