@@ -16,6 +16,7 @@ final class ConnectionStore: ObservableObject {
 
     private let defaults: UserDefaults
     private let credentialStore: KeychainCredentialStore
+    private let synologySessionStore: any SynologySessionStoring
     private let storageKey = "connections.v1"
     private let preferredConnectionKey = "preferredConnection.v1"
     private let rememberedBrowserLocationKey = "browser.lastLocation.v1"
@@ -24,10 +25,12 @@ final class ConnectionStore: ObservableObject {
     init(
         defaults: UserDefaults? = UserDefaults(suiteName: "group.com.armsone.nasfinder"),
         credentialStore: KeychainCredentialStore = .init(),
+        synologySessionStore: any SynologySessionStoring = KeychainSynologySessionStore(),
         performsFileProviderMaintenance: Bool = true
     ) {
         self.defaults = defaults ?? .standard
         self.credentialStore = credentialStore
+        self.synologySessionStore = synologySessionStore
         load()
         if performsFileProviderMaintenance {
             Task { [weak self] in
@@ -170,6 +173,13 @@ final class ConnectionStore: ObservableObject {
                 try credentialStore.remove(for: connection.id)
             } catch {
                 failures.append("\(connection.name) 로그인 정보 제거 실패")
+            }
+            if connection.kind == .synology {
+                do {
+                    try synologySessionStore.removeSession(for: connection)
+                } catch {
+                    failures.append("\(connection.name) 로그인 세션 제거 실패")
+                }
             }
         }
         if !failures.isEmpty {

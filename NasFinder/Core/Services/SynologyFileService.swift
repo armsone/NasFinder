@@ -10,6 +10,7 @@ actor SynologyFileService: RemoteFileService {
     private let session: URLSession
     private let cache: DownloadCache
     private let pollInterval: Duration
+    private let sessionStore: any SynologySessionStoring
     private var sessionID: String?
     private var sessionLoginTask: Task<String, Error>?
 
@@ -24,19 +25,22 @@ actor SynologyFileService: RemoteFileService {
         credential: RemoteCredential,
         session: URLSession = .shared,
         cache: DownloadCache = .shared,
-        pollInterval: Duration = .milliseconds(250)
+        pollInterval: Duration = .milliseconds(250),
+        sessionStore: any SynologySessionStoring = KeychainSynologySessionStore()
     ) {
         self.connection = connection
         self.credential = credential
         self.session = session
         self.cache = cache
         self.pollInterval = pollInterval
+        self.sessionStore = sessionStore
     }
 
     /// Tests each DSM layer separately so the UI can distinguish a closed web
     /// port from TLS, authentication, File Station, and root-path failures.
     func testConnection() async throws {
         sessionID = nil
+        try? sessionStore.removeSession(for: connection)
 
         try await connectionTestStage(.webAPI) {
             try await self.probeWebAPI()
@@ -1363,6 +1367,7 @@ actor SynologyFileService: RemoteFileService {
             // same login task instead of starting a login storm.
             if sessionID == sid {
                 sessionID = nil
+                try? sessionStore.removeSession(for: connection)
             }
             do {
                 return try await operation(validSessionID())
@@ -1378,6 +1383,10 @@ actor SynologyFileService: RemoteFileService {
         if let sessionID { return sessionID }
         if let sessionLoginTask {
             return try await sessionLoginTask.value
+        }
+        if let storedSessionID = try? sessionStore.sessionID(for: connection) {
+            sessionID = storedSessionID
+            return storedSessionID
         }
 
         let parameters = [
@@ -1413,6 +1422,7 @@ actor SynologyFileService: RemoteFileService {
             let sid = try await loginTask.value
             sessionID = sid
             sessionLoginTask = nil
+            try? sessionStore.saveSessionID(sid, for: connection)
             return sid
         } catch {
             sessionLoginTask = nil

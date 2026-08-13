@@ -4,6 +4,72 @@ import XCTest
 
 @MainActor
 final class SynologyFileServiceTests: XCTestCase {
+    func testRecreatedServiceReusesStoredSessionWithoutAnotherLogin() async throws {
+        let fixture = SynologyAPIFixture()
+        let loginCount = LockedBox(0)
+        let handler: @Sendable (SynologyRecordedRequest) throws -> SynologyStubResponse = { request in
+            let fields = request.formFields
+            switch (fields["api"], fields["method"]) {
+            case ("SYNO.API.Auth", "login"):
+                loginCount.withLock { $0 += 1 }
+                return .json(#"{"success":true,"data":{"sid":"stored-sid"}}"#)
+            case ("SYNO.FileStation.List", "list"):
+                XCTAssertEqual(fields["_sid"], "stored-sid")
+                return .json(#"{"success":true,"data":{"files":[]}}"#)
+            default:
+                throw SynologyMockError.unexpectedRequest(fields)
+            }
+        }
+        let firstService = fixture.makeService(handler: handler)
+        defer { fixture.unregister() }
+
+        _ = try await firstService.list(directory: "/share/first")
+        let recreatedService = fixture.makeService(handler: handler)
+        _ = try await recreatedService.list(directory: "/share/second")
+
+        XCTAssertEqual(loginCount.values, 1)
+    }
+
+    func testExpiredStoredSessionIsReplacedAndReused() async throws {
+        let fixture = SynologyAPIFixture()
+        let loginCount = LockedBox(0)
+        let listCount = LockedBox(0)
+        let handler: @Sendable (SynologyRecordedRequest) throws -> SynologyStubResponse = { request in
+            let fields = request.formFields
+            switch (fields["api"], fields["method"]) {
+            case ("SYNO.API.Auth", "login"):
+                let count = loginCount.withLock {
+                    $0 += 1
+                    return $0
+                }
+                let sid = count == 1 ? "expired-sid" : "replacement-sid"
+                return .json(#"{"success":true,"data":{"sid":"\#(sid)"}}"#)
+            case ("SYNO.FileStation.List", "list"):
+                let count = listCount.withLock {
+                    $0 += 1
+                    return $0
+                }
+                if fields["_sid"] == "expired-sid", count > 1 {
+                    return .json(#"{"success":false,"error":{"code":119}}"#)
+                }
+                return .json(#"{"success":true,"data":{"files":[]}}"#)
+            default:
+                throw SynologyMockError.unexpectedRequest(fields)
+            }
+        }
+        let firstService = fixture.makeService(handler: handler)
+        defer { fixture.unregister() }
+
+        _ = try await firstService.list(directory: "/share/first")
+        let secondService = fixture.makeService(handler: handler)
+        _ = try await secondService.list(directory: "/share/second")
+        let thirdService = fixture.makeService(handler: handler)
+        _ = try await thirdService.list(directory: "/share/third")
+
+        XCTAssertEqual(loginCount.values, 2)
+        XCTAssertEqual(listCount.values, 4)
+    }
+
     func testConcurrentExpiredRequestsShareOneRelogin() async throws {
         let fixture = SynologyAPIFixture()
         let loginCount = LockedBox(0)
@@ -773,6 +839,7 @@ private final class SynologyAPIFixture: @unchecked Sendable {
     private let rootPath: String
     private let usesTLS: Bool
     private let port: Int
+    private let sessionStore = InMemorySynologySessionStore()
     private lazy var connection = RemoteConnection(
         name: "Mock NAS",
         kind: .synology,
@@ -812,7 +879,8 @@ private final class SynologyAPIFixture: @unchecked Sendable {
             credential: RemoteCredential(password: "secret"),
             session: session,
             cache: cache,
-            pollInterval: pollInterval
+            pollInterval: pollInterval,
+            sessionStore: sessionStore
         )
     }
 
@@ -835,6 +903,22 @@ private final class SynologyAPIFixture: @unchecked Sendable {
 
     func unregister() {
         SynologyMockURLProtocol.unregister(host: host)
+    }
+}
+
+private final class InMemorySynologySessionStore: SynologySessionStoring, @unchecked Sendable {
+    private let sessionIDs = LockedBox<[UUID: String]>([:])
+
+    func sessionID(for connection: RemoteConnection) throws -> String? {
+        sessionIDs.values[connection.id]
+    }
+
+    func saveSessionID(_ sessionID: String, for connection: RemoteConnection) throws {
+        sessionIDs.withLock { $0[connection.id] = sessionID }
+    }
+
+    func removeSession(for connection: RemoteConnection) throws {
+        sessionIDs.withLock { $0.removeValue(forKey: connection.id) }
     }
 }
 
