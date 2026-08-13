@@ -4,6 +4,52 @@ import XCTest
 
 @MainActor
 final class SynologyFileServiceTests: XCTestCase {
+    func testConcurrentExpiredRequestsShareOneRelogin() async throws {
+        let fixture = SynologyAPIFixture()
+        let loginCount = LockedBox(0)
+        let expiredRequestCount = LockedBox(0)
+        let expiredRequestsReady = DispatchSemaphore(value: 0)
+        let service = fixture.makeService { request in
+            let fields = request.formFields
+            switch (fields["api"], fields["method"]) {
+            case ("SYNO.API.Auth", "login"):
+                let count = loginCount.withLock {
+                    $0 += 1
+                    return $0
+                }
+                let sid = count == 1 ? "expired-sid" : "refreshed-sid"
+                return .json(#"{"success":true,"data":{"sid":"\#(sid)"}}"#)
+            case ("SYNO.FileStation.List", "list"):
+                if fields["_sid"] == "expired-sid" {
+                    let shouldRelease = expiredRequestCount.withLock {
+                        $0 += 1
+                        return $0 == 2
+                    }
+                    if shouldRelease {
+                        expiredRequestsReady.signal()
+                        expiredRequestsReady.signal()
+                    }
+                    _ = expiredRequestsReady.wait(timeout: .now() + 2)
+                    return .json(#"{"success":false,"error":{"code":119}}"#)
+                }
+                XCTAssertEqual(fields["_sid"], "refreshed-sid")
+                return .json(#"{"success":true,"data":{"files":[]}}"#)
+            default:
+                throw SynologyMockError.unexpectedRequest(fields)
+            }
+        }
+        defer { fixture.unregister() }
+
+        async let first = service.list(directory: "/share/first")
+        async let second = service.list(directory: "/share/second")
+        let results = try await (first, second)
+
+        XCTAssertTrue(results.0.isEmpty)
+        XCTAssertTrue(results.1.isEmpty)
+        XCTAssertEqual(expiredRequestCount.values, 2)
+        XCTAssertEqual(loginCount.values, 2)
+    }
+
     func testThumbnailURLCancellationIsNormalized() async throws {
         let fixture = SynologyAPIFixture()
         let service = fixture.makeService { request in

@@ -11,6 +11,7 @@ actor SynologyFileService: RemoteFileService {
     private let cache: DownloadCache
     private let pollInterval: Duration
     private var sessionID: String?
+    private var sessionLoginTask: Task<String, Error>?
 
     /// File Station thumbnails are small responses. If DSM cannot provide one
     /// promptly, keeping a grid cell (and the global progress indicator) alive
@@ -1341,11 +1342,23 @@ actor SynologyFileService: RemoteFileService {
     private func authenticatedRequest<T>(
         _ operation: (String) async throws -> T
     ) async throws -> T {
+        let sid: String
         do {
-            let sid = try await validSessionID()
+            sid = try await validSessionID()
+        } catch {
+            throw RemoteRequestCancellation.normalized(error)
+        }
+
+        do {
             return try await operation(sid)
         } catch let error as SynologyAPIError where error.isAuthenticationError {
-            sessionID = nil
+            // Another request may already have refreshed the shared session
+            // while this operation was waiting for its expired response. Do
+            // not discard that newer SID, and make every waiter share the
+            // same login task instead of starting a login storm.
+            if sessionID == sid {
+                sessionID = nil
+            }
             do {
                 return try await operation(validSessionID())
             } catch {
@@ -1358,6 +1371,9 @@ actor SynologyFileService: RemoteFileService {
 
     private func validSessionID() async throws -> String {
         if let sessionID { return sessionID }
+        if let sessionLoginTask {
+            return try await sessionLoginTask.value
+        }
 
         let parameters = [
             "api": "SYNO.API.Auth",
@@ -1369,18 +1385,34 @@ actor SynologyFileService: RemoteFileService {
             "format": "sid"
         ]
         let request = try request(script: "auth.cgi", parameters: parameters)
-        let (data, response) = try await session.data(for: request)
-        try validateHTTP(response)
-        let envelope = try JSONDecoder().decode(SynologyEnvelope<SynologyAuthData>.self, from: data)
-        guard envelope.success else {
-            if let code = envelope.error?.code {
-                throw SynologyAuthenticationError(code: code)
+        let loginTask = Task<String, Error> {
+            let (data, response) = try await self.session.data(for: request)
+            try self.validateHTTP(response)
+            let envelope = try JSONDecoder().decode(
+                SynologyEnvelope<SynologyAuthData>.self,
+                from: data
+            )
+            guard envelope.success else {
+                if let code = envelope.error?.code {
+                    throw SynologyAuthenticationError(code: code)
+                }
+                throw NasFinderError.authenticationFailed
             }
-            throw NasFinderError.authenticationFailed
+            guard let sid = envelope.data?.sid else {
+                throw NasFinderError.authenticationFailed
+            }
+            return sid
         }
-        guard let sid = envelope.data?.sid else { throw NasFinderError.authenticationFailed }
-        sessionID = sid
-        return sid
+        sessionLoginTask = loginTask
+        do {
+            let sid = try await loginTask.value
+            sessionID = sid
+            sessionLoginTask = nil
+            return sid
+        } catch {
+            sessionLoginTask = nil
+            throw error
+        }
     }
 
     private func probeWebAPI() async throws {
