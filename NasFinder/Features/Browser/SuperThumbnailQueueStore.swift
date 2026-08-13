@@ -24,7 +24,7 @@ struct SuperThumbnailSessionReport: Sendable, Equatable {
     let cachedCount: Int
     var vaultFolders: [SuperThumbnailVaultFolderReport] = []
     var vaultLastVerifiedAt: Date? = nil
-    var mediaScope: SuperThumbnailMediaScope = .videosOnly
+    var mediaScope: SuperThumbnailMediaScope = .videosAndPhotos
 
     var successfulCount: Int { successCounts.reduce(0, +) + photoSuccessCount }
     var vaultUploadedCount: Int { vaultFolders.reduce(0) { $0 + $1.uploadedCount } }
@@ -122,7 +122,7 @@ actor SuperThumbnailQueueStore {
         for items: [RemoteFileItem],
         sessionKey: String,
         allObservedItems: [RemoteFileItem]? = nil,
-        mediaScope: SuperThumbnailMediaScope = .videosOnly
+        mediaScope: SuperThumbnailMediaScope = .videosAndPhotos
     ) -> [String: Int] {
         var sessions = load()
         var session = sessions[sessionKey] ?? SessionState()
@@ -392,7 +392,7 @@ actor SuperThumbnailQueueStore {
             cachedCount: session.cachedItems?.count ?? 0,
             vaultFolders: folderReports,
             vaultLastVerifiedAt: session.vaultLastVerifiedAt,
-            mediaScope: session.mediaScope ?? .videosOnly
+            mediaScope: session.mediaScope ?? .videosAndPhotos
         )
     }
 

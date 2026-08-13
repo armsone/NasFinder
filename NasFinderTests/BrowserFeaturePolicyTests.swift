@@ -222,6 +222,16 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         )
     }
 
+    func testSuperThumbnailAlwaysIncludesVideosAndPhotos() {
+        let video = item(name: "movie.mkv", size: 2_048)
+        let photo = item(name: "photo.heic", size: 4_096)
+        let document = item(name: "notes.txt", size: 20)
+
+        XCTAssertTrue(ThumbnailPreheatPolicy.canGenerateSuperThumbnail(item: video))
+        XCTAssertTrue(ThumbnailPreheatPolicy.canGenerateSuperThumbnail(item: photo))
+        XCTAssertFalse(ThumbnailPreheatPolicy.canGenerateSuperThumbnail(item: document))
+    }
+
     func testFavoriteImportSkipsCanonicalDuplicatesAndAppendsNewAddresses() throws {
         let suiteName = "BrowserFeaturePolicyTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

@@ -1,4 +1,5 @@
 import Foundation
+import ImageIO
 import Network
 import UIKit
 
@@ -29,6 +30,10 @@ enum ThumbnailPreheatPolicy {
                 && supportsRangeStreaming
                 && item.size.map { $0 > 0 } == true
         }
+    }
+
+    static func canGenerateSuperThumbnail(item: RemoteFileItem) -> Bool {
+        !item.isDirectory && (item.isImage || item.isVideo)
     }
 
     static func requiresExternalPower(
@@ -173,7 +178,7 @@ final class ThumbnailPreheater: ObservableObject {
         requiresExternalPower powerOverride: Bool? = nil,
         allowsConstrainedRun: Bool = false,
         generationMode: RemoteVideoThumbnailGenerationMode = .bounded,
-        mediaScope: SuperThumbnailMediaScope = .videosOnly,
+        mediaScope: SuperThumbnailMediaScope = .videosAndPhotos,
         vaultOptions: SuperThumbnailVaultOptions = .init(
             isEnabled: false,
             timing: .later
@@ -265,6 +270,8 @@ final class ThumbnailPreheater: ObservableObject {
                 rootPath: rootPath,
                 recursively: recursively,
                 allowsConstrainedRun: allowsConstrainedRun,
+                includesGenericImages: generationMode == .completeFile
+                    && mediaScope == .videosAndPhotos,
                 service: service
             )
             let completeRunItems = collectedCandidates.filter { $0.isVideo || $0.isImage }
@@ -806,9 +813,14 @@ final class ThumbnailPreheater: ObservableObject {
         rootPath: String,
         recursively: Bool,
         allowsConstrainedRun: Bool,
+        includesGenericImages: Bool,
         service: any RemoteFileService
     ) async throws -> [RemoteFileItem] {
-        var candidates = eligibleItems(in: rootItems, service: service)
+        var candidates = eligibleItems(
+            in: rootItems,
+            service: service,
+            includesGenericImages: includesGenericImages
+        )
         guard recursively else { return candidates }
 
         var pendingDirectories = rootItems.filter(\.isDirectory)
@@ -825,7 +837,11 @@ final class ThumbnailPreheater: ObservableObject {
 
             let children = try await service.list(directory: directory.path)
                 .filter { RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name) }
-            candidates.append(contentsOf: eligibleItems(in: children, service: service))
+            candidates.append(contentsOf: eligibleItems(
+                in: children,
+                service: service,
+                includesGenericImages: includesGenericImages
+            ))
             pendingDirectories.append(contentsOf: children.filter(\.isDirectory))
         }
         return candidates
@@ -833,15 +849,18 @@ final class ThumbnailPreheater: ObservableObject {
 
     private func eligibleItems(
         in items: [RemoteFileItem],
-        service: any RemoteFileService
+        service: any RemoteFileService,
+        includesGenericImages: Bool
     ) -> [RemoteFileItem] {
         switch service.connection.kind {
         case .synology:
-            return items.filter { !$0.isDirectory && ($0.isImage || $0.isVideo) }
+            return items.filter(ThumbnailPreheatPolicy.canGenerateSuperThumbnail)
         case .sftp, .smb, .webDAV, .ftp:
-            // Generic network photos would require their complete originals. Only bounded
-            // video range reads are eligible for unattended preheating.
-            return items.filter { !$0.isDirectory && $0.isVideo }
+            return items.filter {
+                !$0.isDirectory
+                    && ($0.isVideo
+                        || (includesGenericImages && $0.isImage))
+            }
         }
     }
 
@@ -899,6 +918,12 @@ final class ThumbnailPreheater: ObservableObject {
             }
         }
 
+        if generationMode == .completeFile,
+           item.isImage,
+           service.connection.kind != .synology {
+            return try await downloadedImageThumbnailData(for: item, service: service)
+        }
+
         guard canGenerateBoundedVideoThumbnail(for: item, service: service) else {
             return nil
         }
@@ -927,6 +952,40 @@ final class ThumbnailPreheater: ObservableObject {
             transferredBytes: generated.transferredBytes,
             mediaDurationSeconds: generated.mediaDurationSeconds,
             processingPath: generated.processingPath
+        )
+    }
+
+    private func downloadedImageThumbnailData(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) async throws -> ThumbnailPreheatPayload? {
+        let url = try await service.download(item) { [weak self] progress in
+            Task { @MainActor [weak self] in
+                self?.currentItemTransferredBytes = progress.completedByteCount
+                self?.currentItemTotalBytes = progress.totalByteCount ?? item.size ?? 0
+            }
+        }
+        try Task.checkCancellation()
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 384
+        ]
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(
+                source,
+                0,
+                options as CFDictionary
+              ),
+              let data = UIImage(cgImage: cgImage).jpegData(compressionQuality: 0.82)
+        else { return nil }
+        let localSize = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        let downloadedBytes = localSize ?? Int(item.size ?? 0)
+        return ThumbnailPreheatPayload(
+            data: data,
+            transferredBytes: max(downloadedBytes, 0),
+            mediaDurationSeconds: nil,
+            processingPath: .compatibilityLocalFile
         )
     }
 
