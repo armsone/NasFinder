@@ -258,7 +258,8 @@ struct FileBrowserView: View {
             .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
             .modifier(
                 FileBrowserNavigationAppearanceModifier(
-                    isCoverFlow: layoutStyle == .coverFlow
+                    isCoverFlow: layoutStyle == .coverFlow,
+                    usesDarkBackground: coverFlowUsesDarkBackground
                 )
             )
             .navigationTitle("")

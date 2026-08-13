@@ -576,12 +576,24 @@ private struct FavoriteRemovalPopover: View {
 
 struct FavoriteListView: View {
     @EnvironmentObject private var favoriteStore: FavoriteStore
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var favoritePendingRemoval: FavoriteItem?
 
-    private let columns = Array(
-        repeating: GridItem(.flexible(), spacing: 12, alignment: .top),
-        count: 4
-    )
+    private var columns: [GridItem] {
+        let count: Int
+        if dynamicTypeSize.isAccessibilitySize {
+            count = 2
+        } else if horizontalSizeClass == .regular {
+            count = 6
+        } else {
+            count = 3
+        }
+        return Array(
+            repeating: GridItem(.flexible(), spacing: 12, alignment: .top),
+            count: count
+        )
+    }
 
     var body: some View {
         Group {
@@ -612,6 +624,7 @@ struct FavoriteListView: View {
                 }
             }
         }
+        .background(SkyBreezeBackground())
         .navigationTitle("즐겨찾기")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(

@@ -66,14 +66,23 @@ enum FileBrowserCoverFlowBackground: String, CaseIterable, Identifiable {
 
 struct FileBrowserNavigationAppearanceModifier: ViewModifier {
     let isCoverFlow: Bool
+    let usesDarkBackground: Bool
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if isCoverFlow {
             content
-                .toolbarBackground(Color.white, for: .navigationBar)
+                .toolbarBackground(
+                    usesDarkBackground
+                        ? Color(red: 5.0 / 255.0, green: 5.0 / 255.0, blue: 6.0 / 255.0)
+                        : Color.white,
+                    for: .navigationBar
+                )
                 .toolbarBackground(.visible, for: .navigationBar)
-                .toolbarColorScheme(.light, for: .navigationBar)
+                .toolbarColorScheme(
+                    usesDarkBackground ? .dark : .light,
+                    for: .navigationBar
+                )
         } else {
             content
         }
