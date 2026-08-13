@@ -730,7 +730,9 @@ private struct FavoriteFolderMosaicView: View {
         Group {
             if items.isEmpty {
                 Image(systemName: "folder.fill")
-                    .font(.system(size: side * 0.58))
+                    .resizable()
+                    .scaledToFit()
+                    .padding(side * 0.06)
                     .foregroundStyle(SkyBreezeTheme.folderBlue)
                     .overlay {
                         if isLoading {
