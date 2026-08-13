@@ -9,7 +9,10 @@ final class NasFinderDocumentPickerViewController: UIDocumentPickerExtensionView
     override func prepareForPresentation(in mode: UIDocumentPickerMode) {
         super.prepareForPresentation(in: mode)
 
-        let model = DocumentPickerModel { [weak self] url in
+        let model = DocumentPickerModel(
+            pickerMode: mode,
+            documentStorageURL: documentStorageURL
+        ) { [weak self] url in
             self?.dismissGrantingAccess(to: url)
         }
         self.model = model
@@ -58,9 +61,17 @@ final class DocumentPickerModel: ObservableObject {
     @Published private(set) var errorMessage: String?
 
     private let finish: (URL) -> Void
+    private let pickerMode: UIDocumentPickerMode
+    private let documentStorageURL: URL?
     private var operationTask: Task<Void, Never>?
 
-    init(finish: @escaping (URL) -> Void) {
+    init(
+        pickerMode: UIDocumentPickerMode,
+        documentStorageURL: URL?,
+        finish: @escaping (URL) -> Void
+    ) {
+        self.pickerMode = pickerMode
+        self.documentStorageURL = documentStorageURL
         self.finish = finish
     }
 
@@ -172,7 +183,7 @@ final class DocumentPickerModel: ObservableObject {
         let task = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let destination = try Self.downloadDestination(filename: item.name)
+                let destination = try downloadDestination(filename: item.name)
                 try await backend.download(path: item.path, to: destination)
                 try Task.checkCancellation()
                 downloadingItem = nil
@@ -218,14 +229,22 @@ final class DocumentPickerModel: ObservableObject {
         }
     }
 
-    private static func downloadDestination(filename: String) throws -> URL {
-        guard let container = FileManager.default.containerURL(
-            forSecurityApplicationGroupIdentifier: NasFinderFileProviderIdentifiers.appGroup
-        ) else {
-            throw CocoaError(.fileNoSuchFile)
+    private func downloadDestination(filename: String) throws -> URL {
+        let root: URL
+        if pickerMode == .open {
+            guard let documentStorageURL else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            root = documentStorageURL
+        } else {
+            guard let container = FileManager.default.containerURL(
+                forSecurityApplicationGroupIdentifier: NasFinderFileProviderIdentifiers.appGroup
+            ) else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            root = container.appendingPathComponent("DocumentPickerImports", isDirectory: true)
         }
-        let directory = container
-            .appendingPathComponent("DocumentPickerImports", isDirectory: true)
+        let directory = root
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(
             at: directory,
