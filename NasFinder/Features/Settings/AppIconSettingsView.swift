@@ -43,10 +43,10 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
     @MainActor
     static func apply(
         _ icon: AppIconChoice,
-        completion: @escaping (Error?) -> Void = { _ in }
+        completion: @escaping @MainActor @Sendable (String?) -> Void = { _ in }
     ) {
         guard UIApplication.shared.supportsAlternateIcons else {
-            completion(AppIconChangeError.unsupported)
+            completion(AppIconChangeError.unsupported.localizedDescription)
             return
         }
         guard current(alternateIconName: UIApplication.shared.alternateIconName) != icon else {
@@ -54,7 +54,8 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
             return
         }
         UIApplication.shared.setAlternateIconName(icon.alternateIconName) { error in
-            Task { @MainActor in completion(error) }
+            let message = error?.localizedDescription
+            Task { @MainActor in completion(message) }
         }
     }
 }
@@ -178,11 +179,11 @@ struct AppIconPickerSection: View {
 
         isChangingIcon = true
         pendingIcon = icon
-        AppIconChoice.apply(icon) { error in
+        AppIconChoice.apply(icon) { message in
             isChangingIcon = false
             pendingIcon = nil
-            if let error {
-                errorMessage = error.localizedDescription
+            if let message {
+                errorMessage = message
             } else {
                 selectedIcon = icon
             }

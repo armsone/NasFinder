@@ -26,8 +26,8 @@ struct AppSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .onChange(of: selectedThemeRawValue, initial: true) { _, rawValue in
             guard AppThemePreference.resolved(rawValue) == .digitalRain else { return }
-            AppIconChoice.apply(.vibeCoder) { error in
-                themeIconError = error?.localizedDescription
+            AppIconChoice.apply(.vibeCoder) { errorMessage in
+                themeIconError = errorMessage
             }
         }
         .alert("아이콘을 변경할 수 없습니다", isPresented: themeIconErrorBinding) {
