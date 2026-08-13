@@ -125,12 +125,15 @@ struct SuperThumbnailView: View {
 
     var body: some View {
         ScrollView {
-            VStack(spacing: 18) {
-                hero
+            VStack(spacing: 16) {
                 folderSelection
+                hero
                 vaultOptions
                 requirements
                 startButton
+                if !historySelections.isEmpty {
+                    historyPanel
+                }
                 statisticsGrid
                 vaultRemovalLink
                 resetLink
@@ -251,18 +254,19 @@ struct SuperThumbnailView: View {
     private var hero: some View {
         HStack(alignment: .center, spacing: 14) {
             SuperThumbnailMark()
-                .scaleEffect(0.55)
-                .frame(width: 50, height: 50)
-            Text("폴더를 선택하면 더 많은 Video에 Thumbnail을 만듭니다.")
-                .font(.footnote)
+                .scaleEffect(0.44)
+                .frame(width: 40, height: 40)
+            Text("선택한 폴더의 영상 썸네일을 미리 만듭니다.")
+                .font(.system(size: 15))
                 .foregroundStyle(.secondary)
                 .lineSpacing(2)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
+        .padding(.horizontal, 16)
+        .frame(minHeight: 72)
         .background(
             SkyBreezeTheme.thumbnailSurface,
-            in: RoundedRectangle(cornerRadius: 20, style: .continuous)
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
     }
 
@@ -284,26 +288,32 @@ struct SuperThumbnailView: View {
     }
 
     private var vaultOptions: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Picker("NAS Vault", selection: $nasVaultEnabled) {
-                    Text("NAS Vault").tag(true)
-                    Text("Not").tag(false)
-                }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: .infinity)
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $nasVaultEnabled) {
+                Label("NAS에도 보관", systemImage: "externaldrive.fill")
+                    .font(.subheadline)
+            }
+            .frame(minHeight: 36)
 
-                Picker("Save", selection: $nasVaultTimingRaw) {
-                    Text("Now").tag(SuperThumbnailVaultTiming.now.rawValue)
-                    Text("Later").tag(SuperThumbnailVaultTiming.later.rawValue)
+            if nasVaultEnabled {
+                Divider()
+                HStack {
+                    Text("보관 시점")
+                        .font(.subheadline)
+                    Spacer()
+                    Picker("보관 시점", selection: $nasVaultTimingRaw) {
+                        Text("폴더별 완료 즉시")
+                            .tag(SuperThumbnailVaultTiming.now.rawValue)
+                        Text("작업 완료 후 한 번에")
+                            .tag(SuperThumbnailVaultTiming.later.rawValue)
+                    }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
                 }
-                .pickerStyle(.segmented)
-                .frame(maxWidth: .infinity)
-                .disabled(!nasVaultEnabled)
-                .opacity(nasVaultEnabled ? 1 : 0.42)
+                .frame(minHeight: 36)
             }
             Text(vaultOptionDescription)
-                .font(.caption2)
+                .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .padding(14)
@@ -335,10 +345,10 @@ struct SuperThumbnailView: View {
                     Image(systemName: "folder.fill")
                         .foregroundStyle(SkyBreezeTheme.folderBlue)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(selection?.title ?? "폴더 선택")
-                            .font(.subheadline.weight(.regular))
+                        Text(selection?.title ?? "처리할 폴더 선택")
+                            .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(primaryInk)
-                        Text(selection?.path ?? "NAS와 Folder를 선택하세요")
+                        Text(selection?.path ?? "NAS 폴더를 선택하세요")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -348,7 +358,8 @@ struct SuperThumbnailView: View {
                         .font(.caption.bold())
                         .foregroundStyle(.secondary)
                 }
-                .padding(14)
+                .padding(16)
+                .frame(minHeight: 72)
                 .background(
                     SkyBreezeTheme.thumbnailSurface,
                     in: RoundedRectangle(cornerRadius: 16, style: .continuous)
@@ -359,9 +370,6 @@ struct SuperThumbnailView: View {
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 4)
-            if !historySelections.isEmpty {
-                historyPanel
-            }
         }
     }
 
@@ -415,15 +423,9 @@ struct SuperThumbnailView: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 8)
-                Text("보고서")
-                    .font(.caption2.weight(.medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(
-                        historyTint(for: index).opacity(0.09),
-                        in: Capsule()
-                    )
+                Image(systemName: "chevron.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(.tertiary)
             }
             .frame(minHeight: 40)
             .padding(.horizontal, 12)
@@ -445,43 +447,33 @@ struct SuperThumbnailView: View {
     }
 
     private var requirements: some View {
-        HStack(spacing: 16) {
-            requirementStatus(title: "Wi‑Fi", satisfied: hasWiFi)
-            requirementStatus(title: "Power", satisfied: hasExternalPower)
-            Spacer()
-            Text(requirementSummary)
+        HStack(spacing: 7) {
+            Image(systemName: canStart ? "checkmark.circle.fill" : "clock")
                 .foregroundStyle(canStart ? Color.green : Color.secondary)
+            Text(requirementSummary)
+                .foregroundStyle(.secondary)
         }
-        .font(.caption)
+        .font(.system(size: 13))
+        .frame(maxWidth: .infinity, alignment: .center)
         .padding(.horizontal, 4)
-    }
-
-    private func requirementStatus(
-        title: String,
-        satisfied: Bool
-    ) -> some View {
-        Label {
-            Text(title).foregroundStyle(.secondary)
-        } icon: {
-            Image(systemName: satisfied ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(satisfied ? Color.green : Color.secondary)
-        }
     }
 
     private var startButton: some View {
         Button(action: startProcessing) {
             Label(
                 isPreparing
-                    ? "Preparing…"
+                    ? "준비 중…"
                     : startButtonTitle,
                 systemImage: "sparkles.rectangle.stack.fill"
             )
             .frame(maxWidth: .infinity)
+            .frame(height: 54)
         }
         .buttonStyle(.borderedProminent)
-        .controlSize(.large)
+        .buttonBorderShape(.roundedRectangle(radius: 14))
         .font(.body.weight(.medium))
         .disabled(!canStart || isPreparing)
+        .opacity(canStart || isPreparing ? 1 : 0.38)
     }
 
     private var resetLink: some View {
@@ -543,18 +535,18 @@ struct SuperThumbnailView: View {
     }
 
     private var requirementSummary: String {
-        if hasStandardConditions { return "Ready" }
+        if hasStandardConditions { return "시작할 준비가 됐습니다." }
         if let compactJobAssessment {
-            return "Compact · \(compactJobAssessment.videoCount) Videos · "
+            return "소규모 작업 · 영상 \(compactJobAssessment.videoCount)개 · "
                 + formatted(compactJobAssessment.totalBytes)
         }
-        if isAssessingCompactJob { return "Checking…" }
-        return "Wi‑Fi + Power 필요"
+        if isAssessingCompactJob { return "폴더를 확인하고 있습니다." }
+        return "Wi‑Fi 연결과 충전을 기다립니다."
     }
 
     private var startButtonTitle: String {
-        if usesCompactOverride { return "Force Start Compact Job" }
-        return hasPendingSession ? "Resume Super Thumbnail" : "Start Super Thumbnail"
+        if usesCompactOverride { return "소규모 작업 시작" }
+        return hasPendingSession ? "미완료 작업 이어서 하기" : "시작"
     }
 
     private var primaryInk: Color {
@@ -832,6 +824,9 @@ private struct SuperThumbnailReportView: View {
     let onResume: () -> Void
     @State private var report: SuperThumbnailSessionReport?
     @State private var isLoading = true
+    @State private var isStageDetailExpanded = false
+    @State private var isVaultDetailExpanded = false
+    @State private var isFailureDetailExpanded = false
 
     var body: some View {
         ScrollView {
@@ -854,13 +849,23 @@ private struct SuperThumbnailReportView: View {
                 }
 
                 if let report {
-                    reportSummary(report)
-                    if !report.vaultFolders.isEmpty {
-                        vaultSummary(report)
-                    }
+                    reportHeadline(report)
                     reportActions(report)
+                    DisclosureGroup("처리 단계 상세", isExpanded: $isStageDetailExpanded) {
+                        reportSummary(report)
+                            .padding(.top, 8)
+                    }
+                    if !report.vaultFolders.isEmpty {
+                        DisclosureGroup("NAS 보관 상세", isExpanded: $isVaultDetailExpanded) {
+                            vaultSummary(report)
+                                .padding(.top, 8)
+                        }
+                    }
                     if !report.failures.isEmpty {
-                        failureSummary(report.failures)
+                        DisclosureGroup("미완료 파일 \(report.failures.count)개", isExpanded: $isFailureDetailExpanded) {
+                            failureSummary(report.failures)
+                                .padding(.top, 8)
+                        }
                     }
                 } else if isLoading {
                     ProgressView("보고서 불러오는 중…")
@@ -896,11 +901,12 @@ private struct SuperThumbnailReportView: View {
                     dismiss()
                     onResume()
                 } label: {
-                    Label("미완료부터 이어서 진행", systemImage: "arrow.clockwise")
+                    Label("미완료 작업 이어서 하기", systemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
+                        .frame(height: 54)
                 }
                 .buttonStyle(.borderedProminent)
-                .controlSize(.large)
+                .buttonBorderShape(.roundedRectangle(radius: 14))
             }
             selectFolderButton
         }
@@ -911,11 +917,40 @@ private struct SuperThumbnailReportView: View {
             dismiss()
             onSelect()
         } label: {
-            Label("이 폴더 선택", systemImage: "folder.badge.checkmark")
+            Label("이 폴더 다시 선택", systemImage: "folder.badge.checkmark")
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
         .controlSize(.large)
+    }
+
+    private func reportHeadline(_ report: SuperThumbnailSessionReport) -> some View {
+        let incompleteCount = report.pendingCount
+            + report.vaultPendingCount
+            + report.vaultFailedCount
+        let lastVerifiedText = report.vaultLastVerifiedAt.map {
+            " · 마지막 확인 \($0.formatted(date: .abbreviated, time: .shortened))"
+        } ?? ""
+        return VStack(alignment: .leading, spacing: 5) {
+            Text(incompleteCount > 0 ? "미완료 \(incompleteCount)개" : "모두 완료")
+                .font(.system(size: 24, weight: .semibold))
+                .foregroundStyle(.primary)
+            Text(
+                "실패 \(report.failures.count) · 업로드 대기 \(report.vaultPendingCount + report.vaultFailedCount)"
+                    + lastVerifiedText
+            )
+            .font(.system(size: 13))
+            .foregroundStyle(.secondary)
+            Text("이어하기 순서 · 실패한 썸네일 → 업로드 대기 → 신규·변경 → 전체 확인")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(16)
+        .background(
+            SkyBreezeTheme.thumbnailSurface,
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
     }
 
     private func reportSummary(
@@ -1104,6 +1139,7 @@ private struct SuperThumbnailProgressView: View {
     @State private var screenAwakeActivityID = UUID()
     @State private var isOverflowExpanded = true
     @State private var isFailurePanelExpanded = false
+    @State private var isDetailsExpanded = false
     @State private var vaultReport: SuperThumbnailSessionReport?
 
     var body: some View {
@@ -1112,8 +1148,8 @@ private struct SuperThumbnailProgressView: View {
                 VStack(spacing: 14) {
                     HStack(spacing: 9) {
                         SuperThumbnailMark(compact: true)
-                        Text("Super Processing")
-                            .font(.subheadline.weight(.medium))
+                        Text(preheater.isRunning ? "썸네일 만드는 중" : "처리 완료")
+                            .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(.primary)
                     }
                     .frame(maxWidth: .infinity, alignment: .center)
@@ -1130,13 +1166,6 @@ private struct SuperThumbnailProgressView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .center)
 
-                    if let workPhase = preheater.workPhase {
-                        Text(workPhase)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .center)
-                    }
-
                     if let pauseReason = preheater.pauseReason {
                         Text(pauseReason)
                             .font(.caption)
@@ -1145,60 +1174,53 @@ private struct SuperThumbnailProgressView: View {
                     }
 
                     overallProgressPanel
-
-                    VStack(spacing: 0) {
-                        currentFilenameRow
-                        currentItemWaitPanel(
-                            startedAt: preheater.currentItemStartedAt
-                        )
-                        etaPanel
-                    }
+                    currentFilenameRow
+                    currentItemWaitPanel(startedAt: preheater.currentItemStartedAt)
                     HStack(spacing: 18) {
-                        progressMetric("Created", preheater.generatedCount)
-                        progressMetric("Already Done", preheater.cachedCount)
-                        progressMetric("Failed", preheater.failedCount)
+                        progressMetric("완료", preheater.generatedCount)
+                        progressMetric("건너뜀", preheater.cachedCount)
+                        progressMetric("실패", preheater.failedCount)
                     }
                     if preheater.vaultRestoredCount > 0
                         || preheater.vaultStoredCount > 0
                         || preheater.vaultPendingCount > 0
                         || preheater.vaultFailedCount > 0 {
-                        Text(
-                            "NAS Vault · 가져옴 \(preheater.vaultRestoredCount) · "
-                                + "보관 확인 \(preheater.vaultStoredCount) · "
-                                + "대기 \(preheater.vaultPendingCount) · "
-                                + "실패 \(preheater.vaultFailedCount)"
-                        )
+                        Text("NAS 보관 \(preheater.vaultStoredCount)/\(preheater.generatedCount + preheater.cachedCount) · 대기 \(preheater.vaultPendingCount)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                     }
-                    if let verifiedAt = preheater.vaultLastVerifiedAt {
-                        Text(
-                            "NAS Vault 전체 확인 · "
-                                + verifiedAt.formatted(date: .omitted, time: .shortened)
-                        )
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    }
                     if let vaultErrorMessage = preheater.vaultErrorMessage {
-                        Text("NAS Vault 보관 대기 · \(vaultErrorMessage)")
+                        Text("NAS 보관 대기 · \(vaultErrorMessage)")
                             .font(.caption)
                             .foregroundStyle(.orange)
                             .multilineTextAlignment(.center)
                     }
-                    if !preheater.recentGeneratedThumbnails.isEmpty {
-                        overflowPanel
+                    DisclosureGroup("세부 정보", isExpanded: $isDetailsExpanded) {
+                        VStack(spacing: 10) {
+                            if let workPhase = preheater.workPhase {
+                                Text(workPhase)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            etaPanel
+                            if let verifiedAt = preheater.vaultLastVerifiedAt {
+                                Text("NAS 전체 확인 · \(verifiedAt.formatted(date: .omitted, time: .shortened))")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if !preheater.recentGeneratedThumbnails.isEmpty {
+                                overflowPanel
+                            }
+                            if preheater.isRunning, preheater.failedCount > 0 {
+                                failurePanel
+                            }
+                            Text("세션 네트워크 · " + formattedProgressBytes(preheater.transferredBytes + preheater.currentItemTransferredBytes))
+                                .font(.footnote.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.top, 10)
                     }
-                    if preheater.isRunning, preheater.failedCount > 0 {
-                        failurePanel
-                    }
-                    Text(
-                        "Session Network · "
-                            + formattedProgressBytes(
-                                preheater.transferredBytes
-                                    + preheater.currentItemTransferredBytes
-                            )
-                    )
-                    .font(.footnote.monospacedDigit())
+                    .font(.subheadline)
                     .foregroundStyle(.secondary)
 
                     if !preheater.isRunning, preheater.totalCount > 0 {
@@ -1211,14 +1233,21 @@ private struct SuperThumbnailProgressView: View {
             }
             .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
             .safeAreaInset(edge: .bottom) {
-                Button(role: preheater.isRunning ? .destructive : nil) {
-                    preheater.isRunning ? onCancel() : onClose()
-                } label: {
-                    Text(preheater.isRunning ? "Cancel Processing" : "Close")
-                        .frame(maxWidth: .infinity)
+                Group {
+                    if preheater.isRunning {
+                        Button("작업 중단", role: .destructive, action: onCancel)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Button(action: onClose) {
+                            Text("완료")
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 54)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .buttonBorderShape(.roundedRectangle(radius: 14))
+                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
                 .padding(.horizontal, 24)
                 .padding(.vertical, 12)
                 .background(.ultraThinMaterial)
@@ -1242,15 +1271,15 @@ private struct SuperThumbnailProgressView: View {
 
     private var overallProgressPanel: some View {
         VStack(spacing: 9) {
+            Text("\(preheater.completedCount) / \(preheater.totalCount)")
+                .font(.system(size: 28, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.primary)
             ProgressView(value: preheater.fractionCompleted ?? 0)
                 .progressViewStyle(.linear)
                 .tint(Color.blue.opacity(0.72))
-            Text("\(preheater.completedCount) / \(preheater.totalCount)")
-                .font(.title3.monospacedDigit().weight(.regular))
-                .foregroundStyle(.primary)
+                .frame(height: 6)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 13)
+        .padding(16)
         .background(
             SkyBreezeTheme.thumbnailSurface,
             in: RoundedRectangle(cornerRadius: 15, style: .continuous)
@@ -1429,16 +1458,16 @@ private struct SuperThumbnailProgressView: View {
 
     private var formattedETA: String {
         guard let seconds = preheater.estimatedTimeRemaining else {
-            return "Calculating…"
+            return "계산 중…"
         }
-        if seconds <= 0 { return "Almost done" }
+        if seconds <= 0 { return "거의 완료" }
         let minutes = max(Int(ceil(seconds / 60)), 1)
-        if minutes < 60 { return "\(minutes) min" }
+        if minutes < 60 { return "\(minutes)분" }
         let hours = minutes / 60
         let remainingMinutes = minutes % 60
         return remainingMinutes == 0
-            ? "\(hours) hr"
-            : "\(hours) hr \(remainingMinutes) min"
+            ? "\(hours)시간"
+            : "\(hours)시간 \(remainingMinutes)분"
     }
 
     private var currentItemTransferText: String {

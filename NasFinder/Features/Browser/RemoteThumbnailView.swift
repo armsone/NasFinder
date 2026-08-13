@@ -111,6 +111,7 @@ struct RemoteThumbnailView: View {
     let service: any RemoteFileService
     let size: CGSize
     let reloadVersion: Int
+    let blursSkinToneDominantImage: Bool
 
     @StateObject private var loader = RemoteThumbnailLoader()
     @State private var cacheRefreshVersion = 0
@@ -120,12 +121,14 @@ struct RemoteThumbnailView: View {
         item: RemoteFileItem,
         service: any RemoteFileService,
         size: CGSize,
-        reloadVersion: Int = 0
+        reloadVersion: Int = 0,
+        blursSkinToneDominantImage: Bool = false
     ) {
         self.item = item
         self.service = service
         self.size = size
         self.reloadVersion = reloadVersion
+        self.blursSkinToneDominantImage = blursSkinToneDominantImage
     }
 
     var body: some View {
@@ -140,6 +143,11 @@ struct RemoteThumbnailView: View {
                             height: geometry.size.height
                         )
                         .clipped()
+                        .blur(
+                            radius: blursSkinToneDominantImage && loader.isSkinToneDominant
+                                ? 2
+                                : 0
+                        )
                 } else {
                     Image(systemName: item.systemImage)
                         .font(.system(size: min(geometry.size.width, geometry.size.height) * 0.38))
@@ -165,7 +173,8 @@ struct RemoteThumbnailView: View {
                 item: item,
                 service: service,
                 size: size,
-                reloadVersion: reloadVersion
+                reloadVersion: reloadVersion,
+                detectSkinToneDominance: blursSkinToneDominantImage
             )
         }
         .onReceive(
@@ -191,7 +200,7 @@ struct RemoteThumbnailView: View {
 
     private var taskIdentity: String {
         let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
-        return "\(item.id)|\(version)|\(item.size ?? -1)|\(size.width)x\(size.height)|\(UIScreen.main.scale)|\(reloadVersion)|\(cacheRefreshVersion)|\(networkPathVersion)"
+        return "\(item.id)|\(version)|\(item.size ?? -1)|\(size.width)x\(size.height)|\(UIScreen.main.scale)|\(reloadVersion)|\(blursSkinToneDominantImage)|\(cacheRefreshVersion)|\(networkPathVersion)"
     }
 
     private var thumbnailCacheKeys: Set<String> {
@@ -203,6 +212,7 @@ struct RemoteThumbnailView: View {
 final class RemoteThumbnailLoader: ObservableObject {
     @Published var image: UIImage?
     @Published var isLoading = false
+    @Published var isSkinToneDominant = false
 
     private static let imageCache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
@@ -236,10 +246,12 @@ final class RemoteThumbnailLoader: ObservableObject {
         item: RemoteFileItem,
         service: any RemoteFileService,
         size: CGSize,
-        reloadVersion: Int
+        reloadVersion: Int,
+        detectSkinToneDominance: Bool = false
     ) async {
         guard shouldGenerateThumbnail(for: item) else {
             image = nil
+            isSkinToneDominant = false
             isLoading = false
             return
         }
@@ -269,7 +281,7 @@ final class RemoteThumbnailLoader: ObservableObject {
         loadedCacheKey = cacheKey
 
         if let cachedImage = Self.imageCache.object(forKey: cacheKey) {
-            image = cachedImage
+            setImage(cachedImage, detectSkinToneDominance: detectSkinToneDominance)
             isLoading = false
             return
         }
@@ -295,7 +307,7 @@ final class RemoteThumbnailLoader: ObservableObject {
                 scale: UIScreen.main.scale,
                 orientation: .up
             )
-            image = diskImage
+            setImage(diskImage, detectSkinToneDominance: detectSkinToneDominance)
             cache(diskImage, forKey: cacheKey)
             return
         }
@@ -375,7 +387,7 @@ final class RemoteThumbnailLoader: ObservableObject {
                     scale: UIScreen.main.scale,
                     orientation: .up
                 )
-                image = remoteImage
+                setImage(remoteImage, detectSkinToneDominance: detectSkinToneDominance)
                 cache(remoteImage, forKey: cacheKey)
                 await RemoteThumbnailDiskCache.shared.store(
                     remoteThumbnailData,
@@ -452,7 +464,7 @@ final class RemoteThumbnailLoader: ObservableObject {
                     scale: UIScreen.main.scale,
                     orientation: .up
                 )
-                image = generatedUIImage
+                setImage(generatedUIImage, detectSkinToneDominance: detectSkinToneDominance)
                 cache(generatedUIImage, forKey: cacheKey)
                 await RemoteThumbnailDiskCache.shared.store(
                     generated.data,
@@ -512,7 +524,7 @@ final class RemoteThumbnailLoader: ObservableObject {
                 loadedCacheKey = nil
                 return
             }
-            image = generatedImage.image
+            setImage(generatedImage.image, detectSkinToneDominance: detectSkinToneDominance)
             cache(generatedImage.image, forKey: cacheKey)
             if let generatedThumbnailData = generatedImage.image.jpegData(
                 compressionQuality: 0.82
@@ -628,6 +640,12 @@ final class RemoteThumbnailLoader: ObservableObject {
         Self.negativeCacheExpirations.removeValue(forKey: key)
     }
 
+    private func setImage(_ image: UIImage, detectSkinToneDominance: Bool) {
+        self.image = image
+        isSkinToneDominant = detectSkinToneDominance
+            && SkinToneBlurPolicy.isSkinToneDominant(image)
+    }
+
     private func isNegativelyCached(_ key: NSString) -> Bool {
         guard let expiration = Self.negativeCacheExpirations[key] else { return false }
         if expiration > Date() { return true }
@@ -643,6 +661,60 @@ final class RemoteThumbnailLoader: ObservableObject {
                 $0.value > now
             }
         }
+    }
+}
+
+enum SkinToneBlurPolicy {
+    static let requiredFraction = 0.42
+
+    static func shouldBlur(skinToneCount: Int, sampleCount: Int) -> Bool {
+        guard sampleCount > 0 else { return false }
+        return Double(skinToneCount) / Double(sampleCount) >= requiredFraction
+    }
+
+    static func isSkinTone(red: UInt8, green: UInt8, blue: UInt8) -> Bool {
+        let r = Int(red)
+        let g = Int(green)
+        let b = Int(blue)
+        let maximum = max(r, g, b)
+        let minimum = min(r, g, b)
+        return r > 70
+            && g > 35
+            && b > 20
+            && r > g
+            && r > b
+            && maximum - minimum > 24
+            && abs(r - g) > 8
+    }
+
+    static func isSkinToneDominant(_ image: UIImage) -> Bool {
+        guard let cgImage = image.cgImage else { return false }
+        let width = 12
+        let height = 12
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return false }
+        context.interpolationQuality = .low
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        var skinToneCount = 0
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            if isSkinTone(
+                red: pixels[offset],
+                green: pixels[offset + 1],
+                blue: pixels[offset + 2]
+            ) {
+                skinToneCount += 1
+            }
+        }
+        return shouldBlur(skinToneCount: skinToneCount, sampleCount: width * height)
     }
 }
 

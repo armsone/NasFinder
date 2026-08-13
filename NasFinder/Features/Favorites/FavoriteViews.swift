@@ -40,6 +40,43 @@ enum FavoriteShelfInteractionPolicy {
     }
 }
 
+enum FavoriteFolderMosaicPolicy {
+    static let maximumItemCount = 9
+
+    static func candidates(from items: [RemoteFileItem]) -> [RemoteFileItem] {
+        Array(
+            items
+                .filter { !$0.isDirectory && ($0.isImage || $0.isVideo) }
+                .prefix(maximumItemCount)
+        )
+    }
+}
+
+private actor FavoriteFolderMosaicCache {
+    static let shared = FavoriteFolderMosaicCache()
+
+    private struct Entry {
+        let items: [RemoteFileItem]
+        let storedAt: Date
+    }
+
+    private let lifetime: TimeInterval = 60
+    private var entriesByFolderID: [String: Entry] = [:]
+
+    func items(for folder: RemoteFileItem) -> [RemoteFileItem]? {
+        guard let entry = entriesByFolderID[folder.id],
+              Date().timeIntervalSince(entry.storedAt) < lifetime else {
+            entriesByFolderID.removeValue(forKey: folder.id)
+            return nil
+        }
+        return entry.items
+    }
+
+    func store(_ items: [RemoteFileItem], for folder: RemoteFileItem) {
+        entriesByFolderID[folder.id] = Entry(items: items, storedAt: Date())
+    }
+}
+
 struct FavoriteShelfView: View {
     private static let edgeScrollInset: CGFloat = 34
 
@@ -613,11 +650,19 @@ private struct FavoriteCell: View {
         VStack(spacing: 6) {
             Group {
                 if let service {
-                    RemoteThumbnailView(
-                        item: favorite.remoteItem,
-                        service: service,
-                        size: CGSize(width: side, height: side)
-                    )
+                    if favorite.remoteItem.isDirectory {
+                        FavoriteFolderMosaicView(
+                            folder: favorite.remoteItem,
+                            service: service,
+                            side: side
+                        )
+                    } else {
+                        RemoteThumbnailView(
+                            item: favorite.remoteItem,
+                            service: service,
+                            size: CGSize(width: side, height: side)
+                        )
+                    }
                 } else {
                     Image(systemName: favorite.remoteItem.systemImage)
                         .font(.system(size: side * 0.38))
@@ -668,6 +713,76 @@ private struct FavoriteCell: View {
             return nil
         }
         return RemoteFileServiceFactory.make(connection: connection, credential: credential)
+    }
+}
+
+private struct FavoriteFolderMosaicView: View {
+    let folder: RemoteFileItem
+    let service: any RemoteFileService
+    let side: CGFloat
+
+    @State private var items: [RemoteFileItem] = []
+    @State private var isLoading = true
+
+    private let spacing: CGFloat = 1
+
+    var body: some View {
+        Group {
+            if items.isEmpty {
+                Image(systemName: "folder.fill")
+                    .font(.system(size: side * 0.58))
+                    .foregroundStyle(SkyBreezeTheme.folderBlue)
+                    .overlay {
+                        if isLoading {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                    }
+            } else {
+                let cellSide = (side - spacing * 2) / 3
+                LazyVGrid(
+                    columns: Array(
+                        repeating: GridItem(.fixed(cellSide), spacing: spacing),
+                        count: 3
+                    ),
+                    spacing: spacing
+                ) {
+                    ForEach(0..<FavoriteFolderMosaicPolicy.maximumItemCount, id: \.self) {
+                        index in
+                        if items.indices.contains(index) {
+                            RemoteThumbnailView(
+                                item: items[index],
+                                service: service,
+                                size: CGSize(width: cellSide, height: cellSide),
+                                blursSkinToneDominantImage: true
+                            )
+                            .frame(width: cellSide, height: cellSide)
+                        } else {
+                            SkyBreezeTheme.folderBlue.opacity(0.08)
+                                .frame(width: cellSide, height: cellSide)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(width: side, height: side)
+        .task(id: folder.id) {
+            if let cached = await FavoriteFolderMosaicCache.shared.items(for: folder) {
+                items = cached
+                isLoading = false
+                return
+            }
+            do {
+                let children = try await service.list(directory: folder.path)
+                let candidates = FavoriteFolderMosaicPolicy.candidates(from: children)
+                await FavoriteFolderMosaicCache.shared.store(candidates, for: folder)
+                items = candidates
+            } catch {
+                items = []
+            }
+            isLoading = false
+        }
+        .accessibilityHidden(true)
     }
 }
 

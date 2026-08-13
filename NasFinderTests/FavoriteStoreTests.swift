@@ -3,6 +3,57 @@ import XCTest
 
 @MainActor
 final class FavoriteStoreTests: XCTestCase {
+    func testFolderMosaicUsesOnlyFirstNineMediaFiles() {
+        let connectionID = UUID()
+        let folder = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/folder",
+            name: "folder",
+            kind: .folder,
+            size: nil,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let text = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/note.txt",
+            name: "note.txt",
+            kind: .file,
+            size: 1,
+            modifiedAt: nil,
+            contentTypeIdentifier: "public.plain-text"
+        )
+        let media = (0..<12).map { index in
+            RemoteFileItem(
+                connectionID: connectionID,
+                path: "/\(index).jpg",
+                name: "\(index).jpg",
+                kind: .file,
+                size: 1,
+                modifiedAt: nil,
+                contentTypeIdentifier: "public.jpeg"
+            )
+        }
+
+        let result = FavoriteFolderMosaicPolicy.candidates(
+            from: [folder, text] + media
+        )
+
+        XCTAssertEqual(result.count, 9)
+        XCTAssertEqual(result.map(\.name), (0..<9).map { "\($0).jpg" })
+    }
+
+    func testSkinToneBlurRequiresDominantSampleFraction() {
+        XCTAssertFalse(
+            SkinToneBlurPolicy.shouldBlur(skinToneCount: 41, sampleCount: 100)
+        )
+        XCTAssertTrue(
+            SkinToneBlurPolicy.shouldBlur(skinToneCount: 42, sampleCount: 100)
+        )
+        XCTAssertTrue(SkinToneBlurPolicy.isSkinTone(red: 214, green: 154, blue: 120))
+        XCTAssertFalse(SkinToneBlurPolicy.isSkinTone(red: 80, green: 150, blue: 210))
+    }
+
     func testFavoriteShelfOnlyBeginsReorderingForLongHorizontalMovement() {
         XCTAssertFalse(
             FavoriteShelfInteractionPolicy.shouldBeginReordering(

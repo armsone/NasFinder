@@ -172,11 +172,17 @@ struct ConnectionListView: View {
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
+                .padding(.top, -4)
         }
+        .listSectionSpacing(.custom(10))
     }
 
     private var myFilesSection: some View {
         Section {
+            FavoriteShelfView { favorite in
+                selectedFavorite = favorite
+            }
+
             NavigationLink {
                 ReceivedFilesView()
             } label: {
@@ -191,10 +197,6 @@ struct ConnectionListView: View {
             ThumbnailCacheSettingsLink()
 
             SuperThumbnailLink()
-
-            FavoriteShelfView { favorite in
-                selectedFavorite = favorite
-            }
         } header: {
             sectionHeader("내 파일", systemImage: "folder")
         }
@@ -432,10 +434,10 @@ struct ConnectionListView: View {
                 Image(currentLogoAssetName)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 36, height: 36)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .frame(width: 44, height: 44)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .stroke(.primary.opacity(0.08), lineWidth: 0.5)
                     }
 
