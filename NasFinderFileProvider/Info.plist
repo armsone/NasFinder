@@ -31,16 +31,22 @@
 	<string>NasFinder가 파일 앱에서 같은 네트워크의 NAS 또는 SFTP 서버에 연결하려면 로컬 네트워크 접근이 필요합니다.</string>
 	<key>NSExtension</key>
 	<dict>
-		<key>NSExtensionFileProviderDocumentGroup</key>
-		<string>group.com.armsone.nasfinder</string>
-		<key>NSExtensionFileProviderDownloadPipelineDepth</key>
-		<integer>4</integer>
-		<key>NSExtensionFileProviderSupportsEnumeration</key>
-		<true/>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>UIDocumentPickerModes</key>
+			<array>
+				<string>UIDocumentPickerModeImport</string>
+			</array>
+			<key>UIDocumentPickerSupportedFileTypes</key>
+			<array>
+				<string>public.content</string>
+				<string>public.data</string>
+			</array>
+		</dict>
 		<key>NSExtensionPointIdentifier</key>
-		<string>com.apple.fileprovider-nonui</string>
+		<string>com.apple.fileprovider-ui</string>
 		<key>NSExtensionPrincipalClass</key>
-		<string>$(PRODUCT_MODULE_NAME).NasFinderFileProviderExtension</string>
+		<string>$(PRODUCT_MODULE_NAME).NasFinderDocumentPickerViewController</string>
 	</dict>
 </dict>
 </plist>
