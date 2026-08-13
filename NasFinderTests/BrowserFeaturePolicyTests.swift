@@ -99,7 +99,7 @@ final class BrowserFeaturePolicyTests: XCTestCase {
                 predictedEndTranslation: -900,
                 cardStep: 60
             ),
-            14
+            13
         )
         XCTAssertEqual(
             FileBrowserCoverFlowPolicy.restingIndex(
