@@ -4,7 +4,8 @@ import UIKit
 enum FileBrowserCoverFlowPolicy {
     static let visibleCardCountPerSide = 7
     static let preloadCardCountPerSide = visibleCardCountPerSide + 1
-    static let maximumMomentumCards: CGFloat = 3
+    static let momentumGain: CGFloat = 1.2
+    static let maximumMomentumCards: CGFloat = 4
 
     static func preloadIndices(
         itemCount: Int,
@@ -30,7 +31,7 @@ enum FileBrowserCoverFlowPolicy {
         guard itemCount > 0 else { return nil }
         let safeStep = max(cardStep, 1)
         let projectedExtraTranslation = predictedEndTranslation - translation
-        var momentum = -projectedExtraTranslation / safeStep
+        var momentum = (-projectedExtraTranslation / safeStep) * momentumGain
 
         // UIKit's prediction can occasionally point opposite to the actual
         // finger movement at the end of a slow drag. Momentum must only carry
