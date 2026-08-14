@@ -44,14 +44,19 @@ else
     exit 2
 fi
 
-"$repository_root/scripts/xcodebuild_project.sh" -quiet \
-    -project "$project" \
-    -scheme "$scheme" \
-    -destination "id=$device_identifier" \
-    -derivedDataPath "$derived_data-device-tests" \
-    -allowProvisioningUpdates \
-    test \
-    "${test_arguments[@]}"
+test_command=(
+    "$repository_root/scripts/xcodebuild_project.sh" -quiet
+    -project "$project"
+    -scheme "$scheme"
+    -destination "id=$device_identifier"
+    -derivedDataPath "$derived_data-device-tests"
+    -allowProvisioningUpdates
+    test
+)
+if [[ ${#test_arguments[@]} -gt 0 ]]; then
+    test_command+=("${test_arguments[@]}")
+fi
+"${test_command[@]}"
 
 # Device test products include the full VLCKit framework and can consume
 # several gigabytes. They are no longer needed once the selected tests pass;

@@ -280,6 +280,7 @@ final class ThumbnailPreheater: ObservableObject {
                 rootItems: rootItems,
                 rootPath: rootPath,
                 recursively: recursively,
+                requiresExternalPower: requiresExternalPower,
                 allowsConstrainedRun: allowsConstrainedRun,
                 includesGenericImages: generationMode == .completeFile
                     && mediaScope == .videosAndPhotos,
@@ -837,6 +838,7 @@ final class ThumbnailPreheater: ObservableObject {
         rootItems: [RemoteFileItem],
         rootPath: String,
         recursively: Bool,
+        requiresExternalPower: Bool,
         allowsConstrainedRun: Bool,
         includesGenericImages: Bool,
         service: any RemoteFileService
@@ -853,7 +855,7 @@ final class ThumbnailPreheater: ObservableObject {
         while !pendingDirectories.isEmpty {
             try Task.checkCancellation()
             try await waitForRuntimeConditions(
-                requiresExternalPower: true,
+                requiresExternalPower: requiresExternalPower,
                 allowsConstrainedRun: allowsConstrainedRun
             )
             let directory = pendingDirectories.removeFirst()
