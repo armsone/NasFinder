@@ -112,6 +112,7 @@ final class WebHardFileStoreTests: XCTestCase {
         XCTAssertTrue(page.contains("id=\"receive\""))
         XCTAssertTrue(page.contains("id=\"files\""))
         XCTAssertFalse(page.contains("id=\"folder\""))
+        XCTAssertTrue(page.contains("await load(current);status.textContent=`${done}개 올림`"))
 
         var upload = URLRequest(
             url: baseURL.appendingPathComponent("api/file").appending(

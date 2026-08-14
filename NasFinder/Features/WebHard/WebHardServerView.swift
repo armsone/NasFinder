@@ -434,11 +434,25 @@ struct WebHardServerView: View {
     }
 
     private func fileMetadata(_ item: WebHardFileItem) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(item.name)
-                .font(layoutStyle == .largeThumbnails ? .body : .caption)
+        let filenameExtension = (item.name as NSString).pathExtension
+        let filenameStem = filenameExtension.isEmpty
+            ? item.name
+            : (item.name as NSString).deletingPathExtension
+
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 0) {
+                Text(filenameStem)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                if !filenameExtension.isEmpty {
+                    Text(".\(filenameExtension)")
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+                .font(.system(size: layoutStyle == .largeThumbnails ? 8.5 : 6))
                 .foregroundStyle(.primary)
-                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
             if let size = item.size, !item.isDirectory {
                 Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
                     .font(.caption2)
