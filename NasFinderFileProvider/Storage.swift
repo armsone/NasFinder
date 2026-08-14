@@ -91,6 +91,7 @@ protocol ProviderRemoteBackend: Sendable {
     func list(directory: String) async throws -> [ProviderRemoteNode]
     func download(path: String, to destinationURL: URL) async throws
     func thumbnail(path: String, size: ProviderThumbnailSize) async throws -> Data?
+    func vaultThumbnail(for node: ProviderRemoteNode) async throws -> Data?
     func createFolder(path: String) async throws
     func upload(localURL: URL, to path: String) async throws
     func rename(from sourcePath: String, to destinationPath: String) async throws
@@ -99,6 +100,7 @@ protocol ProviderRemoteBackend: Sendable {
 
 extension ProviderRemoteBackend {
     var supportsMutations: Bool { false }
+    func vaultThumbnail(for node: ProviderRemoteNode) async throws -> Data? { nil }
     func thumbnail(path: String, size: ProviderThumbnailSize) async throws -> Data? { nil }
     func createFolder(path: String) async throws { throw NasFinderFileProviderErrors.readOnly }
     func upload(localURL: URL, to path: String) async throws { throw NasFinderFileProviderErrors.readOnly }
@@ -110,7 +112,7 @@ extension ProviderRemoteBackend {
     }
 }
 
-enum ProviderThumbnailSize: String, Sendable {
+enum ProviderThumbnailSize: String, CaseIterable, Sendable {
     case small
     case medium
     case large
@@ -292,19 +294,27 @@ actor NasFinderFileProviderStorage {
               Self.supportsThumbnail(filename: node.name) else { return nil }
 
         let size = Self.thumbnailSize(for: requestedSize)
-        let key = ProviderThumbnailCache.key(
+        if let cached = thumbnailCache.data(
             for: node,
             connectionID: context.connection.id,
-            size: size
-        )
-        if let cached = thumbnailCache.data(forKey: key) { return cached }
+            preferredSize: size
+        ) { return cached }
 
         try Task.checkCancellation()
-        guard let data = try await context.backend.thumbnail(path: path, size: size) else {
-            return nil
+        var data = try await context.backend.thumbnail(path: path, size: size)
+        if data == nil {
+            data = try? await context.backend.vaultThumbnail(for: node)
         }
+        guard let data else { return nil }
         try Task.checkCancellation()
-        thumbnailCache.store(data, forKey: key)
+        thumbnailCache.store(
+            data,
+            forKey: ProviderThumbnailCache.key(
+                for: node,
+                connectionID: context.connection.id,
+                size: size
+            )
+        )
         return data
     }
 

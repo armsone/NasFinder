@@ -114,6 +114,48 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
         }
     }
 
+    func vaultThumbnail(for node: ProviderRemoteNode) async throws -> Data? {
+        let parent = (node.path as NSString).deletingLastPathComponent
+        let vaultDirectory = parent.isEmpty ? "/.NasFinder-Vault" : "\(parent)/.NasFinder-Vault"
+        let vaultPath = "\(vaultDirectory)/\(Self.vaultThumbnailFilename(for: node))"
+        return try await authenticatedRequest { sid in
+            let parameters = self.commonParameters(
+                api: "SYNO.FileStation.Download",
+                version: "2",
+                method: "download",
+                sid: sid
+            ).merging([
+                "path": vaultPath,
+                "mode": "download"
+            ]) { _, new in new }
+            var request = try self.request(script: "entry.cgi", parameters: parameters)
+            request.timeoutInterval = 12
+            let (data, response) = try await self.session.data(for: request)
+            try self.validateHTTP(response)
+            guard data.count <= 4 * 1_024 * 1_024 else { return nil }
+            if self.isJSONResponse(response) {
+                let envelope = try JSONDecoder().decode(
+                    SynologyProviderEnvelope<SynologyProviderDownloadErrorData>.self,
+                    from: data
+                )
+                try self.validate(envelope)
+                return nil
+            }
+            return data.isEmpty ? nil : data
+        }
+    }
+
+    private static func vaultThumbnailFilename(for node: ProviderRemoteNode) -> String {
+        let identity = [
+            "engine=1",
+            "name=\(node.name.precomposedStringWithCanonicalMapping)",
+            "size=\(node.size ?? -1)",
+            "modified=\(Int64((node.modifiedAt?.timeIntervalSince1970 ?? 0) * 1_000))",
+        ].joined(separator: "|")
+        let digest = SHA256.hash(data: Data(identity.utf8))
+        return "v1-" + digest.map { String(format: "%02x", $0) }.joined() + ".jpg"
+    }
+
     private func authenticatedRequest<T: Sendable>(
         _ operation: (String) async throws -> T
     ) async throws -> T {

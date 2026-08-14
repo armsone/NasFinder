@@ -1,4 +1,5 @@
 import CryptoKit
+import FileProvider
 import Foundation
 
 /// A small App Group cache shared with the File Provider extension. The cache
@@ -12,6 +13,7 @@ actor FileProviderThumbnailCache {
     private let directoryURL: URL?
     private let legacyCacheURLs: [URL]
     private let migrationDefaults: UserDefaults
+    private var refreshTask: Task<Void, Never>?
 
     init(containerURL: URL? = FileManager.default.containerURL(
         forSecurityApplicationGroupIdentifier: "group.com.armsone.nasfinder"
@@ -36,8 +38,7 @@ actor FileProviderThumbnailCache {
 
     @discardableResult
     func migrateExistingCachesIfNeeded() -> Int {
-        guard !migrationDefaults.bool(forKey: Self.migrationDefaultsKey),
-              let directoryURL else { return 0 }
+        guard let directoryURL else { return 0 }
         do {
             try fileManager.createDirectory(
                 at: directoryURL,
@@ -75,6 +76,9 @@ actor FileProviderThumbnailCache {
             if !hadCopyFailure {
                 migrationDefaults.set(true, forKey: Self.migrationDefaultsKey)
             }
+            if copiedCount > 0 {
+                scheduleFilesRefresh()
+            }
             return copiedCount
         } catch {
             return 0
@@ -89,6 +93,7 @@ actor FileProviderThumbnailCache {
                 withIntermediateDirectories: true
             )
             try data.write(to: fileURL(forKey: key, directoryURL: directoryURL), options: .atomic)
+            scheduleFilesRefresh()
         } catch {
             // Sharing with Files is an optimization. The app cache remains valid.
         }
@@ -97,6 +102,19 @@ actor FileProviderThumbnailCache {
     func removeAll() {
         guard let directoryURL else { return }
         try? fileManager.removeItem(at: directoryURL)
+    }
+
+    private func scheduleFilesRefresh() {
+        refreshTask?.cancel()
+        refreshTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            guard let domains = try? await NSFileProviderManager.domains() else { return }
+            for domain in domains {
+                guard let manager = NSFileProviderManager(for: domain) else { continue }
+                try? await manager.signalEnumerator(for: .workingSet)
+            }
+        }
     }
 
     private func fileURL(forKey key: String, directoryURL: URL) -> URL {

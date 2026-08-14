@@ -126,17 +126,12 @@ struct SuperThumbnailView: View {
     var body: some View {
         ScrollView {
             VStack(spacing: 16) {
-                folderSelection
-                hero
-                vaultOptions
-                requirements
-                startButton
+                setupPanel
+                actionPanel
                 if !historySelections.isEmpty {
                     historyPanel
                 }
-                statisticsGrid
-                vaultRemovalLink
-                resetLink
+                storagePanel
             }
             .padding(.horizontal, 18)
             .padding(.top, 12)
@@ -256,6 +251,61 @@ struct SuperThumbnailView: View {
         }
     }
 
+    private var setupPanel: some View {
+        VStack(spacing: 0) {
+            folderSelection
+            Divider().padding(.horizontal, 16)
+            hero
+            Divider().padding(.horizontal, 16)
+            vaultOptions
+        }
+        .background(
+            SkyBreezeTheme.thumbnailSurface,
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(SkyBreezeTheme.thumbnailBorder, lineWidth: 1)
+        }
+    }
+
+    private var actionPanel: some View {
+        VStack(spacing: 12) {
+            requirements
+            startButton
+        }
+        .padding(14)
+        .background(
+            SkyBreezeTheme.thumbnailSurface,
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(SkyBreezeTheme.thumbnailBorder, lineWidth: 1)
+        }
+    }
+
+    private var storagePanel: some View {
+        VStack(spacing: 12) {
+            statisticsGrid
+            Divider()
+            VStack(spacing: 8) {
+                vaultRemovalLink
+                resetLink
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(14)
+        .background(
+            SkyBreezeTheme.thumbnailSurface.opacity(0.72),
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(SkyBreezeTheme.thumbnailBorder.opacity(0.7), lineWidth: 1)
+        }
+    }
+
     private var hero: some View {
         HStack(alignment: .center, spacing: 14) {
             SuperThumbnailMark()
@@ -269,10 +319,6 @@ struct SuperThumbnailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 16)
         .frame(minHeight: 72)
-        .background(
-            SkyBreezeTheme.thumbnailSurface,
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-        )
     }
 
     private var statisticsGrid: some View {
@@ -327,11 +373,7 @@ struct SuperThumbnailView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .padding(14)
-        .background(
-            SkyBreezeTheme.thumbnailSurface,
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-        )
+        .padding(16)
     }
 
     private var vaultOptionDescription: String {
@@ -371,25 +413,22 @@ struct SuperThumbnailView: View {
                 }
                 .padding(16)
                 .frame(minHeight: 72)
-                .background(
-                    SkyBreezeTheme.thumbnailSurface,
-                    in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-                )
             }
             .buttonStyle(.plain)
             Text("하위 폴더 포함 · 완료된 항목은 다시 만들지 않음")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .padding(.leading, 4)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 12)
         }
     }
 
     private var historyPanel: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("최근 작업")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-                .padding(.leading, 4)
             ScrollView(.vertical, showsIndicators: historySelections.count > 3) {
                 LazyVStack(spacing: 7) {
                     ForEach(Array(historySelections.enumerated()), id: \.element.id) {
@@ -402,8 +441,15 @@ struct SuperThumbnailView: View {
             .frame(height: min(CGFloat(historySelections.count) * 64, 206))
             .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
         }
-        .padding(.top, 4)
-        .padding(.bottom, 4)
+        .padding(14)
+        .background(
+            SkyBreezeTheme.thumbnailSurface,
+            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(SkyBreezeTheme.thumbnailBorder, lineWidth: 1)
+        }
     }
 
     private func historyRow(
@@ -441,13 +487,10 @@ struct SuperThumbnailView: View {
             .frame(minHeight: 40)
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(
-                SkyBreezeTheme.thumbnailSurface,
-                in: RoundedRectangle(cornerRadius: 15, style: .continuous)
-            )
+            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
             .overlay {
-                RoundedRectangle(cornerRadius: 15, style: .continuous)
-                    .stroke(SkyBreezeTheme.thumbnailBorder, lineWidth: 1)
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(SkyBreezeTheme.thumbnailBorder.opacity(0.7), lineWidth: 1)
             }
         }
         .buttonStyle(.plain)
@@ -487,6 +530,7 @@ struct SuperThumbnailView: View {
             isConfirmingReset = true
         } label: {
             Label("Super Cache 초기화", systemImage: "arrow.counterclockwise")
+                .frame(maxWidth: .infinity)
         }
         .font(.footnote)
         .foregroundStyle(.secondary)
@@ -501,8 +545,10 @@ struct SuperThumbnailView: View {
         } label: {
             if isRemovingVault {
                 ProgressView()
+                    .frame(maxWidth: .infinity)
             } else {
                 Label("선택 폴더 NAS Vault 삭제", systemImage: "trash")
+                    .frame(maxWidth: .infinity)
             }
         }
         .font(.footnote)

@@ -35,6 +35,27 @@ struct ProviderThumbnailCache {
         return data
     }
 
+    func data(
+        for node: ProviderRemoteNode,
+        connectionID: UUID,
+        preferredSize: ProviderThumbnailSize
+    ) -> Data? {
+        let fallbackOrder: [ProviderThumbnailSize] = switch preferredSize {
+        case .small: [.small, .medium, .large]
+        case .medium: [.medium, .small, .large]
+        case .large: [.large, .medium, .small]
+        }
+        for size in fallbackOrder {
+            let key = Self.key(
+                for: node,
+                connectionID: connectionID,
+                size: size
+            )
+            if let data = data(forKey: key) { return data }
+        }
+        return nil
+    }
+
     func store(_ data: Data, forKey key: String) {
         guard !data.isEmpty, isValidImage(data), let directoryURL else { return }
         do {

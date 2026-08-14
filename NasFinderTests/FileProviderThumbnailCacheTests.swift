@@ -2,7 +2,7 @@ import XCTest
 @testable import NasFinder
 
 final class FileProviderThumbnailCacheTests: XCTestCase {
-    func testMigratesExistingThumbnailFilesOnlyOnce() async throws {
+    func testSynchronizesThumbnailsCreatedAfterEarlierMigration() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         let container = root.appendingPathComponent("group", isDirectory: true)
@@ -23,13 +23,15 @@ final class FileProviderThumbnailCacheTests: XCTestCase {
             migrationDefaultsSuiteName: suiteName
         )
         let firstCount = await cache.migrateExistingCachesIfNeeded()
+        try Data([7, 8, 9]).write(to: superCache.appendingPathComponent("later-super-key"))
         let secondCount = await cache.migrateExistingCachesIfNeeded()
 
         XCTAssertEqual(firstCount, 2)
-        XCTAssertEqual(secondCount, 0)
+        XCTAssertEqual(secondCount, 1)
         let destination = container
             .appendingPathComponent("Library/Caches/FileProviderThumbnails.v1")
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent("super-key").path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent("remote-key").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent("later-super-key").path))
     }
 }

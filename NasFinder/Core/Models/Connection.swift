@@ -47,7 +47,7 @@ enum ConnectionKind: String, Codable, CaseIterable, Identifiable, Sendable {
         case .ftp: "arrow.up.arrow.down.square"
         case .dropbox: "shippingbox.fill"
         case .oneDrive: "cloud.fill"
-        case .googleDrive: "triangle.fill"
+        case .googleDrive: "triangle"
         }
     }
 

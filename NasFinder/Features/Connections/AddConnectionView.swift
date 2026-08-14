@@ -45,6 +45,7 @@ struct AddConnectionView: View {
     var body: some View {
         NavigationStack {
             connectionForm
+            .tint(selectedServiceColor)
             .scrollContentBackground(.hidden)
             .background(SkyBreezeBackground())
             .navigationTitle(editingConnection == nil ? "연결 추가" : "연결 수정")
@@ -138,6 +139,13 @@ struct AddConnectionView: View {
                 connectionTestSection
             }
         }
+    }
+
+    private var selectedServiceColor: Color {
+        ThemeServicePalette.color(
+            forServiceIdentifier: kind.rawValue,
+            theme: .current
+        )
     }
 
     private var connectionKindSection: some View {
@@ -325,6 +333,10 @@ struct AddConnectionView: View {
 
     private func connectionKindButton(_ candidate: ConnectionKind) -> some View {
         let isSelected = kind == candidate
+        let serviceColor = ThemeServicePalette.color(
+            forServiceIdentifier: candidate.rawValue,
+            theme: .current
+        )
         return Button {
             kind = candidate
         } label: {
@@ -336,20 +348,20 @@ struct AddConnectionView: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
-            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            .foregroundStyle(serviceColor)
             .frame(maxWidth: .infinity, minHeight: 48)
             .background(
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
                     .fill(
                         isSelected
-                            ? Color.accentColor.opacity(0.12)
+                            ? serviceColor.opacity(0.14)
                             : Color(uiColor: .secondarySystemGroupedBackground)
                     )
             )
             .overlay {
                 RoundedRectangle(cornerRadius: 11, style: .continuous)
                     .stroke(
-                        isSelected ? Color.accentColor.opacity(0.45) : .clear,
+                        isSelected ? serviceColor.opacity(0.55) : serviceColor.opacity(0.14),
                         lineWidth: 1
                     )
             }

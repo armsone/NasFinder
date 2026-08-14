@@ -42,7 +42,7 @@ final class NasFinderDocumentPickerViewController: UIDocumentPickerExtensionView
         let hostingController = UIHostingController(
             rootView: DocumentPickerRootView(model: model)
         )
-        hostingController.view.backgroundColor = .systemGroupedBackground
+        hostingController.view.backgroundColor = DocumentPickerAppearance.backgroundUIColor
         addChild(hostingController)
         hostingController.view.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(hostingController.view)
@@ -175,22 +175,34 @@ final class DocumentPickerModel: ObservableObject {
         guard !item.isDirectory,
               Self.supportsThumbnail(filename: item.name),
               let context = selectedConnection else { return nil }
-        let key = ProviderThumbnailCache.key(
+        let cache = ProviderThumbnailCache()
+        if let cached = cache.data(
             for: item,
             connectionID: context.connection.id,
-            size: size
-        )
-        let cache = ProviderThumbnailCache()
-        if let cached = cache.data(forKey: key) { return cached }
+            preferredSize: size
+        ) { return cached }
 
         do {
-            let data = try await DocumentPickerThumbnailRequestLimiter.shared.withPermit {
+            var data = try await DocumentPickerThumbnailRequestLimiter.shared.withPermit {
                 try Task.checkCancellation()
                 return try await context.backend.thumbnail(path: item.path, size: size)
             }
+            if data == nil {
+                data = try await DocumentPickerThumbnailRequestLimiter.shared.withPermit {
+                    try Task.checkCancellation()
+                    return try await context.backend.vaultThumbnail(for: item)
+                }
+            }
             guard let data else { return nil }
             try Task.checkCancellation()
-            cache.store(data, forKey: key)
+            cache.store(
+                data,
+                forKey: ProviderThumbnailCache.key(
+                    for: item,
+                    connectionID: context.connection.id,
+                    size: size
+                )
+            )
             return data
         } catch {
             return nil
@@ -360,6 +372,9 @@ private struct DocumentPickerRootView: View {
             }
             .navigationTitle(model.title)
             .navigationBarTitleDisplayMode(.inline)
+            .tint(DocumentPickerAppearance.accent)
+            .toolbarBackground(DocumentPickerAppearance.background, for: .navigationBar)
+            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 if model.canNavigateBack {
                     ToolbarItem(placement: .topBarLeading) {
@@ -415,6 +430,7 @@ private struct DocumentPickerRootView: View {
                 Text(model.errorMessage ?? "")
             }
         }
+        .background(DocumentPickerAppearance.background.ignoresSafeArea())
     }
 
     private var connectionList: some View {
@@ -459,6 +475,8 @@ private struct DocumentPickerRootView: View {
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(DocumentPickerAppearance.background)
         .refreshable { await model.loadConnections() }
     }
 
@@ -469,6 +487,8 @@ private struct DocumentPickerRootView: View {
                 List(model.items, id: \.path) { item in
                     pickerItemButton(item, style: .list)
                 }
+                .scrollContentBackground(.hidden)
+                .background(DocumentPickerAppearance.background)
             case .smallThumbnails, .largeThumbnails:
                 ScrollView {
                     LazyVGrid(columns: gridColumns, spacing: layoutStyle == .largeThumbnails ? 18 : 13) {
@@ -478,6 +498,7 @@ private struct DocumentPickerRootView: View {
                     }
                     .padding(16)
                 }
+                .background(DocumentPickerAppearance.background)
             }
         }
         .refreshable { await model.retry() }
@@ -559,11 +580,11 @@ private struct DocumentPickerItemView: View {
             .aspectRatio(1, contentMode: .fit)
             .frame(maxWidth: style == .list ? side : .infinity)
             .frame(width: style == .list ? side : nil, height: style == .list ? side : nil)
-            .background(Color(uiColor: .secondarySystemGroupedBackground))
+            .background(DocumentPickerAppearance.surface)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius)
-                    .stroke(Color.primary.opacity(0.10), lineWidth: 1)
+                    .stroke(DocumentPickerAppearance.border, lineWidth: 1)
             }
     }
 }
@@ -584,8 +605,12 @@ private struct DocumentPickerThumbnailView: View {
                 Image(systemName: placeholderIcon)
                     .resizable()
                     .scaledToFit()
-                    .foregroundStyle(item.isDirectory ? Color.accentColor : Color.secondary)
-                    .padding(item.isDirectory ? 12 : 22)
+                    .foregroundStyle(
+                        item.isDirectory
+                            ? DocumentPickerAppearance.accent
+                            : DocumentPickerAppearance.placeholder
+                    )
+                    .padding(item.isDirectory ? 8 : 14)
             }
         }
         .clipped()
@@ -608,6 +633,30 @@ private struct DocumentPickerThumbnailView: View {
         if type?.conforms(to: .audio) == true { return "waveform" }
         return "doc"
     }
+}
+
+private enum DocumentPickerAppearance {
+    static let backgroundUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.018, green: 0.070, blue: 0.067, alpha: 1)
+            : UIColor(red: 0.957, green: 0.984, blue: 0.996, alpha: 1)
+    }
+    static let surfaceUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.052, green: 0.115, blue: 0.110, alpha: 1)
+            : UIColor(white: 1, alpha: 0.94)
+    }
+    static let borderUIColor = UIColor { traits in
+        traits.userInterfaceStyle == .dark
+            ? UIColor(red: 0.18, green: 0.35, blue: 0.32, alpha: 0.72)
+            : UIColor(red: 0.72, green: 0.86, blue: 0.92, alpha: 0.66)
+    }
+
+    static let background = Color(uiColor: backgroundUIColor)
+    static let surface = Color(uiColor: surfaceUIColor)
+    static let border = Color(uiColor: borderUIColor)
+    static let accent = Color(uiColor: .systemTeal)
+    static let placeholder = Color(uiColor: .secondaryLabel)
 }
 
 private actor DocumentPickerThumbnailRequestLimiter {
