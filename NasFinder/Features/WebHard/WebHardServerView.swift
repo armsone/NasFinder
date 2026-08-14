@@ -260,7 +260,7 @@ struct WebHardServerView: View {
                     .textContentType(.password)
                     .disabled(controller.isRunning)
 
-                Button(controller.isRunning ? "끊기" : "접속") {
+                Button(controller.isRunning ? "닫기" : "열기") {
                     controller.isRunning ? controller.stop() : controller.start()
                 }
                 .buttonStyle(.borderedProminent)
@@ -363,17 +363,25 @@ struct WebHardServerView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                Menu {
+                HStack(spacing: 8) {
                     ForEach(WebHardFileLayoutStyle.allCases) { style in
                         Button {
                             storedLayoutStyle = style.rawValue
                         } label: {
-                            Label(style.title, systemImage: style.systemImage)
+                            Image(systemName: style.systemImage)
+                                .frame(width: 24, height: 24)
+                                .foregroundStyle(layoutStyle == style ? serviceColor : .secondary)
+                                .background(
+                                    layoutStyle == style ? serviceColor.opacity(0.14) : .clear,
+                                    in: RoundedRectangle(cornerRadius: 7)
+                                )
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(style.title)
+                        .accessibilityAddTraits(layoutStyle == style ? .isSelected : [])
                     }
-                } label: {
-                    Image(systemName: layoutStyle.systemImage)
                 }
+                .accessibilityElement(children: .contain)
                 .accessibilityLabel("보기 방식")
             }
         }
