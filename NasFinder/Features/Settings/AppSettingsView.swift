@@ -18,6 +18,7 @@ struct AppSettingsView: View {
             screenAwakeSection
             filesAppIntegrationSection
             openSourceSection
+            creatorSection
         }
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
@@ -198,6 +199,21 @@ struct AppSettingsView: View {
             )
         } header: {
             SettingsSectionHeader(title: "오픈 소스", systemImage: "chevron.left.forwardslash.chevron.right")
+        }
+    }
+
+    private var creatorSection: some View {
+        Section {
+            Link(
+                destination: URL(string: "https://github.com/armsone")!
+            ) {
+                Label("GitHub · armsone", systemImage: "link")
+            }
+            .accessibilityLabel("만든 사람 GitHub, armsone")
+
+            SettingsPanelDescription("NasFinder를 만든 사람의 GitHub입니다.")
+        } header: {
+            SettingsSectionHeader(title: "만든 사람", systemImage: "person.crop.circle")
         }
     }
 
