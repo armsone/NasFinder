@@ -38,7 +38,8 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
             parameters["sort_by"] = "name"
             parameters["sort_direction"] = "asc"
 
-            let request = try self.request(script: "entry.cgi", parameters: parameters)
+            var request = try self.request(script: "entry.cgi", parameters: parameters)
+            request.timeoutInterval = 5
             let (data, response) = try await self.session.data(for: request)
             try self.validateHTTP(response)
             let envelope = try JSONDecoder().decode(
@@ -177,7 +178,7 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
             return storedSessionID
         }
 
-        let request = try request(
+        var request = try request(
             script: "auth.cgi",
             parameters: [
                 "api": "SYNO.API.Auth",
@@ -189,6 +190,7 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
                 "format": "sid"
             ]
         )
+        request.timeoutInterval = 5
         let (data, response) = try await session.data(for: request)
         try validateHTTP(response)
         let envelope = try JSONDecoder().decode(

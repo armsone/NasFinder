@@ -86,6 +86,8 @@ final class DocumentPickerModel: ObservableObject {
     private let pickerMode: UIDocumentPickerMode
     private let documentStorageURL: URL?
     private var operationTask: Task<Void, Never>?
+    private var directoryLoadTask: Task<[ProviderRemoteNode], Error>?
+    private var activeDirectoryLoadID: UUID?
 
     init(
         pickerMode: UIDocumentPickerMode,
@@ -149,6 +151,10 @@ final class DocumentPickerModel: ObservableObject {
             await loadCurrentDirectory()
         } else {
             operationTask?.cancel()
+            directoryLoadTask?.cancel()
+            directoryLoadTask = nil
+            activeDirectoryLoadID = nil
+            isLoading = false
             selectedConnection = nil
             directoryStack = []
             items = []
@@ -218,21 +224,36 @@ final class DocumentPickerModel: ObservableObject {
     private func loadCurrentDirectory() async {
         guard let backend = selectedConnection?.backend,
               let directory = directoryStack.last?.path else { return }
-        operationTask?.cancel()
+        directoryLoadTask?.cancel()
+        let loadID = UUID()
+        activeDirectoryLoadID = loadID
         isLoading = true
         errorMessage = nil
-        defer { isLoading = false }
+        let task = Task {
+            try await backend.list(directory: directory)
+        }
+        directoryLoadTask = task
+        defer {
+            if activeDirectoryLoadID == loadID {
+                directoryLoadTask = nil
+                activeDirectoryLoadID = nil
+                isLoading = false
+            }
+        }
 
         do {
-            items = try await backend.list(directory: directory)
+            let loadedItems = try await task.value
                 .filter { !$0.name.hasPrefix(".") }
                 .sorted { lhs, rhs in
                     if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
                     return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
                 }
+            guard activeDirectoryLoadID == loadID else { return }
+            items = loadedItems
         } catch is CancellationError {
             return
         } catch {
+            guard activeDirectoryLoadID == loadID else { return }
             errorMessage = Self.message(for: error)
         }
     }
@@ -509,8 +530,11 @@ private struct DocumentPickerRootView: View {
     }
 
     private var gridColumns: [GridItem] {
-        let minimum: CGFloat = layoutStyle == .largeThumbnails ? 148 : 88
-        return [GridItem(.adaptive(minimum: minimum, maximum: minimum * 1.35), spacing: 12)]
+        let count = layoutStyle == .largeThumbnails ? 2 : 3
+        return Array(
+            repeating: GridItem(.flexible(minimum: 0, maximum: .infinity), spacing: 12),
+            count: count
+        )
     }
 
     private func pickerItemButton(
@@ -576,12 +600,15 @@ private struct DocumentPickerItemView: View {
         size: ProviderThumbnailSize,
         cornerRadius: CGFloat
     ) -> some View {
-        DocumentPickerThumbnailView(item: item, model: model, requestedSize: size)
+        RoundedRectangle(cornerRadius: cornerRadius)
+            .fill(DocumentPickerAppearance.surface)
             .aspectRatio(1, contentMode: .fit)
             .frame(maxWidth: style == .list ? side : .infinity)
             .frame(width: style == .list ? side : nil, height: style == .list ? side : nil)
-            .background(DocumentPickerAppearance.surface)
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            .overlay {
+                DocumentPickerThumbnailView(item: item, model: model, requestedSize: size)
+                    .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+            }
             .overlay {
                 RoundedRectangle(cornerRadius: cornerRadius)
                     .stroke(DocumentPickerAppearance.border, lineWidth: 1)
