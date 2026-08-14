@@ -158,15 +158,15 @@ enum FileBrowserOrientationController {
     }
 }
 
-struct FileBrowserCoverFlowView: View {
+struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
     private let sideCardScale: CGFloat = 0.80
 
-    let items: [RemoteFileItem]
-    let service: any RemoteFileService
-    let thumbnailReloadVersion: Int
+    let items: [Item]
     @Binding var usesDarkBackground: Bool
-    let onActivate: (RemoteFileItem) -> Void
-    let onShowActions: (RemoteFileItem) -> Void
+    let itemName: (Item) -> String
+    let thumbnail: (Item, CGSize) -> Thumbnail
+    let onActivate: (Item) -> Void
+    let onShowActions: ((Item) -> Void)?
 
     @State private var selectedIndex = 0
     @State private var scrollPosition: CGFloat = 0
@@ -216,7 +216,7 @@ struct FileBrowserCoverFlowView: View {
         .accessibilityLabel("오버플로우 보기")
     }
 
-    private var selectedItem: RemoteFileItem? {
+    private var selectedItem: Item? {
         guard items.indices.contains(selectedIndex) else { return nil }
         return items[selectedIndex]
     }
@@ -232,7 +232,7 @@ struct FileBrowserCoverFlowView: View {
 
     @ViewBuilder
     private func coverCard(
-        item: RemoteFileItem,
+        item: Item,
         index: Int,
         availableSize: CGSize,
         safeAreaTop: CGFloat,
@@ -270,12 +270,7 @@ struct FileBrowserCoverFlowView: View {
         let centerY = baseline - renderedSide + totalHeight / 2
 
         ZStack(alignment: .top) {
-            RemoteThumbnailView(
-                item: item,
-                service: service,
-                size: CGSize(width: 360, height: 260),
-                reloadVersion: thumbnailReloadVersion
-            )
+            thumbnail(item, CGSize(width: 360, height: 260))
             .frame(width: renderedSide, height: renderedSide)
             .background(Color.black)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
@@ -289,12 +284,7 @@ struct FileBrowserCoverFlowView: View {
                     )
             }
 
-            RemoteThumbnailView(
-                item: item,
-                service: service,
-                size: CGSize(width: 360, height: 260),
-                reloadVersion: thumbnailReloadVersion
-            )
+            thumbnail(item, CGSize(width: 360, height: 260))
             .frame(width: renderedSide, height: renderedSide)
             .scaleEffect(x: 1, y: -1)
             .frame(width: renderedSide, height: reflectionHeight, alignment: .top)
@@ -337,10 +327,10 @@ struct FileBrowserCoverFlowView: View {
             onActivate(item)
         }
         .onLongPressGesture(minimumDuration: 0.45) {
-            onShowActions(item)
+            onShowActions?(item)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(item.name)
+        .accessibilityLabel(itemName(item))
         .accessibilityHint("두 번 탭하여 열기")
         .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
     }

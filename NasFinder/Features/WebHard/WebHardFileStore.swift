@@ -1,11 +1,13 @@
 import Foundation
 
-struct WebHardFileItem: Codable, Equatable, Sendable {
+struct WebHardFileItem: Codable, Equatable, Identifiable, Sendable {
     let name: String
     let path: String
     let isDirectory: Bool
     let size: Int64?
     let modifiedAt: Date?
+
+    var id: String { path }
 }
 
 enum WebHardFileStoreError: LocalizedError, Equatable, Sendable {

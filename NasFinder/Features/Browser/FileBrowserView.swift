@@ -715,9 +715,16 @@ struct FileBrowserView: View {
             case .coverFlow:
                 FileBrowserCoverFlowView(
                     items: displayedItems,
-                    service: viewModel.service,
-                    thumbnailReloadVersion: thumbnailReloadVersion,
                     usesDarkBackground: $coverFlowUsesDarkBackground,
+                    itemName: { $0.name },
+                    thumbnail: { item, size in
+                        RemoteThumbnailView(
+                            item: item,
+                            service: viewModel.service,
+                            size: size,
+                            reloadVersion: thumbnailReloadVersion
+                        )
+                    },
                     onActivate: activate,
                     onShowActions: showItemPanel
                 )

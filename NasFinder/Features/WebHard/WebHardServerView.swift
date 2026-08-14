@@ -182,8 +182,11 @@ private enum WebHardFileLayoutStyle: String, CaseIterable, Identifiable {
 struct WebHardServerView: View {
     @EnvironmentObject private var controller: WebHardServerController
     @Environment(\.verticalSizeClass) private var verticalSizeClass
+    @Environment(\.dismiss) private var dismiss
     @AppStorage("webHard.fileLayoutStyle.v1")
     private var storedLayoutStyle = WebHardFileLayoutStyle.smallThumbnails.rawValue
+    @AppStorage("browser.coverFlowBackground.v1")
+    private var coverFlowUsesDarkBackground = false
     @State private var shareItem: WebHardShareItem?
     @State private var deleteCandidate: WebHardFileItem?
 
@@ -195,25 +198,30 @@ struct WebHardServerView: View {
     }
 
     var body: some View {
-        List {
-            networkSection
-            accessSection
-            filesSection
+        Group {
+            if showsCoverFlow {
+                coverFlowContent
+            } else {
+                standardContent
+            }
         }
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SkyBreezeBackground())
         .navigationTitle("폰하드")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar(showsCoverFlow ? .hidden : .visible, for: .navigationBar)
         .tint(serviceColor)
         .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Button("주소 새로고침", systemImage: "arrow.clockwise") {
-                    controller.refreshAddresses()
+            if !showsCoverFlow {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("주소 새로고침", systemImage: "arrow.clockwise") {
+                        controller.refreshAddresses()
+                    }
+                    .disabled(controller.isRunning)
                 }
-                .disabled(controller.isRunning)
             }
         }
+        .overlay { coverFlowNavigationOverlay }
         .onAppear {
             if !controller.isRunning { controller.refreshAddresses() }
             controller.refreshFiles()
@@ -238,6 +246,119 @@ struct WebHardServerView: View {
         } message: {
             Text(deleteCandidate.map { "\($0.name)을(를) 삭제합니다." } ?? "")
         }
+    }
+
+    private var standardContent: some View {
+        List {
+            networkSection
+            accessSection
+            filesSection
+        }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+    }
+
+    private var showsCoverFlow: Bool {
+        layoutStyle == .largeThumbnails && verticalSizeClass == .compact
+    }
+
+    private var coverFlowContent: some View {
+        FileBrowserCoverFlowView(
+            items: controller.files,
+            usesDarkBackground: $coverFlowUsesDarkBackground,
+            itemName: { $0.name },
+            thumbnail: { item, _ in
+                WebHardThumbnailView(
+                    item: item,
+                    fileURL: controller.fileURL(for: item),
+                    generation: controller.thumbnailGeneration
+                )
+            },
+            onActivate: { item in
+                if item.isDirectory { controller.openDirectory(item) }
+            },
+            onShowActions: nil
+        )
+    }
+
+    @ViewBuilder
+    private var coverFlowNavigationOverlay: some View {
+        if showsCoverFlow {
+            GeometryReader { geometry in
+                HStack(spacing: 8) {
+                    Button {
+                        if controller.currentPath == "/" {
+                            dismiss()
+                        } else {
+                            controller.navigateUp()
+                        }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 22, weight: .semibold))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(coverFlowChromeForeground)
+                    .background(coverFlowChromeBackground, in: Circle())
+                    .overlay { Circle().stroke(coverFlowChromeBorder, lineWidth: 1) }
+                    .shadow(
+                        color: .black.opacity(coverFlowUsesDarkBackground ? 0.40 : 0.10),
+                        radius: 8,
+                        y: 2
+                    )
+                    .accessibilityLabel(controller.currentPath == "/" ? "폰하드 닫기" : "상위 폴더")
+
+                    Text(controller.currentPath == "/" ? "폰하드" : controller.currentPath)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(coverFlowChromeForeground)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(
+                            maxWidth: min(geometry.size.width * 0.44, 340),
+                            minHeight: 44,
+                            alignment: .leading
+                        )
+
+                    Spacer(minLength: 8)
+
+                    Menu {
+                        Button("흰색") { coverFlowUsesDarkBackground = false }
+                        Button("검정") { coverFlowUsesDarkBackground = true }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 16, weight: .bold))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(SkyBreezeTheme.accent)
+                    .background(coverFlowChromeBackground, in: Circle())
+                    .overlay { Circle().stroke(coverFlowChromeBorder, lineWidth: 1) }
+                    .shadow(
+                        color: .black.opacity(coverFlowUsesDarkBackground ? 0.40 : 0.10),
+                        radius: 8,
+                        y: 2
+                    )
+                    .accessibilityLabel("오버플로우 배경")
+                }
+                .padding(.horizontal, 12)
+                .padding(.top, geometry.safeAreaInsets.top + 4)
+                .frame(maxWidth: .infinity, alignment: .top)
+            }
+        }
+    }
+
+    private var coverFlowChromeForeground: Color {
+        coverFlowUsesDarkBackground ? .white.opacity(0.88) : .black.opacity(0.82)
+    }
+
+    private var coverFlowChromeBackground: Color {
+        coverFlowUsesDarkBackground ? .white.opacity(0.10) : .white.opacity(0.92)
+    }
+
+    private var coverFlowChromeBorder: Color {
+        coverFlowUsesDarkBackground ? .white.opacity(0.16) : .black.opacity(0.10)
     }
 
     private var networkSection: some View {
@@ -413,26 +534,6 @@ struct WebHardServerView: View {
                 .buttonStyle(.plain)
                 .contextMenu { itemContextMenu(item) }
             }
-        } else if layoutStyle == .largeThumbnails && verticalSizeClass == .compact {
-            GeometryReader { proxy in
-                let spacing: CGFloat = 10
-                let cellWidth = max(1, (proxy.size.width - spacing * 2) / 3)
-
-                ScrollView(.horizontal) {
-                    LazyHStack(alignment: .top, spacing: spacing) {
-                        ForEach(controller.files, id: \.path) { item in
-                            fileGridCell(item)
-                                .frame(width: cellWidth)
-                        }
-                    }
-                }
-                .scrollIndicators(.hidden)
-                .scrollClipDisabled()
-            }
-            // Keep the List row's height stable while UIKit animates rotation.
-            // Self-sizing this nested horizontal collection can recursively
-            // invalidate UICollectionView's visible-cell layout on iOS 26.6.
-            .frame(height: 300)
         } else {
             let columnCount = layoutStyle == .largeThumbnails ? 2 : 3
             LazyVGrid(
