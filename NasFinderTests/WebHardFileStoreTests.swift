@@ -111,9 +111,10 @@ final class WebHardFileStoreTests: XCTestCase {
         let page = try XCTUnwrap(String(data: pageData, encoding: .utf8))
         XCTAssertTrue(page.contains("id=\"receive\""))
         XCTAssertTrue(page.contains("id=\"files\""))
-        XCTAssertFalse(page.contains("id=\"folder\""))
-        XCTAssertTrue(page.contains("webkitGetAsEntry"))
+        XCTAssertTrue(page.contains("id=\"folder\""))
+        XCTAssertTrue(page.contains("id=\"uploadSubmit\""))
         XCTAssertTrue(page.contains("file.webkitRelativePath||file.name"))
+        XCTAssertTrue(page.contains("webkitGetAsEntry"))
         XCTAssertTrue(page.contains("await load(current);status.textContent=`${done}개 올림`"))
 
         var upload = URLRequest(

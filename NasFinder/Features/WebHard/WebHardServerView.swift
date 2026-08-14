@@ -181,6 +181,7 @@ private enum WebHardFileLayoutStyle: String, CaseIterable, Identifiable {
 
 struct WebHardServerView: View {
     @EnvironmentObject private var controller: WebHardServerController
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @AppStorage("webHard.fileLayoutStyle.v1")
     private var storedLayoutStyle = WebHardFileLayoutStyle.smallThumbnails.rawValue
     @State private var shareItem: WebHardShareItem?
@@ -412,33 +413,58 @@ struct WebHardServerView: View {
                 .buttonStyle(.plain)
                 .contextMenu { itemContextMenu(item) }
             }
+        } else if layoutStyle == .largeThumbnails && verticalSizeClass == .compact {
+            ScrollView(.horizontal) {
+                LazyHStack(alignment: .top, spacing: 10) {
+                    ForEach(controller.files, id: \.path) { item in
+                        fileGridCell(item)
+                            .containerRelativeFrame(.horizontal, count: 3, spacing: 10)
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+            .scrollClipDisabled()
         } else {
             LazyVGrid(
                 columns: Array(
-                    repeating: GridItem(.flexible(), spacing: 10),
+                    repeating: GridItem(.flexible(), spacing: 10, alignment: .top),
                     count: layoutStyle == .largeThumbnails ? 2 : 3
                 ),
                 spacing: 14
             ) {
                 ForEach(controller.files, id: \.path) { item in
-                    Button {
-                        if item.isDirectory { controller.openDirectory(item) }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 6) {
-                            WebHardThumbnailView(
-                                item: item,
-                                fileURL: controller.fileURL(for: item),
-                                generation: controller.thumbnailGeneration
-                            )
-                            .aspectRatio(1, contentMode: .fit)
-                            fileMetadata(item)
-                        }
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu { itemContextMenu(item) }
+                    fileGridCell(item)
                 }
             }
         }
+    }
+
+    private func fileGridCell(_ item: WebHardFileItem) -> some View {
+        Button {
+            if item.isDirectory { controller.openDirectory(item) }
+        } label: {
+            VStack(alignment: .leading, spacing: 0) {
+                WebHardThumbnailView(
+                    item: item,
+                    fileURL: controller.fileURL(for: item),
+                    generation: controller.thumbnailGeneration
+                )
+                .aspectRatio(1, contentMode: .fit)
+
+                fileMetadata(item)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(
+                        height: layoutStyle == .largeThumbnails ? 50 : 40,
+                        alignment: .topLeading
+                    )
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(SkyBreezeTheme.thumbnailSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .contextMenu { itemContextMenu(item) }
     }
 
     private func fileMetadata(_ item: WebHardFileItem) -> some View {
@@ -446,6 +472,7 @@ struct WebHardServerView: View {
         let filenameStem = filenameExtension.isEmpty
             ? item.name
             : (item.name as NSString).deletingPathExtension
+        let metadataFontSize: CGFloat = layoutStyle == .largeThumbnails ? 12.75 : 9
 
         return VStack(alignment: .leading, spacing: 2) {
             HStack(spacing: 0) {
@@ -458,12 +485,12 @@ struct WebHardServerView: View {
                         .fixedSize(horizontal: true, vertical: false)
                 }
             }
-                .font(.system(size: layoutStyle == .largeThumbnails ? 8.5 : 6))
+                .font(.system(size: metadataFontSize))
                 .foregroundStyle(.primary)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let size = item.size, !item.isDirectory {
                 Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
-                    .font(.caption2)
+                    .font(.system(size: metadataFontSize))
                     .foregroundStyle(.secondary)
             }
         }
