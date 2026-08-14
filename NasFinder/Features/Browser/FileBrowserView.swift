@@ -1815,20 +1815,16 @@ private struct RemoteFileGridCell: View {
                 }
                 .clipShape(RoundedRectangle(cornerRadius: isLarge ? 15 : 11))
 
-            HStack(spacing: 0) {
-                Text(filenameStem)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                if !filenameExtension.isEmpty {
-                    Text(".\(filenameExtension)")
-                        .fixedSize(horizontal: true, vertical: false)
-                }
-            }
-                .font(.system(size: isLarge ? 8.5 : 6, weight: isLarge ? .semibold : .regular))
+            Text(item.name)
+                .font(isLarge ? .headline : .caption)
+                .fontWeight(isLarge ? .semibold : .regular)
                 .foregroundStyle(SkyBreezeTheme.primaryText)
+                .lineLimit(2)
+                .minimumScaleFactor(isLarge ? 0.85 : 0.72)
+                .allowsTightening(true)
+                .truncationMode(.tail)
                 .multilineTextAlignment(.leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity)
 
             RemoteFileMetadataView(
                 item: item,
@@ -1849,14 +1845,6 @@ private struct RemoteFileGridCell: View {
         return CGSize(width: 104, height: 104)
     }
 
-    private var filenameExtension: String {
-        (item.name as NSString).pathExtension
-    }
-
-    private var filenameStem: String {
-        guard !filenameExtension.isEmpty else { return item.name }
-        return (item.name as NSString).deletingPathExtension
-    }
 }
 
 private struct RemoteFileListRow: View {
