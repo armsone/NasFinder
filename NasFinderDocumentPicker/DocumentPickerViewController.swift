@@ -188,12 +188,8 @@ final class DocumentPickerModel: ObservableObject {
             await refreshTask.value
             return
         }
-        directoryLoadTask?.cancel()
-        directoryLoadTask = nil
-        activeDirectoryLoadID = nil
-        isLoading = false
-        errorMessage = "NAS 응답이 늦어 새로고침을 종료했습니다. 기존 목록은 그대로 유지됩니다."
-        refreshTask.cancel()
+        // Pull-to-refresh must stop holding the host UI, but the directory
+        // request keeps running and applies its result when the NAS responds.
     }
 
     func clearError() {
@@ -649,24 +645,29 @@ private struct DocumentPickerThumbnailView: View {
     @State private var image: UIImage?
 
     var body: some View {
-        ZStack {
-            if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
-            } else {
-                Image(systemName: placeholderIcon)
-                    .resizable()
-                    .scaledToFit()
-                    .foregroundStyle(
-                        item.isDirectory
-                            ? DocumentPickerAppearance.accent
-                            : DocumentPickerAppearance.placeholder
-                    )
-                    .padding(item.isDirectory ? 8 : 14)
+        GeometryReader { proxy in
+            ZStack {
+                if let image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                } else {
+                    Image(systemName: placeholderIcon)
+                        .resizable()
+                        .scaledToFit()
+                        .foregroundStyle(
+                            item.isDirectory
+                                ? DocumentPickerAppearance.accent
+                                : DocumentPickerAppearance.placeholder
+                        )
+                        .padding(item.isDirectory ? 8 : 14)
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                }
             }
+            .frame(width: proxy.size.width, height: proxy.size.height)
+            .clipped()
         }
-        .clipped()
         .task(id: "\(item.path)|\(requestedSize.rawValue)") {
             guard !item.isDirectory else { return }
             if let data = await model.thumbnailData(for: item, size: requestedSize),
