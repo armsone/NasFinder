@@ -414,21 +414,31 @@ struct WebHardServerView: View {
                 .contextMenu { itemContextMenu(item) }
             }
         } else if layoutStyle == .largeThumbnails && verticalSizeClass == .compact {
-            ScrollView(.horizontal) {
-                LazyHStack(alignment: .top, spacing: 10) {
-                    ForEach(controller.files, id: \.path) { item in
-                        fileGridCell(item)
-                            .containerRelativeFrame(.horizontal, count: 3, spacing: 10)
+            GeometryReader { proxy in
+                let spacing: CGFloat = 10
+                let cellWidth = max(1, (proxy.size.width - spacing * 2) / 3)
+
+                ScrollView(.horizontal) {
+                    LazyHStack(alignment: .top, spacing: spacing) {
+                        ForEach(controller.files, id: \.path) { item in
+                            fileGridCell(item)
+                                .frame(width: cellWidth)
+                        }
                     }
                 }
+                .scrollIndicators(.hidden)
+                .scrollClipDisabled()
             }
-            .scrollIndicators(.hidden)
-            .scrollClipDisabled()
+            // Keep the List row's height stable while UIKit animates rotation.
+            // Self-sizing this nested horizontal collection can recursively
+            // invalidate UICollectionView's visible-cell layout on iOS 26.6.
+            .frame(height: 300)
         } else {
+            let columnCount = layoutStyle == .largeThumbnails ? 2 : 3
             LazyVGrid(
                 columns: Array(
                     repeating: GridItem(.flexible(), spacing: 10, alignment: .top),
-                    count: layoutStyle == .largeThumbnails ? 2 : 3
+                    count: columnCount
                 ),
                 spacing: 14
             ) {
@@ -436,7 +446,22 @@ struct WebHardServerView: View {
                     fileGridCell(item)
                 }
             }
+            .frame(
+                height: layoutStyle == .largeThumbnails ? portraitPosterGridHeight : nil,
+                alignment: .top
+            )
         }
+    }
+
+    private var portraitPosterGridHeight: CGFloat {
+        let screenSize = UIScreen.main.bounds.size
+        let portraitWidth = min(screenSize.width, screenSize.height)
+        let listContentWidth = max(1, portraitWidth - 32)
+        let cellWidth = max(1, (listContentWidth - 10) / 2)
+        let rowCount = (controller.files.count + 1) / 2
+        guard rowCount > 0 else { return 0 }
+        return CGFloat(rowCount) * (cellWidth + 50)
+            + CGFloat(rowCount - 1) * 14
     }
 
     private func fileGridCell(_ item: WebHardFileItem) -> some View {
