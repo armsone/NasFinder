@@ -157,6 +157,14 @@ struct ConnectionListView: View {
             .buttonStyle(.plain)
             .navigationLinkIndicatorVisibility(.hidden)
 
+            NavigationLink {
+                WebHardServerView()
+            } label: {
+                WebHardNetworkLocationRow()
+            }
+            .buttonStyle(.plain)
+            .navigationLinkIndicatorVisibility(.hidden)
+
             Button(
                 store.connections.isEmpty ? "네트워크를 추가해 주세요" : "네트워크 추가",
                 systemImage: "plus"
@@ -578,6 +586,60 @@ private struct WebNetworkLocationRow: View {
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Browser, WWW")
         .accessibilityHint("웹 브라우저를 엽니다.")
+    }
+}
+
+private struct WebHardNetworkLocationRow: View {
+    private var serviceColor: Color {
+        ThemeServicePalette.color(
+            forServiceIdentifier: "webHard",
+            theme: .current
+        )
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            HStack(spacing: 13) {
+                ZStack(alignment: .bottomTrailing) {
+                    Image(systemName: "externaldrive.fill.badge.wifi")
+                        .font(.title3)
+                        .foregroundStyle(serviceColor)
+                        .frame(width: 32, height: 32)
+
+                    Text(ThemeServicePalette.badgeLetter(forServiceIdentifier: "webHard"))
+                        .font(.system(size: 7, weight: .bold, design: .rounded))
+                        .foregroundStyle(
+                            ThemeServicePalette.foregroundColor(
+                                forServiceIdentifier: "webHard",
+                                theme: .current
+                            )
+                        )
+                        .frame(width: 13, height: 13)
+                        .background(serviceColor, in: Circle())
+                        .overlay { Circle().stroke(.background, lineWidth: 1) }
+                }
+                .accessibilityHidden(true)
+
+                Text("폰하드")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.primary)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+
+            Image(systemName: "arrow.right")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 44, height: 48)
+                .contentShape(Rectangle())
+                .accessibilityHidden(true)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("폰하드")
+        .accessibilityHint("폰하드 설정을 엽니다.")
     }
 }
 

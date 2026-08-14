@@ -25,6 +25,63 @@ final class AppThemePreferenceTests: XCTestCase {
         )
     }
 
+    func testServicePaletteHasStableRecognizableBadgeLetters() {
+        let expectedLetters = [
+            "synology": "N",
+            "sftp": "S",
+            "smb": "M",
+            "webDAV": "W",
+            "ftp": "F",
+            "dropbox": "D",
+            "oneDrive": "O",
+            "googleDrive": "G",
+            "webHard": "H",
+        ]
+
+        XCTAssertEqual(
+            Set(expectedLetters.keys),
+            Set(ThemeServicePalette.supportedServiceIdentifiers)
+        )
+        XCTAssertEqual(Set(expectedLetters.values).count, expectedLetters.count)
+        for (identifier, letter) in expectedLetters {
+            XCTAssertEqual(
+                ThemeServicePalette.badgeLetter(forServiceIdentifier: identifier),
+                letter
+            )
+        }
+    }
+
+    func testServiceBadgeColorsRemainReadableAcrossThemes() {
+        for theme in AppThemePreference.allCases {
+            for identifier in ThemeServicePalette.supportedServiceIdentifiers {
+                let style = ThemeServicePalette.style(
+                    forServiceIdentifier: identifier,
+                    theme: theme
+                )
+                XCTAssertGreaterThanOrEqual(
+                    style.foregroundContrastRatio,
+                    4.5,
+                    "\(identifier) badge should remain readable in \(theme.rawValue)"
+                )
+            }
+        }
+    }
+
+    func testBrandBaseColorsStayStableInDayTheme() {
+        XCTAssertEqual(
+            ThemeServicePalette.style(forServiceIdentifier: "synology", theme: .day),
+            ThemeServiceStyle(hex: 0x0067E6)
+        )
+        XCTAssertEqual(
+            ThemeServicePalette.style(forServiceIdentifier: "oneDrive", theme: .day),
+            ThemeServiceStyle(hex: 0x0078D4)
+        )
+        XCTAssertEqual(
+            ThemeServicePalette.style(forServiceIdentifier: "dropbox", theme: .day),
+            ThemeServiceStyle(hex: 0x0061FF)
+        )
+    }
+
     func testThemeColorSchemesMatchTheirIntendedContrast() {
         XCTAssertNil(AppThemePreference.system.preferredColorScheme)
         XCTAssertEqual(AppThemePreference.day.preferredColorScheme, .light)

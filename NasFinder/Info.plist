@@ -117,7 +117,7 @@
 		</dict>
 	</array>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>NasFinder가 같은 네트워크의 NAS 또는 SFTP 서버에 연결하려면 로컬 네트워크 접근이 필요합니다.</string>
+	<string>네트워크 저장공간과 폰하드를 사용하려면 로컬 네트워크 접근이 필요합니다.</string>
 	<key>NasFinderKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)com.armsone.nasfinder.shared</string>
 	<key>NasFinderGoogleClientID</key>

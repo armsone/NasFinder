@@ -748,7 +748,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = NasFinder;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "NasFinder가 같은 네트워크의 NAS 또는 SFTP 서버에 연결하려면 로컬 네트워크 접근이 필요합니다.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "네트워크 저장공간과 폰하드를 사용하려면 로컬 네트워크 접근이 필요합니다.";
 				INFOPLIST_KEY_NasFinderKeychainAccessGroup = "$(AppIdentifierPrefix)com.armsone.nasfinder.shared";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -791,7 +791,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = NasFinder;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "NasFinder가 같은 네트워크의 NAS 또는 SFTP 서버에 연결하려면 로컬 네트워크 접근이 필요합니다.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "네트워크 저장공간과 폰하드를 사용하려면 로컬 네트워크 접근이 필요합니다.";
 				INFOPLIST_KEY_NasFinderKeychainAccessGroup = "$(AppIdentifierPrefix)com.armsone.nasfinder.shared";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;

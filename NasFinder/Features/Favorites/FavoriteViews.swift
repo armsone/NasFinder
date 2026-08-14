@@ -808,29 +808,31 @@ private struct FavoriteConnectionBadge: View {
     var body: some View {
         Text(kind.favoriteBadgeLetter)
             .font(.system(size: max(8, side * 0.15), weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
+            .foregroundStyle(kind.favoriteBadgeForegroundColor)
             .frame(width: max(15, side * 0.25), height: max(15, side * 0.25))
-            .background(kind.favoriteBadgeColor.opacity(0.88), in: Circle())
+            .background(kind.favoriteBadgeColor, in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(SkyBreezeTheme.thumbnailSurface.opacity(0.9), lineWidth: 1)
+            }
             .accessibilityHidden(true)
     }
 }
 
 private extension ConnectionKind {
     var favoriteBadgeLetter: String {
-        switch self {
-        case .synology: "N"
-        case .sftp: "S"
-        case .smb: "M"
-        case .webDAV: "W"
-        case .ftp: "F"
-        case .dropbox: "D"
-        case .oneDrive: "O"
-        case .googleDrive: "G"
-        }
+        ThemeServicePalette.badgeLetter(forServiceIdentifier: rawValue)
     }
 
     var favoriteBadgeColor: Color {
         ThemeServicePalette.color(
+            forServiceIdentifier: rawValue,
+            theme: .current
+        )
+    }
+
+    var favoriteBadgeForegroundColor: Color {
+        ThemeServicePalette.foregroundColor(
             forServiceIdentifier: rawValue,
             theme: .current
         )

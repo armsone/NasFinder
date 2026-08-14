@@ -8,6 +8,7 @@ struct NasFinderApp: App {
     @StateObject private var favoriteStore = FavoriteStore()
     @StateObject private var browserFavoritesStore = BrowserFavoritesStore()
     @StateObject private var screenAwakeController = ScreenAwakeController.shared
+    @StateObject private var webHardServerController = WebHardServerController()
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.system.rawValue
 
@@ -22,6 +23,7 @@ struct NasFinderApp: App {
                 .environmentObject(inboxStore)
                 .environmentObject(favoriteStore)
                 .environmentObject(browserFavoritesStore)
+                .environmentObject(webHardServerController)
                 .tint(SkyBreezeTheme.accent)
                 .preferredColorScheme(selectedTheme.preferredColorScheme)
                 .task {
@@ -55,6 +57,9 @@ struct NasFinderApp: App {
                 }
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     screenAwakeController.updateAppIsActive(phase == .active)
+                    if phase != .active {
+                        webHardServerController.applicationDidEnterBackground()
+                    }
                 }
         }
     }

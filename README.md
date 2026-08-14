@@ -26,10 +26,13 @@ NasFinder는 iPhone에서 Synology NAS와 SFTP 서버의 파일을 탐색하고,
 
 ## 실행 준비
 
-1. `NasFinder.xcodeproj`를 Xcode에서 엽니다.
-2. 현재 서명 Team은 `T7B4EPLHPK`, 앱 번들 ID는 `com.armsone.nasfinder`로 설정되어 있습니다. 다른 개발자 계정에서는 앱·File Provider·Share·테스트 타깃을 해당 계정 값으로 바꿉니다.
-3. Developer Portal에서 `group.com.armsone.nasfinder` App Group을 앱과 Share/File Provider 확장에 등록합니다.
-4. 실기기에서 로컬 네트워크 권한을 허용합니다.
+1. 최초 clone 또는 `Package.resolved` 변경 뒤 한 번 `make packages`를 실행합니다. Swift 패키지는 저장소의 `.build` 아래에 캐시되며 이후 명령줄 빌드는 GitHub를 다시 조회하지 않습니다. Codex에서는 Xcode가 내부 `sandbox-exec`를 사용하므로 이 준비 명령만 범위를 제한해 샌드박스 밖에서 실행합니다.
+2. `NasFinder.xcodeproj`를 Xcode에서 엽니다.
+3. 현재 서명 Team은 `T7B4EPLHPK`, 앱 번들 ID는 `com.armsone.nasfinder`로 설정되어 있습니다. 다른 개발자 계정에서는 앱·File Provider·Share·테스트 타깃을 해당 계정 값으로 바꿉니다.
+4. Developer Portal에서 `group.com.armsone.nasfinder` App Group을 앱과 Share/File Provider 확장에 등록합니다.
+5. 실기기에서 로컬 네트워크 권한을 허용합니다.
+
+명령줄 빌드와 테스트는 `scripts/xcodebuild_project.sh`를 사용합니다. 이 래퍼는 `Package.resolved`의 버전만 허용하고 프로젝트 로컬 패키지 체크아웃을 재사용합니다. 패키지 캐시가 준비된 뒤 일반 빌드에서는 자동 패키지 해석을 비활성화합니다.
 
 Synology 연결에는 QuickConnect ID가 아닌, 기기에서 접근 가능한 DDNS/도메인 또는 VPN 주소가 필요합니다. 외부 연결은 신뢰할 수 있는 HTTPS 인증서를 사용하세요.
 

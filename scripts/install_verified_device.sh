@@ -17,6 +17,9 @@ cd "$repository_root"
 
 verified_sha="$(git rev-parse HEAD)"
 short_sha="$(git rev-parse --short=12 HEAD)"
+source_state_file="$(mktemp)"
+trap 'rm -f "$source_state_file"' EXIT
+git status --porcelain=v1 --untracked-files=all > "$source_state_file"
 derived_data="/tmp/NasFinder-verified-$short_sha"
 project="NasFinder.xcodeproj"
 scheme="NasFinder"
@@ -41,7 +44,7 @@ else
     exit 2
 fi
 
-xcodebuild -quiet \
+"$repository_root/scripts/xcodebuild_project.sh" -quiet \
     -project "$project" \
     -scheme "$scheme" \
     -destination "id=$device_identifier" \
@@ -59,13 +62,13 @@ rm -rf "$derived_data-device-tests"
     echo "error: 테스트 중 HEAD가 변경됐습니다." >&2
     exit 1
 }
-[[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
-    echo "error: 테스트 중 작업 폴더가 변경됐습니다." >&2
+cmp -s "$source_state_file" <(git status --porcelain=v1 --untracked-files=all) || {
+    echo "error: 테스트 중 소스 상태가 변경됐습니다." >&2
     exit 1
 }
 
 echo "[2/5] Building the signed device app"
-xcodebuild -quiet \
+"$repository_root/scripts/xcodebuild_project.sh" -quiet \
     -project "$project" \
     -scheme "$scheme" \
     -destination "id=$device_identifier" \

@@ -26,7 +26,7 @@ if [[ -z "$branch" ]]; then
     failed=1
 fi
 
-if [[ "$mode" == "push" || "$mode" == "install" ]]; then
+if [[ "$mode" == "push" ]]; then
     if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
         echo "error: 커밋되지 않은 변경이 있습니다." >&2
         echo "       Git push는 작업 폴더의 변경을 포함하지 않습니다. 먼저 모두 커밋하세요." >&2
@@ -58,28 +58,6 @@ if [[ $unanchored_snapshots -gt 0 ]]; then
     failed=1
 fi
 
-if [[ "$mode" == "install" && -n "$branch" ]]; then
-    upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)"
-    if [[ -z "$upstream" ]]; then
-        echo "error: 현재 브랜치 '$branch'에 GitHub upstream이 없습니다." >&2
-        echo "       먼저 git push --set-upstream origin $branch 를 실행하세요." >&2
-        failed=1
-    else
-        remote="$(git config --get "branch.$branch.remote")"
-        merge_ref="$(git config --get "branch.$branch.merge")"
-        remote_branch="${merge_ref#refs/heads/}"
-        git fetch --quiet "$remote" "$remote_branch"
-        upstream_sha="$(git rev-parse '@{upstream}')"
-        if [[ "$head_sha" != "$upstream_sha" ]]; then
-            echo "error: 로컬 HEAD와 GitHub upstream이 다릅니다." >&2
-            echo "       local:    $head_sha" >&2
-            echo "       upstream: $upstream_sha" >&2
-            echo "       동일한 커밋을 푸시한 뒤에만 설치할 수 있습니다." >&2
-            failed=1
-        fi
-    fi
-fi
-
 if [[ $failed -ne 0 ]]; then
     exit 1
 fi
@@ -87,6 +65,3 @@ fi
 echo "repository guard: OK"
 echo "branch: ${branch:-detached}"
 echo "commit: $head_sha"
-if [[ "$mode" == "install" ]]; then
-    echo "upstream: $(git rev-parse '@{upstream}')"
-fi

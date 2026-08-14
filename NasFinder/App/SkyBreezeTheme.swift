@@ -207,27 +207,110 @@ enum SkyBreezeTheme {
     }
 }
 
+struct ThemeServiceStyle: Equatable, Sendable {
+    let red: Double
+    let green: Double
+    let blue: Double
+
+    var color: Color {
+        Color(red: red, green: green, blue: blue)
+    }
+
+    var foregroundColor: Color {
+        usesDarkForeground ? .black : .white
+    }
+
+    var usesDarkForeground: Bool {
+        let luminance = relativeLuminance
+        let whiteContrast = 1.05 / (luminance + 0.05)
+        let blackContrast = (luminance + 0.05) / 0.05
+        return blackContrast >= whiteContrast
+    }
+
+    var foregroundContrastRatio: Double {
+        let luminance = relativeLuminance
+        return usesDarkForeground
+            ? (luminance + 0.05) / 0.05
+            : 1.05 / (luminance + 0.05)
+    }
+
+    init(hex: Int) {
+        red = Double((hex >> 16) & 0xFF) / 255
+        green = Double((hex >> 8) & 0xFF) / 255
+        blue = Double(hex & 0xFF) / 255
+    }
+
+    fileprivate func blended(
+        toward target: (red: Double, green: Double, blue: Double),
+        amount: Double
+    ) -> Self {
+        Self(
+            red: red + (target.red - red) * amount,
+            green: green + (target.green - green) * amount,
+            blue: blue + (target.blue - blue) * amount
+        )
+    }
+
+    private init(red: Double, green: Double, blue: Double) {
+        self.red = red
+        self.green = green
+        self.blue = blue
+    }
+
+    private var relativeLuminance: Double {
+        func linearized(_ component: Double) -> Double {
+            component <= 0.04045
+                ? component / 12.92
+                : pow((component + 0.055) / 1.055, 2.4)
+        }
+
+        return 0.2126 * linearized(red)
+            + 0.7152 * linearized(green)
+            + 0.0722 * linearized(blue)
+    }
+}
+
 enum ThemeServicePalette {
+    static let supportedServiceIdentifiers = [
+        "synology", "sftp", "smb", "webDAV", "ftp",
+        "dropbox", "oneDrive", "googleDrive", "webHard",
+    ]
+
     static func colors(for theme: AppThemePreference) -> [Color] {
+        fallbackStyles(for: theme).map(\.color)
+    }
+
+    static func badgeLetter(forServiceIdentifier identifier: String) -> String {
+        switch identifier {
+        case "synology": "N"
+        case "sftp": "S"
+        case "smb": "M"
+        case "webDAV": "W"
+        case "ftp": "F"
+        case "dropbox": "D"
+        case "oneDrive": "O"
+        case "googleDrive": "G"
+        case "webHard": "H"
+        default: String(identifier.prefix(1)).uppercased()
+        }
+    }
+
+    static func style(
+        forServiceIdentifier identifier: String,
+        theme: AppThemePreference
+    ) -> ThemeServiceStyle {
+        let base = baseStyle(forServiceIdentifier: identifier)
+            ?? fallbackStyle(forServiceIdentifier: identifier, theme: theme)
+
         switch theme {
-        case .digitalRain:
-            [
-                Color(red: 0.32, green: 1.00, blue: 0.76),
-                Color(red: 0.08, green: 0.72, blue: 0.64),
-                Color(red: 0.22, green: 0.82, blue: 0.92),
-                Color(red: 0.54, green: 0.95, blue: 0.70),
-            ]
-        case .windyMeadow:
-            [
-                Color(red: 0.12, green: 0.62, blue: 0.86),
-                Color(red: 0.38, green: 0.68, blue: 0.22),
-                Color(red: 0.96, green: 0.72, blue: 0.28),
-                Color(red: 0.52, green: 0.38, blue: 0.70),
-            ]
         case .night:
-            [.blue, .green, .orange, .purple]
+            return base.blended(toward: (1, 1, 1), amount: 0.08)
+        case .digitalRain:
+            return base.blended(toward: (0.74, 1, 0.90), amount: 0.06)
+        case .windyMeadow:
+            return base.blended(toward: (0, 0, 0), amount: 0.04)
         case .system, .day:
-            [.blue, .green, .orange, .indigo]
+            return base
         }
     }
 
@@ -235,7 +318,63 @@ enum ThemeServicePalette {
         forServiceIdentifier identifier: String,
         theme: AppThemePreference
     ) -> Color {
-        let palette = colors(for: theme)
+        style(forServiceIdentifier: identifier, theme: theme).color
+    }
+
+    static func foregroundColor(
+        forServiceIdentifier identifier: String,
+        theme: AppThemePreference
+    ) -> Color {
+        style(forServiceIdentifier: identifier, theme: theme).foregroundColor
+    }
+
+    private static func baseStyle(
+        forServiceIdentifier identifier: String
+    ) -> ThemeServiceStyle? {
+        switch identifier {
+        case "synology": ThemeServiceStyle(hex: 0x0067E6)
+        case "sftp": ThemeServiceStyle(hex: 0x218739)
+        case "smb": ThemeServiceStyle(hex: 0x0F6CBD)
+        case "webDAV": ThemeServiceStyle(hex: 0x6554C0)
+        case "ftp": ThemeServiceStyle(hex: 0xE87500)
+        case "dropbox": ThemeServiceStyle(hex: 0x0061FF)
+        case "oneDrive": ThemeServiceStyle(hex: 0x0078D4)
+        case "googleDrive": ThemeServiceStyle(hex: 0x34A853)
+        case "webHard": ThemeServiceStyle(hex: 0x5856D6)
+        default: nil
+        }
+    }
+
+    private static func fallbackStyles(
+        for theme: AppThemePreference
+    ) -> [ThemeServiceStyle] {
+        switch theme {
+        case .digitalRain:
+            [
+                ThemeServiceStyle(hex: 0x52FFC2),
+                ThemeServiceStyle(hex: 0x14B8A3),
+                ThemeServiceStyle(hex: 0x38D1EB),
+                ThemeServiceStyle(hex: 0x8AF2B3),
+            ]
+        case .windyMeadow:
+            [
+                ThemeServiceStyle(hex: 0x1F9EDB),
+                ThemeServiceStyle(hex: 0x61AD38),
+                ThemeServiceStyle(hex: 0xF5B847),
+                ThemeServiceStyle(hex: 0x8561B3),
+            ]
+        case .night:
+            [0x0A84FF, 0x30D158, 0xFF9F0A, 0xBF5AF2].map(ThemeServiceStyle.init(hex:))
+        case .system, .day:
+            [0x007AFF, 0x34C759, 0xFF9500, 0x5856D6].map(ThemeServiceStyle.init(hex:))
+        }
+    }
+
+    private static func fallbackStyle(
+        forServiceIdentifier identifier: String,
+        theme: AppThemePreference
+    ) -> ThemeServiceStyle {
+        let palette = fallbackStyles(for: theme)
         let stableIndex = identifier.utf8.reduce(0) { ($0 &* 31) &+ Int($1) }
         let index = Int(stableIndex.magnitude % UInt(palette.count))
         return palette[index]
