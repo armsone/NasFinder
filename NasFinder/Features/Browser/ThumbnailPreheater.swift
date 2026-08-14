@@ -46,9 +46,41 @@ enum ThumbnailPreheatPolicy {
     }
 }
 
+enum ThumbnailThermalPolicy {
+    static let fairPacingDelayMilliseconds = 500
+
+    static func shouldPause(for thermalState: ProcessInfo.ThermalState) -> Bool {
+        switch thermalState {
+        case .nominal, .fair:
+            false
+        case .serious, .critical:
+            true
+        @unknown default:
+            true
+        }
+    }
+
+    static func pacingDelayMilliseconds(
+        for thermalState: ProcessInfo.ThermalState
+    ) -> Int? {
+        thermalState == .fair ? fairPacingDelayMilliseconds : nil
+    }
+}
+
 private struct SuperThumbnailWorkItem {
     let item: RemoteFileItem
     let attempt: Int
+    let cooperationDeferrals: Int
+
+    init(
+        item: RemoteFileItem,
+        attempt: Int,
+        cooperationDeferrals: Int = 0
+    ) {
+        self.item = item
+        self.attempt = attempt
+        self.cooperationDeferrals = cooperationDeferrals
+    }
 }
 
 enum SuperThumbnailResumePolicy {
@@ -260,7 +292,11 @@ final class ThumbnailPreheater: ObservableObject {
         vaultOptions: SuperThumbnailVaultOptions,
         service: any RemoteFileService
     ) async {
+        var cooperativeVaultRun: SuperThumbnailVaultRun?
         defer {
+            if let cooperativeVaultRun {
+                Task { await cooperativeVaultRun.stopCooperation() }
+            }
             ScreenAwakeController.shared.finishActivity(screenAwakeActivityID)
             isRunning = false
             currentItemName = nil
@@ -300,8 +336,16 @@ final class ThumbnailPreheater: ObservableObject {
                     ? vaultOptions
                     : .init(isEnabled: false, timing: .later),
                 items: candidates,
-                service: service
+                service: service,
+                cooperationRootPath: generationMode == .completeFile
+                    ? rootPath
+                    : nil,
+                workerID: generationMode == .completeFile
+                    ? UUID().uuidString
+                    : nil
             )
+            cooperativeVaultRun = vaultRun
+            await vaultRun.startCooperation()
             totalCount = candidates.count
             estimatedTimeRemaining = etaEstimator.totalEstimate(
                 for: candidates,
@@ -356,7 +400,13 @@ final class ThumbnailPreheater: ObservableObject {
             }
             var pendingCandidates: [RemoteFileItem] = []
             if generationMode == .completeFile {
-                for item in candidates {
+                for (candidateIndex, item) in candidates.enumerated() {
+                    if candidateIndex.isMultiple(of: 32) {
+                        try await waitForRuntimeConditions(
+                            requiresExternalPower: requiresExternalPower,
+                            allowsConstrainedRun: allowsConstrainedRun
+                        )
+                    }
                     var cachedData = await cachedThumbnailData(for: item)
                     if cachedData == nil,
                        !preservesUnobservedSessionItems,
@@ -518,6 +568,19 @@ final class ThumbnailPreheater: ObservableObject {
                         break
                     }
                 }
+                if cachedThumbnailData == nil,
+                   let restored = await vaultRun.cooperativeRestoredData(
+                       for: item,
+                       forceRefresh: work.cooperationDeferrals > 0
+                   ),
+                   UIImage(data: restored) != nil {
+                    cachedThumbnailData = restored
+                    vaultRestoredCount += 1
+                    await SuperThumbnailCache.shared.store(
+                        restored,
+                        forKey: cacheKey
+                    )
+                }
                 if let cachedThumbnailData {
                     cachedCount += 1
                     completedCount += 1
@@ -572,6 +635,37 @@ final class ThumbnailPreheater: ObservableObject {
                    transferredBytes + estimatedBytes > itemMaximumDataBytes {
                     reachedDataLimit = true
                     break
+                }
+
+                let cooperativeLease: SuperThumbnailCooperativeLease?
+                switch await vaultRun.cooperativeClaim(item) {
+                case .uncoordinated:
+                    cooperativeLease = nil
+                    if workPhase == "여러 기기와 작업 분담 중" {
+                        workPhase = usesVault ? "신규·변경 파일 처리" : "썸네일 만들기"
+                    }
+                case .acquired(let lease):
+                    cooperativeLease = lease
+                    workPhase = "여러 기기와 작업 분담 중"
+                case .deferred:
+                    workPhase = "여러 기기와 작업 분담 중"
+                    let shouldBackOff = workIndex >= workQueue.count
+                    workQueue.append(
+                        SuperThumbnailWorkItem(
+                            item: item,
+                            attempt: work.attempt,
+                            cooperationDeferrals: work.cooperationDeferrals + 1
+                        )
+                    )
+                    currentItemTransferredBytes = 0
+                    currentItemTotalBytes = 0
+                    currentItemStartedAt = nil
+                    currentItemIsPhoto = false
+                    updateQueueCounts(workQueue, from: workIndex)
+                    if shouldBackOff {
+                        try await Task.sleep(for: .milliseconds(500))
+                    }
+                    continue
                 }
 
                 let activityID = UUID()
@@ -664,6 +758,9 @@ final class ThumbnailPreheater: ObservableObject {
                             .imageGenerationFailed
                     }
                 } catch is CancellationError {
+                    if let cooperativeLease {
+                        await vaultRun.releaseCooperativeLease(cooperativeLease)
+                    }
                     throw CancellationError()
                 } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
                     reachedDataLimit = true
@@ -727,6 +824,9 @@ final class ThumbnailPreheater: ObservableObject {
                     }
                 }
                 if deferredForLater {
+                    if let cooperativeLease {
+                        await vaultRun.releaseCooperativeLease(cooperativeLease)
+                    }
                     updateQueueCounts(workQueue, from: workIndex)
                     currentItemTransferredBytes = 0
                     currentItemTotalBytes = 0
@@ -766,11 +866,15 @@ final class ThumbnailPreheater: ObservableObject {
                         await applyVaultResult(
                             await vaultRun.markCompleted(
                                 item,
+                                cooperative: cooperativeLease != nil,
                                 localData: Self.localSuperThumbnailData
                             ),
                             sessionKey: queueSessionKey
                         )
                     }
+                }
+                if let cooperativeLease {
+                    await vaultRun.releaseCooperativeLease(cooperativeLease)
                 }
                 currentItemTransferredBytes = 0
                 currentItemTotalBytes = 0
@@ -1253,6 +1357,11 @@ final class ThumbnailPreheater: ObservableObject {
         allowsConstrainedRun: Bool
     ) throws {
         guard appIsActive else { throw ThumbnailPreheatError.appInactive }
+        if ThumbnailThermalPolicy.shouldPause(
+            for: ProcessInfo.processInfo.thermalState
+        ) {
+            throw ThumbnailPreheatError.deviceTooHot
+        }
         let batteryLevel = UIDevice.current.batteryLevel
         if batteryLevel >= 0, batteryLevel <= 0.2 {
             throw ThumbnailPreheatError.lowBattery
@@ -1282,6 +1391,20 @@ final class ThumbnailPreheater: ObservableObject {
                 pauseReason = "앱 화면으로 돌아오면 계속합니다"
                 try await Task.sleep(for: .seconds(1))
                 continue
+            }
+            let thermalState = ProcessInfo.processInfo.thermalState
+            if ThumbnailThermalPolicy.shouldPause(for: thermalState) {
+                pauseReason = "iPhone 온도가 내려갈 때까지 쉬는 중"
+                ScreenAwakeController.shared.finishActivity(screenAwakeActivityID)
+                try await Task.sleep(for: .seconds(5))
+                continue
+            }
+            ScreenAwakeController.shared.beginActivity(screenAwakeActivityID)
+            if let delay = ThumbnailThermalPolicy.pacingDelayMilliseconds(
+                for: thermalState
+            ) {
+                pauseReason = "발열을 낮추며 천천히 계속하는 중"
+                try await Task.sleep(for: .milliseconds(delay))
             }
             let batteryLevel = UIDevice.current.batteryLevel
             if batteryLevel >= 0, batteryLevel <= 0.2 {
@@ -1621,6 +1744,7 @@ private enum ThumbnailPreheatError: LocalizedError {
     case powerRequired
     case appInactive
     case lowBattery
+    case deviceTooHot
     case noEligibleMedia
 
     var errorDescription: String? {
@@ -1633,6 +1757,8 @@ private enum ThumbnailPreheatError: LocalizedError {
             "NasFinder가 화면에 열려 있을 때만 썸네일을 미리 만들 수 있습니다."
         case .lowBattery:
             "배터리가 20% 이하라서 Super Thumbnail 작업을 취소했습니다."
+        case .deviceTooHot:
+            "iPhone 온도가 높습니다. 잠시 식힌 뒤 다시 시작해 주세요."
         case .noEligibleMedia:
             "이 폴더에서 현재 설정으로 처리할 영상이나 사진을 찾지 못했습니다."
         }

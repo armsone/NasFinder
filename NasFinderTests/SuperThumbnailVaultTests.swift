@@ -2,6 +2,161 @@ import XCTest
 @testable import NasFinder
 
 final class SuperThumbnailVaultTests: XCTestCase {
+    func testSimultaneousVaultProcessesGrantOnlyOneLease() async throws {
+        let storage = VaultTestStorage()
+        let serviceA = VaultTestService(storage: storage)
+        let serviceB = VaultTestService(
+            storage: storage,
+            connectionID: serviceA.connection.id
+        )
+        let item = makeItems(connectionID: serviceA.connection.id)[0]
+        let vaultA = SuperThumbnailVault()
+        let vaultB = SuperThumbnailVault()
+
+        async let first = vaultA.claim(
+            item,
+            workerID: "worker-a",
+            service: serviceA
+        )
+        async let second = vaultB.claim(
+            item,
+            workerID: "worker-b",
+            service: serviceB
+        )
+        let results = await [first, second]
+        let leases = results.compactMap { result -> SuperThumbnailCooperativeLease? in
+            guard case .acquired(let lease) = result else { return nil }
+            return lease
+        }
+        XCTAssertEqual(leases.count, 1)
+        if let lease = leases.first {
+            await vaultA.release(lease, service: serviceA)
+            await vaultB.release(lease, service: serviceB)
+        }
+    }
+
+    func testExpiredWorkerAndLeaseCanBeRecovered() async throws {
+        let storage = VaultTestStorage()
+        let service = VaultTestService(storage: storage)
+        let item = makeItems(connectionID: service.connection.id)[0]
+        let vault = SuperThumbnailVault()
+        let startedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        try await vault.registerWorker(
+            "worker-a",
+            rootPath: "/media",
+            service: service,
+            now: startedAt
+        )
+        let active = try await vault.activeWorkerIDs(
+            rootPath: "/media",
+            service: service,
+            now: startedAt.addingTimeInterval(89)
+        )
+        XCTAssertEqual(active, Set(["worker-a"]))
+        let expired = try await vault.activeWorkerIDs(
+            rootPath: "/media",
+            service: service,
+            now: startedAt.addingTimeInterval(91)
+        )
+        XCTAssertTrue(expired.isEmpty)
+
+        let first = await vault.claim(
+            item,
+            workerID: "worker-a",
+            service: service,
+            now: startedAt
+        )
+        guard case .acquired = first else {
+            return XCTFail("첫 임대를 만들지 못했습니다.")
+        }
+        let recovered = await vault.claim(
+            item,
+            workerID: "worker-b",
+            service: service,
+            now: startedAt.addingTimeInterval(181)
+        )
+        guard case .acquired(let recoveredLease) = recovered else {
+            return XCTFail("만료된 임대를 다른 기기가 회수해야 합니다.")
+        }
+        await vault.release(recoveredLease, service: service)
+    }
+
+    func testMultipleDevicesLeaseEachItemToOnlyOneWorker() async throws {
+        let storage = VaultTestStorage()
+        let service = VaultTestService(storage: storage)
+        let item = makeItems(connectionID: service.connection.id)[0]
+        let vault = SuperThumbnailVault.shared
+        try await vault.registerWorker(
+            "worker-a",
+            rootPath: "/media",
+            service: service
+        )
+        try await vault.registerWorker(
+            "worker-b",
+            rootPath: "/media",
+            service: service
+        )
+
+        let first = await vault.claim(
+            item,
+            workerID: "worker-a",
+            service: service
+        )
+        guard case .acquired(let firstLease) = first else {
+            return XCTFail("첫 번째 기기가 작업을 선점해야 합니다.")
+        }
+        let competing = await vault.claim(
+            item,
+            workerID: "worker-b",
+            service: service
+        )
+        guard case .deferred = competing else {
+            return XCTFail("다른 기기는 같은 작업을 건너뛰어야 합니다.")
+        }
+
+        await vault.release(firstLease, service: service)
+        let reassigned = await vault.claim(
+            item,
+            workerID: "worker-b",
+            service: service
+        )
+        guard case .acquired(let secondLease) = reassigned else {
+            return XCTFail("임대 해제 후 다른 기기가 작업을 가져가야 합니다.")
+        }
+        await vault.release(secondLease, service: service)
+        await vault.unregisterWorker(
+            "worker-a",
+            rootPath: "/media",
+            service: service
+        )
+        await vault.unregisterWorker(
+            "worker-b",
+            rootPath: "/media",
+            service: service
+        )
+    }
+
+    func testCooperativeCompletionPublishesEachResultImmediately() async throws {
+        let storage = VaultTestStorage()
+        let service = VaultTestService(storage: storage)
+        let items = makeItems(connectionID: service.connection.id)
+        let run = SuperThumbnailVaultRun(
+            options: .init(isEnabled: true, timing: .now),
+            items: items,
+            service: service
+        )
+
+        let result = await run.markCompleted(
+            items[0],
+            cooperative: true,
+            localData: { Data($0.name.utf8) }
+        )
+
+        XCTAssertEqual(result.storedItemIDs, Set([items[0].id]))
+        let storedCount = await storage.vaultFileCount()
+        XCTAssertEqual(storedCount, 1)
+    }
+
     func testNowWaitsForWholeFolderBeforeUploadingExistingLocalResults() async throws {
         let storage = VaultTestStorage()
         let service = VaultTestService(storage: storage)
@@ -183,7 +338,14 @@ private actor VaultTestStorage {
         return result
     }
 
-    func createDirectory(_ path: String) { directories.insert(path) }
+    func createDirectory(_ path: String) throws {
+        guard directories.insert(path).inserted else {
+            throw RemoteFileOperationError.conflict(
+                sourcePath: path,
+                destinationPath: path
+            )
+        }
+    }
     func store(_ data: Data, path: String) { files[path] = data }
     func beginUpload() throws {
         uploadAttempts += 1
@@ -194,6 +356,7 @@ private actor VaultTestStorage {
     }
     func uploadAttemptCount() -> Int { uploadAttempts }
     func data(at path: String) -> Data? { files[path] }
+    func containsFile(at path: String) -> Bool { files[path] != nil }
     func remove(_ path: String) { files[path] = nil; directories.remove(path) }
     func rename(from: String, to: String) { files[to] = files.removeValue(forKey: from) }
     func vaultFileCount() -> Int {
@@ -222,9 +385,10 @@ private struct VaultTestService: RemoteFileService, Sendable {
     let connection: RemoteConnection
     let storage: VaultTestStorage
 
-    init(storage: VaultTestStorage) {
+    init(storage: VaultTestStorage, connectionID: UUID = UUID()) {
         self.storage = storage
         connection = RemoteConnection(
+            id: connectionID,
             name: "Vault Test",
             kind: .webDAV,
             host: "vault.test",
@@ -255,7 +419,7 @@ private struct VaultTestService: RemoteFileService, Sendable {
         context: RemoteOperationContext
     ) async throws -> RemoteFileItem {
         let path = directoryPath == "/" ? "/\(name)" : "\(directoryPath)/\(name)"
-        await storage.createDirectory(path)
+        try await storage.createDirectory(path)
         return RemoteFileItem(
             connectionID: connection.id,
             path: path,
@@ -277,6 +441,28 @@ private struct VaultTestService: RemoteFileService, Sendable {
         try await storage.beginUpload()
         let name = preferredName ?? localURL.lastPathComponent
         let path = "\(directoryPath)/\(name)"
+        if await storage.containsFile(at: path) {
+            switch conflictPolicy {
+            case .fail:
+                throw RemoteFileOperationError.conflict(
+                    sourcePath: localURL.path,
+                    destinationPath: path
+                )
+            case .skip:
+                return .init(
+                    operationID: context.operationID,
+                    operation: .upload,
+                    outcomes: [.skipped(sourcePath: localURL.path, destinationPath: path)]
+                )
+            case .replace:
+                break
+            case .keepBoth:
+                throw RemoteFileOperationError.conflict(
+                    sourcePath: localURL.path,
+                    destinationPath: path
+                )
+            }
+        }
         await storage.store(try Data(contentsOf: localURL), path: path)
         return .init(
             operationID: context.operationID,

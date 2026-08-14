@@ -3,6 +3,35 @@ import XCTest
 
 @MainActor
 final class BrowserFeaturePolicyTests: XCTestCase {
+    func testSuperThumbnailThermalPolicyBalancesSpeedAndHeat() {
+        XCTAssertFalse(ThumbnailThermalPolicy.shouldPause(for: .nominal))
+        XCTAssertNil(ThumbnailThermalPolicy.pacingDelayMilliseconds(for: .nominal))
+        XCTAssertFalse(ThumbnailThermalPolicy.shouldPause(for: .fair))
+        XCTAssertEqual(
+            ThumbnailThermalPolicy.pacingDelayMilliseconds(for: .fair),
+            500
+        )
+        XCTAssertTrue(ThumbnailThermalPolicy.shouldPause(for: .serious))
+        XCTAssertTrue(ThumbnailThermalPolicy.shouldPause(for: .critical))
+    }
+
+    func testHiddenSuperThumbnailStartCountsDownAfterFiveTaps() {
+        XCTAssertNil(
+            SuperThumbnailHiddenStartPolicy.remainingTapCount(after: 4)
+        )
+        XCTAssertEqual(
+            SuperThumbnailHiddenStartPolicy.remainingTapCount(after: 5),
+            5
+        )
+        XCTAssertEqual(
+            SuperThumbnailHiddenStartPolicy.remainingTapCount(after: 9),
+            1
+        )
+        XCTAssertNil(
+            SuperThumbnailHiddenStartPolicy.remainingTapCount(after: 10)
+        )
+    }
+
     func testCoverFlowBackgroundChoicesMapToStoredBoolean() {
         XCTAssertFalse(
             FileBrowserCoverFlowBackground.light.usesDarkBackground

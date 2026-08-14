@@ -82,6 +82,17 @@ private struct CompactJobAssessment: Equatable {
     let totalBytes: Int64
 }
 
+enum SuperThumbnailHiddenStartPolicy {
+    static let requiredTapCount = 10
+    static let visibleCountdownStart = 5
+
+    static func remainingTapCount(after tapCount: Int) -> Int? {
+        guard tapCount >= visibleCountdownStart,
+              tapCount < requiredTapCount else { return nil }
+        return requiredTapCount - tapCount
+    }
+}
+
 private struct SuperThumbnailHistoryEntry: Codable, Equatable {
     let connectionID: String
     let path: String
@@ -107,7 +118,7 @@ struct SuperThumbnailView: View {
     @State private var compactJobAssessment: CompactJobAssessment?
     @State private var isAssessingCompactJob = false
     @State private var compactAssessmentID = UUID()
-    @State private var screenAwakeActivityID = UUID()
+    @State private var hiddenStartTapCount = 0
     @State private var reportSelection: SuperThumbnailSelection?
     @State private var isShowingReport = false
     @AppStorage("superThumbnail.lastConnectionID.v1") private var lastConnectionID = ""
@@ -152,6 +163,7 @@ struct SuperThumbnailView: View {
                 selection = selected
                 saveSelection(selected)
                 hasPendingSession = false
+                hiddenStartTapCount = 0
                 assessCompactJob(for: selected)
                 isSelectingFolder = false
             }
@@ -227,11 +239,11 @@ struct SuperThumbnailView: View {
         .task(id: connectionStore.connections.count) {
             await refreshStatistics()
         }
-        .onAppear {
-            ScreenAwakeController.shared.beginForcedActivity(screenAwakeActivityID)
-        }
         .onDisappear {
-            ScreenAwakeController.shared.finishForcedActivity(screenAwakeActivityID)
+            hiddenStartTapCount = 0
+        }
+        .onChange(of: hiddenStartGestureAvailable) { _, isAvailable in
+            if !isAvailable { hiddenStartTapCount = 0 }
         }
         .onChange(of: scenePhase, initial: true) { _, phase in
             preheater.updateAppIsActive(phase == .active)
@@ -390,10 +402,10 @@ struct SuperThumbnailView: View {
     }
 
     private var folderSelection: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            Button {
-                isSelectingFolder = true
-            } label: {
+        Button {
+            isSelectingFolder = true
+        } label: {
+            VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 12) {
                     Image(systemName: "folder.fill")
                         .foregroundStyle(SkyBreezeTheme.folderBlue)
@@ -413,15 +425,18 @@ struct SuperThumbnailView: View {
                 }
                 .padding(16)
                 .frame(minHeight: 72)
+                Text("하위 폴더 포함 · 완료된 항목은 다시 만들지 않음")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, 4)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 12)
             }
-            .buttonStyle(.plain)
-            Text("하위 폴더 포함 · 완료된 항목은 다시 만들지 않음")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .padding(.leading, 4)
-                .padding(.horizontal, 16)
-                .padding(.bottom, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityHint("NAS에서 처리할 폴더를 선택합니다.")
     }
 
     private var historyPanel: some View {
@@ -456,44 +471,59 @@ struct SuperThumbnailView: View {
         _ previous: SuperThumbnailSelection,
         index: Int
     ) -> some View {
-        Button {
-            reportSelection = previous
-            isShowingReport = true
-        } label: {
-            HStack(spacing: 11) {
-                Image(systemName: index == 0 ? "clock.fill" : "clock")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: 24, height: 24)
-                    .background(
-                        Color.secondary.opacity(0.08),
-                        in: Circle()
-                    )
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(previous.title)
-                        .font(.subheadline)
-                        .foregroundStyle(primaryInk)
-                        .lineLimit(1)
-                    Text(previous.path)
-                        .font(.caption2)
+        HStack(spacing: 4) {
+            Button {
+                reportSelection = previous
+                isShowingReport = true
+            } label: {
+                HStack(spacing: 11) {
+                    Image(systemName: index == 0 ? "clock.fill" : "clock")
+                        .font(.caption)
                         .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                        .frame(width: 24, height: 24)
+                        .background(
+                            Color.secondary.opacity(0.08),
+                            in: Circle()
+                        )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(previous.title)
+                            .font(.subheadline)
+                            .foregroundStyle(primaryInk)
+                            .lineLimit(1)
+                        Text(previous.path)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.right")
+                        .font(.caption.bold())
+                        .foregroundStyle(.tertiary)
                 }
-                Spacer(minLength: 8)
-                Image(systemName: "chevron.right")
+                .frame(minHeight: 40)
+            }
+            .buttonStyle(.plain)
+
+            Menu {
+                Button("최근 작업에서 삭제", role: .destructive) {
+                    removeHistorySelection(previous)
+                }
+            } label: {
+                Image(systemName: "ellipsis")
                     .font(.caption.bold())
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(.secondary)
+                    .frame(width: 28, height: 40)
+                    .contentShape(Rectangle())
             }
-            .frame(minHeight: 40)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 8)
-            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
-            .overlay {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .stroke(SkyBreezeTheme.thumbnailBorder.opacity(0.7), lineWidth: 1)
-            }
+            .accessibilityLabel("\(previous.title) 최근 작업 메뉴")
         }
-        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(SkyBreezeTheme.thumbnailBorder.opacity(0.7), lineWidth: 1)
+        }
     }
 
     private var requirements: some View {
@@ -523,6 +553,14 @@ struct SuperThumbnailView: View {
         .buttonBorderShape(.roundedRectangle(radius: 14))
         .font(.body.weight(.medium))
         .disabled(!canStart || isPreparing)
+        .overlay {
+            if hiddenStartGestureAvailable {
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: registerHiddenStartTap)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 
     private var resetLink: some View {
@@ -583,6 +621,16 @@ struct SuperThumbnailView: View {
         hasWiFi && hasExternalPower
     }
 
+    private var hiddenStartGestureAvailable: Bool {
+        selection != nil
+            && !hasStandardConditions
+            && compactJobAssessment == nil
+            && !isAssessingCompactJob
+            && !isPreparing
+            && !preheater.isRunning
+            && !preheater.isCancellationRequested
+    }
+
     private var usesCompactOverride: Bool {
         !hasStandardConditions && compactJobAssessment != nil
     }
@@ -590,6 +638,11 @@ struct SuperThumbnailView: View {
     private var requirementSummary: String {
         if selection == nil { return "먼저 처리할 폴더를 선택하세요." }
         if hasStandardConditions { return "시작할 준비가 됐습니다." }
+        if let remaining = SuperThumbnailHiddenStartPolicy.remainingTapCount(
+            after: hiddenStartTapCount
+        ) {
+            return "제한 없이 시작하려면 \(remaining)번 더 누르세요."
+        }
         if let compactJobAssessment {
             return "소규모 작업 · 미디어 \(compactJobAssessment.mediaCount)개 · "
                 + formatted(compactJobAssessment.totalBytes)
@@ -623,11 +676,31 @@ struct SuperThumbnailView: View {
 
     private func startProcessing() {
         guard let selection, canStart else { return }
+        hiddenStartTapCount = 0
         launchProcessing(
             selection: selection,
             allowsConstrainedRun: usesCompactOverride,
             resumeExistingVault: hasPendingSession
         )
+    }
+
+    private func registerHiddenStartTap() {
+        guard let selection, hiddenStartGestureAvailable else {
+            hiddenStartTapCount = 0
+            return
+        }
+        hiddenStartTapCount += 1
+        if hiddenStartTapCount >= SuperThumbnailHiddenStartPolicy.requiredTapCount {
+            hiddenStartTapCount = 0
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            launchProcessing(
+                selection: selection,
+                allowsConstrainedRun: true,
+                resumeExistingVault: hasPendingSession
+            )
+        } else if hiddenStartTapCount >= SuperThumbnailHiddenStartPolicy.visibleCountdownStart {
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
     }
 
     private func removeSelectedVaults() {
@@ -765,6 +838,27 @@ struct SuperThumbnailView: View {
         if let encoded = try? JSONEncoder().encode(Array(entries.prefix(10))),
            let json = String(data: encoded, encoding: .utf8) {
             folderHistoryJSON = json
+        }
+    }
+
+    private func removeHistorySelection(_ selection: SuperThumbnailSelection) {
+        let connectionID = selection.connection.id.uuidString
+        let entries = decodedHistoryEntries.filter {
+            $0.connectionID != connectionID || $0.path != selection.path
+        }
+        if let encoded = try? JSONEncoder().encode(entries),
+           let json = String(data: encoded, encoding: .utf8) {
+            folderHistoryJSON = json
+        }
+        if lastConnectionID == connectionID, lastPath == selection.path {
+            lastConnectionID = ""
+            lastPath = ""
+            lastTitle = ""
+        }
+        if previousConnectionID == connectionID, previousPath == selection.path {
+            previousConnectionID = ""
+            previousPath = ""
+            previousTitle = ""
         }
     }
 
@@ -1209,7 +1303,6 @@ private struct SuperThumbnailProgressView: View {
     let sessionKey: String
     let onCancel: () -> Void
     let onClose: () -> Void
-    @State private var screenAwakeActivityID = UUID()
     @State private var isOverflowExpanded = true
     @State private var isFailurePanelExpanded = false
     @State private var isDetailsExpanded = false
@@ -1344,12 +1437,6 @@ private struct SuperThumbnailProgressView: View {
             }
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .onAppear {
-                ScreenAwakeController.shared.beginForcedActivity(screenAwakeActivityID)
-            }
-            .onDisappear {
-                ScreenAwakeController.shared.finishForcedActivity(screenAwakeActivityID)
-            }
             .task(id: preheater.isRunning) {
                 guard !preheater.isRunning, !sessionKey.isEmpty else { return }
                 vaultReport = await SuperThumbnailQueueStore.shared.report(

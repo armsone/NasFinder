@@ -264,6 +264,7 @@ struct FileBrowserView: View {
             )
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarBackButtonHidden(true)
             .modifier(
                 FileBrowserCoverFlowChromeModifier(
                     isActive: layoutStyle == .coverFlow
@@ -484,6 +485,12 @@ struct FileBrowserView: View {
 
     @ToolbarContentBuilder
     private var browserToolbar: some ToolbarContent {
+        ToolbarItem(placement: .topBarLeading) {
+            if layoutStyle != .coverFlow {
+                browserBackButton
+            }
+        }
+
         ToolbarItem(placement: .principal) {
             if layoutStyle != .coverFlow {
                 Button(action: dashboardAction) {
@@ -508,6 +515,36 @@ struct FileBrowserView: View {
                 }
             }
         }
+    }
+
+    private var browserBackButton: some View {
+        Image(systemName: "chevron.left")
+            .font(.system(size: 17, weight: .semibold))
+            .foregroundStyle(SkyBreezeTheme.accent)
+            .frame(width: 32, height: 32)
+            .background(SkyBreezeTheme.accent.opacity(0.12), in: Circle())
+            .contentShape(Circle())
+            .gesture(
+                LongPressGesture(minimumDuration: 0.5)
+                    .exclusively(before: TapGesture())
+                    .onEnded { result in
+                        switch result {
+                        case .first:
+                            dashboardAction()
+                        case .second:
+                            dismiss()
+                        }
+                    }
+            )
+            .accessibilityLabel("이전 폴더")
+            .accessibilityHint("길게 누르면 NasFinder 첫 화면으로 바로 이동합니다.")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction {
+                dismiss()
+            }
+            .accessibilityAction(named: "NasFinder 첫 화면") {
+                dashboardAction()
+            }
     }
 
     private var regularMoreButton: some View {
