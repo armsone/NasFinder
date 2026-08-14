@@ -170,6 +170,32 @@ final class DocumentPickerModel: ObservableObject {
         }
     }
 
+    func retryWithVisibleDeadline() async {
+        let refreshTask = Task { @MainActor in
+            await retry()
+        }
+        await Task.yield()
+
+        for _ in 0..<50 {
+            if !isLoading {
+                await refreshTask.value
+                return
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+
+        guard isLoading else {
+            await refreshTask.value
+            return
+        }
+        directoryLoadTask?.cancel()
+        directoryLoadTask = nil
+        activeDirectoryLoadID = nil
+        isLoading = false
+        errorMessage = "NAS 응답이 늦어 새로고침을 종료했습니다. 기존 목록은 그대로 유지됩니다."
+        refreshTask.cancel()
+    }
+
     func clearError() {
         errorMessage = nil
     }
@@ -522,7 +548,7 @@ private struct DocumentPickerRootView: View {
                 .background(DocumentPickerAppearance.background)
             }
         }
-        .refreshable { await model.retry() }
+        .refreshable { await model.retryWithVisibleDeadline() }
     }
 
     private var layoutStyle: DocumentPickerLayoutStyle {
