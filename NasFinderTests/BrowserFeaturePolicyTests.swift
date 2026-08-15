@@ -261,6 +261,27 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         XCTAssertFalse(ThumbnailPreheatPolicy.canGenerateSuperThumbnail(item: document))
     }
 
+    func testSuperThumbnailTreatsDesignedForIPadMacAsExternallyPowered() {
+        XCTAssertTrue(
+            ThumbnailRuntimePolicy.hasExternalPower(
+                batteryState: .unknown,
+                isIOSAppOnMac: true
+            )
+        )
+        XCTAssertFalse(
+            ThumbnailRuntimePolicy.hasExternalPower(
+                batteryState: .unknown,
+                isIOSAppOnMac: false
+            )
+        )
+        XCTAssertTrue(
+            ThumbnailRuntimePolicy.hasExternalPower(
+                batteryState: .charging,
+                isIOSAppOnMac: false
+            )
+        )
+    }
+
     func testFavoriteImportSkipsCanonicalDuplicatesAndAppendsNewAddresses() throws {
         let suiteName = "BrowserFeaturePolicyTests.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

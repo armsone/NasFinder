@@ -185,6 +185,7 @@ struct SuperThumbnailView: View {
                         || preheater.failedCount > 0
                         || preheater.vaultPendingCount > 0
                         || preheater.vaultFailedCount > 0
+                        || preheater.errorMessage != nil
                     isShowingProgress = false
                     Task { await refreshStatistics() }
                 }
@@ -602,11 +603,9 @@ struct SuperThumbnailView: View {
 
     private var hasExternalPower: Bool {
         _ = eligibilityVersion
-        switch UIDevice.current.batteryState {
-        case .charging, .full: return true
-        case .unknown, .unplugged: return false
-        @unknown default: return false
-        }
+        return ThumbnailRuntimePolicy.hasExternalPower(
+            batteryState: UIDevice.current.batteryState
+        )
     }
 
     private var canStart: Bool {
@@ -1314,7 +1313,7 @@ private struct SuperThumbnailProgressView: View {
                 VStack(spacing: 14) {
                     HStack(spacing: 9) {
                         SuperThumbnailMark(compact: true)
-                        Text(preheater.isRunning ? "썸네일 만드는 중" : "처리 완료")
+                        Text(progressTitle)
                             .font(.system(size: 17, weight: .semibold))
                             .foregroundStyle(.primary)
                     }
@@ -1337,6 +1336,19 @@ private struct SuperThumbnailProgressView: View {
                             .font(.caption)
                             .foregroundStyle(.orange)
                             .multilineTextAlignment(.center)
+                    }
+
+                    if let errorMessage = preheater.errorMessage {
+                        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                            .font(.callout)
+                            .foregroundStyle(.red)
+                            .multilineTextAlignment(.center)
+                            .padding(14)
+                            .frame(maxWidth: .infinity)
+                            .background(
+                                Color.red.opacity(0.08),
+                                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            )
                     }
 
                     overallProgressPanel
@@ -1423,7 +1435,7 @@ private struct SuperThumbnailProgressView: View {
                         .disabled(preheater.isCancellationRequested)
                     } else {
                         Button(action: onClose) {
-                            Text("완료")
+                            Text(preheater.errorMessage == nil ? "완료" : "닫기")
                                 .frame(maxWidth: .infinity)
                                 .frame(height: 54)
                         }
@@ -1444,6 +1456,12 @@ private struct SuperThumbnailProgressView: View {
                 )
             }
         }
+    }
+
+    private var progressTitle: String {
+        if preheater.isRunning { return "썸네일 만드는 중" }
+        if preheater.errorMessage != nil { return "처리하지 못했습니다" }
+        return "처리 완료"
     }
 
     private var overallProgressPanel: some View {

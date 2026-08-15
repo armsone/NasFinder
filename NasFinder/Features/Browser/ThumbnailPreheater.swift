@@ -46,6 +46,23 @@ enum ThumbnailPreheatPolicy {
     }
 }
 
+enum ThumbnailRuntimePolicy {
+    static func hasExternalPower(
+        batteryState: UIDevice.BatteryState,
+        isIOSAppOnMac: Bool = ProcessInfo.processInfo.isiOSAppOnMac
+    ) -> Bool {
+        if isIOSAppOnMac { return true }
+        switch batteryState {
+        case .charging, .full:
+            return true
+        case .unknown, .unplugged:
+            return false
+        @unknown default:
+            return false
+        }
+    }
+}
+
 enum ThumbnailThermalPolicy {
     static let fairPacingDelayMilliseconds = 500
 
@@ -1371,14 +1388,12 @@ final class ThumbnailPreheater: ObservableObject {
             throw ThumbnailPreheatError.wifiRequired
         }
         guard requiresExternalPower else { return }
-        switch UIDevice.current.batteryState {
-        case .charging, .full:
-            return
-        case .unknown, .unplugged:
-            throw ThumbnailPreheatError.powerRequired
-        @unknown default:
+        guard ThumbnailRuntimePolicy.hasExternalPower(
+            batteryState: UIDevice.current.batteryState
+        ) else {
             throw ThumbnailPreheatError.powerRequired
         }
+        return
     }
 
     private func waitForRuntimeConditions(
@@ -1416,19 +1431,10 @@ final class ThumbnailPreheater: ObservableObject {
             }
 
             let hasWiFi = ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
-            let hasPower: Bool
-            if requiresExternalPower {
-                switch UIDevice.current.batteryState {
-                case .charging, .full:
-                    hasPower = true
-                case .unknown, .unplugged:
-                    hasPower = false
-                @unknown default:
-                    hasPower = false
-                }
-            } else {
-                hasPower = true
-            }
+            let hasPower = !requiresExternalPower
+                || ThumbnailRuntimePolicy.hasExternalPower(
+                    batteryState: UIDevice.current.batteryState
+                )
             if hasWiFi, hasPower {
                 pauseReason = nil
                 return
