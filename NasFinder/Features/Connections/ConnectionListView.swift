@@ -11,12 +11,15 @@ private struct BrowserDestination: Identifiable, Hashable {
 }
 
 struct ConnectionListView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var store: ConnectionStore
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @EnvironmentObject private var favoriteStore: FavoriteStore
     @EnvironmentObject private var browserFavoritesStore: BrowserFavoritesStore
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
 
     @State private var isAddingConnection: Bool
     @State private var connectionPendingDeletion: RemoteConnection?
@@ -436,6 +439,46 @@ struct ConnectionListView: View {
         ).previewAssetName
     }
 
+    private var selectedTheme: AppThemePreference {
+        .resolved(selectedThemeRawValue)
+    }
+
+    private var currentThemeBadge: some View {
+        Button {
+            selectNextTheme()
+        } label: {
+            Image(systemName: selectedTheme.systemImage)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(
+                    selectedTheme.preferredColorScheme == .dark ? .white : .black.opacity(0.72)
+                )
+                .frame(width: 38, height: 18)
+                .background {
+                    Capsule()
+                        .fill(
+                            SkyBreezeTheme.skyGradient(
+                                for: colorScheme,
+                                theme: selectedTheme
+                            )
+                        )
+                }
+                .overlay {
+                    Capsule()
+                        .stroke(Color(uiColor: .systemBackground), lineWidth: 2)
+                }
+                .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("현재 테마, \(selectedTheme.title)")
+        .accessibilityHint("두 번 탭하면 다음 테마로 바뀝니다.")
+    }
+
+    private func selectNextTheme() {
+        withAnimation(.easeInOut(duration: 0.20)) {
+            selectedThemeRawValue = selectedTheme.next.rawValue
+        }
+    }
+
     private var dashboardLogo: some View {
         Button(action: openRememberedLocation) {
             HStack(spacing: 7) {
@@ -491,9 +534,16 @@ struct ConnectionListView: View {
                 dashboardLogo
             }
             .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .topBarTrailing) {
+                currentThemeBadge
+            }
+            .sharedBackgroundVisibility(.hidden)
         } else {
             ToolbarItem(placement: .topBarLeading) {
                 dashboardLogo
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                currentThemeBadge
             }
         }
     }

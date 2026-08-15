@@ -9,11 +9,19 @@ final class AppThemePreferenceTests: XCTestCase {
     }
 
     func testAllSelectableThemesHaveStableUniqueValues() {
-        XCTAssertEqual(AppThemePreference.allCases.count, 5)
+        XCTAssertEqual(AppThemePreference.allCases.count, 6)
         XCTAssertEqual(
             Set(AppThemePreference.allCases.map(\.rawValue)).count,
             AppThemePreference.allCases.count
         )
+    }
+
+    func testThemesCycleInDisplayOrder() {
+        let themes = AppThemePreference.allCases
+        for index in themes.indices.dropLast() {
+            XCTAssertEqual(themes[index].next, themes[index + 1])
+        }
+        XCTAssertEqual(themes.last?.next, themes.first)
     }
 
     func testVibeCoderTitleAndExtensibleServicePalette() {
@@ -88,5 +96,6 @@ final class AppThemePreferenceTests: XCTestCase {
         XCTAssertEqual(AppThemePreference.night.preferredColorScheme, .dark)
         XCTAssertEqual(AppThemePreference.digitalRain.preferredColorScheme, .dark)
         XCTAssertEqual(AppThemePreference.windyMeadow.preferredColorScheme, .light)
+        XCTAssertEqual(AppThemePreference.workbench.preferredColorScheme, .dark)
     }
 }

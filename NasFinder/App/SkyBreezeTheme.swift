@@ -7,6 +7,7 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
     case night
     case digitalRain
     case windyMeadow
+    case workbench
 
     static let storageKey = "app.theme.preference.v1"
 
@@ -19,6 +20,7 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
         case .night: "밤"
         case .digitalRain: "Vibe Coder"
         case .windyMeadow: "Windy Meadow"
+        case .workbench: "Workbench"
         }
     }
 
@@ -29,6 +31,7 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
         case .night: "차분하고 어둡게"
         case .digitalRain: "Black · Mint"
         case .windyMeadow: "Sky · Meadow"
+        case .workbench: "Slate · Syntax"
         }
     }
 
@@ -39,6 +42,7 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
         case .night: "moon.stars.fill"
         case .digitalRain: "terminal.fill"
         case .windyMeadow: "wind"
+        case .workbench: "chevron.left.forwardslash.chevron.right"
         }
     }
 
@@ -46,12 +50,19 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .system: nil
         case .day, .windyMeadow: .light
-        case .night, .digitalRain: .dark
+        case .night, .digitalRain, .workbench: .dark
         }
     }
 
     static func resolved(_ rawValue: String?) -> Self {
         rawValue.flatMap(Self.init(rawValue:)) ?? .system
+    }
+
+    var next: Self {
+        let themes = Self.allCases
+        guard let currentIndex = themes.firstIndex(of: self) else { return .system }
+        let nextIndex = themes.index(after: currentIndex)
+        return nextIndex == themes.endIndex ? themes[themes.startIndex] : themes[nextIndex]
     }
 
     static var current: Self {
@@ -67,6 +78,7 @@ enum SkyBreezeTheme {
         switch AppThemePreference.current {
         case .digitalRain: Color(red: 0.18, green: 0.91, blue: 0.72)
         case .windyMeadow: Color(red: 0.05, green: 0.55, blue: 0.76)
+        case .workbench: Color(red: 0.36, green: 0.78, blue: 1.00)
         default: Color(uiColor: .systemBlue)
         }
     }
@@ -88,6 +100,7 @@ enum SkyBreezeTheme {
         switch AppThemePreference.current {
         case .digitalRain: Color(red: 0.23, green: 0.84, blue: 0.69)
         case .windyMeadow: Color(red: 0.04, green: 0.48, blue: 0.68)
+        case .workbench: Color(red: 0.36, green: 0.78, blue: 1.00)
         default:
             adaptiveColor(
                 light: (0.08, 0.47, 0.70),
@@ -97,21 +110,26 @@ enum SkyBreezeTheme {
     }
 
     static var primaryText: Color {
-        AppThemePreference.current == .digitalRain
-            ? Color(red: 0.90, green: 0.98, blue: 0.95)
-            : Color(uiColor: .label)
+        switch AppThemePreference.current {
+        case .digitalRain: Color(red: 0.90, green: 0.98, blue: 0.95)
+        case .workbench: Color(red: 0.92, green: 0.95, blue: 0.98)
+        default: Color(uiColor: .label)
+        }
     }
 
     static var secondaryText: Color {
-        AppThemePreference.current == .digitalRain
-            ? Color(red: 0.60, green: 0.75, blue: 0.70)
-            : Color(uiColor: .secondaryLabel)
+        switch AppThemePreference.current {
+        case .digitalRain: Color(red: 0.60, green: 0.75, blue: 0.70)
+        case .workbench: Color(red: 0.61, green: 0.69, blue: 0.76)
+        default: Color(uiColor: .secondaryLabel)
+        }
     }
 
     static var thumbnailSurface: Color {
         switch AppThemePreference.current {
         case .digitalRain: Color(red: 0.035, green: 0.105, blue: 0.095)
         case .windyMeadow: Color(red: 0.985, green: 0.975, blue: 0.91)
+        case .workbench: Color(red: 0.075, green: 0.105, blue: 0.145)
         default:
             Color(
                 uiColor: UIColor { traits in
@@ -127,6 +145,7 @@ enum SkyBreezeTheme {
         switch AppThemePreference.current {
         case .digitalRain: Color(red: 0.10, green: 0.32, blue: 0.27)
         case .windyMeadow: Color(red: 0.62, green: 0.73, blue: 0.40)
+        case .workbench: Color(red: 0.20, green: 0.29, blue: 0.37)
         default:
             adaptiveColor(
                 light: (0.75, 0.89, 0.95),
@@ -139,6 +158,7 @@ enum SkyBreezeTheme {
         switch AppThemePreference.current {
         case .digitalRain: Color(red: 0.012, green: 0.045, blue: 0.042)
         case .windyMeadow: Color(red: 0.93, green: 0.96, blue: 0.82)
+        case .workbench: Color(red: 0.035, green: 0.055, blue: 0.08)
         default:
             adaptiveColor(
                 light: (0.955, 0.985, 0.995),
@@ -164,6 +184,12 @@ enum SkyBreezeTheme {
                 Color(red: 0.23, green: 0.74, blue: 0.95),
                 Color(red: 0.72, green: 0.90, blue: 0.88),
                 Color(red: 0.89, green: 0.94, blue: 0.70),
+            ]
+        case .workbench:
+            colors = [
+                Color(red: 0.07, green: 0.10, blue: 0.15),
+                Color(red: 0.035, green: 0.055, blue: 0.08),
+                Color(red: 0.055, green: 0.12, blue: 0.18),
             ]
         case .night:
             colors = [
@@ -309,6 +335,8 @@ enum ThemeServicePalette {
             return base.blended(toward: (0.74, 1, 0.90), amount: 0.06)
         case .windyMeadow:
             return base.blended(toward: (0, 0, 0), amount: 0.04)
+        case .workbench:
+            return base.blended(toward: (0.72, 0.86, 1.0), amount: 0.05)
         case .system, .day:
             return base
         }
@@ -363,6 +391,13 @@ enum ThemeServicePalette {
                 ThemeServiceStyle(hex: 0xF5B847),
                 ThemeServiceStyle(hex: 0x8561B3),
             ]
+        case .workbench:
+            [
+                ThemeServiceStyle(hex: 0x5CC8FF),
+                ThemeServiceStyle(hex: 0x65D6AD),
+                ThemeServiceStyle(hex: 0xF4C76B),
+                ThemeServiceStyle(hex: 0xC792EA),
+            ]
         case .night:
             [0x0A84FF, 0x30D158, 0xFF9F0A, 0xBF5AF2].map(ThemeServiceStyle.init(hex:))
         case .system, .day:
@@ -404,6 +439,41 @@ struct CodeRainDecoration: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .clipped()
+    }
+}
+
+struct WorkbenchDecoration: View {
+    let size: CGSize
+
+    private let lines = [
+        "let client = NAS()",
+        "await client.connect()",
+        "git status --short",
+        "func browse(path: URL)",
+        "guard result.isReady else",
+        "return .success(files)",
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: max(size.height * 0.022, 12)) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
+                HStack(spacing: 10) {
+                    Text(String(format: "%02d", index + 1))
+                        .foregroundStyle(Color.white.opacity(0.18))
+                    Text(line)
+                        .foregroundStyle(
+                            index.isMultiple(of: 3)
+                                ? Color(red: 0.36, green: 0.78, blue: 1.00).opacity(0.19)
+                                : Color.white.opacity(0.10)
+                        )
+                }
+            }
+        }
+        .font(.system(size: max(min(size.width * 0.032, 12), 7), design: .monospaced))
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+        .padding(.top, max(size.height * 0.08, 24))
+        .padding(.trailing, max(size.width * 0.04, 12))
         .clipped()
     }
 }
@@ -452,6 +522,8 @@ struct SkyBreezeBackground: View {
                 )
                 .foregroundStyle(.white.opacity(0.24))
                 .offset(x: size.width * 0.24, y: 112)
+        case .workbench:
+            WorkbenchDecoration(size: size)
         default:
             Image(systemName: "cloud.fill")
                 .font(.system(size: max(min(size.width * 0.42, 190), 1)))

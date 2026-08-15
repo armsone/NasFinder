@@ -151,7 +151,7 @@ struct AppSettingsView: View {
 
     private func themePreviewForeground(_ theme: AppThemePreference) -> Color {
         switch theme {
-        case .night, .digitalRain: .white
+        case .night, .digitalRain, .workbench: .white
         default: Color(red: 0.10, green: 0.15, blue: 0.16)
         }
     }
@@ -229,6 +229,8 @@ private struct ThemePreviewBackground: View {
                 if theme == .digitalRain {
                     CodeRainDecoration(size: geometry.size)
                         .opacity(0.92)
+                } else if theme == .workbench {
+                    WorkbenchDecoration(size: geometry.size)
                 }
             }
         }
@@ -268,6 +270,15 @@ private struct ThemePreviewBackground: View {
                 ],
                 startPoint: .top,
                 endPoint: .bottom
+            )
+        case .workbench:
+            LinearGradient(
+                colors: [
+                    Color(red: 0.08, green: 0.12, blue: 0.18),
+                    Color(red: 0.025, green: 0.04, blue: 0.065),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
             )
         }
     }
