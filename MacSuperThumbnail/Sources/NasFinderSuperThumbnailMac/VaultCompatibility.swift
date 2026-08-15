@@ -1,0 +1,283 @@
+import AVFoundation
+import CryptoKit
+import Foundation
+import ImageIO
+import UniformTypeIdentifiers
+
+enum NasFinderVaultCompatibility {
+    static let directoryName = ".NasFinder-Vault"
+    static let engineVersion = 1
+    static let workersDirectoryName = ".workers-v1"
+
+    static func thumbnailFilename(for url: URL) throws -> String {
+        let values = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+        return thumbnailFilename(
+            name: url.lastPathComponent,
+            size: values.fileSize.map(Int64.init),
+            modifiedAt: values.contentModificationDate
+        )
+    }
+
+    static func thumbnailFilename(
+        name: String,
+        size: Int64?,
+        modifiedAt: Date?
+    ) -> String {
+        let identity = [
+            "engine=\(engineVersion)",
+            "name=\(name.precomposedStringWithCanonicalMapping)",
+            "size=\(size ?? -1)",
+            "modified=\(Int64((modifiedAt?.timeIntervalSince1970 ?? 0) * 1_000))",
+        ].joined(separator: "|")
+        let digest = SHA256.hash(data: Data(identity.utf8))
+        return "v\(engineVersion)-"
+            + digest.map { String(format: "%02x", $0) }.joined()
+            + ".jpg"
+    }
+}
+
+enum SupportedMedia {
+    private static let imageExtensions: Set<String> = [
+        "avif", "bmp", "gif", "heic", "heif", "jpeg", "jpg", "png", "tif", "tiff", "webp",
+    ]
+    private static let videoExtensions: Set<String> = [
+        "3gp", "avi", "m2ts", "m4v", "mkv", "mov", "mp4", "mpeg", "mpg", "mts", "ts", "webm",
+    ]
+
+    static func kind(for url: URL) -> MediaKind? {
+        let ext = url.pathExtension.lowercased()
+        if imageExtensions.contains(ext) { return .image }
+        if videoExtensions.contains(ext) { return .video }
+        return nil
+    }
+}
+
+enum MediaKind: Hashable {
+    case image
+    case video
+}
+
+struct MediaFile {
+    let url: URL
+    let kind: MediaKind
+    let size: Int64
+}
+
+struct ProcessingResult {
+    let generated: Bool
+    let alreadyCached: Bool
+    let thumbnailBytes: Int64
+}
+
+private struct VaultWorkerRecord: Codable {
+    let workerID: String
+    let expiresAt: Date
+}
+
+private struct VaultLeaseRecord: Codable {
+    let workerID: String
+    let token: String
+    let expiresAt: Date
+}
+
+enum VaultProcessorError: LocalizedError {
+    case cannotDecode
+    case cannotEncode
+    case claimUnavailable
+
+    var errorDescription: String? {
+        switch self {
+        case .cannotDecode:
+            return "지원되지 않거나 손상된 미디어입니다."
+        case .cannotEncode:
+            return "썸네일 JPEG를 만들지 못했습니다."
+        case .claimUnavailable:
+            return "다른 기기가 처리 중입니다."
+        }
+    }
+}
+
+enum VaultProcessor {
+    private static let fileManager = FileManager.default
+    private static let workerLifetime: TimeInterval = 90
+    private static let leaseLifetime: TimeInterval = 180
+    private static let leaseRecordName = ".owner.json"
+    private static let maxPixelSize = 384
+
+    static func discoverMedia(in root: URL) throws -> [MediaFile] {
+        let keys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .isDirectoryKey,
+            .isHiddenKey,
+            .fileSizeKey,
+            .nameKey,
+        ]
+        guard let enumerator = fileManager.enumerator(
+            at: root,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            errorHandler: { _, _ in true }
+        ) else { return [] }
+
+        var files: [MediaFile] = []
+        for case let url as URL in enumerator {
+            try Task.checkCancellation()
+            let values = try? url.resourceValues(forKeys: keys)
+            if values?.isDirectory == true,
+               url.lastPathComponent == NasFinderVaultCompatibility.directoryName {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard values?.isRegularFile == true,
+                  values?.isHidden != true,
+                  let kind = SupportedMedia.kind(for: url) else { continue }
+            files.append(
+                MediaFile(
+                    url: url,
+                    kind: kind,
+                    size: Int64(values?.fileSize ?? 0)
+                )
+            )
+        }
+        return files.sorted {
+            $0.url.path.localizedStandardCompare($1.url.path) == .orderedAscending
+        }
+    }
+
+    @discardableResult
+    static func registerWorker(_ workerID: String, root: URL) throws -> URL {
+        let workers = root
+            .appendingPathComponent(NasFinderVaultCompatibility.directoryName, isDirectory: true)
+            .appendingPathComponent(NasFinderVaultCompatibility.workersDirectoryName, isDirectory: true)
+        try fileManager.createDirectory(at: workers, withIntermediateDirectories: true)
+        let record = VaultWorkerRecord(
+            workerID: workerID,
+            expiresAt: Date().addingTimeInterval(workerLifetime)
+        )
+        let destination = workers.appendingPathComponent("worker-\(workerID).json")
+        try JSONEncoder().encode(record).write(to: destination, options: .atomic)
+        return destination
+    }
+
+    static func process(_ file: MediaFile, workerID: String) async throws -> ProcessingResult {
+        try Task.checkCancellation()
+        let vault = file.url.deletingLastPathComponent()
+            .appendingPathComponent(NasFinderVaultCompatibility.directoryName, isDirectory: true)
+        try fileManager.createDirectory(at: vault, withIntermediateDirectories: true)
+
+        let filename = try NasFinderVaultCompatibility.thumbnailFilename(for: file.url)
+        let destination = vault.appendingPathComponent(filename)
+        if fileManager.fileExists(atPath: destination.path) {
+            let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+            return ProcessingResult(generated: false, alreadyCached: true, thumbnailBytes: size)
+        }
+
+        let claimName = ".claim-" + String(filename.dropLast(".jpg".count))
+        let claim = vault.appendingPathComponent(claimName, isDirectory: true)
+        try acquireClaim(at: claim, workerID: workerID)
+        defer { try? fileManager.removeItem(at: claim) }
+
+        if fileManager.fileExists(atPath: destination.path) {
+            let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+            return ProcessingResult(generated: false, alreadyCached: true, thumbnailBytes: size)
+        }
+
+        let data: Data
+        switch file.kind {
+        case .image:
+            data = try imageThumbnailData(for: file.url)
+        case .video:
+            data = try await videoThumbnailData(for: file.url)
+        }
+        try Task.checkCancellation()
+
+        let temporary = vault.appendingPathComponent(".upload-\(UUID().uuidString).tmp")
+        try data.write(to: temporary, options: .atomic)
+        do {
+            try fileManager.moveItem(at: temporary, to: destination)
+        } catch {
+            try? fileManager.removeItem(at: temporary)
+            if !fileManager.fileExists(atPath: destination.path) { throw error }
+            let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? 0
+            return ProcessingResult(generated: false, alreadyCached: true, thumbnailBytes: size)
+        }
+        return ProcessingResult(
+            generated: true,
+            alreadyCached: false,
+            thumbnailBytes: Int64(data.count)
+        )
+    }
+
+    private static func acquireClaim(at claim: URL, workerID: String) throws {
+        if fileManager.fileExists(atPath: claim.path) {
+            let owner = claim.appendingPathComponent(leaseRecordName)
+            if let data = try? Data(contentsOf: owner),
+               let record = try? JSONDecoder().decode(VaultLeaseRecord.self, from: data),
+               record.expiresAt > Date(),
+               record.workerID != workerID {
+                throw VaultProcessorError.claimUnavailable
+            }
+            try? fileManager.removeItem(at: claim)
+        }
+        do {
+            try fileManager.createDirectory(at: claim, withIntermediateDirectories: false)
+        } catch {
+            throw VaultProcessorError.claimUnavailable
+        }
+        let record = VaultLeaseRecord(
+            workerID: workerID,
+            token: UUID().uuidString,
+            expiresAt: Date().addingTimeInterval(leaseLifetime)
+        )
+        try JSONEncoder().encode(record)
+            .write(to: claim.appendingPathComponent(leaseRecordName), options: .atomic)
+    }
+
+    private static func imageThumbnailData(for url: URL) throws -> Data {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else {
+            throw VaultProcessorError.cannotDecode
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            throw VaultProcessorError.cannotDecode
+        }
+        return try jpegData(from: image, quality: 0.82)
+    }
+
+    private static func videoThumbnailData(for url: URL) async throws -> Data {
+        let asset = AVURLAsset(url: url)
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.5, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
+        let duration = try await asset.load(.duration)
+        let seconds = duration.seconds.isFinite ? duration.seconds : 0
+        let captureTime = CMTime(seconds: min(max(seconds * 0.1, 0), 3), preferredTimescale: 600)
+        let image = try await generator.image(at: captureTime).image
+        return try jpegData(from: image, quality: 0.82)
+    }
+
+    private static func jpegData(from image: CGImage, quality: Double) throws -> Data {
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output,
+            UTType.jpeg.identifier as CFString,
+            1,
+            nil
+        ) else { throw VaultProcessorError.cannotEncode }
+        CGImageDestinationAddImage(
+            destination,
+            image,
+            [kCGImageDestinationLossyCompressionQuality: quality] as CFDictionary
+        )
+        guard CGImageDestinationFinalize(destination) else {
+            throw VaultProcessorError.cannotEncode
+        }
+        return output as Data
+    }
+}
