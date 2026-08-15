@@ -10,6 +10,20 @@ private struct BrowserDestination: Identifiable, Hashable {
     var id: String { "\(connection.id.uuidString):\(path)" }
 }
 
+private struct IOSAppOnMacShortcutModifier: ViewModifier {
+    let key: KeyEquivalent
+    let modifiers: EventModifiers
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if ProcessInfo.processInfo.isiOSAppOnMac {
+            content.keyboardShortcut(key, modifiers: modifiers)
+        } else {
+            content
+        }
+    }
+}
+
 struct ConnectionListView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -30,6 +44,14 @@ struct ConnectionListView: View {
     @State private var deviceStorage = DeviceStorageSnapshot.current()
     @State private var navigationIdentity = UUID()
 
+    private var isRunningOnMac: Bool {
+        ProcessInfo.processInfo.isiOSAppOnMac
+    }
+
+    private var dashboardContentMaxWidth: CGFloat? {
+        isRunningOnMac ? 760 : nil
+    }
+
     init() {
         #if DEBUG
         _isAddingConnection = State(
@@ -45,6 +67,8 @@ struct ConnectionListView: View {
             List {
                 dashboardSections
             }
+            .frame(maxWidth: dashboardContentMaxWidth)
+            .environment(\.defaultMinListRowHeight, isRunningOnMac ? 36 : 44)
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(SkyBreezeBackground())
@@ -118,6 +142,7 @@ struct ConnectionListView: View {
                 returnToDashboard()
             }
         }
+        .background(SkyBreezeBackground())
         .id(navigationIdentity)
     }
 
@@ -176,6 +201,9 @@ struct ConnectionListView: View {
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
+            .modifier(
+                IOSAppOnMacShortcutModifier(key: "n", modifiers: .command)
+            )
         } header: {
             sectionHeader("네트워크", systemImage: "network")
         } footer: {

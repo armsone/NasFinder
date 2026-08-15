@@ -11,6 +11,10 @@ struct AppSettingsView: View {
         .resolved(selectedThemeRawValue)
     }
 
+    private var isRunningOnMac: Bool {
+        ProcessInfo.processInfo.isiOSAppOnMac
+    }
+
     var body: some View {
         List {
             themePaletteSection
@@ -20,6 +24,8 @@ struct AppSettingsView: View {
             openSourceSection
             creatorSection
         }
+        .frame(maxWidth: isRunningOnMac ? 680 : nil)
+        .environment(\.defaultMinListRowHeight, isRunningOnMac ? 36 : 44)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(SkyBreezeBackground())
