@@ -280,6 +280,18 @@ final class BrowserFeaturePolicyTests: XCTestCase {
                 isIOSAppOnMac: false
             )
         )
+        XCTAssertFalse(
+            ThumbnailRuntimePolicy.hasLowBattery(
+                batteryLevel: 0,
+                isIOSAppOnMac: true
+            )
+        )
+        XCTAssertTrue(
+            ThumbnailRuntimePolicy.hasLowBattery(
+                batteryLevel: 0.2,
+                isIOSAppOnMac: false
+            )
+        )
     }
 
     func testFavoriteImportSkipsCanonicalDuplicatesAndAppendsNewAddresses() throws {

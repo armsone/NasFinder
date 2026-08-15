@@ -61,6 +61,13 @@ enum ThumbnailRuntimePolicy {
             return false
         }
     }
+
+    static func hasLowBattery(
+        batteryLevel: Float,
+        isIOSAppOnMac: Bool = ProcessInfo.processInfo.isiOSAppOnMac
+    ) -> Bool {
+        !isIOSAppOnMac && batteryLevel >= 0 && batteryLevel <= 0.2
+    }
 }
 
 enum ThumbnailThermalPolicy {
@@ -1379,8 +1386,9 @@ final class ThumbnailPreheater: ObservableObject {
         ) {
             throw ThumbnailPreheatError.deviceTooHot
         }
-        let batteryLevel = UIDevice.current.batteryLevel
-        if batteryLevel >= 0, batteryLevel <= 0.2 {
+        if ThumbnailRuntimePolicy.hasLowBattery(
+            batteryLevel: UIDevice.current.batteryLevel
+        ) {
             throw ThumbnailPreheatError.lowBattery
         }
         if allowsConstrainedRun { return }
@@ -1421,8 +1429,9 @@ final class ThumbnailPreheater: ObservableObject {
                 pauseReason = "발열을 낮추며 천천히 계속하는 중"
                 try await Task.sleep(for: .milliseconds(delay))
             }
-            let batteryLevel = UIDevice.current.batteryLevel
-            if batteryLevel >= 0, batteryLevel <= 0.2 {
+            if ThumbnailRuntimePolicy.hasLowBattery(
+                batteryLevel: UIDevice.current.batteryLevel
+            ) {
                 throw ThumbnailPreheatError.lowBattery
             }
             if allowsConstrainedRun {
