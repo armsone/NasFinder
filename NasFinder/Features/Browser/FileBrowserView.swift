@@ -264,7 +264,6 @@ struct FileBrowserView: View {
             )
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarBackButtonHidden(true)
             .modifier(
                 FileBrowserCoverFlowChromeModifier(
                     isActive: layoutStyle == .coverFlow
@@ -279,6 +278,7 @@ struct FileBrowserView: View {
             .toolbar { browserToolbar }
             .overlay { coverFlowNavigationOverlay }
         )
+        .navigationBarBackButtonHidden(true)
         .navigationDestination(item: $navigatedFolder) { item in
             FileBrowserView(
                 connection: viewModel.connection,

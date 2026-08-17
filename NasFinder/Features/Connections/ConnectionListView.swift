@@ -668,35 +668,15 @@ private struct WebNetworkLocationRow: View {
 }
 
 private struct WebHardNetworkLocationRow: View {
-    private var serviceColor: Color {
-        ThemeServicePalette.color(
-            forServiceIdentifier: "webHard",
-            theme: .current
-        )
-    }
-
     var body: some View {
         HStack(spacing: 4) {
             HStack(spacing: 13) {
-                ZStack(alignment: .bottomTrailing) {
-                    Image(systemName: "externaldrive.fill.badge.wifi")
-                        .font(.title3)
-                        .foregroundStyle(serviceColor)
-                        .frame(width: 32, height: 32)
-
-                    Text(ThemeServicePalette.badgeLetter(forServiceIdentifier: "webHard"))
-                        .font(.system(size: 7, weight: .bold, design: .rounded))
-                        .foregroundStyle(
-                            ThemeServicePalette.foregroundColor(
-                                forServiceIdentifier: "webHard",
-                                theme: .current
-                            )
-                        )
-                        .frame(width: 13, height: 13)
-                        .background(serviceColor, in: Circle())
-                        .overlay { Circle().stroke(.background, lineWidth: 1) }
-                }
-                .accessibilityHidden(true)
+                Image("PhoneHardLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 32, height: 32)
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .accessibilityHidden(true)
 
                 Text("폰하드")
                     .font(.subheadline.weight(.medium))

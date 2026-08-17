@@ -445,14 +445,26 @@ struct SuperThumbnailView: View {
             Text("최근 작업")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-            ScrollView(.vertical, showsIndicators: historySelections.count > 3) {
-                LazyVStack(spacing: 7) {
-                    ForEach(Array(historySelections.enumerated()), id: \.element.id) {
-                        index, previous in
-                        historyRow(previous, index: index)
-                    }
+            List {
+                ForEach(Array(historySelections.enumerated()), id: \.element.id) {
+                    index, previous in
+                    historyRow(previous, index: index)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            Button("삭제", systemImage: "trash", role: .destructive) {
+                                removeHistorySelection(previous)
+                            }
+                        }
+                        .listRowInsets(
+                            EdgeInsets(top: 0, leading: 0, bottom: 7, trailing: 0)
+                        )
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
                 }
             }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .contentMargins(.vertical, 0, for: .scrollContent)
+            .environment(\.defaultMinListRowHeight, 0)
             .scrollBounceBehavior(.basedOnSize)
             .frame(height: min(CGFloat(historySelections.count) * 64, 206))
             .clipShape(RoundedRectangle(cornerRadius: 15, style: .continuous))
@@ -472,59 +484,46 @@ struct SuperThumbnailView: View {
         _ previous: SuperThumbnailSelection,
         index: Int
     ) -> some View {
-        HStack(spacing: 4) {
-            Button {
-                reportSelection = previous
-                isShowingReport = true
-            } label: {
-                HStack(spacing: 11) {
-                    Image(systemName: index == 0 ? "clock.fill" : "clock")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
-                        .background(
-                            Color.secondary.opacity(0.08),
-                            in: Circle()
-                        )
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(previous.title)
-                            .font(.subheadline)
-                            .foregroundStyle(primaryInk)
-                            .lineLimit(1)
-                        Text(previous.path)
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 8)
-                    Image(systemName: "chevron.right")
-                        .font(.caption.bold())
-                        .foregroundStyle(.tertiary)
-                }
-                .frame(minHeight: 40)
-            }
-            .buttonStyle(.plain)
-
-            Menu {
-                Button("최근 작업에서 삭제", role: .destructive) {
-                    removeHistorySelection(previous)
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.caption.bold())
+        Button {
+            reportSelection = previous
+            isShowingReport = true
+        } label: {
+            HStack(spacing: 11) {
+                Image(systemName: index == 0 ? "clock.fill" : "clock")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .frame(width: 28, height: 40)
-                    .contentShape(Rectangle())
+                    .frame(width: 24, height: 24)
+                    .background(
+                        Color.secondary.opacity(0.08),
+                        in: Circle()
+                    )
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(previous.title)
+                        .font(.subheadline)
+                        .foregroundStyle(primaryInk)
+                        .lineLimit(1)
+                    Text(previous.path)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.caption.bold())
+                    .foregroundStyle(.tertiary)
             }
-            .accessibilityLabel("\(previous.title) 최근 작업 메뉴")
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
+            .overlay {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(SkyBreezeTheme.thumbnailBorder.opacity(0.7), lineWidth: 1)
+            }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: 14))
-        .overlay {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(SkyBreezeTheme.thumbnailBorder.opacity(0.7), lineWidth: 1)
-        }
+        .buttonStyle(.plain)
+        .accessibilityHint("작업 보고서를 열고 이어서 할 수 있습니다. 왼쪽으로 쓸어 삭제합니다.")
     }
 
     private var requirements: some View {
