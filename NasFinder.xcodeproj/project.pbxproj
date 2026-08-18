@@ -736,6 +736,7 @@
 					AppIconAlternate,
 					AppIconVibeCoder,
 					AppIconCyberVault,
+					AppIconNetworkNAS,
 				);
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = NasFinder/NasFinder.entitlements;
@@ -780,6 +781,7 @@
 					AppIconAlternate,
 					AppIconVibeCoder,
 					AppIconCyberVault,
+					AppIconNetworkNAS,
 				);
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = NasFinder/NasFinder.entitlements;

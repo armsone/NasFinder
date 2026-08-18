@@ -16,6 +16,7 @@ struct ReceivedFilesView: View {
     @State private var uploadabilityRefreshGeneration = 0
     @State private var pendingUploadSources: [LocalUploadSource] = []
     @State private var isChoosingUploadDestination = false
+    @State private var isImportingFromFiles = false
 
     var body: some View {
         Group {
@@ -69,6 +70,12 @@ struct ReceivedFilesView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
+                if !isSelecting {
+                    Button("파일에서 가져오기", systemImage: "doc.badge.plus") {
+                        isImportingFromFiles = true
+                    }
+                }
+
                 if !inboxStore.records.isEmpty {
                     Button(isSelecting ? "완료" : "선택") {
                         if isSelecting {
@@ -80,6 +87,25 @@ struct ReceivedFilesView: View {
                 }
             }
         }
+        .modifier(
+            ReceivedFilesImporterModifier(
+                isPresented: $isImportingFromFiles,
+                importFiles: { urls in
+                    Task {
+                        await inboxStore.importFromFiles(urls)
+                    }
+                },
+                importFailed: { error in
+                    let cocoaError = error as NSError
+                    guard !(cocoaError.domain == NSCocoaErrorDomain
+                            && cocoaError.code == CocoaError.Code.userCancelled.rawValue) else {
+                        return
+                    }
+                    inboxStore.errorMessage =
+                        "파일을 선택하지 못했습니다: \(error.localizedDescription)"
+                }
+            )
+        )
         .safeAreaInset(edge: .bottom) {
             if isSelecting {
                 uploadSelectionBar
@@ -372,6 +398,31 @@ struct ReceivedFilesView: View {
             get: { inboxStore.errorMessage != nil },
             set: { if !$0 { inboxStore.errorMessage = nil } }
         )
+    }
+}
+
+private struct ReceivedFilesImporterModifier: ViewModifier {
+    @Binding var isPresented: Bool
+    let importFiles: ([URL]) -> Void
+    let importFailed: (Error) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .fileImporter(
+                isPresented: $isPresented,
+                allowedContentTypes: [.data, .content],
+                allowsMultipleSelection: true
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard !urls.isEmpty else { return }
+                    importFiles(urls)
+                case .failure(let error):
+                    importFailed(error)
+                }
+            }
+            .fileDialogConfirmationLabel("가져오기")
+            .fileDialogMessage("나의 iPhone 또는 iCloud Drive에서 파일을 선택하세요.")
     }
 }
 

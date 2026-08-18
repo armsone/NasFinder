@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 private struct BrowserDestination: Identifiable, Hashable {
     let connection: RemoteConnection
@@ -40,6 +41,7 @@ struct ConnectionListView: View {
     @State private var editingConnection: RemoteConnection?
     @State private var browserDestination: BrowserDestination?
     @State private var selectedFavorite: FavoriteItem?
+    @State private var isImportingFromFiles = false
     @State private var didAttemptAutomaticOpen = false
     @State private var deviceStorage = DeviceStorageSnapshot.current()
     @State private var navigationIdentity = UUID()
@@ -100,6 +102,38 @@ struct ConnectionListView: View {
             }
             .navigationDestination(item: $selectedFavorite) { favorite in
                 FavoriteDestinationView(favorite: favorite)
+            }
+            .fileImporter(
+                isPresented: $isImportingFromFiles,
+                allowedContentTypes: [.data, .content],
+                allowsMultipleSelection: true
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard !urls.isEmpty else { return }
+                    Task {
+                        if await inboxStore.importFromFiles(urls) > 0 {
+                            inboxStore.shouldPresentInbox = true
+                        }
+                    }
+                case .failure(let error):
+                    let cocoaError = error as NSError
+                    guard !(cocoaError.domain == NSCocoaErrorDomain
+                            && cocoaError.code == CocoaError.Code.userCancelled.rawValue) else {
+                        return
+                    }
+                    inboxStore.errorMessage =
+                        "파일을 선택하지 못했습니다: \(error.localizedDescription)"
+                }
+            }
+            .fileDialogConfirmationLabel("가져오기")
+            .fileDialogMessage("나의 iPhone 또는 iCloud Drive에서 파일을 선택하세요.")
+            .alert("파일 가져오기 오류", isPresented: inboxErrorBinding) {
+                Button("확인", role: .cancel) {
+                    inboxStore.errorMessage = nil
+                }
+            } message: {
+                Text(inboxStore.errorMessage ?? "")
             }
             .alert("알림", isPresented: errorBinding) {
                 Button("확인", role: .cancel) {
@@ -245,9 +279,39 @@ struct ConnectionListView: View {
 
     private var storageSection: some View {
         Section {
-            LabeledContent("iPhone 저장공간") {
-                Text(deviceStorageSummary)
+            Button {
+                isImportingFromFiles = true
+            } label: {
+                HStack(spacing: 12) {
+                    Image(systemName: "folder")
+                        .font(.body.weight(.medium))
+                        .foregroundStyle(.blue)
+                        .frame(width: 28)
+                        .accessibilityHidden(true)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("iPhone 저장공간")
+                            .foregroundStyle(.primary)
+                        Text(deviceStorageSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("파일 앱 열기 · iCloud Drive 지원")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityHint("파일 앱에서 나의 iPhone 또는 iCloud Drive의 파일을 선택합니다.")
+
             if deviceStorage.hasCapacity {
                 ProgressView(value: deviceStorage.usedFraction) {
                     Text("저장공간")
@@ -289,6 +353,13 @@ struct ConnectionListView: View {
                     browserFavoritesStore.errorMessage = nil
                 }
             }
+        )
+    }
+
+    private var inboxErrorBinding: Binding<Bool> {
+        Binding(
+            get: { inboxStore.errorMessage != nil },
+            set: { if !$0 { inboxStore.errorMessage = nil } }
         )
     }
 

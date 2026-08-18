@@ -17,10 +17,12 @@ struct AppIconChoiceTests {
     }
 
     @Test func cyberIconsUseRegisteredAssetNames() {
-        #expect(AppIconChoice.allCases.count == 4)
+        #expect(AppIconChoice.allCases.count == 5)
         #expect(AppIconChoice.vibeCoder.alternateIconName == "AppIconVibeCoder")
         #expect(AppIconChoice.cyberVault.alternateIconName == "AppIconCyberVault")
+        #expect(AppIconChoice.networkNAS.alternateIconName == "AppIconNetworkNAS")
         #expect(AppIconChoice.current(alternateIconName: "AppIconVibeCoder") == .vibeCoder)
         #expect(AppIconChoice.current(alternateIconName: "AppIconCyberVault") == .cyberVault)
+        #expect(AppIconChoice.current(alternateIconName: "AppIconNetworkNAS") == .networkNAS)
     }
 }

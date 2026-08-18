@@ -6,6 +6,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
     case purpleNAS
     case vibeCoder
     case cyberVault
+    case networkNAS
 
     var id: String { rawValue }
 
@@ -15,6 +16,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         case .purpleNAS: "퍼플 NAS"
         case .vibeCoder: "바이브 코더"
         case .cyberVault: "사이버 볼트"
+        case .networkNAS: "네트워크 NAS"
         }
     }
 
@@ -24,6 +26,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         case .purpleNAS: "AppIconAlternatePreview"
         case .vibeCoder: "AppIconVibeCoderPreview"
         case .cyberVault: "AppIconCyberVaultPreview"
+        case .networkNAS: "AppIconNetworkNASPreview"
         }
     }
 
@@ -33,6 +36,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         case .purpleNAS: "AppIconAlternate"
         case .vibeCoder: "AppIconVibeCoder"
         case .cyberVault: "AppIconCyberVault"
+        case .networkNAS: "AppIconNetworkNAS"
         }
     }
 

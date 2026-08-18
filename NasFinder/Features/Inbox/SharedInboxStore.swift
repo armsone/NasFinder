@@ -2,6 +2,12 @@ import Combine
 import Foundation
 import UniformTypeIdentifiers
 
+private struct FilesImportResult: Sendable {
+    let records: [SharedInboxRecord]
+    let failedFilenames: [String]
+    let saveError: String?
+}
+
 @MainActor
 final class SharedInboxStore: ObservableObject {
     @Published private(set) var records: [SharedInboxRecord] = []
@@ -74,6 +80,74 @@ final class SharedInboxStore: ObservableObject {
         } catch {
             errorMessage = "파일을 NasFinder로 열지 못했습니다: \(error.localizedDescription)"
         }
+    }
+
+    @discardableResult
+    func importFromFiles(_ urls: [URL]) async -> Int {
+        guard !urls.isEmpty else { return 0 }
+
+        let result = await Task.detached(priority: .userInitiated) {
+            var importedRecords: [SharedInboxRecord] = []
+            var failedFilenames: [String] = []
+
+            for url in urls {
+                let accessed = url.startAccessingSecurityScopedResource()
+                defer {
+                    if accessed { url.stopAccessingSecurityScopedResource() }
+                }
+
+                do {
+                    let values = try url.resourceValues(forKeys: [.contentTypeKey])
+                    let record = try SharedInbox.importTemporaryFile(
+                        at: url,
+                        originalFilename: url.lastPathComponent,
+                        contentTypeIdentifier: values.contentType?.identifier
+                    )
+                    importedRecords.append(record)
+                } catch {
+                    failedFilenames.append(url.lastPathComponent)
+                }
+            }
+
+            guard !importedRecords.isEmpty else {
+                return FilesImportResult(
+                    records: importedRecords,
+                    failedFilenames: failedFilenames,
+                    saveError: nil
+                )
+            }
+
+            do {
+                try SharedInbox.append(records: importedRecords)
+                return FilesImportResult(
+                    records: importedRecords,
+                    failedFilenames: failedFilenames,
+                    saveError: nil
+                )
+            } catch {
+                for record in importedRecords {
+                    try? SharedInbox.delete(record)
+                }
+                return FilesImportResult(
+                    records: [],
+                    failedFilenames: failedFilenames,
+                    saveError: error.localizedDescription
+                )
+            }
+        }.value
+
+        reload()
+
+        if let saveError = result.saveError {
+            errorMessage = "선택한 파일을 보관하지 못했습니다: \(saveError)"
+        } else if !result.failedFilenames.isEmpty {
+            let failedCount = result.failedFilenames.count
+            errorMessage = "\(failedCount)개 파일을 가져오지 못했습니다."
+        } else {
+            errorMessage = nil
+        }
+
+        return result.records.count
     }
 
     @discardableResult

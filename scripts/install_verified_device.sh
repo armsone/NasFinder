@@ -113,6 +113,11 @@ cyber_vault_icon="$(
         'Print :CFBundleIcons:CFBundleAlternateIcons:AppIconCyberVault:CFBundleIconName' \
         "$info_plist"
 )"
+network_nas_icon="$(
+    /usr/libexec/PlistBuddy -c \
+        'Print :CFBundleIcons:CFBundleAlternateIcons:AppIconNetworkNAS:CFBundleIconName' \
+        "$info_plist"
+)"
 
 [[ "$actual_bundle_identifier" == "$bundle_identifier" ]] || {
     echo "error: 잘못된 bundle identifier: $actual_bundle_identifier" >&2
@@ -121,7 +126,8 @@ cyber_vault_icon="$(
 [[ "$primary_icon" == "AppIcon" \
     && "$alternate_icon" == "AppIconAlternate" \
     && "$vibe_coder_icon" == "AppIconVibeCoder" \
-    && "$cyber_vault_icon" == "AppIconCyberVault" ]] || {
+    && "$cyber_vault_icon" == "AppIconCyberVault" \
+    && "$network_nas_icon" == "AppIconNetworkNAS" ]] || {
     echo "error: 기본 또는 보조 앱 아이콘 등록이 빠졌습니다." >&2
     exit 1
 }
@@ -130,6 +136,7 @@ grep -q '"Name" : "AppIcon"' <<< "$asset_info"
 grep -q '"Name" : "AppIconAlternate"' <<< "$asset_info"
 grep -q '"Name" : "AppIconVibeCoder"' <<< "$asset_info"
 grep -q '"Name" : "AppIconCyberVault"' <<< "$asset_info"
+grep -q '"Name" : "AppIconNetworkNAS"' <<< "$asset_info"
 
 [[ "$(git rev-parse HEAD)" == "$verified_sha" ]] || {
     echo "error: 빌드 중 HEAD가 변경됐습니다." >&2
