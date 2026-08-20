@@ -1,3 +1,4 @@
+import QuickLookThumbnailing
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -360,9 +361,9 @@ struct ReceivedFilesView: View {
 
         Group {
             if item.isImage || item.isVideo || item.contentType.conforms(to: .pdf) {
-                RemoteThumbnailView(
+                LocalInboxThumbnailView(
+                    record: record,
                     item: item,
-                    service: LocalInboxFileService(records: [record]),
                     size: size
                 )
             } else {
@@ -398,6 +399,67 @@ struct ReceivedFilesView: View {
             get: { inboxStore.errorMessage != nil },
             set: { if !$0 { inboxStore.errorMessage = nil } }
         )
+    }
+}
+
+private struct LocalInboxThumbnailView: View {
+    let record: SharedInboxRecord
+    let item: RemoteFileItem
+    let size: CGSize
+
+    @State private var image: UIImage?
+    @State private var isLoading = false
+
+    var body: some View {
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
+            } else {
+                Image(systemName: item.systemImage)
+                    .font(.title2)
+                    .foregroundStyle(.secondary)
+            }
+
+            if item.isVideo {
+                Image(systemName: "play.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.white)
+                    .shadow(radius: 2)
+            }
+
+            if isLoading {
+                ProgressView()
+                    .controlSize(.small)
+                    .padding(5)
+                    .background(.ultraThinMaterial, in: Circle())
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipped()
+        .task(id: record.id) {
+            await loadThumbnail()
+        }
+    }
+
+    @MainActor
+    private func loadThumbnail() async {
+        image = nil
+        isLoading = true
+        defer { isLoading = false }
+
+        guard let fileURL = try? SharedInbox.fileURL(for: record) else { return }
+        let request = QLThumbnailGenerator.Request(
+            fileAt: fileURL,
+            size: size,
+            scale: UIScreen.main.scale,
+            representationTypes: .thumbnail
+        )
+        guard let representation = try? await QLThumbnailGenerator.shared
+            .generateBestRepresentation(for: request) else { return }
+        guard !Task.isCancelled else { return }
+        image = representation.uiImage
     }
 }
 

@@ -184,6 +184,7 @@ struct ConnectionListView: View {
     private var dashboardSections: some View {
         myFilesSection
         networkSection
+        photoTransferSection
         storageSection
         settingsSection
     }
@@ -327,6 +328,19 @@ struct ConnectionListView: View {
         }
         .font(.subheadline)
         .foregroundStyle(.secondary)
+    }
+
+    private var photoTransferSection: some View {
+        Section {
+            NavigationLink {
+                PhotoTransferView()
+            } label: {
+                Label("Live Photos & Motion Photos", systemImage: "photo.on.rectangle.angled")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityHint("사진과 영상을 함께 보내는 화면을 엽니다.")
+        }
     }
 
     private var settingsSection: some View {
