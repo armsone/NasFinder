@@ -21,6 +21,7 @@ struct AppSettingsView: View {
             AppIconPickerSection(compact: true)
             screenAwakeSection
             filesAppIntegrationSection
+            GooglePhotosSettingsSection()
             openSourceSection
             creatorSection
         }

@@ -81,6 +81,16 @@
 				<string>com.googleusercontent.apps.747776487519-62dfscj170itd8b6qt3slfk9r7f68moc</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>Google Photos OAuth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.54458207874-u67ssi4fl73tkakqlmh61tt94hhm6esh</string>
+			</array>
+		</dict>
 	</array>
 	<key>LSApplicationCategoryType</key>
 	<string>public.app-category.productivity</string>
@@ -128,6 +138,8 @@
 	<string>$(AppIdentifierPrefix)com.armsone.nasfinder.shared</string>
 	<key>NasFinderGoogleClientID</key>
 	<string>747776487519-62dfscj170itd8b6qt3slfk9r7f68moc.apps.googleusercontent.com</string>
+	<key>NasFinderGooglePhotosClientID</key>
+	<string>54458207874-u67ssi4fl73tkakqlmh61tt94hhm6esh.apps.googleusercontent.com</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

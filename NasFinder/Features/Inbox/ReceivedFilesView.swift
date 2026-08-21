@@ -18,6 +18,7 @@ struct ReceivedFilesView: View {
     @State private var pendingUploadSources: [LocalUploadSource] = []
     @State private var isChoosingUploadDestination = false
     @State private var isImportingFromFiles = false
+    @State private var isImportingFromGooglePhotos = false
 
     var body: some View {
         Group {
@@ -26,6 +27,11 @@ struct ReceivedFilesView: View {
                     Label("받은 파일이 없습니다", systemImage: "tray")
                 } description: {
                     Text("다른 앱의 공유 메뉴에서 NasFinder를 선택하면 이곳에 파일이 보관됩니다.")
+                } actions: {
+                    Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
+                        isImportingFromGooglePhotos = true
+                    }
+                    .buttonStyle(.bordered)
                 }
             } else {
                 List {
@@ -72,6 +78,10 @@ struct ReceivedFilesView: View {
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if !isSelecting {
+                    Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
+                        isImportingFromGooglePhotos = true
+                    }
+
                     Button("파일에서 가져오기", systemImage: "doc.badge.plus") {
                         isImportingFromFiles = true
                     }
@@ -169,6 +179,14 @@ struct ReceivedFilesView: View {
             }
         ) {
             InboxUploadDestinationView(sources: pendingUploadSources)
+        }
+        .sheet(
+            isPresented: $isImportingFromGooglePhotos,
+            onDismiss: {
+                reloadInbox()
+            }
+        ) {
+            GooglePhotosImportFlowView(inboxStore: inboxStore)
         }
     }
 
