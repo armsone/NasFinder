@@ -220,14 +220,6 @@ struct ConnectionListView: View {
             .buttonStyle(.plain)
             .navigationLinkIndicatorVisibility(.hidden)
 
-            NavigationLink {
-                WebHardServerView()
-            } label: {
-                WebHardNetworkLocationRow()
-            }
-            .buttonStyle(.plain)
-            .navigationLinkIndicatorVisibility(.hidden)
-
             Button {
                 isAddingConnection = true
             } label: {
@@ -276,6 +268,12 @@ struct ConnectionListView: View {
                         Text("받은 파일")
                     }
                 }
+            }
+
+            NavigationLink {
+                WebHardServerView()
+            } label: {
+                WebHardNetworkLocationRow()
             }
 
             ThumbnailCacheSettingsLink()
@@ -781,36 +779,22 @@ private struct WebHardNetworkLocationRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 4) {
-            HStack(spacing: 13) {
-                if isEnamel {
-                    PhoneHardMark(size: 32)
-                        .accessibilityHidden(true)
-                } else {
-                    Image("PhoneHardLogo")
-                        .resizable()
-                        .scaledToFit()
-                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                        .frame(width: 32, height: 32)
-                        .accessibilityHidden(true)
-                }
-
-                Text("폰하드")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.primary)
-
-                Spacer(minLength: 0)
+        HStack(spacing: 7) {
+            if isEnamel {
+                PhoneHardMark(size: 32)
+                    .accessibilityHidden(true)
+            } else {
+                Image("PhoneHardLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .frame(width: 32, height: 32)
+                    .accessibilityHidden(true)
             }
-            .padding(.vertical, 2)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
 
-            Image(systemName: "arrow.right")
-                .font(.body.weight(.medium))
-                .foregroundStyle(SkyBreezeTheme.accent)
-                .frame(width: 44, height: 48)
-                .contentShape(Rectangle())
-                .accessibilityHidden(true)
+            Text("폰하드")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.primary)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("폰하드")
