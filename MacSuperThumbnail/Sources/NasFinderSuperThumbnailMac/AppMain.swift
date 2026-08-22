@@ -4,6 +4,7 @@ import SwiftUI
 @main
 struct NasFinderSuperThumbnailMacApp: App {
     @StateObject private var model = SuperThumbnailMacModel()
+    @StateObject private var updateController = UpdateController()
 
     var body: some Scene {
         WindowGroup {
@@ -12,6 +13,14 @@ struct NasFinderSuperThumbnailMacApp: App {
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 900, height: 680)
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("업데이트 확인…") {
+                    updateController.checkForUpdates()
+                }
+                .disabled(!updateController.canCheckForUpdates)
+            }
+        }
     }
 }
 
