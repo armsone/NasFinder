@@ -6,11 +6,67 @@ import UniformTypeIdentifiers
 struct RemoteVideoThumbnailGenerationResult: Sendable {
     let data: Data
     let transferredBytes: Int
+    let mediaDurationSeconds: TimeInterval?
+    let processingPath: RemoteVideoThumbnailProcessingPath
+
+    init(
+        data: Data,
+        transferredBytes: Int,
+        mediaDurationSeconds: TimeInterval? = nil,
+        processingPath: RemoteVideoThumbnailProcessingPath = .avFoundationRange
+    ) {
+        self.data = data
+        self.transferredBytes = transferredBytes
+        self.mediaDurationSeconds = mediaDurationSeconds
+        self.processingPath = processingPath
+    }
+}
+
+enum RemoteVideoThumbnailProcessingPath: String, Codable, Sendable {
+    case backend
+    case avFoundationRange
+    case compatibilityRange
+    case compatibilityLocalFile
+}
+
+enum RemoteVideoThumbnailGenerationMode: Sendable {
+    case bounded
+    case completeFile
+}
+
+enum RemoteVideoThumbnailRoutingPolicy {
+    static func bypassesBackendThumbnail(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) -> Bool {
+        service.connection.kind == .sftp
+            && service.supportsRangeStreaming
+            && CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item)
+    }
+
+    static func canGenerateBoundedThumbnail(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) -> Bool {
+        item.isVideo
+            && service.supportsRangeStreaming
+            && (
+                service.connection.kind == .synology
+                    || CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item)
+            )
+    }
+
+    static func trafficBudget(
+        for service: any RemoteFileService
+    ) -> RemoteVideoThumbnailTrafficBudget {
+        service.connection.kind == .sftp ? .sftpShared : .shared
+    }
 }
 
 enum RemoteVideoThumbnailGenerationError: LocalizedError, Sendable {
     case unsupportedSource
     case trafficBudgetExhausted
+    case itemTrafficLimitReached
     case invalidDuration
     case imageGenerationFailed
     case imageEncodingFailed
@@ -22,6 +78,8 @@ enum RemoteVideoThumbnailGenerationError: LocalizedError, Sendable {
             "이 연결에서는 영상 일부를 읽어 썸네일을 만들 수 없습니다."
         case .trafficBudgetExhausted:
             "이 폴더의 썸네일 데이터 사용 한도에 도달했습니다."
+        case .itemTrafficLimitReached:
+            "파일당 128MB 범위 한도에서 썸네일을 만들지 못했습니다."
         case .invalidDuration:
             "영상 재생 시간을 확인할 수 없습니다."
         case .imageGenerationFailed:
@@ -35,7 +93,7 @@ enum RemoteVideoThumbnailGenerationError: LocalizedError, Sendable {
 }
 
 /// Creates a thumbnail from an AVFoundation asset backed by the service's
-/// byte-range API. The folder lease makes the 20 MiB ceiling shared by every
+/// byte-range API. The folder lease makes the folder ceiling shared by every
 /// visible cell and preheating request in the current app process.
 enum RemoteVideoThumbnailGenerator {
     private static let logger = Logger(
@@ -50,10 +108,29 @@ enum RemoteVideoThumbnailGenerator {
         service: any RemoteFileService,
         size: RemoteThumbnailSize,
         trafficBudget: RemoteVideoThumbnailTrafficBudget = .shared,
-        timeout: Duration = defaultGenerationTimeout
+        mode: RemoteVideoThumbnailGenerationMode = .bounded,
+        timeout: Duration = defaultGenerationTimeout,
+        progress: (@Sendable (Int64, Int64) -> Void)? = nil
     ) async throws -> RemoteVideoThumbnailGenerationResult {
+        if mode == .completeFile
+            || CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item) {
+            // Keep VLCKit work structured under the cell task. The shared
+            // coordinator intentionally outlives individual waiters, which is
+            // useful for AVFoundation but retained cancelled VLC players when
+            // pull-to-refresh replaced a grid generation.
+            return try await CompatibilityRemoteVideoThumbnailGenerator.generate(
+                for: item,
+                service: service,
+                size: size,
+                trafficBudget: trafficBudget,
+                mode: mode,
+                timeout: timeout,
+                progress: progress
+            )
+        }
         let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
-        let key = "\(item.id)|\(version)|\(item.size ?? -1)|\(size.rawValue)"
+        let budgetID = ObjectIdentifier(trafficBudget)
+        let key = "\(item.id)|\(version)|\(item.size ?? -1)|\(size.rawValue)|\(budgetID)"
         return try await coordinator.value(for: key) {
             try await generateUncoordinated(
                 for: item,
@@ -288,25 +365,20 @@ private final class RemoteVideoThumbnailDeadlineRace<Value: Sendable>: @unchecke
 }
 
 enum RemoteVideoThumbnailQuality {
+    static func isAtLeast50PercentBlack(_ image: CGImage) -> Bool {
+        let values = grayscaleSamples(from: image)
+        guard !values.isEmpty else { return false }
+        let blackPixels = values.lazy.filter { $0 <= 0.05 }.count
+        return Double(blackPixels) / Double(values.count) >= 0.5
+    }
+
     /// Rejects near-uniform black or white intro frames while retaining normal
     /// bright and dark scenes that still contain visible detail.
     static func isUsable(_ image: CGImage) -> Bool {
-        let width = 32
-        let height = 32
-        var pixels = [UInt8](repeating: 0, count: width * height)
-        guard let context = CGContext(
-            data: &pixels,
-            width: width,
-            height: height,
-            bitsPerComponent: 8,
-            bytesPerRow: width,
-            space: CGColorSpaceCreateDeviceGray(),
-            bitmapInfo: CGImageAlphaInfo.none.rawValue
-        ) else { return true }
-        context.interpolationQuality = .low
-        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        let values = grayscaleSamples(from: image)
+        guard !values.isEmpty else { return true }
+        if isAtLeast50PercentBlack(image) { return false }
 
-        let values = pixels.map { Double($0) / 255.0 }
         let mean = values.reduce(0, +) / Double(values.count)
         let variance = values.reduce(0) { partial, value in
             let difference = value - mean
@@ -320,10 +392,25 @@ enum RemoteVideoThumbnailQuality {
         if mean > 0.97,
            standardDeviation < 0.03,
            luminanceRange < 0.08 { return false }
-        if mean < 0.03,
-           standardDeviation < 0.03,
-           luminanceRange < 0.08 { return false }
         return true
+    }
+
+    private static func grayscaleSamples(from image: CGImage) -> [Double] {
+        let width = 32
+        let height = 32
+        var pixels = [UInt8](repeating: 0, count: width * height)
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else { return [] }
+        context.interpolationQuality = .low
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return pixels.map { Double($0) / 255.0 }
     }
 }
 
@@ -372,14 +459,41 @@ actor RemoteVideoThumbnailTrafficBudget {
     }
 
     static let shared = RemoteVideoThumbnailTrafficBudget()
+    static let cellularShared = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 24 * 1_024 * 1_024,
+        maximumItemBytes: 4 * 1_024 * 1_024,
+        minimumLeaseBytes: defaultMinimumLeaseBytes,
+        maximumTotalBytes: 24 * 1_024 * 1_024
+    )
+    static let completeFileMaximumItemBytes = 128 * 1_024 * 1_024
+    static let completeFileFastPass = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumItemBytes: 24 * 1_024 * 1_024,
+        minimumLeaseBytes: defaultMinimumLeaseBytes
+    )
+    static let completeFileRetryPass = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumItemBytes: 40 * 1_024 * 1_024,
+        minimumLeaseBytes: defaultMinimumLeaseBytes
+    )
+    static let completeFileRecoveryPass = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumItemBytes: 64 * 1_024 * 1_024,
+        minimumLeaseBytes: defaultMinimumLeaseBytes
+    )
+    static let completeFileShared = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumItemBytes: completeFileMaximumItemBytes,
+        minimumLeaseBytes: defaultMinimumLeaseBytes
+    )
     static let sftpShared = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: 18_000_000,
         maximumItemBytes: defaultMaximumItemBytes,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
 
-    static let defaultMaximumFolderBytes = 20 * 1_024 * 1_024
-    static let defaultMaximumItemBytes = 4 * 1_024 * 1_024
+    static let defaultMaximumFolderBytes = 256 * 1_024 * 1_024
+    static let defaultMaximumItemBytes = 16 * 1_024 * 1_024
     static let defaultMinimumLeaseBytes = 128 * 1_024
 
     private struct FolderState {
@@ -390,27 +504,41 @@ actor RemoteVideoThumbnailTrafficBudget {
     private let maximumFolderBytes: Int
     private let maximumItemBytes: Int
     private let minimumLeaseBytes: Int
+    private let maximumTotalBytes: Int?
     private var folders: [String: FolderState] = [:]
+    private var totalTransferredBytes = 0
 
     init(
         maximumFolderBytes: Int = defaultMaximumFolderBytes,
         maximumItemBytes: Int = defaultMaximumItemBytes,
-        minimumLeaseBytes: Int = defaultMinimumLeaseBytes
+        minimumLeaseBytes: Int = defaultMinimumLeaseBytes,
+        maximumTotalBytes: Int? = nil
     ) {
         self.maximumFolderBytes = max(maximumFolderBytes, 0)
         self.maximumItemBytes = max(maximumItemBytes, 0)
         self.minimumLeaseBytes = max(minimumLeaseBytes, 1)
+        self.maximumTotalBytes = maximumTotalBytes.map { max($0, 0) }
     }
 
     func lease(for item: RemoteFileItem) -> Lease? {
         let folderKey = Self.folderKey(for: item)
         var state = folders[folderKey] ?? FolderState()
         let reservedBytes = state.reservations.values.reduce(0, +)
-        let availableBytes = max(
+        let folderAvailableBytes = max(
             maximumFolderBytes - state.transferredBytes - reservedBytes,
             0
         )
-        let grantedBytes = min(maximumItemBytes, availableBytes)
+        let allReservedBytes = folders.values.reduce(0) {
+            $0 + $1.reservations.values.reduce(0, +)
+        }
+        let totalAvailableBytes = maximumTotalBytes.map {
+            max($0 - totalTransferredBytes - allReservedBytes, 0)
+        } ?? Int.max
+        let grantedBytes = min(
+            maximumItemBytes,
+            folderAvailableBytes,
+            totalAvailableBytes
+        )
         guard grantedBytes >= minimumLeaseBytes else { return nil }
 
         let identifier = UUID()
@@ -428,8 +556,19 @@ actor RemoteVideoThumbnailTrafficBudget {
               let reservedBytes = state.reservations.removeValue(
                   forKey: lease.identifier
               ) else { return }
-        state.transferredBytes += min(max(transferredBytes, 0), reservedBytes)
+        let chargedBytes = min(max(transferredBytes, 0), reservedBytes)
+        state.transferredBytes += chargedBytes
+        totalTransferredBytes += chargedBytes
         folders[lease.folderKey] = state
+    }
+
+    func hasCapacity() -> Bool {
+        guard let maximumTotalBytes else { return true }
+        let reservedBytes = folders.values.reduce(0) {
+            $0 + $1.reservations.values.reduce(0, +)
+        }
+        return maximumTotalBytes - totalTransferredBytes - reservedBytes
+            >= minimumLeaseBytes
     }
 
     func transferredBytes(for item: RemoteFileItem) -> Int {
@@ -447,6 +586,7 @@ actor RemoteVideoThumbnailTrafficBudget {
                 reservations: state.reservations
             )
         }
+        totalTransferredBytes = 0
     }
 
     private static func folderKey(for item: RemoteFileItem) -> String {

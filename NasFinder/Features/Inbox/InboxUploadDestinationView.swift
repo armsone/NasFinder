@@ -43,8 +43,10 @@ struct InboxUploadDestinationView: View {
                         .disabled(operationCoordinator.isWorking)
                     }
                     .listStyle(.insetGrouped)
+                    .scrollContentBackground(.hidden)
                 }
             }
+            .background(SkyBreezeBackground())
             .navigationTitle("NAS로 보내기")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -236,6 +238,8 @@ private struct InboxUploadFolderView: View {
                     guard !operationCoordinator.isBusy else { return }
                     await viewModel.load()
                 }
+                .scrollContentBackground(.hidden)
+                .background(SkyBreezeBackground())
             }
         }
         .navigationTitle(currentFolderName)

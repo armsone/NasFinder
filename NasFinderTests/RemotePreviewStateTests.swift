@@ -1,10 +1,828 @@
 @preconcurrency import AVFoundation
 import CoreVideo
+import UIKit
 import XCTest
 @testable import NasFinder
 
 @MainActor
 final class RemotePreviewStateTests: XCTestCase {
+    func testPlaybackSourceLabelsAndControlsAutoHideDelay() {
+        XCTAssertEqual(RemoteVideoPlaybackSource.partial.title, "부분 재생")
+        XCTAssertEqual(RemoteVideoPlaybackSource.completeFile.title, "전체 파일")
+        XCTAssertEqual(
+            RemotePreviewInteractionPolicy.controlsAutoHideDelay,
+            .milliseconds(2_500)
+        )
+    }
+
+    func testVerticalVolumeDragStaysVolumeUntilFingerIsReleased() {
+        let started = RemotePreviewVerticalDragMode.resolve(
+            existing: nil,
+            verticalTranslation: -80
+        )
+        XCTAssertEqual(started, .volume)
+        XCTAssertEqual(
+            RemotePreviewVerticalDragMode.resolve(
+                existing: started,
+                verticalTranslation: 140
+            ),
+            .volume
+        )
+    }
+
+    func testVerticalDismissDragDoesNotBecomeVolumeMidGesture() {
+        let started = RemotePreviewVerticalDragMode.resolve(
+            existing: nil,
+            verticalTranslation: 40
+        )
+        XCTAssertEqual(started, .dismiss)
+        XCTAssertEqual(
+            RemotePreviewVerticalDragMode.resolve(
+                existing: started,
+                verticalTranslation: -140
+            ),
+            .dismiss
+        )
+    }
+
+    func testCompatibilityFormatPolicyKeepsMP4AndMOVOnAVPlayer() {
+        let connectionID = UUID()
+        for filename in ["movie.mp4", "clip.mov", "recording.m4v"] {
+            let item = RemoteFileItem(
+                connectionID: connectionID,
+                path: "/share/\(filename)",
+                name: filename,
+                kind: .file,
+                size: 1_024,
+                modifiedAt: nil,
+                contentTypeIdentifier: nil
+            )
+            XCTAssertFalse(
+                CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item)
+            )
+        }
+    }
+
+    func testCompatibilityFormatPolicyRoutesLegacyContainersToVLCKit() {
+        let connectionID = UUID()
+        for filename in ["movie.AVI", "clip.asf", "archive.wmv", "video.mkv"] {
+            let item = RemoteFileItem(
+                connectionID: connectionID,
+                path: "/share/\(filename)",
+                name: filename,
+                kind: .file,
+                size: 1_024,
+                modifiedAt: nil,
+                contentTypeIdentifier: nil
+            )
+            XCTAssertTrue(
+                CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(for: item)
+            )
+        }
+    }
+
+    func testCompatibilitySubtitleMatchesExactBaseNameAndPrefersSRT() throws {
+        let connectionID = UUID()
+        let video = remoteItem(
+            connectionID: connectionID,
+            path: "/share/Movie.MKV"
+        )
+        let items = [
+            remoteItem(connectionID: connectionID, path: "/share/Movie.en.srt"),
+            remoteItem(connectionID: connectionID, path: "/share/movie.ass"),
+            remoteItem(connectionID: connectionID, path: "/share/MOVIE.SRT"),
+            remoteItem(connectionID: connectionID, path: "/other/Movie.srt"),
+        ]
+
+        let match = try XCTUnwrap(
+            CompatibilityExternalSubtitlePolicy.matchingSubtitle(
+                for: video,
+                in: items
+            )
+        )
+        XCTAssertEqual(match.path, "/share/MOVIE.SRT")
+    }
+
+    func testCompatibilitySubtitleDoesNotMatchLanguageSuffix() {
+        let connectionID = UUID()
+        let video = remoteItem(connectionID: connectionID, path: "/share/Movie.mkv")
+        let subtitle = remoteItem(
+            connectionID: connectionID,
+            path: "/share/Movie.ko.srt"
+        )
+
+        XCTAssertNil(
+            CompatibilityExternalSubtitlePolicy.matchingSubtitle(
+                for: video,
+                in: [subtitle]
+            )
+        )
+    }
+
+    func testSFTPMKVCircumventsAVFoundationBackendThumbnail() {
+        let service = ThumbnailRoutingTestService(kind: .sftp)
+        let mkv = remoteItem(
+            connectionID: service.connection.id,
+            path: "/share/video.mkv"
+        )
+        let mp4 = remoteItem(
+            connectionID: service.connection.id,
+            path: "/share/video.mp4"
+        )
+
+        XCTAssertTrue(
+            RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
+                for: mkv,
+                service: service
+            )
+        )
+        XCTAssertTrue(
+            RemoteVideoThumbnailRoutingPolicy.canGenerateBoundedThumbnail(
+                for: mkv,
+                service: service
+            )
+        )
+        XCTAssertFalse(
+            RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
+                for: mp4,
+                service: service
+            )
+        )
+    }
+
+    func testSynologyMKVTriesServerThumbnailBeforeVLCKitFallback() {
+        let service = ThumbnailRoutingTestService(kind: .synology)
+        let mkv = remoteItem(
+            connectionID: service.connection.id,
+            path: "/share/video.mkv"
+        )
+
+        XCTAssertFalse(
+            RemoteVideoThumbnailRoutingPolicy.bypassesBackendThumbnail(
+                for: mkv,
+                service: service
+            )
+        )
+        XCTAssertTrue(
+            RemoteVideoThumbnailRoutingPolicy.canGenerateBoundedThumbnail(
+                for: mkv,
+                service: service
+            )
+        )
+    }
+
+    func testCompatibilityThumbnailPlaybackIsSilentAndSerialized() {
+        XCTAssertTrue(
+            CompatibilityVideoThumbnailPlaybackPolicy.usesDedicatedThumbnailer
+        )
+        XCTAssertEqual(
+            CompatibilityVideoThumbnailPlaybackPolicy.maximumConcurrentOperations,
+            1
+        )
+        XCTAssertEqual(
+            CompatibilityVideoThumbnailPlaybackPolicy.cleanupQueueLabel,
+            "com.armsone.nasfinder.vlc-thumbnail-cleanup"
+        )
+        XCTAssertEqual(
+            RemoteVideoThumbnailTrafficBudget.defaultMaximumFolderBytes,
+            256 * 1_024 * 1_024
+        )
+        XCTAssertEqual(
+            RemoteVideoThumbnailTrafficBudget.defaultMaximumItemBytes,
+            16 * 1_024 * 1_024
+        )
+        XCTAssertEqual(
+            ThumbnailPreheater.maximumSynologyDataBytes,
+            256 * 1_024 * 1_024
+        )
+        XCTAssertEqual(
+            ThumbnailPreheater.maximumCellularDataBytes,
+            24 * 1_024 * 1_024
+        )
+        XCTAssertTrue(
+            ThumbnailPreheatPolicy.allowsConstrainedNetwork(for: .bounded)
+        )
+        XCTAssertFalse(
+            ThumbnailPreheatPolicy.allowsConstrainedNetwork(for: .completeFile)
+        )
+        XCTAssertFalse(
+            CompatibilityVideoThumbnailAttemptPolicy.usesPlayerSnapshotFirst(
+                for: .synology
+            )
+        )
+        XCTAssertFalse(
+            CompatibilityVideoThumbnailAttemptPolicy.usesPlayerSnapshotFirst(
+                for: .sftp
+            )
+        )
+        XCTAssertEqual(
+            CompatibilityVideoThumbnailAttemptPolicy.seekFallbackDelay,
+            .seconds(2)
+        )
+    }
+
+    func testSuperThumbnailReportShowsSuccessAndRemainingByStage() {
+        let report = SuperThumbnailSessionReport(
+            successCounts: [10, 30, 2],
+            failures: [
+                SuperThumbnailFailureRecord(
+                    itemID: "failed",
+                    name: "failed.mkv",
+                    fileExtension: "MKV",
+                    fileSize: 1_024,
+                    durationSeconds: 60,
+                    reason: "timeout"
+                ),
+            ],
+            pendingCount: 1,
+            cachedCount: 50
+        )
+
+        XCTAssertEqual(report.totalCount, 93)
+        XCTAssertEqual(report.remainingCounts, [33, 3, 1])
+        XCTAssertTrue(report.hasWorkToResume)
+    }
+
+    func testSuperThumbnailCachedItemDoesNotDuplicateSuccessfulResult() async {
+        let suiteName = "SuperThumbnailQueueStoreTests.\(UUID().uuidString)"
+        defer {
+            UserDefaults(suiteName: suiteName)?
+                .removePersistentDomain(forName: suiteName)
+        }
+        let store = SuperThumbnailQueueStore(
+            userDefaults: UserDefaults(suiteName: suiteName)!
+        )
+        let item = remoteItem(
+            connectionID: UUID(),
+            path: "/share/movie.mkv"
+        )
+        _ = await store.attempts(for: [item], sessionKey: "session")
+        await store.recordSuccess(item, sessionKey: "session", attempt: 0)
+        let transition = await store.markCached(
+            item,
+            sessionKey: "session"
+        )
+
+        let report = await store.report(sessionKey: "session")
+        XCTAssertEqual(transition.previousSuccessAttempt, 0)
+        XCTAssertFalse(transition.removedPhotoSuccess)
+        XCTAssertFalse(transition.removedFailure)
+        XCTAssertEqual(report?.successCounts, [0, 0, 0])
+        XCTAssertEqual(report?.cachedCount, 1)
+        XCTAssertEqual(report?.totalCount, 1)
+    }
+
+    func testSuperThumbnailPhotoScopeAndResultSurviveVideoOnlyObservation() async {
+        let suiteName = "SuperThumbnailPhotoScopeTests.\(UUID().uuidString)"
+        defer {
+            UserDefaults(suiteName: suiteName)?
+                .removePersistentDomain(forName: suiteName)
+        }
+        let store = SuperThumbnailQueueStore(
+            userDefaults: UserDefaults(suiteName: suiteName)!
+        )
+        let connectionID = UUID()
+        let video = remoteItem(connectionID: connectionID, path: "/share/movie.mkv")
+        let photo = remoteItem(connectionID: connectionID, path: "/share/photo.heic")
+
+        _ = await store.attempts(
+            for: [video, photo],
+            sessionKey: "session",
+            allObservedItems: [video, photo],
+            mediaScope: .videosAndPhotos
+        )
+        await store.recordPhotoSuccess(photo, sessionKey: "session")
+
+        _ = await store.attempts(
+            for: [video],
+            sessionKey: "session",
+            allObservedItems: [video, photo],
+            mediaScope: .videosOnly
+        )
+        let report = await store.report(sessionKey: "session")
+
+        XCTAssertEqual(report?.photoSuccessCount, 1)
+        XCTAssertEqual(report?.mediaScope, .videosOnly)
+        XCTAssertEqual(report?.pendingCount, 1)
+        XCTAssertEqual(report?.totalCount, 2)
+    }
+
+    func testSuperThumbnailVaultResumeReportPersistsFolderUploadProgress() async {
+        let suiteName = "SuperThumbnailVaultResumeTests.\(UUID().uuidString)"
+        defer {
+            UserDefaults(suiteName: suiteName)?
+                .removePersistentDomain(forName: suiteName)
+        }
+        let store = SuperThumbnailQueueStore(
+            userDefaults: UserDefaults(suiteName: suiteName)!
+        )
+        let connectionID = UUID()
+        let first = remoteItem(
+            connectionID: connectionID,
+            path: "/share/movies/first.mkv"
+        )
+        let second = remoteItem(
+            connectionID: connectionID,
+            path: "/share/movies/second.mkv"
+        )
+        let third = remoteItem(
+            connectionID: connectionID,
+            path: "/share/photos/third.mov"
+        )
+        let items = [first, second, third]
+
+        _ = await store.attempts(for: items, sessionKey: "session")
+        for item in items {
+            _ = await store.markCached(item, sessionKey: "session")
+        }
+        await store.prepareVault(for: items, sessionKey: "session")
+        await store.markVaultPending(first, sessionKey: "session")
+        await store.markVaultPending(second, sessionKey: "session")
+        await store.recordVaultResult(
+            storedItemIDs: [first.id],
+            attemptedItemIDs: [first.id, second.id],
+            errorDescription: "upload failed",
+            sessionKey: "session"
+        )
+
+        var report = await store.report(sessionKey: "session")
+        XCTAssertEqual(report?.vaultUploadedCount, 1)
+        XCTAssertEqual(report?.vaultFailedCount, 1)
+        XCTAssertEqual(report?.vaultWaitingThumbnailCount, 1)
+        XCTAssertTrue(report?.hasWorkToResume == true)
+        XCTAssertEqual(report?.vaultFolders.count, 2)
+
+        await store.markVaultPending(third, sessionKey: "session")
+        let verifiedAt = Date(timeIntervalSince1970: 1_234)
+        await store.recordVaultVerification(
+            storedItemIDs: Set(items.map(\.id)),
+            verifiedAt: verifiedAt,
+            sessionKey: "session"
+        )
+        report = await store.report(sessionKey: "session")
+        XCTAssertEqual(report?.vaultUploadedCount, 3)
+        XCTAssertEqual(report?.vaultPendingCount, 0)
+        XCTAssertEqual(report?.vaultFailedCount, 0)
+        XCTAssertEqual(report?.vaultLastVerifiedAt, verifiedAt)
+        XCTAssertFalse(report?.hasWorkToResume == true)
+    }
+
+    func testSuperThumbnailResumeUsesOnlyUnfinishedStoredItems() async {
+        let suiteName = "SuperThumbnailResumeItemsTests.\(UUID().uuidString)"
+        defer {
+            UserDefaults(suiteName: suiteName)?
+                .removePersistentDomain(forName: suiteName)
+        }
+        let store = SuperThumbnailQueueStore(
+            userDefaults: UserDefaults(suiteName: suiteName)!
+        )
+        let connectionID = UUID()
+        let uploaded = remoteItem(connectionID: connectionID, path: "/share/uploaded.mkv")
+        let pendingUpload = remoteItem(connectionID: connectionID, path: "/share/pending.mkv")
+        let failedThumbnail = remoteItem(connectionID: connectionID, path: "/share/failed.mkv")
+        let items = [uploaded, pendingUpload, failedThumbnail]
+
+        _ = await store.attempts(for: items, sessionKey: "session")
+        for item in [uploaded, pendingUpload] {
+            _ = await store.markCached(item, sessionKey: "session")
+        }
+        await store.recordFailure(
+            failedThumbnail,
+            sessionKey: "session",
+            durationSeconds: nil,
+            reason: "timeout"
+        )
+        await store.prepareVault(for: items, sessionKey: "session")
+        await store.markVaultPending(uploaded, sessionKey: "session")
+        await store.markVaultPending(pendingUpload, sessionKey: "session")
+        await store.recordVaultResult(
+            storedItemIDs: [uploaded.id],
+            attemptedItemIDs: [uploaded.id, pendingUpload.id],
+            errorDescription: "upload failed",
+            sessionKey: "session"
+        )
+
+        let resumed = await store.resumeItems(
+            sessionKey: "session",
+            connectionID: connectionID
+        )
+
+        XCTAssertEqual(
+            Set(resumed.map(\.id)),
+            Set([pendingUpload.id, failedThumbnail.id])
+        )
+
+        let failureOnlySuiteName = "SuperThumbnailResumeFailureOnlyTests.\(UUID().uuidString)"
+        defer {
+            UserDefaults(suiteName: failureOnlySuiteName)?
+                .removePersistentDomain(forName: failureOnlySuiteName)
+        }
+        let failureOnlyStore = SuperThumbnailQueueStore(
+            userDefaults: UserDefaults(suiteName: failureOnlySuiteName)!
+        )
+        _ = await failureOnlyStore.attempts(
+            for: [failedThumbnail],
+            sessionKey: "failure-only"
+        )
+        await failureOnlyStore.recordFailure(
+            failedThumbnail,
+            sessionKey: "failure-only",
+            durationSeconds: nil,
+            reason: "timeout"
+        )
+        let failureOnlyResume = await failureOnlyStore.resumeItems(
+            sessionKey: "failure-only",
+            connectionID: connectionID
+        )
+        XCTAssertEqual(failureOnlyResume.map(\.id), [failedThumbnail.id])
+    }
+
+    func testVaultUploadCanReuseAutomaticThumbnailCache() async throws {
+        let testRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: testRoot) }
+        let superCache = SuperThumbnailCache(
+            directoryURL: testRoot.appendingPathComponent("super", isDirectory: true),
+            userDefaults: UserDefaults(suiteName: UUID().uuidString)!
+        )
+        let automaticCache = RemoteThumbnailDiskCache(
+            directoryURL: testRoot.appendingPathComponent("automatic", isDirectory: true),
+            userDefaultsSuiteName: UUID().uuidString
+        )
+        let item = remoteItem(connectionID: UUID(), path: "/share/cached.mkv")
+        let imageData = try XCTUnwrap(
+            UIImage(systemName: "photo")?.pngData()
+        )
+        let key = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
+        await automaticCache.store(imageData, forKey: key)
+
+        let restored = await ThumbnailPreheater.localThumbnailDataForVault(
+            for: item,
+            superCache: superCache,
+            automaticCache: automaticCache
+        )
+
+        XCTAssertEqual(restored, imageData)
+    }
+
+    func testSuperThumbnailResumePrioritizesPreviousFailuresThenEarlierStages() {
+        let connectionID = UUID()
+        let newItem = remoteItem(connectionID: connectionID, path: "/new.mkv")
+        let retryItem = remoteItem(connectionID: connectionID, path: "/retry.mkv")
+        let failedItem = remoteItem(connectionID: connectionID, path: "/failed.mkv")
+        let recoveryItem = remoteItem(connectionID: connectionID, path: "/recovery.mkv")
+
+        let ordered = SuperThumbnailResumePolicy.orderedCandidates(
+            [newItem, retryItem, failedItem, recoveryItem],
+            savedAttempts: [
+                retryItem.id: 1,
+                failedItem.id: 2,
+                recoveryItem.id: 2,
+            ],
+            previousFailureIDs: [failedItem.id]
+        )
+
+        XCTAssertEqual(
+            ordered.map(\.id),
+            [failedItem.id, newItem.id, retryItem.id, recoveryItem.id]
+        )
+    }
+
+    func testTrafficMeasuringServiceForwardsBoundedThumbnailLimit() async throws {
+        let probe = BoundedThumbnailProbe()
+        let base = BoundedThumbnailProbeService(probe: probe)
+        let tracker = PageNetworkTrafficTracker()
+        let service = TrafficMeasuringRemoteFileService(
+            base: base,
+            tracker: tracker
+        )
+        let item = remoteItem(
+            connectionID: base.connection.id,
+            path: "/share/movie.mkv"
+        )
+
+        _ = try await service.thumbnailData(
+            for: item,
+            size: .small,
+            maximumByteCount: 4_096
+        )
+
+        let forwardedLimit = await probe.maximumByteCount
+        XCTAssertEqual(forwardedLimit, 4_096)
+    }
+
+    func testCompatibilityRemoteStreamSupportsBoundedReadsAndSeeking() async throws {
+        let movieURL = try await makeTinyMOV()
+        defer { try? FileManager.default.removeItem(at: movieURL) }
+        let byteCount = Int64(
+            try movieURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        )
+        let service = RangeReadingTinyVideoService(movieURL: movieURL)
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/tiny.avi",
+            name: "tiny.avi",
+            kind: .file,
+            size: byteCount,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let stream = try CompatibilityRemoteInputStream(
+            item: item,
+            service: service,
+            maximumTransferredBytes: CompatibilityRemoteInputStream.maximumReadChunkBytes * 2
+        )
+        stream.open()
+        defer { stream.close() }
+
+        var firstBytes = [UInt8](repeating: 0, count: 32)
+        let firstCount = stream.read(&firstBytes, maxLength: firstBytes.count)
+        XCTAssertEqual(firstCount, firstBytes.count)
+        XCTAssertEqual(
+            stream.property(forKey: .fileCurrentOffsetKey) as? NSNumber,
+            NSNumber(value: firstBytes.count)
+        )
+
+        XCTAssertTrue(
+            stream.setProperty(4, forKey: .fileCurrentOffsetKey)
+        )
+        var soughtBytes = [UInt8](repeating: 0, count: 16)
+        let soughtCount = stream.read(&soughtBytes, maxLength: soughtBytes.count)
+        XCTAssertEqual(soughtCount, soughtBytes.count)
+        XCTAssertGreaterThan(stream.accountedByteCount, 0)
+        XCTAssertLessThanOrEqual(
+            stream.accountedByteCount,
+            CompatibilityRemoteInputStream.maximumReadChunkBytes * 2
+        )
+    }
+
+    func testCompatibilityRemoteStreamStopsAStalledRangeRead() {
+        let service = StallingRangeVideoService()
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/stalled.avi",
+            name: "stalled.avi",
+            kind: .file,
+            size: 1_024 * 1_024,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let stream = try! CompatibilityRemoteInputStream(
+            item: item,
+            service: service,
+            rangeReadTimeout: 0.05
+        )
+        stream.open()
+        defer { stream.close() }
+
+        var bytes = [UInt8](repeating: 0, count: 32)
+        XCTAssertEqual(stream.read(&bytes, maxLength: bytes.count), -1)
+        XCTAssertEqual(
+            stream.streamError as? CompatibilityVideoPlayerError,
+            .remoteReadTimedOut
+        )
+    }
+
+    func testClosingCompatibilityRemoteStreamUnblocksActiveRead() async throws {
+        let service = StallingRangeVideoService()
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/stalled.avi",
+            name: "stalled.avi",
+            kind: .file,
+            size: 1_024 * 1_024,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let stream = try CompatibilityRemoteInputStream(
+            item: item,
+            service: service,
+            rangeReadTimeout: 30
+        )
+        stream.open()
+        let readTask = Task.detached {
+            var bytes = [UInt8](repeating: 0, count: 32)
+            return stream.read(&bytes, maxLength: bytes.count)
+        }
+        try await Task.sleep(for: .milliseconds(50))
+
+        let clock = ContinuousClock()
+        let closingStartedAt = clock.now
+        stream.close()
+
+        let readResult = await readTask.value
+        XCTAssertEqual(readResult, -1)
+        XCTAssertLessThan(
+            closingStartedAt.duration(to: clock.now),
+            .seconds(1)
+        )
+    }
+
+    func testStoppingCompatibilityPlayerReturnsWhileRemoteReadIsStalled() async throws {
+        let service = StallingRangeVideoService()
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/stalled.avi",
+            name: "stalled.avi",
+            kind: .file,
+            size: 1_024 * 1_024,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let player = try CompatibilityVideoPlayer(item: item, service: service)
+        player.play()
+        try await Task.sleep(for: .milliseconds(50))
+
+        let clock = ContinuousClock()
+        let stopStartedAt = clock.now
+        player.stop()
+
+        XCTAssertLessThan(stopStartedAt.duration(to: clock.now), .milliseconds(250))
+    }
+
+    func testCompatibilityPlaybackWatchdogReportsNoProgress() async {
+        let expectation = expectation(description: "stalled playback detected")
+        let watchdog = CompatibilityPlaybackWatchdog()
+        watchdog.start(
+            stallTimeout: .milliseconds(40),
+            pollInterval: .milliseconds(5),
+            isPlaybackExpected: { true },
+            currentSeconds: { 0 },
+            onStall: { expectation.fulfill() }
+        )
+
+        await fulfillment(of: [expectation], timeout: 1)
+        watchdog.stop()
+    }
+
+    func testCompatibilityPlaybackWatchdogIgnoresPausedPlayback() async {
+        let expectation = expectation(description: "paused playback is not stalled")
+        expectation.isInverted = true
+        let watchdog = CompatibilityPlaybackWatchdog()
+        watchdog.start(
+            stallTimeout: .milliseconds(30),
+            pollInterval: .milliseconds(5),
+            isPlaybackExpected: { false },
+            currentSeconds: { 0 },
+            onStall: { expectation.fulfill() }
+        )
+
+        await fulfillment(of: [expectation], timeout: 0.1)
+        watchdog.stop()
+    }
+
+    func testCompatibilityPlaybackWatchdogAcceptsContinuedProgress() async {
+        let expectation = expectation(description: "progressing playback is not stalled")
+        expectation.isInverted = true
+        var currentSeconds = 0.0
+        let watchdog = CompatibilityPlaybackWatchdog()
+        watchdog.start(
+            stallTimeout: .milliseconds(35),
+            pollInterval: .milliseconds(5),
+            isPlaybackExpected: { true },
+            currentSeconds: { currentSeconds },
+            onStall: { expectation.fulfill() }
+        )
+        let progressTask = Task { @MainActor in
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .milliseconds(10))
+                currentSeconds += 0.1
+            }
+        }
+
+        await fulfillment(of: [expectation], timeout: 0.1)
+        await progressTask.value
+        watchdog.stop()
+    }
+
+    func testAAAHeavySynologyCompatibilityThumbnailUsesPlayerSnapshot() async throws {
+        let movieURL = try await makeTinyMOV()
+        defer { try? FileManager.default.removeItem(at: movieURL) }
+        let byteCount = Int64(
+            try movieURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        )
+        let service = RangeReadingTinyVideoService(movieURL: movieURL)
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/tiny.avi",
+            name: "tiny.avi",
+            kind: .file,
+            size: byteCount,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let maximumBytes = 1 * 1_024 * 1_024
+        let trafficBudget = RemoteVideoThumbnailTrafficBudget(
+            maximumFolderBytes: maximumBytes,
+            maximumItemBytes: maximumBytes,
+            minimumLeaseBytes: 1
+        )
+
+        let result = try await RemoteVideoThumbnailGenerator.generate(
+            for: item,
+            service: service,
+            size: .small,
+            trafficBudget: trafficBudget,
+            timeout: .seconds(10)
+        )
+
+        XCTAssertFalse(result.data.isEmpty)
+        XCTAssertGreaterThan(result.transferredBytes, 0)
+        XCTAssertLessThanOrEqual(result.transferredBytes, maximumBytes)
+    }
+
+    func testOfficialAVIAndASFSamplesPlaySeekRotateAndCreateThumbnails() async throws {
+        guard ProcessInfo.processInfo.environment["NASFINDER_VLC_INTEGRATION_TESTS"] == "1" else {
+            throw XCTSkip("실제 VideoLAN 미디어 검증은 명시적으로 활성화할 때만 실행합니다.")
+        }
+
+        let samples = [
+            (
+                filename: "2-audio-streams.avi",
+                url: URL(string: "https://streams.videolan.org/samples/avi/2-audio-streams.avi")!
+            ),
+            (
+                filename: "IMAG0002.ASF",
+                url: URL(string: "https://streams.videolan.org/samples/asf-wmv/IMAG0002.ASF")!
+            ),
+        ]
+
+        for sample in samples {
+            let (data, response) = try await URLSession.shared.data(from: sample.url)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200)
+            XCTAssertFalse(data.isEmpty)
+            let localURL = FileManager.default.temporaryDirectory
+                .appending(path: UUID().uuidString, directoryHint: .notDirectory)
+                .appendingPathExtension((sample.filename as NSString).pathExtension)
+            try data.write(to: localURL, options: .atomic)
+            defer { try? FileManager.default.removeItem(at: localURL) }
+
+            let service = RangeReadingTinyVideoService(movieURL: localURL)
+            let item = RemoteFileItem(
+                connectionID: service.connection.id,
+                path: "/integration/\(sample.filename)",
+                name: sample.filename,
+                kind: .file,
+                size: Int64(data.count),
+                modifiedAt: nil,
+                contentTypeIdentifier: nil
+            )
+            let viewModel = RemotePreviewViewModel(
+                items: [item],
+                initialItemID: item.id,
+                service: service
+            )
+            await viewModel.loadCurrentItem()
+            let player = try XCTUnwrap(viewModel.compatibilityPlayer)
+            let drawable = UIView(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+            player.attach(drawable: drawable)
+            player.play()
+
+            try await waitUntil(timeout: .seconds(20)) {
+                !viewModel.isPreparingVideo || viewModel.errorMessage != nil
+            }
+            XCTAssertNil(viewModel.errorMessage, sample.filename)
+            try await waitUntil(timeout: .seconds(10)) {
+                player.currentSeconds > 0.1
+            }
+            XCTAssertFalse(player.mediaPlayer.audioTracks.isEmpty, sample.filename)
+            XCTAssertFalse(player.mediaPlayer.videoTracks.isEmpty, sample.filename)
+            XCTAssertGreaterThan(player.mediaPlayer.videoSize.width, 0, sample.filename)
+            XCTAssertGreaterThan(player.mediaPlayer.videoSize.height, 0, sample.filename)
+
+            let seekTarget = min(max(player.durationSeconds * 0.5, 0.2), 2)
+            player.seek(to: seekTarget)
+            player.play()
+            try await waitUntil(timeout: .seconds(10)) {
+                player.currentSeconds >= seekTarget
+            }
+
+            drawable.frame = CGRect(x: 0, y: 0, width: 844, height: 390)
+            drawable.setNeedsLayout()
+            drawable.layoutIfNeeded()
+            XCTAssertTrue(player.mediaPlayer.drawable as? UIView === drawable)
+            viewModel.tearDown()
+
+            let maximumBytes = min(max(data.count, 1), 4 * 1_024 * 1_024)
+            for _ in 0..<3 {
+                let budget = RemoteVideoThumbnailTrafficBudget(
+                    maximumFolderBytes: maximumBytes,
+                    maximumItemBytes: maximumBytes,
+                    minimumLeaseBytes: 1
+                )
+                let thumbnail = try await RemoteVideoThumbnailGenerator.generate(
+                    for: item,
+                    service: service,
+                    size: .small,
+                    trafficBudget: budget,
+                    timeout: .seconds(20)
+                )
+                XCTAssertFalse(thumbnail.data.isEmpty, sample.filename)
+                XCTAssertLessThanOrEqual(thumbnail.transferredBytes, maximumBytes)
+            }
+        }
+    }
+
     func testSingleTapOnlyTogglesPlaybackWhenControlsAreVisible() {
         XCTAssertFalse(
             RemotePreviewInteractionPolicy.shouldTogglePlaybackOnSingleTap(
@@ -244,6 +1062,67 @@ final class RemotePreviewStateTests: XCTestCase {
         }
     }
 
+    func testCancelledCompatibilityThumbnailDoesNotBlockNextGeneration() async throws {
+        let service = StallingRangeVideoService()
+        let item = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/home/test/stalled.avi",
+            name: "stalled.avi",
+            kind: .file,
+            size: 8 * 1_024 * 1_024,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let trafficBudget = RemoteVideoThumbnailTrafficBudget(
+            maximumFolderBytes: 8 * 1_024 * 1_024,
+            maximumItemBytes: 4 * 1_024 * 1_024,
+            minimumLeaseBytes: 1
+        )
+        let first = Task {
+            try await RemoteVideoThumbnailGenerator.generate(
+                for: item,
+                service: service,
+                size: .small,
+                trafficBudget: trafficBudget,
+                timeout: .seconds(30)
+            )
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        let clock = ContinuousClock()
+        let cancellationStartedAt = clock.now
+        first.cancel()
+        await CompatibilityRemoteVideoThumbnailGenerator.cancelAll()
+        do {
+            _ = try await first.value
+            XCTFail("취소된 호환 썸네일이 성공하면 안 됩니다.")
+        } catch is CancellationError {
+            XCTAssertLessThan(
+                cancellationStartedAt.duration(to: clock.now),
+                .seconds(2)
+            )
+        } catch {
+            XCTFail("취소는 CancellationError여야 합니다: \(error)")
+        }
+
+        do {
+            _ = try await RemoteVideoThumbnailGenerator.generate(
+                for: item,
+                service: service,
+                size: .small,
+                trafficBudget: trafficBudget,
+                timeout: .milliseconds(100)
+            )
+            XCTFail("다음 멈춘 작업은 제한 시간 오류여야 합니다.")
+        } catch RemoteVideoThumbnailGenerationError.timedOut {
+            XCTAssertLessThan(
+                cancellationStartedAt.duration(to: clock.now),
+                .seconds(3)
+            )
+        } catch {
+            XCTFail("다음 작업이 이전 대기열에 막혔습니다: \(error)")
+        }
+    }
+
     func testRemoteThumbnailQualityRejectsFlatWhiteFrame() throws {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let context = try XCTUnwrap(
@@ -284,7 +1163,7 @@ final class RemotePreviewStateTests: XCTestCase {
         XCTAssertFalse(RemoteVideoThumbnailQuality.isUsable(image))
     }
 
-    func testRemoteThumbnailQualityAcceptsDarkFrameWithSmallBrightPoint() throws {
+    func testRemoteThumbnailQualityRetriesWhenAtLeast50PercentIsBlack() throws {
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         let context = try XCTUnwrap(
             CGContext(
@@ -300,9 +1179,33 @@ final class RemotePreviewStateTests: XCTestCase {
         context.setFillColor(CGColor(gray: 0.005, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
         context.setFillColor(CGColor(gray: 0.8, alpha: 1))
-        context.fill(CGRect(x: 15, y: 15, width: 1, height: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 16, height: 32))
         let image = try XCTUnwrap(context.makeImage())
 
+        XCTAssertTrue(RemoteVideoThumbnailQuality.isAtLeast50PercentBlack(image))
+        XCTAssertFalse(RemoteVideoThumbnailQuality.isUsable(image))
+    }
+
+    func testRemoteThumbnailQualityAcceptsFrameBelow50PercentBlack() throws {
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil,
+                width: 32,
+                height: 32,
+                bitsPerComponent: 8,
+                bytesPerRow: 32 * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+            )
+        )
+        context.setFillColor(CGColor(gray: 0, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 32, height: 32))
+        context.setFillColor(CGColor(gray: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: 17, height: 32))
+        let image = try XCTUnwrap(context.makeImage())
+
+        XCTAssertFalse(RemoteVideoThumbnailQuality.isAtLeast50PercentBlack(image))
         XCTAssertTrue(RemoteVideoThumbnailQuality.isUsable(image))
     }
 
@@ -493,6 +1396,51 @@ final class RemotePreviewStateTests: XCTestCase {
         XCTAssertEqual(viewModel.photoAdvanceInterval, .tenSeconds)
     }
 
+    func testPhotoSlideshowOffersOneSecondAndKeepsDimmedControlsInteractive() {
+        XCTAssertEqual(PhotoAdvanceInterval.allCases.first, .oneSecond)
+        XCTAssertEqual(PhotoAdvanceInterval.oneSecond.title, "1초")
+        XCTAssertEqual(
+            RemotePreviewInteractionPolicy.controlsOpacity(
+                controlsAreVisible: false,
+                isPhoto: true,
+                isPlaying: true
+            ),
+            0.10
+        )
+        XCTAssertTrue(
+            RemotePreviewInteractionPolicy.controlsAcceptInput(
+                controlsAreVisible: false,
+                isPhoto: true,
+                isPlaying: true
+            )
+        )
+        XCTAssertEqual(
+            RemotePreviewInteractionPolicy.controlsOpacity(
+                controlsAreVisible: false,
+                isPhoto: false,
+                isPlaying: true
+            ),
+            0
+        )
+        let startedAt = Date(timeIntervalSinceReferenceDate: 100)
+        XCTAssertEqual(
+            RemotePreviewInteractionPolicy.slideshowProgress(
+                startedAt: startedAt,
+                intervalSeconds: 4,
+                now: startedAt.addingTimeInterval(1)
+            ),
+            0.25
+        )
+        XCTAssertEqual(
+            RemotePreviewInteractionPolicy.slideshowProgress(
+                startedAt: startedAt,
+                intervalSeconds: 4,
+                now: startedAt.addingTimeInterval(10)
+            ),
+            1
+        )
+    }
+
     func testManualNavigationAutoplaysWhileAutomaticNavigationPreservesPause() {
         let recorder = StallingPreviewRecorder()
         let service = StallingPreviewService(recorder: recorder)
@@ -653,6 +1601,126 @@ final class RemotePreviewStateTests: XCTestCase {
             throw error
         }
     }
+
+    private func remoteItem(
+        connectionID: UUID,
+        path: String
+    ) -> RemoteFileItem {
+        RemoteFileItem(
+            connectionID: connectionID,
+            path: path,
+            name: (path as NSString).lastPathComponent,
+            kind: .file,
+            size: 1_024,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+    }
+
+    func testSuperThumbnailCancelImmediatelyAcknowledgesAndStopsWork() async throws {
+        let service = CancellationResistantThumbnailListService()
+        let folder = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/share/folder",
+            name: "folder",
+            kind: .folder,
+            size: nil,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let preheater = ThumbnailPreheater()
+
+        preheater.start(
+            rootItems: [folder],
+            rootPath: "/share",
+            recursively: true,
+            requiresExternalPower: false,
+            generationMode: .completeFile,
+            service: service
+        )
+        XCTAssertTrue(preheater.isRunning)
+        XCTAssertFalse(preheater.isCancellationRequested)
+
+        let listingDeadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while !(await service.hasStartedListing),
+              ContinuousClock.now < listingDeadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let didStartListing = await service.hasStartedListing
+        XCTAssertTrue(didStartListing)
+
+        preheater.cancel()
+        XCTAssertTrue(preheater.isCancellationRequested)
+        XCTAssertFalse(preheater.isRunning)
+        XCTAssertEqual(preheater.statusMessage, "썸네일 미리 생성을 중지했습니다.")
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(1))
+        while preheater.isCancellationRequested, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertFalse(preheater.isRunning)
+        XCTAssertFalse(preheater.isCancellationRequested)
+        XCTAssertEqual(preheater.statusMessage, "썸네일 미리 생성을 중지했습니다.")
+        let cancelRequestCount = await service.cancelRequestCount
+        XCTAssertEqual(cancelRequestCount, 1)
+    }
+}
+
+private actor CancellationResistantThumbnailListService: RemoteFileService {
+    let connection = RemoteConnection(
+        name: "Cancellation test",
+        kind: .synology,
+        host: "cancel.invalid",
+        username: "tester"
+    )
+    private var blockingTask: Task<Void, Error>?
+    private(set) var cancelRequestCount = 0
+    private(set) var hasStartedListing = false
+
+    func list(directory path: String?) async throws -> [RemoteFileItem] {
+        hasStartedListing = true
+        let blockingTask = Task<Void, Error> {
+            try await Task.sleep(for: .seconds(30))
+        }
+        self.blockingTask = blockingTask
+        try await blockingTask.value
+        return []
+    }
+
+    func cancelPendingThumbnailWork() {
+        cancelRequestCount += 1
+        blockingTask?.cancel()
+        blockingTask = nil
+    }
+
+    func download(_ item: RemoteFileItem) async throws -> URL {
+        throw RemoteFileOperationError.unsupported(operation: .copy)
+    }
+}
+
+private struct ThumbnailRoutingTestService: RemoteFileService {
+    let connection: RemoteConnection
+    let supportsRangeStreaming = true
+
+    init(kind: ConnectionKind) {
+        connection = RemoteConnection(
+            name: "Thumbnail routing test",
+            kind: kind,
+            host: "thumbnail.invalid",
+            username: "tester"
+        )
+    }
+
+    func list(directory path: String?) async throws -> [RemoteFileItem] { [] }
+    func download(_ item: RemoteFileItem) async throws -> URL {
+        throw RemoteThumbnailError.optimizedPreviewUnavailable
+    }
+    func readRange(
+        of item: RemoteFileItem,
+        offset: Int64,
+        length: Int
+    ) async throws -> Data { Data() }
+    func testConnection() async throws {}
 }
 
 private actor SuccessfulSmallVideoProgressGate {
@@ -942,4 +2010,43 @@ private enum StallingPreviewBehavior: Sendable {
 private enum StallingPreviewTestError: Error {
     case didNotStart
     case didNotProgress
+}
+
+private actor BoundedThumbnailProbe {
+    private(set) var maximumByteCount: Int?
+
+    func record(_ value: Int) {
+        maximumByteCount = value
+    }
+}
+
+private struct BoundedThumbnailProbeService: RemoteFileService {
+    let connection = RemoteConnection(
+        name: "Bounded thumbnail probe",
+        kind: .synology,
+        host: "probe.invalid",
+        username: "tester"
+    )
+    let probe: BoundedThumbnailProbe
+
+    func list(directory path: String?) async throws -> [RemoteFileItem] { [] }
+    func download(_ item: RemoteFileItem) async throws -> URL {
+        throw NasFinderError.invalidResponse
+    }
+    func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize
+    ) async throws -> Data? {
+        XCTFail("Unbounded thumbnail API must not be used")
+        return nil
+    }
+    func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        maximumByteCount: Int
+    ) async throws -> Data? {
+        await probe.record(maximumByteCount)
+        return Data(count: min(maximumByteCount, 64))
+    }
+    func testConnection() async throws {}
 }

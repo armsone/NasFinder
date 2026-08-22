@@ -116,6 +116,38 @@ final class RemoteVideoStreamingTaskRegistryTests: XCTestCase {
         XCTAssertEqual(finalTransferredBytes, 800)
     }
 
+    func testCellularTrafficBudgetCapsTransfersAcrossFolders() async {
+        let budget = RemoteVideoThumbnailTrafficBudget(
+            maximumFolderBytes: 1_000,
+            maximumItemBytes: 700,
+            minimumLeaseBytes: 1,
+            maximumTotalBytes: 900
+        )
+        let connectionID = UUID()
+        let firstItem = thumbnailItem(
+            connectionID: connectionID,
+            path: "/home/first/video.mp4"
+        )
+        let secondItem = thumbnailItem(
+            connectionID: connectionID,
+            path: "/home/second/video.mp4"
+        )
+
+        let firstLease = await budget.lease(for: firstItem)
+        XCTAssertEqual(firstLease?.maximumBytes, 700)
+        if let firstLease {
+            await budget.finish(firstLease, transferredBytes: 700)
+        }
+
+        let secondLease = await budget.lease(for: secondItem)
+        XCTAssertEqual(secondLease?.maximumBytes, 200)
+        if let secondLease {
+            await budget.finish(secondLease, transferredBytes: 200)
+        }
+        let hasCapacity = await budget.hasCapacity()
+        XCTAssertFalse(hasCapacity)
+    }
+
     func testByteBudgetNeverExceedsConfiguredLimit() {
         let budget = RemoteVideoStreamingByteBudget(maximumBytes: 1_024)
 

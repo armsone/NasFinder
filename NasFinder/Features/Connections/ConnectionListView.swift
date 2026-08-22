@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 private struct BrowserDestination: Identifiable, Hashable {
     let connection: RemoteConnection
@@ -10,22 +11,65 @@ private struct BrowserDestination: Identifiable, Hashable {
     var id: String { "\(connection.id.uuidString):\(path)" }
 }
 
+private struct IOSAppOnMacShortcutModifier: ViewModifier {
+    let key: KeyEquivalent
+    let modifiers: EventModifiers
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if ProcessInfo.processInfo.isiOSAppOnMac {
+            content.keyboardShortcut(key, modifiers: modifiers)
+        } else {
+            content
+        }
+    }
+}
+
+enum AppVersionDisplayPolicy {
+    static func text(shortVersion: String?, buildNumber: String?) -> String? {
+        guard let shortVersion, !shortVersion.isEmpty,
+              let buildNumber, !buildNumber.isEmpty else { return nil }
+        return "버전 \(shortVersion) · 빌드 \(buildNumber)"
+    }
+
+    static func text(bundle: Bundle = .main) -> String? {
+        text(
+            shortVersion: bundle.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String,
+            buildNumber: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        )
+    }
+}
+
 struct ConnectionListView: View {
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @EnvironmentObject private var store: ConnectionStore
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @EnvironmentObject private var favoriteStore: FavoriteStore
     @EnvironmentObject private var browserFavoritesStore: BrowserFavoritesStore
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
 
     @State private var isAddingConnection: Bool
     @State private var connectionPendingDeletion: RemoteConnection?
     @State private var editingConnection: RemoteConnection?
     @State private var browserDestination: BrowserDestination?
     @State private var selectedFavorite: FavoriteItem?
+    @State private var isImportingFromFiles = false
     @State private var didAttemptAutomaticOpen = false
     @State private var deviceStorage = DeviceStorageSnapshot.current()
     @State private var navigationIdentity = UUID()
+
+    private var isRunningOnMac: Bool {
+        ProcessInfo.processInfo.isiOSAppOnMac
+    }
+
+    private var dashboardContentMaxWidth: CGFloat? {
+        isRunningOnMac ? 760 : nil
+    }
 
     init() {
         #if DEBUG
@@ -42,6 +86,8 @@ struct ConnectionListView: View {
             List {
                 dashboardSections
             }
+            .frame(maxWidth: dashboardContentMaxWidth)
+            .environment(\.defaultMinListRowHeight, isRunningOnMac ? 36 : 44)
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(SkyBreezeBackground())
@@ -73,6 +119,38 @@ struct ConnectionListView: View {
             }
             .navigationDestination(item: $selectedFavorite) { favorite in
                 FavoriteDestinationView(favorite: favorite)
+            }
+            .fileImporter(
+                isPresented: $isImportingFromFiles,
+                allowedContentTypes: [.data, .content],
+                allowsMultipleSelection: true
+            ) { result in
+                switch result {
+                case .success(let urls):
+                    guard !urls.isEmpty else { return }
+                    Task {
+                        if await inboxStore.importFromFiles(urls) > 0 {
+                            inboxStore.shouldPresentInbox = true
+                        }
+                    }
+                case .failure(let error):
+                    let cocoaError = error as NSError
+                    guard !(cocoaError.domain == NSCocoaErrorDomain
+                            && cocoaError.code == CocoaError.Code.userCancelled.rawValue) else {
+                        return
+                    }
+                    inboxStore.errorMessage =
+                        "파일을 선택하지 못했습니다: \(error.localizedDescription)"
+                }
+            }
+            .fileDialogConfirmationLabel("가져오기")
+            .fileDialogMessage("나의 iPhone 또는 iCloud Drive에서 파일을 선택하세요.")
+            .alert("파일 가져오기 오류", isPresented: inboxErrorBinding) {
+                Button("확인", role: .cancel) {
+                    inboxStore.errorMessage = nil
+                }
+            } message: {
+                Text(inboxStore.errorMessage ?? "")
             }
             .alert("알림", isPresented: errorBinding) {
                 Button("확인", role: .cancel) {
@@ -115,13 +193,14 @@ struct ConnectionListView: View {
                 returnToDashboard()
             }
         }
+        .background(SkyBreezeBackground())
         .id(navigationIdentity)
     }
 
     @ViewBuilder
     private var dashboardSections: some View {
-        networkSection
         myFilesSection
+        networkSection
         storageSection
         settingsSection
     }
@@ -157,42 +236,63 @@ struct ConnectionListView: View {
             .buttonStyle(.plain)
             .navigationLinkIndicatorVisibility(.hidden)
 
-            Button(
-                store.connections.isEmpty ? "네트워크를 추가해 주세요" : "네트워크 추가",
-                systemImage: "plus"
-            ) {
+            Button {
                 isAddingConnection = true
+            } label: {
+                HStack(spacing: 7) {
+                    ThemedSymbol(systemName: "plus", size: 32, symbolSize: 17)
+                    Text(store.connections.isEmpty ? "네트워크를 추가해 주세요" : "네트워크 추가")
+                }
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
+            .modifier(
+                IOSAppOnMacShortcutModifier(key: "n", modifiers: .command)
+            )
         } header: {
             sectionHeader("네트워크", systemImage: "network")
+                .padding(.top, 8)
         } footer: {
             Text(networkFooterText)
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
+                .padding(.top, -4)
         }
+        .listSectionSpacing(.custom(10))
     }
 
     private var myFilesSection: some View {
         Section {
-            NavigationLink {
-                ReceivedFilesView()
-            } label: {
-                LabeledContent {
-                    Text(inboxSummary)
-                        .foregroundStyle(.secondary)
-                } label: {
-                    Label("받은 파일", systemImage: "tray.and.arrow.down")
-                }
-            }
-
-            ThumbnailCacheSettingsLink()
-
             FavoriteShelfView { favorite in
                 selectedFavorite = favorite
             }
+
+            NavigationLink {
+                ReceivedFilesView()
+            } label: {
+                WebHardNetworkLocationRow(summary: inboxSummary)
+            }
+
+            NavigationLink {
+                PhotoTransferView()
+            } label: {
+                HStack(spacing: 7) {
+                    ThemedSymbol(
+                        systemName: "photo.on.rectangle.angled",
+                        size: 32,
+                        symbolSize: 17
+                    )
+                    Text("Live Photos & Motion Photos")
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+            }
+            .accessibilityHint("사진과 영상을 함께 보내는 화면을 엽니다.")
+
+            ThumbnailCacheSettingsLink()
+
+            SuperThumbnailLink()
         } header: {
             sectionHeader("내 파일", systemImage: "folder")
         }
@@ -202,9 +302,38 @@ struct ConnectionListView: View {
 
     private var storageSection: some View {
         Section {
-            LabeledContent("iPhone 저장공간") {
-                Text(deviceStorageSummary)
+            Button {
+                isImportingFromFiles = true
+            } label: {
+                HStack(spacing: 12) {
+                    ThemedSymbol(systemName: "folder", size: 32, symbolSize: 17)
+                        .foregroundStyle(.blue)
+                        .frame(width: 32)
+                        .accessibilityHidden(true)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("iPhone 저장공간")
+                            .foregroundStyle(.primary)
+                        Text(deviceStorageSummary)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text("파일 앱 열기 · iCloud Drive 지원")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tertiary)
+                        .accessibilityHidden(true)
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityHint("파일 앱에서 나의 iPhone 또는 iCloud Drive의 파일을 선택합니다.")
+
             if deviceStorage.hasCapacity {
                 ProgressView(value: deviceStorage.usedFraction) {
                     Text("저장공간")
@@ -227,8 +356,17 @@ struct ConnectionListView: View {
             NavigationLink {
                 AppSettingsView(connectionCount: store.connections.count)
             } label: {
-                Label("설정", systemImage: "gearshape")
+                HStack(spacing: 7) {
+                    ThemedSymbol(systemName: "gearshape", size: 32, symbolSize: 17)
+                    Text("설정")
+                }
                     .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        } footer: {
+            if let versionText = AppVersionDisplayPolicy.text() {
+                Text(versionText)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
@@ -246,6 +384,13 @@ struct ConnectionListView: View {
                     browserFavoritesStore.errorMessage = nil
                 }
             }
+        )
+    }
+
+    private var inboxErrorBinding: Binding<Bool> {
+        Binding(
+            get: { inboxStore.errorMessage != nil },
+            set: { if !$0 { inboxStore.errorMessage = nil } }
         )
     }
 
@@ -276,7 +421,7 @@ struct ConnectionListView: View {
                     ReceivedFilesView()
                 } label: {
                     QuickLocationCard(
-                        title: "받은 파일",
+                        title: "폰하드",
                         subtitle: inboxStore.records.isEmpty
                             ? "다른 앱에서 파일 가져오기"
                             : inboxSummary,
@@ -285,7 +430,7 @@ struct ConnectionListView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .accessibilityHint("다른 앱에서 NasFinder로 받은 파일을 엽니다.")
+                .accessibilityHint("다른 앱에서 NasFinder로 가져온 폰하드 파일을 엽니다.")
 
                 NavigationLink {
                     FilesAppIntegrationGuideView(connectionCount: store.connections.count)
@@ -424,16 +569,56 @@ struct ConnectionListView: View {
         ).previewAssetName
     }
 
+    private var selectedTheme: AppThemePreference {
+        .resolved(selectedThemeRawValue)
+    }
+
+    private var currentThemeBadge: some View {
+        Button {
+            selectNextTheme()
+        } label: {
+            Image(systemName: selectedTheme.systemImage)
+                .font(.system(size: 9, weight: .bold))
+                .foregroundStyle(
+                    selectedTheme.preferredColorScheme == .dark ? .white : .black.opacity(0.72)
+                )
+                .frame(width: 38, height: 18)
+                .background {
+                    Capsule()
+                        .fill(
+                            SkyBreezeTheme.skyGradient(
+                                for: colorScheme,
+                                theme: selectedTheme
+                            )
+                        )
+                }
+                .overlay {
+                    Capsule()
+                        .stroke(Color(uiColor: .systemBackground), lineWidth: 2)
+                }
+                .shadow(color: .black.opacity(0.18), radius: 1.5, y: 1)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("현재 테마, \(selectedTheme.title)")
+        .accessibilityHint("두 번 탭하면 다음 테마로 바뀝니다.")
+    }
+
+    private func selectNextTheme() {
+        withAnimation(.easeInOut(duration: 0.20)) {
+            selectedThemeRawValue = selectedTheme.next.rawValue
+        }
+    }
+
     private var dashboardLogo: some View {
         Button(action: openRememberedLocation) {
-            HStack(spacing: 7) {
+            HStack(spacing: 8) {
                 Image(currentLogoAssetName)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 36, height: 36)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .frame(width: 38, height: 38)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
                             .stroke(.primary.opacity(0.08), lineWidth: 0.5)
                     }
 
@@ -442,6 +627,7 @@ struct ConnectionListView: View {
                     .foregroundStyle(.primary.opacity(0.82))
                     .fixedSize(horizontal: true, vertical: false)
             }
+            .padding(.vertical, 3)
             .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.plain)
@@ -479,22 +665,29 @@ struct ConnectionListView: View {
                 dashboardLogo
             }
             .sharedBackgroundVisibility(.hidden)
+            ToolbarItem(placement: .topBarTrailing) {
+                currentThemeBadge
+            }
+            .sharedBackgroundVisibility(.hidden)
         } else {
             ToolbarItem(placement: .topBarLeading) {
                 dashboardLogo
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                currentThemeBadge
             }
         }
     }
 
     private func sectionHeader(_ title: String, systemImage: String) -> some View {
-        HStack(spacing: 3) {
-            Spacer(minLength: 0)
-            Image(systemName: systemImage)
+        HStack(spacing: selectedTheme == .skeuomorphism ? 7 : 3) {
+            ThemedSymbol(systemName: systemImage)
             Text(title)
+            Spacer(minLength: 0)
         }
             .font(.footnote.weight(.medium))
             .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .trailing)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var errorBinding: Binding<Bool> {
@@ -538,7 +731,7 @@ private struct WebNetworkLocationRow: View {
     var body: some View {
         HStack(spacing: 4) {
             HStack(spacing: 13) {
-                Image(systemName: "globe")
+                ThemedSymbol(systemName: "globe", size: 32, symbolSize: 17)
                     .font(.title3)
                     .foregroundStyle(SkyBreezeTheme.browserOrange)
                     .frame(width: 32, height: 32)
@@ -548,7 +741,7 @@ private struct WebNetworkLocationRow: View {
                     HStack(spacing: 6) {
                         Text("Browser")
                             .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.primary)
 
                         Text("WWW")
                             .font(.caption2.weight(.semibold))
@@ -561,19 +754,65 @@ private struct WebNetworkLocationRow: View {
 
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, 6)
+            .padding(.vertical, 2)
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Image(systemName: "arrow.right")
                 .font(.body.weight(.medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 44, height: 54)
+                .foregroundStyle(SkyBreezeTheme.accent)
+                .frame(width: 44, height: 48)
                 .contentShape(Rectangle())
                 .accessibilityHidden(true)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Browser, WWW")
         .accessibilityHint("웹 브라우저를 엽니다.")
+    }
+}
+
+private struct WebHardNetworkLocationRow: View {
+    let summary: String?
+
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
+    init(summary: String? = nil) {
+        self.summary = summary
+    }
+
+    private var isEnamel: Bool {
+        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+    }
+
+    var body: some View {
+        HStack(spacing: 7) {
+            if isEnamel {
+                PhoneHardMark(size: 32)
+                    .accessibilityHidden(true)
+            } else {
+                Image("PhoneHardLogo")
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .frame(width: 32, height: 32)
+                    .accessibilityHidden(true)
+            }
+
+            Text("폰하드")
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.primary)
+
+            Spacer(minLength: 8)
+
+            if let summary {
+                Text(summary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("폰하드")
+        .accessibilityHint("폰하드 파일을 엽니다.")
     }
 }
 
@@ -591,7 +830,7 @@ private struct StorageOverviewCard: View {
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.primary)
 
-                Text("iPhone에 받은 파일과 연결된 원격 위치를 한눈에 확인하세요.")
+                Text("iPhone의 폰하드 파일과 연결된 원격 위치를 한눈에 확인하세요.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -604,7 +843,7 @@ private struct StorageOverviewCard: View {
                 spacing: 10
             ) {
                 StorageMetric(
-                    title: "받은 파일",
+                    title: "폰하드",
                     value: inboxCount == 0 ? "없음" : formattedByteCount(inboxByteCount),
                     detail: "\(inboxCount)개",
                     systemImage: "tray.full.fill",
@@ -803,7 +1042,11 @@ private struct NetworkLocationCard: View {
         HStack(spacing: 4) {
             Button(action: requestOpening) {
                 HStack(spacing: 13) {
-                    Image(systemName: connection.kind.systemImage)
+                    ThemedSymbol(
+                        systemName: connection.kind.systemImage,
+                        size: 32,
+                        symbolSize: 17
+                    )
                         .font(.title3)
                         .foregroundStyle(connection.kind.dashboardTint)
                         .frame(width: 32, height: 32)
@@ -813,7 +1056,7 @@ private struct NetworkLocationCard: View {
                         HStack(spacing: 6) {
                             Text(connection.name)
                                 .font(.subheadline.weight(.medium))
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(.primary)
                                 .lineLimit(2)
 
                             if isPreferred {
@@ -836,13 +1079,13 @@ private struct NetworkLocationCard: View {
 
                         Text(connection.host)
                             .font(.caption2)
-                            .foregroundStyle(.tertiary)
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
 
                     Spacer(minLength: 0)
                 }
-                .padding(.vertical, 6)
+                .padding(.vertical, 2)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
@@ -893,16 +1136,32 @@ private struct NetworkLocationCard: View {
 
 private struct AddNetworkLocationCard: View {
     let action: () -> Void
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
+    private var isBKStyle: Bool {
+        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+    }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 13) {
-                Image(systemName: "plus")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.blue)
-                    .frame(width: 46, height: 46)
-                    .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
-                    .accessibilityHidden(true)
+                Group {
+                    if isBKStyle {
+                        ThemedSymbol(systemName: "plus", size: 32, symbolSize: 17)
+                    } else {
+                        Image(systemName: "plus")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.blue)
+                            .frame(width: 46, height: 46)
+                            .background(
+                                .blue.opacity(0.12),
+                                in: RoundedRectangle(cornerRadius: 13)
+                            )
+                    }
+                }
+                .frame(width: 46, height: 46)
+                .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("네트워크 추가")
@@ -1087,16 +1346,22 @@ private struct DeviceStorageSnapshot: Equatable {
 
 private extension ConnectionKind {
     var dashboardTint: Color {
-        switch self {
-        case .synology: SkyBreezeTheme.nasBlue
-        case .sftp: SkyBreezeTheme.sftpGreen
-        }
+        ThemeServicePalette.color(
+            forServiceIdentifier: rawValue,
+            theme: .current
+        )
     }
 
     var dashboardLabel: String {
         switch self {
         case .synology: "NAS"
         case .sftp: "SFTP"
+        case .smb: "SMB"
+        case .webDAV: "WebDAV"
+        case .ftp: "FTP"
+        case .dropbox: "Dropbox"
+        case .oneDrive: "OneDrive"
+        case .googleDrive: "Google Drive"
         }
     }
 }

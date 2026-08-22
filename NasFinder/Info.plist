@@ -20,7 +20,7 @@
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>LSHandlerRank</key>
-			<string>Owner</string>
+			<string>Alternate</string>
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>public.content</string>
@@ -36,9 +36,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>$(MARKETING_VERSION)</string>
+	<string>1.4</string>
 	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<string>202608221534</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
@@ -49,6 +49,46 @@
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>nasfinder</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>Dropbox OAuth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>db-yrvp63r1yokddm1</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>Microsoft OAuth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>msauth.com.armsone.nasfinder</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>Google OAuth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.747776487519-62dfscj170itd8b6qt3slfk9r7f68moc</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>Google Photos OAuth</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.54458207874-u67ssi4fl73tkakqlmh61tt94hhm6esh</string>
 			</array>
 		</dict>
 	</array>
@@ -86,10 +126,20 @@
 			</dict>
 		</dict>
 	</array>
+	<key>NSCameraUsageDescription</key>
+	<string>다른 기기의 QR 코드를 스캔해 사진 전송을 연결하려면 카메라 접근이 필요합니다.</string>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>다른 기기에서 받은 사진, 영상과 Live Photo를 사진 보관함에 저장합니다.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>선택한 Live Photo의 원본 사진과 움직임 영상을 함께 전송합니다.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>NasFinder가 같은 네트워크의 NAS 또는 SFTP 서버에 연결하려면 로컬 네트워크 접근이 필요합니다.</string>
+	<string>네트워크 저장공간과 폰하드를 사용하려면 로컬 네트워크 접근이 필요합니다.</string>
 	<key>NasFinderKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)com.armsone.nasfinder.shared</string>
+	<key>NasFinderGoogleClientID</key>
+	<string>747776487519-62dfscj170itd8b6qt3slfk9r7f68moc.apps.googleusercontent.com</string>
+	<key>NasFinderGooglePhotosClientID</key>
+	<string>54458207874-u67ssi4fl73tkakqlmh61tt94hhm6esh.apps.googleusercontent.com</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

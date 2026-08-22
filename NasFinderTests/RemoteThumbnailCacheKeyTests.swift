@@ -3,6 +3,17 @@ import XCTest
 @testable import NasFinder
 
 final class RemoteThumbnailCacheKeyTests: XCTestCase {
+    func testAllRemoteDataKeysCoverEveryStoredThumbnailSize() {
+        let item = makeItem(modifiedAt: Date(timeIntervalSince1970: 100))
+
+        XCTAssertEqual(
+            RemoteThumbnailCacheKey.allRemoteDataKeys(for: item),
+            Set(RemoteThumbnailSize.allCases.map {
+                RemoteThumbnailCacheKey.remoteData(for: item, size: $0)
+            })
+        )
+    }
+
     func testRemoteDataKeyIsSharedAcrossRenderedSizes() {
         let item = makeItem(modifiedAt: Date(timeIntervalSince1970: 100))
         let remoteKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)

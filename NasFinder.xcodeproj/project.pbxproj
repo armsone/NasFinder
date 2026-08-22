@@ -10,8 +10,12 @@
 		A10000000000000000000017 /* NasFinderFileProvider.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* NasFinderFileProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A1000000000000000000002A /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000002B /* Citadel */; };
 		A1000000000000000000002D /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000002E /* Citadel */; };
+		D40000000000000000000001 /* VLCKit in Frameworks */ = {isa = PBXBuildFile; productRef = D40000000000000000000003 /* VLCKit */; };
+		E50000000000000000000001 /* SMBClient in Frameworks */ = {isa = PBXBuildFile; productRef = E50000000000000000000003 /* SMBClient */; };
 		B20000000000000000000001 /* NasFinderShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* NasFinderShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		C30000000000000000000001 /* NasFinderWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = C30000000000000000000003 /* NasFinderWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F60000000000000000000001 /* NasFinderDocumentPicker.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F60000000000000000000004 /* NasFinderDocumentPicker.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F60000000000000000000002 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = F60000000000000000000023 /* Citadel */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -43,6 +47,13 @@
 			remoteGlobalIDString = C30000000000000000000009;
 			remoteInfo = NasFinderWidget;
 		};
+		F60000000000000000000003 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F60000000000000000000010;
+			remoteInfo = NasFinderDocumentPicker;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -55,6 +66,7 @@
 				A10000000000000000000017 /* NasFinderFileProvider.appex in Embed App Extensions */,
 				B20000000000000000000001 /* NasFinderShare.appex in Embed App Extensions */,
 				C30000000000000000000001 /* NasFinderWidget.appex in Embed App Extensions */,
+				F60000000000000000000001 /* NasFinderDocumentPicker.appex in Embed App Extensions */,
 			);
 			name = "Embed App Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -67,6 +79,7 @@
 		A10000000000000000000009 /* NasFinderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NasFinderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000000000000000000003 /* NasFinderShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NasFinderShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C30000000000000000000003 /* NasFinderWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NasFinderWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		F60000000000000000000004 /* NasFinderDocumentPicker.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NasFinderDocumentPicker.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -98,6 +111,20 @@
 			);
 			target = C30000000000000000000009 /* NasFinderWidget */;
 		};
+		F60000000000000000000005 /* Exceptions for "NasFinderDocumentPicker" folder in "NasFinderDocumentPicker" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = F60000000000000000000010 /* NasFinderDocumentPicker */;
+		};
+		F60000000000000000000006 /* Exceptions for "NasFinderFileProvider" folder in "NasFinderDocumentPicker" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = F60000000000000000000010 /* NasFinderDocumentPicker */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -117,6 +144,7 @@
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
 				A10000000000000000000029 /* Exceptions for "NasFinderFileProvider" folder in "NasFinderFileProvider" target */,
+				F60000000000000000000006 /* Exceptions for "NasFinderFileProvider" folder in "NasFinderDocumentPicker" target */,
 			);
 			explicitFileTypes = {
 			};
@@ -167,6 +195,18 @@
 			path = NasFinderWidget;
 			sourceTree = "<group>";
 		};
+		F60000000000000000000007 /* NasFinderDocumentPicker */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F60000000000000000000005 /* Exceptions for "NasFinderDocumentPicker" folder in "NasFinderDocumentPicker" target */,
+			);
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = NasFinderDocumentPicker;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -175,6 +215,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				A1000000000000000000002A /* Citadel in Frameworks */,
+				D40000000000000000000001 /* VLCKit in Frameworks */,
+				E50000000000000000000001 /* SMBClient in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -207,6 +249,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F60000000000000000000011 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F60000000000000000000002 /* Citadel in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -218,6 +268,7 @@
 				B20000000000000000000006 /* NasFinderShare */,
 				C30000000000000000000005 /* NasFinderWidget */,
 				A10000000000000000000005 /* NasFinderFileProvider */,
+				F60000000000000000000007 /* NasFinderDocumentPicker */,
 				A10000000000000000000006 /* NasFinderTests */,
 				A10000000000000000000003 /* Products */,
 			);
@@ -231,6 +282,7 @@
 				A10000000000000000000009 /* NasFinderTests.xctest */,
 				B20000000000000000000003 /* NasFinderShare.appex */,
 				C30000000000000000000003 /* NasFinderWidget.appex */,
+				F60000000000000000000004 /* NasFinderDocumentPicker.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -253,6 +305,7 @@
 				A10000000000000000000019 /* PBXTargetDependency */,
 				B20000000000000000000014 /* PBXTargetDependency */,
 				C3000000000000000000000A /* PBXTargetDependency */,
+				F60000000000000000000014 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A10000000000000000000004 /* NasFinder */,
@@ -261,6 +314,8 @@
 			name = NasFinder;
 			packageProductDependencies = (
 				A1000000000000000000002B /* Citadel */,
+				D40000000000000000000003 /* VLCKit */,
+				E50000000000000000000003 /* SMBClient */,
 			);
 			productName = NasFinder;
 			productReference = A10000000000000000000007 /* NasFinder.app */;
@@ -357,6 +412,30 @@
 			productReference = C30000000000000000000003 /* NasFinderWidget.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
+		F60000000000000000000010 /* NasFinderDocumentPicker */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F60000000000000000000022 /* Build configuration list for PBXNativeTarget "NasFinderDocumentPicker" */;
+			buildPhases = (
+				F60000000000000000000012 /* Sources */,
+				F60000000000000000000011 /* Frameworks */,
+				F60000000000000000000013 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				F60000000000000000000007 /* NasFinderDocumentPicker */,
+				A10000000000000000000005 /* NasFinderFileProvider */,
+			);
+			name = NasFinderDocumentPicker;
+			packageProductDependencies = (
+				F60000000000000000000023 /* Citadel */,
+			);
+			productName = NasFinderDocumentPicker;
+			productReference = F60000000000000000000004 /* NasFinderDocumentPicker.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -383,6 +462,9 @@
 					C30000000000000000000009 = {
 						CreatedOnToolsVersion = 26.0;
 					};
+					F60000000000000000000010 = {
+						CreatedOnToolsVersion = 26.0;
+					};
 				};
 			};
 			buildConfigurationList = A10000000000000000000024 /* Build configuration list for PBXProject "NasFinder" */;
@@ -396,6 +478,8 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				A1000000000000000000002C /* XCRemoteSwiftPackageReference "Citadel" */,
+				D40000000000000000000002 /* XCRemoteSwiftPackageReference "VLCKit" */,
+				E50000000000000000000002 /* XCRemoteSwiftPackageReference "SMBClient" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A10000000000000000000003 /* Products */;
@@ -407,6 +491,7 @@
 				A1000000000000000000000C /* NasFinderTests */,
 				B20000000000000000000010 /* NasFinderShare */,
 				C30000000000000000000009 /* NasFinderWidget */,
+				F60000000000000000000010 /* NasFinderDocumentPicker */,
 			);
 		};
 /* End PBXProject section */
@@ -441,6 +526,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		C30000000000000000000008 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		F60000000000000000000013 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -485,6 +577,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		F60000000000000000000012 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -510,6 +609,12 @@
 			platformFilter = ios;
 			target = C30000000000000000000009 /* NasFinderWidget */;
 			targetProxy = C30000000000000000000002 /* PBXContainerItemProxy */;
+		};
+		F60000000000000000000014 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = ios;
+			target = F60000000000000000000010 /* NasFinderDocumentPicker */;
+			targetProxy = F60000000000000000000003 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -627,11 +732,17 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIconAlternate;
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = (
+					AppIconAlternate,
+					AppIconVibeCoder,
+					AppIconCyberVault,
+					AppIconNetworkNAS,
+					AppIconEnamel,
+				);
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = NasFinder/NasFinder.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 202608221534;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -639,7 +750,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = NasFinder;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "NasFinder가 같은 네트워크의 NAS 또는 SFTP 서버에 연결하려면 로컬 네트워크 접근이 필요합니다.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "네트워크 저장공간과 폰하드를 사용하려면 로컬 네트워크 접근이 필요합니다.";
 				INFOPLIST_KEY_NasFinderKeychainAccessGroup = "$(AppIdentifierPrefix)com.armsone.nasfinder.shared";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -651,11 +762,12 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -666,11 +778,17 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
-				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = AppIconAlternate;
+				ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES = (
+					AppIconAlternate,
+					AppIconVibeCoder,
+					AppIconCyberVault,
+					AppIconNetworkNAS,
+					AppIconEnamel,
+				);
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				CODE_SIGN_ENTITLEMENTS = NasFinder/NasFinder.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 202608221534;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -678,7 +796,7 @@
 				INFOPLIST_KEY_CFBundleDisplayName = NasFinder;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
 				INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking = YES;
-				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "NasFinder가 같은 네트워크의 NAS 또는 SFTP 서버에 연결하려면 로컬 네트워크 접근이 필요합니다.";
+				INFOPLIST_KEY_NSLocalNetworkUsageDescription = "네트워크 저장공간과 폰하드를 사용하려면 로컬 네트워크 접근이 필요합니다.";
 				INFOPLIST_KEY_NasFinderKeychainAccessGroup = "$(AppIdentifierPrefix)com.armsone.nasfinder.shared";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
@@ -690,11 +808,12 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SUPPORTS_MACCATALYST = NO;
+				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -707,7 +826,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderFileProvider/NasFinderFileProvider.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 202608221534;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderFileProvider/Info.plist;
@@ -716,7 +835,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.fileprovider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -734,7 +853,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderFileProvider/NasFinderFileProvider.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 202608221534;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderFileProvider/Info.plist;
@@ -743,7 +862,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.fileprovider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -760,7 +879,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 202608221534;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -769,7 +888,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -785,7 +904,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 202608221534;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -794,7 +913,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -811,7 +930,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderShare/NasFinderShare.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 202608221534;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderShare/Info.plist;
@@ -820,7 +939,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -838,7 +957,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderShare/NasFinderShare.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 202608221534;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderShare/Info.plist;
@@ -847,7 +966,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -864,7 +983,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 202608221534;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -874,7 +993,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -891,7 +1010,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 202608221534;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -901,8 +1020,62 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 1.0;
+				MARKETING_VERSION = 1.4;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.widget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		F60000000000000000000020 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = NasFinderDocumentPicker/NasFinderDocumentPicker.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 202608221534;
+				DEVELOPMENT_TEAM = T7B4EPLHPK;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NasFinderDocumentPicker/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.4;
+				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.documentpicker;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		F60000000000000000000021 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = NasFinderDocumentPicker/NasFinderDocumentPicker.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 202608221534;
+				DEVELOPMENT_TEAM = T7B4EPLHPK;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = NasFinderDocumentPicker/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.4;
+				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.documentpicker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -970,6 +1143,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		F60000000000000000000022 /* Build configuration list for PBXNativeTarget "NasFinderDocumentPicker" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F60000000000000000000020 /* Debug */,
+				F60000000000000000000021 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
@@ -981,6 +1163,22 @@
 				minimumVersion = 0.12.1;
 			};
 		};
+		D40000000000000000000002 /* XCRemoteSwiftPackageReference "VLCKit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/videolan/vlckit.git";
+			requirement = {
+				kind = revision;
+				revision = e3774eb25c62c902e9066ba267e6416d82e83382;
+			};
+		};
+		E50000000000000000000002 /* XCRemoteSwiftPackageReference "SMBClient" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/kishikawakatsumi/SMBClient.git";
+			requirement = {
+				kind = exactVersion;
+				version = 0.3.1;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -990,6 +1188,21 @@
 			productName = Citadel;
 		};
 		A1000000000000000000002E /* Citadel */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1000000000000000000002C /* XCRemoteSwiftPackageReference "Citadel" */;
+			productName = Citadel;
+		};
+		D40000000000000000000003 /* VLCKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = D40000000000000000000002 /* XCRemoteSwiftPackageReference "VLCKit" */;
+			productName = VLCKit;
+		};
+		E50000000000000000000003 /* SMBClient */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E50000000000000000000002 /* XCRemoteSwiftPackageReference "SMBClient" */;
+			productName = SMBClient;
+		};
+		F60000000000000000000023 /* Citadel */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = A1000000000000000000002C /* XCRemoteSwiftPackageReference "Citadel" */;
 			productName = Citadel;

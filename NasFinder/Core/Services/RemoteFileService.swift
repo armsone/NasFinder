@@ -11,6 +11,7 @@ enum RemoteThumbnailSize: String, CaseIterable, Sendable {
 /// instead of immediately falling back to `download(_:)` for this error.
 enum RemoteThumbnailError: Error, Sendable {
     case optimizedPreviewUnavailable
+    case responseTooLarge
 }
 
 enum RemoteRequestCancellation {
@@ -97,6 +98,14 @@ protocol RemoteFileService: Sendable {
         for item: RemoteFileItem,
         size: RemoteThumbnailSize
     ) async throws -> Data?
+    func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        maximumByteCount: Int
+    ) async throws -> Data?
+    /// Cancels connection work that may outlive an individual thumbnail task,
+    /// such as a shared authentication refresh.
+    func cancelPendingThumbnailWork() async
     func testConnection() async throws
 
     func createFolder(
@@ -179,6 +188,21 @@ extension RemoteFileService {
     ) async throws -> Data? {
         nil
     }
+
+    func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        maximumByteCount: Int
+    ) async throws -> Data? {
+        let data = try await thumbnailData(for: item, size: size)
+        guard let data else { return nil }
+        guard data.count <= maximumByteCount else {
+            throw RemoteThumbnailError.responseTooLarge
+        }
+        return data
+    }
+
+    func cancelPendingThumbnailWork() async {}
 
     func testConnection() async throws {
         _ = try await list(directory: connection.normalizedRootPath)

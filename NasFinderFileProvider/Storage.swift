@@ -43,6 +43,12 @@ enum NasFinderFileProviderIdentifiers {
 enum ProviderConnectionKind: String, Codable, Sendable {
     case synology
     case sftp
+    case smb
+    case webDAV
+    case ftp
+    case dropbox
+    case oneDrive
+    case googleDrive
 }
 
 struct ProviderConnection: Codable, Sendable {
@@ -65,6 +71,9 @@ struct ProviderConnection: Codable, Sendable {
             return trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
         case .sftp:
             return trimmed.isEmpty ? "." : trimmed
+        case .smb, .webDAV, .ftp, .dropbox, .oneDrive, .googleDrive:
+            guard !trimmed.isEmpty, trimmed != "/" else { return "/" }
+            return trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
         }
     }
 }
@@ -81,6 +90,8 @@ protocol ProviderRemoteBackend: Sendable {
     var supportsMutations: Bool { get }
     func list(directory: String) async throws -> [ProviderRemoteNode]
     func download(path: String, to destinationURL: URL) async throws
+    func thumbnail(path: String, size: ProviderThumbnailSize) async throws -> Data?
+    func vaultThumbnail(for node: ProviderRemoteNode) async throws -> Data?
     func createFolder(path: String) async throws
     func upload(localURL: URL, to path: String) async throws
     func rename(from sourcePath: String, to destinationPath: String) async throws
@@ -89,6 +100,8 @@ protocol ProviderRemoteBackend: Sendable {
 
 extension ProviderRemoteBackend {
     var supportsMutations: Bool { false }
+    func vaultThumbnail(for node: ProviderRemoteNode) async throws -> Data? { nil }
+    func thumbnail(path: String, size: ProviderThumbnailSize) async throws -> Data? { nil }
     func createFolder(path: String) async throws { throw NasFinderFileProviderErrors.readOnly }
     func upload(localURL: URL, to path: String) async throws { throw NasFinderFileProviderErrors.readOnly }
     func rename(from sourcePath: String, to destinationPath: String) async throws {
@@ -97,6 +110,12 @@ extension ProviderRemoteBackend {
     func delete(path: String, isDirectory: Bool) async throws {
         throw NasFinderFileProviderErrors.readOnly
     }
+}
+
+enum ProviderThumbnailSize: String, CaseIterable, Sendable {
+    case small
+    case medium
+    case large
 }
 
 struct ProviderSnapshot: @unchecked Sendable {
@@ -132,6 +151,7 @@ actor NasFinderFileProviderStorage {
     }
 
     private let contextResult: Result<Context, Error>
+    private let thumbnailCache = ProviderThumbnailCache()
     private var identifiersByAnchor: [Data: Set<String>] = [:]
 
     init(domainIdentifier: NSFileProviderDomainIdentifier) {
@@ -154,6 +174,8 @@ actor NasFinderFileProviderStorage {
                     connection: connection,
                     password: password
                 )
+            case .smb, .webDAV, .ftp, .dropbox, .oneDrive, .googleDrive:
+                throw NasFinderFileProviderErrors.unsupportedConnection
             }
             return Context(connection: connection, backend: backend)
         }
@@ -253,6 +275,47 @@ actor NasFinderFileProviderStorage {
         try await context.backend.download(path: remotePath, to: destinationURL)
         try Task.checkCancellation()
         return (destinationURL, item)
+    }
+
+    func thumbnail(
+        for identifier: NSFileProviderItemIdentifier,
+        requestedSize: CGSize
+    ) async throws -> Data? {
+        try Task.checkCancellation()
+        let context = try contextResult.get()
+        guard let path = NasFinderFileProviderIdentifiers.remotePath(for: identifier),
+              let parentPath = Self.parentPath(
+                of: path,
+                rootedAt: context.connection.normalizedRootPath
+              ) else { return nil }
+        let nodes = try await context.backend.list(directory: parentPath)
+        guard let node = nodes.first(where: { $0.path == path }),
+              !node.isDirectory,
+              Self.supportsThumbnail(filename: node.name) else { return nil }
+
+        let size = Self.thumbnailSize(for: requestedSize)
+        if let cached = thumbnailCache.data(
+            for: node,
+            connectionID: context.connection.id,
+            preferredSize: size
+        ) { return cached }
+
+        try Task.checkCancellation()
+        var data = try await context.backend.thumbnail(path: path, size: size)
+        if data == nil {
+            data = try? await context.backend.vaultThumbnail(for: node)
+        }
+        guard let data else { return nil }
+        try Task.checkCancellation()
+        thumbnailCache.store(
+            data,
+            forKey: ProviderThumbnailCache.key(
+                for: node,
+                connectionID: context.connection.id,
+                size: size
+            )
+        )
+        return data
     }
 
     func create(
@@ -449,6 +512,17 @@ actor NasFinderFileProviderStorage {
         return trimmed
     }
 
+    private static func supportsThumbnail(filename: String) -> Bool {
+        ProviderThumbnailCache.supportsThumbnail(filename: filename)
+    }
+
+    private static func thumbnailSize(for requestedSize: CGSize) -> ProviderThumbnailSize {
+        let maximumDimension = max(requestedSize.width, requestedSize.height)
+        if maximumDimension <= 128 { return .small }
+        if maximumDimension <= 512 { return .medium }
+        return .large
+    }
+
     private static func appending(_ name: String, to directory: String) -> String {
         if directory == "/" { return "/\(name)" }
         if directory == "." { return "./\(name)" }
@@ -509,7 +583,7 @@ private enum ProviderFileVisibilityPolicy {
     }
 }
 
-private struct SharedKeychainCredentialReader {
+struct SharedKeychainCredentialReader {
     private enum LookupResult {
         case success(String)
         case failure(OSStatus)
@@ -623,6 +697,15 @@ enum NasFinderFileProviderErrors {
         CocoaError(
             .fileReadUnknown,
             userInfo: [NSLocalizedDescriptionKey: "The NasFinder connection settings are incomplete."]
+        )
+    }
+
+    static var unsupportedConnection: Error {
+        CocoaError(
+            .featureUnsupported,
+            userInfo: [
+                NSLocalizedDescriptionKey: "Open this location in NasFinder. Files integration is not available for this connection type yet."
+            ]
         )
     }
 }

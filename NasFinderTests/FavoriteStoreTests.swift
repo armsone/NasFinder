@@ -3,6 +3,57 @@ import XCTest
 
 @MainActor
 final class FavoriteStoreTests: XCTestCase {
+    func testFolderMosaicUsesOnlyFirstNineMediaFiles() {
+        let connectionID = UUID()
+        let folder = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/folder",
+            name: "folder",
+            kind: .folder,
+            size: nil,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let text = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/note.txt",
+            name: "note.txt",
+            kind: .file,
+            size: 1,
+            modifiedAt: nil,
+            contentTypeIdentifier: "public.plain-text"
+        )
+        let media = (0..<12).map { index in
+            RemoteFileItem(
+                connectionID: connectionID,
+                path: "/\(index).jpg",
+                name: "\(index).jpg",
+                kind: .file,
+                size: 1,
+                modifiedAt: nil,
+                contentTypeIdentifier: "public.jpeg"
+            )
+        }
+
+        let result = FavoriteFolderMosaicPolicy.candidates(
+            from: [folder, text] + media
+        )
+
+        XCTAssertEqual(result.count, 9)
+        XCTAssertEqual(result.map(\.name), (0..<9).map { "\($0).jpg" })
+    }
+
+    func testSkinToneBlurRequiresDominantSampleFraction() {
+        XCTAssertFalse(
+            SkinToneBlurPolicy.shouldBlur(skinToneCount: 41, sampleCount: 100)
+        )
+        XCTAssertTrue(
+            SkinToneBlurPolicy.shouldBlur(skinToneCount: 42, sampleCount: 100)
+        )
+        XCTAssertTrue(SkinToneBlurPolicy.isSkinTone(red: 214, green: 154, blue: 120))
+        XCTAssertFalse(SkinToneBlurPolicy.isSkinTone(red: 80, green: 150, blue: 210))
+    }
+
     func testFavoriteShelfOnlyBeginsReorderingForLongHorizontalMovement() {
         XCTAssertFalse(
             FavoriteShelfInteractionPolicy.shouldBeginReordering(
@@ -46,6 +97,51 @@ final class FavoriteStoreTests: XCTestCase {
         store.toggle(item)
         XCTAssertFalse(store.contains(item))
         XCTAssertTrue(FavoriteStore(defaults: defaults).items.isEmpty)
+    }
+
+    func testFavoritePreservesCloudIdentityAndReadsLegacyPayload() throws {
+        let connectionID = UUID()
+        let cloudItem = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/old-name.mov",
+            remoteIdentifier: "drive-item-7",
+            parentRemoteIdentifier: "drive-root",
+            revisionIdentifier: "rev-3",
+            name: "old-name.mov",
+            kind: .file,
+            size: 99,
+            modifiedAt: nil,
+            contentTypeIdentifier: "public.movie"
+        )
+        let favorite = FavoriteItem(item: cloudItem)
+        let decoded = try JSONDecoder().decode(
+            FavoriteItem.self,
+            from: JSONEncoder().encode(favorite)
+        )
+
+        XCTAssertEqual(decoded.remoteItem.remoteIdentifier, "drive-item-7")
+        XCTAssertEqual(decoded.remoteItem.parentRemoteIdentifier, "drive-root")
+        XCTAssertEqual(decoded.remoteItem.revisionIdentifier, "rev-3")
+        XCTAssertEqual(decoded.id, cloudItem.id)
+
+        let legacyJSON = """
+        {
+          "connectionID": "\(connectionID.uuidString)",
+          "path": "/legacy.mov",
+          "name": "legacy.mov",
+          "kind": "file",
+          "size": 1,
+          "contentTypeIdentifier": "public.movie",
+          "addedAt": 0
+        }
+        """
+        let legacy = try JSONDecoder().decode(
+            FavoriteItem.self,
+            from: Data(legacyJSON.utf8)
+        )
+
+        XCTAssertNil(legacy.remoteIdentifier)
+        XCTAssertEqual(legacy.id, "\(connectionID.uuidString):/legacy.mov")
     }
 
     func testFavoriteSupportsFoldersAndKeepsInsertionOrder() throws {

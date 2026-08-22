@@ -3,14 +3,29 @@ import SwiftUI
 struct AppSettingsView: View {
     let connectionCount: Int
     @ObservedObject private var screenAwakeController = ScreenAwakeController.shared
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
+    private var selectedTheme: AppThemePreference {
+        .resolved(selectedThemeRawValue)
+    }
+
+    private var isRunningOnMac: Bool {
+        ProcessInfo.processInfo.isiOSAppOnMac
+    }
 
     var body: some View {
         List {
+            themePaletteSection
             AppIconPickerSection(compact: true)
             screenAwakeSection
-            themePaletteSection
             filesAppIntegrationSection
+            GooglePhotosSettingsSection()
+            openSourceSection
+            creatorSection
         }
+        .frame(maxWidth: isRunningOnMac ? 680 : nil)
+        .environment(\.defaultMinListRowHeight, isRunningOnMac ? 36 : 44)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(SkyBreezeBackground())
@@ -29,113 +44,96 @@ struct AppSettingsView: View {
 
             SettingsPanelDescription(screenAwakeController.mode.description)
         } header: {
-            SettingsSectionHeader(title: "화면 꺼짐 방지", systemImage: "sun.max")
+            SettingsSectionHeader(title: "화면", systemImage: "sun.max")
         }
     }
 
-    private let colors: [ThemeColorRole] = [
-        ThemeColorRole(
-            name: "주요 글자",
-            description: "이름과 핵심 정보",
-            lightColor: Color(red: 0.11, green: 0.11, blue: 0.12),
-            darkColor: Color(red: 0.95, green: 0.95, blue: 0.97)
-        ),
-        ThemeColorRole(
-            name: "보조 글자",
-            description: "패널 아이콘과 보조 정보",
-            lightColor: Color(red: 0.43, green: 0.43, blue: 0.44),
-            darkColor: Color(red: 0.68, green: 0.68, blue: 0.70)
-        ),
-        ThemeColorRole(
-            name: "설명",
-            description: "조용한 안내와 메타 정보",
-            lightColor: Color(red: 0.55, green: 0.55, blue: 0.58),
-            darkColor: Color(red: 0.55, green: 0.55, blue: 0.58)
-        ),
-        ThemeColorRole(
-            name: "선택",
-            description: "Apple 시스템 파란색",
-            lightColor: Color(red: 0.00, green: 0.48, blue: 1.00),
-            darkColor: Color(red: 0.04, green: 0.52, blue: 1.00)
-        ),
-        ThemeColorRole(
-            name: "NAS",
-            description: "Synology 네트워크 위치",
-            lightColor: Color(red: 0.00, green: 0.48, blue: 1.00),
-            darkColor: Color(red: 0.04, green: 0.52, blue: 1.00)
-        ),
-        ThemeColorRole(
-            name: "SFTP",
-            description: "SFTP 네트워크 위치",
-            lightColor: Color(red: 0.20, green: 0.68, blue: 0.31),
-            darkColor: Color(red: 0.19, green: 0.82, blue: 0.35)
-        ),
-        ThemeColorRole(
-            name: "Browser",
-            description: "WWW 네트워크 위치",
-            lightColor: Color(red: 1.00, green: 0.58, blue: 0.00),
-            darkColor: Color(red: 1.00, green: 0.62, blue: 0.04)
-        ),
-        ThemeColorRole(
-            name: "삭제",
-            description: "위험하거나 되돌리기 어려운 동작",
-            lightColor: Color(red: 1.00, green: 0.23, blue: 0.19),
-            darkColor: Color(red: 1.00, green: 0.27, blue: 0.23)
-        ),
-        ThemeColorRole(
-            name: "패널 표면",
-            description: "라이트·다크 모드 적응형 배경",
-            lightColor: Color(red: 0.95, green: 0.95, blue: 0.97),
-            darkColor: Color(red: 0.11, green: 0.11, blue: 0.12)
-        ),
-    ]
-
     private var themePaletteSection: some View {
         Section {
-            VStack(spacing: 0) {
-                HStack(spacing: 10) {
-                    Spacer()
-                    Text("낮")
-                        .frame(width: 38)
-                    Text("밤")
-                        .frame(width: 38)
-                }
-                .font(.caption2.weight(.medium))
-                .foregroundStyle(.tertiary)
-                .padding(.bottom, 4)
-
-                ForEach(Array(colors.enumerated()), id: \.element.id) { index, role in
-                    if index > 0 {
-                        Divider()
+            GeometryReader { geometry in
+                let spacing: CGFloat = 8
+                let cardWidth = (geometry.size.width - spacing * 2) / 3
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: 3),
+                    spacing: spacing
+                ) {
+                    ForEach(AppThemePreference.allCases) { theme in
+                        themeCard(theme)
                     }
-
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(role.name)
-                                .font(.subheadline)
-                                .foregroundStyle(.primary)
-                            Text(role.description)
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-
-                        Spacer(minLength: 8)
-                        paletteSwatch(role.lightColor, modeName: "낮")
-                        paletteSwatch(role.darkColor, modeName: "밤")
-                    }
-                    .padding(.vertical, 7)
-                    .accessibilityElement(children: .combine)
                 }
-
-                Divider()
-                SettingsPanelDescription(
-                    "표시 색은 iPhone의 라이트·다크 모드에 맞춰 자동으로 바뀝니다."
-                )
-                .padding(.top, 8)
             }
+            .frame(height: 328)
+            .listRowInsets(
+                EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
+            )
+
+            SettingsPanelDescription(
+                selectedTheme == .system
+                    ? "iPhone의 라이트·다크 모드에 맞춰 자동으로 바뀝니다."
+                    : "선택한 테마는 앱을 다시 열어도 유지됩니다."
+            )
+
         } header: {
-            SettingsSectionHeader(title: "테마 색 구성", systemImage: "paintpalette")
+            SettingsSectionHeader(title: "테마", systemImage: "paintpalette")
+        }
+    }
+
+    private func themeCard(_ theme: AppThemePreference) -> some View {
+        let isSelected = selectedTheme == theme
+        return Button {
+            withAnimation(.easeInOut(duration: 0.20)) {
+                selectedThemeRawValue = theme.rawValue
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Image(systemName: theme.systemImage)
+                        .font(.caption.weight(.medium))
+                    Spacer(minLength: 0)
+                    if isSelected {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.caption)
+                    }
+                }
+                .foregroundStyle(themePreviewForeground(theme))
+
+                Spacer(minLength: 0)
+
+                Text(theme.title)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(themePreviewForeground(theme))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.68)
+
+                HStack(spacing: 3) {
+                    ForEach(Array(ThemeServicePalette.colors(for: theme).prefix(4).enumerated()), id: \.offset) { _, color in
+                        Circle().fill(color).frame(width: 5, height: 5)
+                    }
+                }
+            }
+            .padding(9)
+            .frame(height: 104)
+            .background {
+                ThemePreviewBackground(theme: theme)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(
+                        isSelected ? SkyBreezeTheme.accent : Color.secondary.opacity(0.18),
+                        lineWidth: isSelected ? 1.5 : 0.5
+                    )
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(theme.title) 테마")
+        .accessibilityValue(isSelected ? "선택됨" : "선택 안 됨")
+    }
+
+    private func themePreviewForeground(_ theme: AppThemePreference) -> Color {
+        switch theme {
+        case .night, .digitalRain, .workbench: .white
+        default: Color(red: 0.10, green: 0.15, blue: 0.16)
         }
     }
 
@@ -162,15 +160,123 @@ struct AppSettingsView: View {
         }
     }
 
-    private func paletteSwatch(_ color: Color, modeName: String) -> some View {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-            .fill(color)
-            .frame(width: 38, height: 28)
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(.separator.opacity(0.55), lineWidth: 0.5)
+    private var openSourceSection: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("VLCKit 4.0.0a23")
+                    .font(.subheadline)
+                Text("일부 호환 영상 재생에 VideoLAN의 VLCKit을 사용합니다. VLCKit은 GNU LGPL 2.1 이상으로 제공됩니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .accessibilityLabel("\(modeName) 모드 색상")
+
+            Link(
+                "라이선스 보기",
+                destination: URL(string: "https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html")!
+            )
+            Link(
+                "VLCKit 소스 코드",
+                destination: URL(string: "https://github.com/videolan/vlckit/tree/4.0.0-a23")!
+            )
+        } header: {
+            SettingsSectionHeader(title: "오픈 소스", systemImage: "chevron.left.forwardslash.chevron.right")
+        }
+    }
+
+    private var creatorSection: some View {
+        Section {
+            Link(
+                destination: URL(string: "https://github.com/armsone")!
+            ) {
+                Label("GitHub · armsone", systemImage: "link")
+            }
+            .accessibilityLabel("만든 사람 GitHub, armsone")
+
+            SettingsPanelDescription("NasFinder를 만든 사람의 GitHub입니다.")
+        } header: {
+            SettingsSectionHeader(title: "만든 사람", systemImage: "person.crop.circle")
+        }
+    }
+
+}
+
+private struct ThemePreviewBackground: View {
+    let theme: AppThemePreference
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                gradient
+                if theme == .digitalRain {
+                    CodeRainDecoration(size: geometry.size)
+                        .opacity(0.92)
+                } else if theme == .workbench {
+                    WorkbenchDecoration(size: geometry.size)
+                } else if theme == .skeuomorphism {
+                    Circle()
+                        .stroke(.white.opacity(0.75), lineWidth: 7)
+                        .shadow(color: .black.opacity(0.24), radius: 2, x: 1, y: 2)
+                        .padding(18)
+                }
+            }
+        }
+    }
+
+    private var gradient: LinearGradient {
+        switch theme {
+        case .system:
+            LinearGradient(
+                colors: [.white.opacity(0.96), .black.opacity(0.18)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .day:
+            LinearGradient(
+                colors: [Color(red: 0.72, green: 0.91, blue: 1), .white],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .night:
+            LinearGradient(
+                colors: [Color(red: 0.06, green: 0.15, blue: 0.21), .black],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .digitalRain:
+            LinearGradient(
+                colors: [Color(red: 0.005, green: 0.05, blue: 0.045), .black],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .windyMeadow:
+            LinearGradient(
+                colors: [
+                    Color(red: 0.28, green: 0.76, blue: 0.96),
+                    Color(red: 0.73, green: 0.84, blue: 0.38),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        case .workbench:
+            LinearGradient(
+                colors: [
+                    Color(red: 0.08, green: 0.12, blue: 0.18),
+                    Color(red: 0.025, green: 0.04, blue: 0.065),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .skeuomorphism:
+            LinearGradient(
+                colors: [
+                    Color(red: 0.78, green: 0.78, blue: 0.76),
+                    Color(red: 0.98, green: 0.975, blue: 0.96),
+                    .white,
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
     }
 }
 
@@ -192,13 +298,4 @@ private struct SettingsIntegrationStep: View {
         }
         .accessibilityElement(children: .combine)
     }
-}
-
-private struct ThemeColorRole: Identifiable {
-    let name: String
-    let description: String
-    let lightColor: Color
-    let darkColor: Color
-
-    var id: String { name }
 }
