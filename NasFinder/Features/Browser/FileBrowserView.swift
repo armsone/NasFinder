@@ -581,20 +581,27 @@ struct FileBrowserView: View {
     @ViewBuilder
     private var coverFlowNavigationOverlay: some View {
         if layoutStyle == .coverFlow {
-            GeometryReader { geometry in
-                HStack(spacing: 8) {
+            FileBrowserCoverFlowNavigationChrome(
+                usesDarkBackground: coverFlowUsesDarkBackground
+            ) { containerWidth in
+                HStack(spacing: FileBrowserCoverFlowChromePolicy.itemSpacing) {
                     coverFlowBackButton
 
                     Button(action: dashboardAction) {
                         Text(title)
                             .font(.subheadline.weight(.medium))
-                            .foregroundStyle(coverFlowChromeForeground)
+                            .foregroundStyle(
+                                FileBrowserCoverFlowChromePolicy.foreground(
+                                    usesDarkBackground: coverFlowUsesDarkBackground
+                                )
+                            )
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .layoutPriority(1)
                             .frame(
-                                maxWidth: min(geometry.size.width * 0.44, 340),
-                                minHeight: 44,
+                                maxWidth: FileBrowserCoverFlowChromePolicy
+                                    .titleMaximumWidth(containerWidth: containerWidth),
+                                minHeight: FileBrowserCoverFlowChromePolicy.buttonSize,
                                 alignment: .leading
                             )
                             .contentShape(Rectangle())
@@ -606,10 +613,6 @@ struct FileBrowserView: View {
                     Spacer(minLength: 8)
                     coverFlowMoreButton
                 }
-                .padding(.horizontal, 12)
-                .padding(.top, geometry.safeAreaInsets.top + 4)
-                .frame(maxWidth: .infinity, alignment: .top)
-                .animation(.easeInOut(duration: 0.20), value: coverFlowUsesDarkBackground)
             }
         }
     }
@@ -618,18 +621,12 @@ struct FileBrowserView: View {
         Button {
             dismiss()
         } label: {
-            Image(systemName: "chevron.left")
-                .font(.system(size: 22, weight: .semibold))
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
+            FileBrowserCoverFlowChromeIcon(
+                kind: .back,
+                usesDarkBackground: coverFlowUsesDarkBackground
+            )
         }
         .buttonStyle(.plain)
-        .foregroundStyle(coverFlowChromeForeground)
-        .background(coverFlowChromeBackground, in: Circle())
-        .overlay {
-            Circle().stroke(coverFlowChromeBorder, lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(coverFlowUsesDarkBackground ? 0.40 : 0.10), radius: 8, y: 2)
         .accessibilityLabel("이전 폴더")
     }
 
@@ -637,18 +634,12 @@ struct FileBrowserView: View {
         Button {
             interactionCoordinator.showBrowserPanel()
         } label: {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 16, weight: .bold))
-                .frame(width: 44, height: 44)
-                .contentShape(Circle())
+            FileBrowserCoverFlowChromeIcon(
+                kind: .more,
+                usesDarkBackground: coverFlowUsesDarkBackground
+            )
         }
         .buttonStyle(.plain)
-        .foregroundStyle(SkyBreezeTheme.accent)
-        .background(coverFlowChromeBackground, in: Circle())
-        .overlay {
-            Circle().stroke(coverFlowChromeBorder, lineWidth: 1)
-        }
-        .shadow(color: .black.opacity(coverFlowUsesDarkBackground ? 0.40 : 0.10), radius: 8, y: 2)
         .disabled(operationCoordinator.isBusy)
         .accessibilityLabel("더 보기")
         .popover(
@@ -661,18 +652,6 @@ struct FileBrowserView: View {
                     interactionCoordinator.panelDidDisappear()
                 }
         }
-    }
-
-    private var coverFlowChromeForeground: Color {
-        coverFlowUsesDarkBackground ? .white.opacity(0.88) : .black.opacity(0.82)
-    }
-
-    private var coverFlowChromeBackground: Color {
-        coverFlowUsesDarkBackground ? .white.opacity(0.10) : .white.opacity(0.92)
-    }
-
-    private var coverFlowChromeBorder: Color {
-        coverFlowUsesDarkBackground ? .white.opacity(0.16) : .black.opacity(0.10)
     }
 
     @ViewBuilder
@@ -2693,16 +2672,6 @@ private struct ThumbnailNetworkChangeModifier: ViewModifier {
         ) { _ in
             onChange()
         }
-    }
-}
-
-private struct FileBrowserCoverFlowChromeModifier: ViewModifier {
-    let isActive: Bool
-
-    func body(content: Content) -> some View {
-        content
-            .navigationBarBackButtonHidden(isActive)
-            .toolbar(isActive ? .hidden : .visible, for: .navigationBar)
     }
 }
 

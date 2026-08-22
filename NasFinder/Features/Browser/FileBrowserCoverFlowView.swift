@@ -158,6 +158,118 @@ enum FileBrowserOrientationController {
     }
 }
 
+enum FileBrowserCoverFlowChromePolicy {
+    static let buttonSize: CGFloat = 44
+    static let horizontalPadding: CGFloat = 12
+    static let safeAreaTopPadding: CGFloat = 4
+    static let itemSpacing: CGFloat = 8
+
+    static func titleMaximumWidth(containerWidth: CGFloat) -> CGFloat {
+        min(containerWidth * 0.44, 340)
+    }
+
+    static func foreground(usesDarkBackground: Bool) -> Color {
+        usesDarkBackground ? .white.opacity(0.88) : .black.opacity(0.82)
+    }
+
+    static func background(usesDarkBackground: Bool) -> Color {
+        usesDarkBackground ? .white.opacity(0.10) : .white.opacity(0.92)
+    }
+
+    static func border(usesDarkBackground: Bool) -> Color {
+        usesDarkBackground ? .white.opacity(0.16) : .black.opacity(0.10)
+    }
+}
+
+struct FileBrowserCoverFlowNavigationChrome<Content: View>: View {
+    let usesDarkBackground: Bool
+    private let content: (CGFloat) -> Content
+
+    init(
+        usesDarkBackground: Bool,
+        @ViewBuilder content: @escaping (CGFloat) -> Content
+    ) {
+        self.usesDarkBackground = usesDarkBackground
+        self.content = content
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            content(geometry.size.width)
+                .padding(.horizontal, FileBrowserCoverFlowChromePolicy.horizontalPadding)
+                .padding(
+                    .top,
+                    geometry.safeAreaInsets.top
+                        + FileBrowserCoverFlowChromePolicy.safeAreaTopPadding
+                )
+                .frame(maxWidth: .infinity, alignment: .top)
+                .animation(.easeInOut(duration: 0.20), value: usesDarkBackground)
+        }
+    }
+}
+
+struct FileBrowserCoverFlowChromeIcon: View {
+    enum Kind: Equatable {
+        case back
+        case more
+    }
+
+    let kind: Kind
+    let usesDarkBackground: Bool
+
+    var body: some View {
+        Image(systemName: kind == .back ? "chevron.left" : "ellipsis")
+            .font(
+                kind == .back
+                    ? .system(size: 22, weight: .semibold)
+                    : .system(size: 16, weight: .bold)
+            )
+            .frame(
+                width: FileBrowserCoverFlowChromePolicy.buttonSize,
+                height: FileBrowserCoverFlowChromePolicy.buttonSize
+            )
+            .contentShape(Circle())
+            .foregroundStyle(kind == .more ? SkyBreezeTheme.accent : foreground)
+            .background(background, in: Circle())
+            .overlay {
+                Circle().stroke(border, lineWidth: 1)
+            }
+            .shadow(
+                color: .black.opacity(usesDarkBackground ? 0.40 : 0.10),
+                radius: 8,
+                y: 2
+            )
+    }
+
+    private var foreground: Color {
+        FileBrowserCoverFlowChromePolicy.foreground(
+            usesDarkBackground: usesDarkBackground
+        )
+    }
+
+    private var background: Color {
+        FileBrowserCoverFlowChromePolicy.background(
+            usesDarkBackground: usesDarkBackground
+        )
+    }
+
+    private var border: Color {
+        FileBrowserCoverFlowChromePolicy.border(
+            usesDarkBackground: usesDarkBackground
+        )
+    }
+}
+
+struct FileBrowserCoverFlowChromeModifier: ViewModifier {
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .navigationBarBackButtonHidden(isActive)
+            .toolbar(isActive ? .hidden : .visible, for: .navigationBar)
+    }
+}
+
 struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
     private let sideCardScale: CGFloat = 0.80
 

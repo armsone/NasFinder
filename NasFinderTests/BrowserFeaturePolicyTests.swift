@@ -45,16 +45,41 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         )
     }
 
-    func testReceivedFilesOverflowBackgroundControlContract() {
-        XCTAssertEqual(
-            ReceivedFilesOverflowPresentationPolicy.backgroundControlPlacement,
-            .topTrailing
+    func testReceivedFilesOverflowUsesSharedChromeOnlyInNormalPopulatedState() {
+        XCTAssertTrue(
+            ReceivedFilesLayoutPresentationPolicy.usesCoverFlowChrome(
+                presentedStyle: .overflow,
+                isSelecting: false,
+                hasRecords: true
+            )
         )
-        XCTAssertTrue(ReceivedFilesOverflowPresentationPolicy.toggledBackground(false))
-        XCTAssertFalse(ReceivedFilesOverflowPresentationPolicy.toggledBackground(true))
+        XCTAssertFalse(
+            ReceivedFilesLayoutPresentationPolicy.usesCoverFlowChrome(
+                presentedStyle: .overflow,
+                isSelecting: true,
+                hasRecords: true
+            )
+        )
+        XCTAssertFalse(
+            ReceivedFilesLayoutPresentationPolicy.usesCoverFlowChrome(
+                presentedStyle: .overflow,
+                isSelecting: false,
+                hasRecords: false
+            )
+        )
+        XCTAssertFalse(
+            ReceivedFilesLayoutPresentationPolicy.usesCoverFlowChrome(
+                presentedStyle: .posters,
+                isSelecting: false,
+                hasRecords: true
+            )
+        )
+        XCTAssertEqual(FileBrowserCoverFlowChromePolicy.buttonSize, 44)
+        XCTAssertEqual(FileBrowserCoverFlowChromePolicy.horizontalPadding, 12)
+        XCTAssertEqual(FileBrowserCoverFlowChromePolicy.safeAreaTopPadding, 4)
     }
 
-    func testReceivedFilesThumbnailSourceContractKeepsEveryLayoutSquare() {
+    func testReceivedFilesThumbnailGeometryKeepsEveryLayoutSquare() {
         let proposedSizes = [
             "자세히": CGSize(width: 56, height: 56),
             "썸네일": CGSize(width: 220, height: 220),
@@ -70,6 +95,16 @@ final class BrowserFeaturePolicyTests: XCTestCase {
                 max(proposedSize.width, proposedSize.height),
                 layout
             )
+        }
+    }
+
+    func testReceivedFilesGridArtworkUsesColumnWidthForBothDimensions() {
+        for columnWidth: CGFloat in [104, 164, 240, 360] {
+            let containerSize = ReceivedFilesThumbnailPolicy.squareContainerSize(
+                forWidth: columnWidth
+            )
+            XCTAssertEqual(containerSize.width, columnWidth)
+            XCTAssertEqual(containerSize.height, columnWidth)
         }
     }
 

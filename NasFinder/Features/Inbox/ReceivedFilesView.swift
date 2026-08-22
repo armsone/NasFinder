@@ -46,19 +46,13 @@ enum ReceivedFilesLayoutPresentationPolicy {
     ) -> ReceivedFilesLayoutStyle {
         selectedStyle == .posters && isLandscape ? .overflow : selectedStyle
     }
-}
 
-enum ReceivedFilesOverflowControlPlacement: Equatable {
-    case topTrailing
-
-    var alignment: Alignment { .topTrailing }
-}
-
-enum ReceivedFilesOverflowPresentationPolicy {
-    static let backgroundControlPlacement = ReceivedFilesOverflowControlPlacement.topTrailing
-
-    static func toggledBackground(_ usesDarkBackground: Bool) -> Bool {
-        !usesDarkBackground
+    static func usesCoverFlowChrome(
+        presentedStyle: ReceivedFilesLayoutStyle,
+        isSelecting: Bool,
+        hasRecords: Bool
+    ) -> Bool {
+        presentedStyle == .overflow && !isSelecting && hasRecords
     }
 }
 
@@ -68,6 +62,7 @@ struct ReceivedFilesView: View {
         let refreshGeneration: Int
     }
 
+    @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @EnvironmentObject private var webHardController: WebHardServerController
@@ -125,75 +120,81 @@ struct ReceivedFilesView: View {
             isSelecting ? "\(selectedRecords.count)개 선택" : (isEnamel ? "" : "폰하드")
         )
         .navigationBarTitleDisplayMode(.inline)
+        .modifier(
+            FileBrowserCoverFlowChromeModifier(isActive: usesCoverFlowChrome)
+        )
         .toolbar {
-            if isSelecting {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button(allRecordsAreSelected ? "전체 해제" : "전체 선택") {
-                        toggleAllSelection()
-                    }
-                }
-
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button("지우기", systemImage: "trash", role: .destructive) {
-                        isConfirmingSelectionDeletion = true
-                    }
-                    .disabled(selectedRecords.isEmpty)
-
-                    Button("완료") {
-                        endSelection()
-                    }
-                }
-            } else {
-                if isEnamel {
-                    ToolbarItem(placement: .principal) {
-                        HStack(spacing: 8) {
-                            PhoneHardMark(size: 26)
-                            Text("폰하드")
-                                .font(.headline)
-                                .foregroundStyle(.primary)
+            if !usesCoverFlowChrome {
+                if isSelecting {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(allRecordsAreSelected ? "전체 해제" : "전체 선택") {
+                            toggleAllSelection()
                         }
                     }
-                }
 
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    if !inboxStore.records.isEmpty {
-                        Menu {
-                            ForEach(ReceivedFilesLayoutStyle.selectableCases) { style in
-                                Button {
-                                    storedLayoutStyle = style.rawValue
-                                } label: {
-                                    Label(style.title, systemImage: style.systemImage)
-                                    if layoutStyle == style {
-                                        Image(systemName: "checkmark")
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        Button("지우기", systemImage: "trash", role: .destructive) {
+                            isConfirmingSelectionDeletion = true
+                        }
+                        .disabled(selectedRecords.isEmpty)
+
+                        Button("완료") {
+                            endSelection()
+                        }
+                    }
+                } else {
+                    if isEnamel {
+                        ToolbarItem(placement: .principal) {
+                            HStack(spacing: 8) {
+                                PhoneHardMark(size: 26)
+                                Text("폰하드")
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+                            }
+                        }
+                    }
+
+                    ToolbarItemGroup(placement: .topBarTrailing) {
+                        if !inboxStore.records.isEmpty {
+                            Menu {
+                                ForEach(ReceivedFilesLayoutStyle.selectableCases) { style in
+                                    Button {
+                                        storedLayoutStyle = style.rawValue
+                                    } label: {
+                                        Label(style.title, systemImage: style.systemImage)
+                                        if layoutStyle == style {
+                                            Image(systemName: "checkmark")
+                                        }
                                     }
                                 }
+                            } label: {
+                                Image(systemName: layoutStyle.systemImage)
+                            }
+                            .accessibilityLabel("보기")
+                        }
+
+                        Menu {
+                            Button("파일에서 가져오기", systemImage: "doc.badge.plus") {
+                                isImportingFromFiles = true
+                            }
+                            Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
+                                isImportingFromGooglePhotos = true
                             }
                         } label: {
-                            Image(systemName: layoutStyle.systemImage)
+                            Image(systemName: "ellipsis.circle")
                         }
-                        .accessibilityLabel("보기")
-                    }
+                        .accessibilityLabel("폰하드 메뉴")
 
-                    Menu {
-                        Button("파일에서 가져오기", systemImage: "doc.badge.plus") {
-                            isImportingFromFiles = true
-                        }
-                        Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
-                            isImportingFromGooglePhotos = true
-                        }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                    .accessibilityLabel("폰하드 메뉴")
-
-                    if !inboxStore.records.isEmpty {
-                        Button("선택") {
-                            isSelecting = true
+                        if !inboxStore.records.isEmpty {
+                            Button("선택") {
+                                isSelecting = true
+                            }
                         }
                     }
                 }
             }
         }
+        .overlay { coverFlowNavigationOverlay }
         .modifier(
             ReceivedFilesImporterModifier(
                 isPresented: $isImportingFromFiles,
@@ -378,24 +379,82 @@ struct ReceivedFilesView: View {
                 onActivate: activate,
                 onShowActions: nil
             )
-            .overlay(
-                alignment: ReceivedFilesOverflowPresentationPolicy
-                    .backgroundControlPlacement.alignment
-            ) {
-                Button {
-                    overflowUsesDarkBackground = ReceivedFilesOverflowPresentationPolicy
-                        .toggledBackground(overflowUsesDarkBackground)
-                } label: {
-                    Image(systemName: overflowUsesDarkBackground ? "sun.max.fill" : "moon.fill")
-                        .frame(width: 44, height: 44)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var usesCoverFlowChrome: Bool {
+        ReceivedFilesLayoutPresentationPolicy.usesCoverFlowChrome(
+            presentedStyle: presentedLayoutStyle,
+            isSelecting: isSelecting,
+            hasRecords: !inboxStore.records.isEmpty
+        )
+    }
+
+    @ViewBuilder
+    private var coverFlowNavigationOverlay: some View {
+        if usesCoverFlowChrome {
+            FileBrowserCoverFlowNavigationChrome(
+                usesDarkBackground: overflowUsesDarkBackground
+            ) { containerWidth in
+                HStack(spacing: FileBrowserCoverFlowChromePolicy.itemSpacing) {
+                    Button {
+                        dismiss()
+                    } label: {
+                        FileBrowserCoverFlowChromeIcon(
+                            kind: .back,
+                            usesDarkBackground: overflowUsesDarkBackground
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("폰하드 닫기")
+
+                    Button {
+                        dismiss()
+                    } label: {
+                        Text("폰하드")
+                            .font(.subheadline.weight(.medium))
+                            .foregroundStyle(
+                                FileBrowserCoverFlowChromePolicy.foreground(
+                                    usesDarkBackground: overflowUsesDarkBackground
+                                )
+                            )
+                            .lineLimit(1)
+                            .frame(
+                                maxWidth: FileBrowserCoverFlowChromePolicy
+                                    .titleMaximumWidth(containerWidth: containerWidth),
+                                minHeight: FileBrowserCoverFlowChromePolicy.buttonSize,
+                                alignment: .leading
+                            )
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("폰하드, 첫 화면으로 이동")
+
+                    Spacer(minLength: 8)
+
+                    Menu {
+                        ForEach(FileBrowserCoverFlowBackground.allCases) { background in
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.20)) {
+                                    overflowUsesDarkBackground = background.usesDarkBackground
+                                }
+                            } label: {
+                                Text(background.title)
+                                if background.usesDarkBackground == overflowUsesDarkBackground {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    } label: {
+                        FileBrowserCoverFlowChromeIcon(
+                            kind: .more,
+                            usesDarkBackground: overflowUsesDarkBackground
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("배경 선택")
                 }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.circle)
-                .tint(overflowUsesDarkBackground ? .white : .primary)
-                .accessibilityLabel(
-                    overflowUsesDarkBackground ? "밝은 배경으로 전환" : "어두운 배경으로 전환"
-                )
-                .padding(16)
             }
         }
     }
@@ -484,12 +543,18 @@ struct ReceivedFilesView: View {
             activate(record)
         } label: {
             VStack(alignment: .leading, spacing: poster ? 9 : 6) {
-                receivedFileArtwork(
-                    for: item,
-                    record: record,
-                    requestSize: requestSize
-                )
-                .frame(maxWidth: .infinity)
+                GeometryReader { proxy in
+                    let containerSize = ReceivedFilesThumbnailPolicy.squareContainerSize(
+                        forWidth: proxy.size.width
+                    )
+
+                    receivedFileArtwork(
+                        for: item,
+                        record: record,
+                        requestSize: requestSize
+                    )
+                    .frame(width: containerSize.width, height: containerSize.height)
+                }
                 .aspectRatio(1, contentMode: .fit)
                 .background(.quaternary.opacity(0.55))
                 .clipShape(RoundedRectangle(cornerRadius: poster ? 15 : 11))
@@ -763,6 +828,11 @@ struct ReceivedFilesView: View {
 enum ReceivedFilesThumbnailPolicy {
     static func squareSize(_ proposedSize: CGSize) -> CGSize {
         let side = max(proposedSize.width, proposedSize.height)
+        return CGSize(width: side, height: side)
+    }
+
+    static func squareContainerSize(forWidth width: CGFloat) -> CGSize {
+        let side = max(0, width)
         return CGSize(width: side, height: side)
     }
 }

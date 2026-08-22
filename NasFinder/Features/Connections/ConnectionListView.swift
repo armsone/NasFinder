@@ -25,6 +25,23 @@ private struct IOSAppOnMacShortcutModifier: ViewModifier {
     }
 }
 
+enum AppVersionDisplayPolicy {
+    static func text(shortVersion: String?, buildNumber: String?) -> String? {
+        guard let shortVersion, !shortVersion.isEmpty,
+              let buildNumber, !buildNumber.isEmpty else { return nil }
+        return "버전 \(shortVersion) · 빌드 \(buildNumber)"
+    }
+
+    static func text(bundle: Bundle = .main) -> String? {
+        text(
+            shortVersion: bundle.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String,
+            buildNumber: bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+        )
+    }
+}
+
 struct ConnectionListView: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -344,6 +361,12 @@ struct ConnectionListView: View {
                     Text("설정")
                 }
                     .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+        } footer: {
+            if let versionText = AppVersionDisplayPolicy.text() {
+                Text(versionText)
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
