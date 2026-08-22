@@ -44,6 +44,10 @@ ditto "${executable}" "${output_app}/Contents/MacOS/NasFinderSuperThumbnailMac"
 ditto "${icon_source}" "${output_app}/Contents/Resources/AppIcon.png"
 ditto "${sparkle_framework}" "${output_app}/Contents/Frameworks/Sparkle.framework"
 
+# SwiftPM 실행 파일의 기본 rpath는 ../lib이므로 앱 번들에 넣은 Frameworks도 명시한다.
+install_name_tool -add_rpath '@executable_path/../Frameworks' \
+  "${output_app}/Contents/MacOS/NasFinderSuperThumbnailMac"
+
 info_plist="${output_app}/Contents/Info.plist"
 plutil -create xml1 "${info_plist}"
 plutil -insert CFBundleDevelopmentRegion -string ko "${info_plist}"
