@@ -5,8 +5,9 @@ package_root="${0:A:h}"
 dist_dir="${package_root}/dist"
 appcast_path="${dist_dir}/nasfinder-super-thumbnail.xml"
 key_account="${SPARKLE_KEY_ACCOUNT:-NasFinderSuperThumbnail}"
-download_url_prefix="${DOWNLOAD_URL_PREFIX:-https://github.com/armsone/NasFinder/releases/download/mac-super-thumbnail-v1.0.0/}"
-release_notes_link="${RELEASE_NOTES_LINK:-https://github.com/armsone/NasFinder/releases/tag/mac-super-thumbnail-v1.0.0}"
+app_version="${APP_VERSION:-2.0.0}"
+download_url_prefix="${DOWNLOAD_URL_PREFIX:-https://github.com/armsone/NasFinder/releases/download/mac-super-thumbnail-v${app_version}/}"
+release_notes_link="${RELEASE_NOTES_LINK:-https://github.com/armsone/NasFinder/releases/tag/mac-super-thumbnail-v${app_version}}"
 
 if [[ -z "${SPARKLE_BIN_DIR:-}" || ! -x "${SPARKLE_BIN_DIR}/generate_appcast" ]]; then
   print -u2 "SPARKLE_BIN_DIR에 Sparkle 릴리스의 generate_appcast 도구 경로가 필요합니다."
@@ -18,7 +19,7 @@ fi
 # 이 스크립트는 Keychain 값을 읽거나 노출하지 않는다.
 work_dir=$(mktemp -d "${dist_dir}/.appcast.XXXXXX")
 trap 'rm -rf "${work_dir}"' EXIT
-ditto "${dist_dir}/NasFinder-Super-Thumbnail-1.0.0.dmg" "${work_dir}/NasFinder-Super-Thumbnail-1.0.0.dmg"
+ditto "${dist_dir}/NasFinder-Super-Thumbnail-${app_version}.dmg" "${work_dir}/NasFinder-Super-Thumbnail-${app_version}.dmg"
 
 "${SPARKLE_BIN_DIR}/generate_appcast" \
   --account "${key_account}" \
