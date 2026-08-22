@@ -3,13 +3,15 @@ import QuickLookThumbnailing
 import SwiftUI
 import UniformTypeIdentifiers
 
-private enum ReceivedFilesLayoutStyle: String, CaseIterable, Identifiable {
+enum ReceivedFilesLayoutStyle: String, CaseIterable, Identifiable {
     case details
     case thumbnails
     case posters
     case overflow
 
     var id: String { rawValue }
+
+    static let selectableCases: [Self] = [.details, .thumbnails, .posters]
 
     var title: String {
         switch self {
@@ -27,6 +29,36 @@ private enum ReceivedFilesLayoutStyle: String, CaseIterable, Identifiable {
         case .posters: "square.grid.2x2"
         case .overflow: "rectangle.stack.fill"
         }
+    }
+}
+
+enum ReceivedFilesLayoutPresentationPolicy {
+    static func normalizedSelection(_ rawValue: String) -> ReceivedFilesLayoutStyle {
+        guard let style = ReceivedFilesLayoutStyle(rawValue: rawValue), style != .overflow else {
+            return rawValue == ReceivedFilesLayoutStyle.overflow.rawValue ? .posters : .details
+        }
+        return style
+    }
+
+    static func presentedStyle(
+        selectedStyle: ReceivedFilesLayoutStyle,
+        isLandscape: Bool
+    ) -> ReceivedFilesLayoutStyle {
+        selectedStyle == .posters && isLandscape ? .overflow : selectedStyle
+    }
+}
+
+enum ReceivedFilesOverflowControlPlacement: Equatable {
+    case topTrailing
+
+    var alignment: Alignment { .topTrailing }
+}
+
+enum ReceivedFilesOverflowPresentationPolicy {
+    static let backgroundControlPlacement = ReceivedFilesOverflowControlPlacement.topTrailing
+
+    static func toggledBackground(_ usesDarkBackground: Bool) -> Bool {
+        !usesDarkBackground
     }
 }
 
@@ -54,40 +86,40 @@ struct ReceivedFilesView: View {
     @State private var isImportingFromFiles = false
     @State private var isImportingFromGooglePhotos = false
     @State private var isConfirmingSelectionDeletion = false
+    @State private var isLandscape = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            if !isSelecting {
-                WebHardConnectionPanel()
-                    .frame(maxWidth: 760)
-                    .padding(.horizontal, 16)
-                    .padding(.top, 12)
-                    .padding(.bottom, 14)
-            }
+        Group {
+            if inboxStore.records.isEmpty {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        connectionPanel
 
-            Group {
-                if inboxStore.records.isEmpty {
-                    ContentUnavailableView {
-                        Label("폰하드가 비어 있습니다", systemImage: "tray")
-                    } description: {
-                        Text("내가 저장하거나 다른 기기에서 보낸 파일이 이곳에 모입니다.")
-                    } actions: {
-                        Button("파일 가져오기", systemImage: "doc.badge.plus") {
-                            isImportingFromFiles = true
-                        }
-                        .buttonStyle(.borderedProminent)
+                        ContentUnavailableView {
+                            Label("폰하드가 비어 있습니다", systemImage: "tray")
+                        } description: {
+                            Text("내가 저장하거나 다른 기기에서 보낸 파일이 이곳에 모입니다.")
+                        } actions: {
+                            Button("파일 가져오기", systemImage: "doc.badge.plus") {
+                                isImportingFromFiles = true
+                            }
+                            .buttonStyle(.borderedProminent)
 
-                        Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
-                            isImportingFromGooglePhotos = true
+                            Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
+                                isImportingFromGooglePhotos = true
+                            }
+                            .buttonStyle(.bordered)
                         }
-                        .buttonStyle(.bordered)
+                        .padding(.vertical, 44)
                     }
-                } else {
-                    receivedFilesContent
+                    .frame(maxWidth: .infinity)
                 }
+                .refreshable { reloadInbox() }
+            } else {
+                receivedFilesContent
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SkyBreezeBackground())
         .navigationTitle(
             isSelecting ? "\(selectedRecords.count)개 선택" : (isEnamel ? "" : "폰하드")
@@ -126,7 +158,7 @@ struct ReceivedFilesView: View {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if !inboxStore.records.isEmpty {
                         Menu {
-                            ForEach(ReceivedFilesLayoutStyle.allCases) { style in
+                            ForEach(ReceivedFilesLayoutStyle.selectableCases) { style in
                                 Button {
                                     storedLayoutStyle = style.rawValue
                                 } label: {
@@ -193,7 +225,10 @@ struct ReceivedFilesView: View {
                 previewItem = LocalInboxFileService.remoteItem(for: record)
             }
         }
-        .onAppear(perform: reloadInbox)
+        .onAppear {
+            normalizeStoredLayoutStyle()
+            reloadInbox()
+        }
         .task(id: uploadabilityTaskID) {
             let records = inboxStore.records
             let refreshGeneration = uploadabilityRefreshGeneration
@@ -222,6 +257,18 @@ struct ReceivedFilesView: View {
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             uploadabilityRefreshGeneration &+= 1
+        }
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear {
+                        updateOrientation(for: proxy.size)
+                    }
+                    .onChange(of: proxy.size) { _, size in
+                        updateOrientation(for: size)
+                    }
+            }
+            .allowsHitTesting(false)
         }
         .alert("폰하드 오류", isPresented: errorBinding) {
             Button("확인", role: .cancel) {
@@ -268,9 +315,19 @@ struct ReceivedFilesView: View {
 
     @ViewBuilder
     private var receivedFilesContent: some View {
-        switch layoutStyle {
+        switch presentedLayoutStyle {
         case .details:
             List {
+                if !isSelecting {
+                    WebHardConnectionPanel()
+                        .frame(maxWidth: 760)
+                        .listRowInsets(
+                            EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16)
+                        )
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(Color.clear)
+                }
+
                 ForEach(inboxStore.records) { record in
                     receivedFileRow(record)
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
@@ -288,13 +345,20 @@ struct ReceivedFilesView: View {
             .refreshable { reloadInbox() }
         case .thumbnails, .posters:
             ScrollView {
-                LazyVGrid(columns: gridColumns, spacing: layoutStyle == .posters ? 20 : 14) {
-                    ForEach(inboxStore.records) { record in
-                        receivedFileTile(record, poster: layoutStyle == .posters)
-                            .contextMenu { recordContextMenu(record) }
+                VStack(spacing: 0) {
+                    connectionPanel
+
+                    LazyVGrid(
+                        columns: gridColumns,
+                        spacing: presentedLayoutStyle == .posters ? 20 : 14
+                    ) {
+                        ForEach(inboxStore.records) { record in
+                            receivedFileTile(record, poster: presentedLayoutStyle == .posters)
+                                .contextMenu { recordContextMenu(record) }
+                        }
                     }
+                    .padding(16)
                 }
-                .padding(16)
             }
             .refreshable { reloadInbox() }
         case .overflow:
@@ -304,16 +368,58 @@ struct ReceivedFilesView: View {
                 itemName: { $0.originalFilename },
                 thumbnail: { record, size in
                     let item = LocalInboxFileService.remoteItem(for: record)
-                    return receivedFileArtwork(for: item, record: record, requestSize: size)
+                    let squareSize = ReceivedFilesThumbnailPolicy.squareSize(size)
+                    return receivedFileArtwork(
+                        for: item,
+                        record: record,
+                        requestSize: squareSize
+                    )
                 },
                 onActivate: activate,
                 onShowActions: nil
             )
+            .overlay(
+                alignment: ReceivedFilesOverflowPresentationPolicy
+                    .backgroundControlPlacement.alignment
+            ) {
+                Button {
+                    overflowUsesDarkBackground = ReceivedFilesOverflowPresentationPolicy
+                        .toggledBackground(overflowUsesDarkBackground)
+                } label: {
+                    Image(systemName: overflowUsesDarkBackground ? "sun.max.fill" : "moon.fill")
+                        .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
+                .tint(overflowUsesDarkBackground ? .white : .primary)
+                .accessibilityLabel(
+                    overflowUsesDarkBackground ? "밝은 배경으로 전환" : "어두운 배경으로 전환"
+                )
+                .padding(16)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var connectionPanel: some View {
+        if !isSelecting {
+            WebHardConnectionPanel()
+                .frame(maxWidth: 760)
+                .padding(.horizontal, 16)
+                .padding(.top, 12)
+                .padding(.bottom, 10)
         }
     }
 
     private var layoutStyle: ReceivedFilesLayoutStyle {
-        ReceivedFilesLayoutStyle(rawValue: storedLayoutStyle) ?? .details
+        ReceivedFilesLayoutPresentationPolicy.normalizedSelection(storedLayoutStyle)
+    }
+
+    private var presentedLayoutStyle: ReceivedFilesLayoutStyle {
+        ReceivedFilesLayoutPresentationPolicy.presentedStyle(
+            selectedStyle: layoutStyle,
+            isLandscape: isLandscape
+        )
     }
 
     private var isEnamel: Bool {
@@ -322,6 +428,19 @@ struct ReceivedFilesView: View {
 
     private var gridColumns: [GridItem] {
         [GridItem(.adaptive(minimum: layoutStyle == .posters ? 164 : 104), spacing: 14)]
+    }
+
+    private func normalizeStoredLayoutStyle() {
+        let normalized = ReceivedFilesLayoutPresentationPolicy
+            .normalizedSelection(storedLayoutStyle)
+        if storedLayoutStyle != normalized.rawValue {
+            storedLayoutStyle = normalized.rawValue
+        }
+    }
+
+    private func updateOrientation(for size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        isLandscape = size.width > size.height
     }
 
     @ViewBuilder
@@ -357,6 +476,9 @@ struct ReceivedFilesView: View {
         let item = LocalInboxFileService.remoteItem(for: record)
         let selected = selectedRecordIDs.contains(record.id)
         let requestSide: CGFloat = poster ? 360 : 220
+        let requestSize = ReceivedFilesThumbnailPolicy.squareSize(
+            CGSize(width: requestSide, height: requestSide)
+        )
 
         return Button {
             activate(record)
@@ -365,7 +487,7 @@ struct ReceivedFilesView: View {
                 receivedFileArtwork(
                     for: item,
                     record: record,
-                    requestSize: CGSize(width: requestSide, height: requestSide)
+                    requestSize: requestSize
                 )
                 .frame(maxWidth: .infinity)
                 .aspectRatio(1, contentMode: .fit)
@@ -589,7 +711,7 @@ struct ReceivedFilesView: View {
         for item: RemoteFileItem,
         record: SharedInboxRecord
     ) -> some View {
-        let size = CGSize(width: 56, height: 56)
+        let size = ReceivedFilesThumbnailPolicy.squareSize(CGSize(width: 56, height: 56))
         let shape = RoundedRectangle(cornerRadius: 9)
 
         receivedFileArtwork(for: item, record: record, requestSize: size)
@@ -635,6 +757,13 @@ struct ReceivedFilesView: View {
             get: { inboxStore.errorMessage != nil },
             set: { if !$0 { inboxStore.errorMessage = nil } }
         )
+    }
+}
+
+enum ReceivedFilesThumbnailPolicy {
+    static func squareSize(_ proposedSize: CGSize) -> CGSize {
+        let side = max(proposedSize.width, proposedSize.height)
+        return CGSize(width: side, height: side)
     }
 }
 

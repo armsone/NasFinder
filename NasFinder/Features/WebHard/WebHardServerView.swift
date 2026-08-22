@@ -9,20 +9,6 @@ extension WebHardServerState {
         case .stopped, .failed: false
         }
     }
-
-    var connectionStatusTitle: String {
-        switch self {
-        case .stopped: "닫혀 있음"
-        case .starting: "여는 중"
-        case .ready: "열려 있음"
-        case .failed: "확인 필요"
-        }
-    }
-
-    var isReadyForConnections: Bool {
-        if case .ready = self { return true }
-        return false
-    }
 }
 
 @MainActor
@@ -210,32 +196,21 @@ struct WebHardConnectionPanel: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 9) {
                 if isEnamel {
-                    PhoneHardMark(size: 32)
+                    PhoneHardMark(size: 28)
                 } else {
                     ThemedSymbol(
                         systemName: "externaldrive.fill.badge.wifi",
-                        size: 32,
-                        symbolSize: 17,
-                        showsStatus: controller.isRunning
+                        size: 28,
+                        symbolSize: 15
                     )
                 }
 
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("다른 기기에서 열기")
-                        .font(isEnamel ? .title3.weight(.bold) : .headline)
-                        .foregroundStyle(isEnamel ? bkCharcoal : Color.primary)
-                    HStack(spacing: 6) {
-                        if isEnamel {
-                            BKWebHardStatusLamp(isOn: controller.state.isReadyForConnections)
-                        }
-                        Text(controller.state.connectionStatusTitle)
-                            .font(.caption.weight(isEnamel ? .medium : .regular))
-                            .foregroundStyle(connectionStatusColor)
-                    }
-                }
+                Text("서버 열기")
+                    .font(.headline.weight(isEnamel ? .bold : .semibold))
+                    .foregroundStyle(isEnamel ? bkCharcoal : Color.primary)
 
                 Spacer(minLength: 8)
 
@@ -249,22 +224,15 @@ struct WebHardConnectionPanel: View {
                 .accessibilityLabel("접속 주소 새로고침")
             }
 
-            if isEnamel {
-                Text("같은 Wi-Fi의 브라우저에서 폰하드를 열어 파일을 주고받습니다.")
-                    .font(.subheadline)
-                    .foregroundStyle(Color(red: 0.32, green: 0.33, blue: 0.34))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
             WebHardConnectionControls()
         }
-        .padding(isEnamel ? 18 : 16)
+        .padding(14)
         .background(
             panelFill,
-            in: RoundedRectangle(cornerRadius: 18, style: .continuous)
+            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(panelRim, lineWidth: isEnamel ? 1.25 : 1)
         }
         .overlay(alignment: .top) {
@@ -276,15 +244,10 @@ struct WebHardConnectionPanel: View {
                     .padding(.top, 2)
             }
         }
-        .shadow(color: .black.opacity(isEnamel ? 0.16 : 0.06), radius: 10, y: 5)
+        .shadow(color: .black.opacity(isEnamel ? 0.14 : 0.06), radius: 8, y: 4)
         .onAppear {
             if !controller.isRunning { controller.refreshAddresses() }
         }
-    }
-
-    private var connectionStatusColor: Color {
-        if case .failed = controller.state { return .red }
-        return isEnamel ? Color(red: 0.34, green: 0.35, blue: 0.36) : .secondary
     }
 
     private var bkCharcoal: Color {
@@ -329,24 +292,24 @@ private struct WebHardConnectionControls: View {
     @EnvironmentObject private var controller: WebHardServerController
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.system.rawValue
+    @State private var isPasswordExpanded = false
 
     private var isEnamel: Bool {
         AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            addressControl
+        VStack(alignment: .leading, spacing: 9) {
+            addressInfoRow
 
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 12) {
-                    passwordControl
-                    toggleButton
-                }
-                VStack(alignment: .leading, spacing: 10) {
-                    passwordControl
-                    toggleButton
-                }
+            if isPasswordExpanded {
+                passwordControl
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            HStack(spacing: 10) {
+                passwordDisclosureButton
+                toggleButton
             }
 
             if case let .failed(message) = controller.state {
@@ -354,62 +317,58 @@ private struct WebHardConnectionControls: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
-
-            if let accessURL = controller.accessURL {
-                HStack(alignment: .center, spacing: 10) {
-                    ThemedSymbol(
-                        systemName: "link",
-                        size: 30,
-                        symbolSize: 15,
-                        showsStatus: true
-                    )
-                    .accessibilityHidden(true)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("접속 주소")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(accessURL.absoluteString)
-                            .font(.footnote.monospaced())
-                            .textSelection(.enabled)
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .accessibilityElement(children: .combine)
-            }
         }
+        .animation(.easeInOut(duration: 0.18), value: isPasswordExpanded)
     }
 
     @ViewBuilder
-    private var addressControl: some View {
-        if controller.addresses.isEmpty {
+    private var addressInfoRow: some View {
+        if controller.selectedAddress == nil {
             Label("사용 가능한 접속 주소가 없습니다", systemImage: "network.slash")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
         } else {
-            if isEnamel {
-                addressPicker
-                    .tint(Color(red: 0.12, green: 0.13, blue: 0.14))
-                    .padding(.horizontal, 13)
-                    .frame(minHeight: 48)
-                    .background(BKWebHardRecessedSurface())
-            } else {
-                addressPicker
+            ViewThatFits(in: .horizontal) {
+                LabeledContent {
+                    addressText(alignment: .trailing)
+                } label: {
+                    addressLabel
+                }
+
+                VStack(alignment: .leading, spacing: 3) {
+                    addressLabel
+                    addressText(alignment: .leading)
+                }
             }
+            .frame(minHeight: 32)
+            .accessibilityElement(children: .combine)
         }
     }
 
-    private var addressPicker: some View {
-        Picker("접속 주소", selection: $controller.selectedAddressID) {
-            ForEach(controller.addresses) { address in
-                Text("\(address.kind.title) · \(address.address)")
-                    .tag(Optional(address.id))
-            }
+    private var addressLabel: some View {
+        Text("접속 주소")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+    }
+
+    private func addressText(alignment: TextAlignment) -> some View {
+        Text(addressValue)
+            .font(.footnote.monospaced())
+            .foregroundStyle(
+                isEnamel ? Color(red: 0.12, green: 0.13, blue: 0.14) : Color.primary
+            )
+            .multilineTextAlignment(alignment)
+            .textSelection(.enabled)
+            .lineLimit(2)
+            .truncationMode(.middle)
+    }
+
+    private var addressValue: String {
+        if let accessURL = controller.accessURL {
+            return accessURL.absoluteString
         }
-        .pickerStyle(.menu)
-        .disabled(controller.isRunning)
+        guard let address = controller.selectedAddress else { return "" }
+        return "\(address.kind.title) · \(address.address)"
     }
 
     @ViewBuilder
@@ -418,20 +377,43 @@ private struct WebHardConnectionControls: View {
             passwordField
                 .textFieldStyle(.plain)
                 .foregroundStyle(Color(red: 0.12, green: 0.13, blue: 0.14))
-                .padding(.horizontal, 13)
-                .frame(minWidth: 180, maxWidth: .infinity, minHeight: 48)
+                .padding(.horizontal, 11)
+                .frame(minWidth: 140, maxWidth: .infinity, minHeight: 40)
                 .background(BKWebHardRecessedSurface())
         } else {
             passwordField
                 .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 180, maxWidth: .infinity)
+                .frame(minWidth: 140, maxWidth: .infinity, minHeight: 40)
         }
     }
 
     private var passwordField: some View {
         SecureField("비밀번호 (선택)", text: $controller.password)
+            .font(.subheadline)
+            .controlSize(.small)
             .textContentType(.password)
             .disabled(controller.isRunning)
+    }
+
+    private var passwordDisclosureButton: some View {
+        Button {
+            isPasswordExpanded.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Text("비밀번호")
+                Image(systemName: isPasswordExpanded ? "chevron.up" : "chevron.down")
+                    .font(.caption.weight(.semibold))
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(isEnamel ? Color(red: 0.12, green: 0.13, blue: 0.14) : .accentColor)
+        .frame(minWidth: 120, maxWidth: .infinity, minHeight: 40)
+        .accessibilityValue(isPasswordExpanded ? "펼쳐짐" : "접힘")
+        .accessibilityHint(
+            isPasswordExpanded ? "비밀번호 입력을 접습니다." : "비밀번호 입력을 펼칩니다."
+        )
     }
 
     @ViewBuilder
@@ -439,16 +421,22 @@ private struct WebHardConnectionControls: View {
         if isEnamel {
             connectionToggleButton
                 .buttonStyle(BKWebHardToggleButtonStyle(isRunning: controller.isRunning))
+                .frame(minWidth: 88, maxWidth: .infinity)
                 .opacity(toggleIsDisabled ? 0.45 : 1)
         } else {
             connectionToggleButton
                 .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .frame(minWidth: 88, maxWidth: .infinity)
         }
     }
 
     private var connectionToggleButton: some View {
-        Button(controller.isRunning ? "닫기" : "열기") {
+        Button {
             controller.isRunning ? controller.stop() : controller.start()
+        } label: {
+            Text(controller.isRunning ? "닫기" : "열기")
+                .frame(maxWidth: .infinity)
         }
         .disabled(toggleIsDisabled)
         .accessibilityHint(
@@ -463,40 +451,9 @@ private struct WebHardConnectionControls: View {
     }
 }
 
-private struct BKWebHardStatusLamp: View {
-    let isOn: Bool
-
-    var body: some View {
-        Circle()
-            .fill(
-                isOn
-                    ? AnyShapeStyle(
-                        LinearGradient(
-                            colors: [
-                                Color(red: 1.00, green: 0.22, blue: 0.24),
-                                Color(red: 0.894, green: 0.118, blue: 0.145),
-                            ],
-                            startPoint: .topLeading,
-                            endPoint: .bottomTrailing
-                        )
-                    )
-                    : AnyShapeStyle(Color(red: 0.62, green: 0.63, blue: 0.63))
-            )
-            .frame(width: 9, height: 9)
-            .overlay(Circle().stroke(.white.opacity(0.92), lineWidth: 0.75))
-            .shadow(
-                color: isOn
-                    ? Color(red: 0.894, green: 0.118, blue: 0.145).opacity(0.42)
-                    : .clear,
-                radius: 3
-            )
-            .accessibilityHidden(true)
-    }
-}
-
 private struct BKWebHardRecessedSurface: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 11, style: .continuous)
+        RoundedRectangle(cornerRadius: 9, style: .continuous)
             .fill(
                 LinearGradient(
                     colors: [
@@ -508,7 +465,7 @@ private struct BKWebHardRecessedSurface: View {
                 )
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
                     .stroke(Color.black.opacity(0.16), lineWidth: 1)
             }
             .shadow(color: .white.opacity(0.88), radius: 0, y: 1)
@@ -526,14 +483,14 @@ private struct BKWebHardToggleButtonStyle: ButtonStyle {
                     ? Color(red: 0.12, green: 0.13, blue: 0.14)
                     : Color.white
             )
-            .padding(.horizontal, 22)
-            .frame(minWidth: 96, minHeight: 48)
+            .padding(.horizontal, 16)
+            .frame(minWidth: 88, maxWidth: .infinity, minHeight: 40)
             .background {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(buttonFill)
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(buttonRim, lineWidth: 1)
             }
             .overlay(alignment: .top) {

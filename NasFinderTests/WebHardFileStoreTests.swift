@@ -83,20 +83,12 @@ final class WebHardFileStoreTests: XCTestCase {
 
     func testServerConnectionStateKeepsStartingServerClosable() {
         XCTAssertFalse(WebHardServerState.stopped.isConnectionOpen)
-        XCTAssertFalse(WebHardServerState.stopped.isReadyForConnections)
-        XCTAssertEqual(WebHardServerState.stopped.connectionStatusTitle, "닫혀 있음")
 
         XCTAssertTrue(WebHardServerState.starting.isConnectionOpen)
-        XCTAssertFalse(WebHardServerState.starting.isReadyForConnections)
-        XCTAssertEqual(WebHardServerState.starting.connectionStatusTitle, "여는 중")
 
         XCTAssertTrue(WebHardServerState.ready(port: 8_080).isConnectionOpen)
-        XCTAssertTrue(WebHardServerState.ready(port: 8_080).isReadyForConnections)
-        XCTAssertEqual(WebHardServerState.ready(port: 8_080).connectionStatusTitle, "열려 있음")
 
         XCTAssertFalse(WebHardServerState.failed("실패").isConnectionOpen)
-        XCTAssertFalse(WebHardServerState.failed("실패").isReadyForConnections)
-        XCTAssertEqual(WebHardServerState.failed("실패").connectionStatusTitle, "확인 필요")
     }
 
     func testFolderArchiveHasZipHeadersAndFileName() throws {

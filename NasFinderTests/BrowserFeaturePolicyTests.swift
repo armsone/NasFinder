@@ -3,6 +3,76 @@ import XCTest
 
 @MainActor
 final class BrowserFeaturePolicyTests: XCTestCase {
+    func testReceivedFilesLayoutSelectorExcludesOverflow() {
+        XCTAssertEqual(
+            ReceivedFilesLayoutStyle.selectableCases.map(\.title),
+            ["자세히", "썸네일", "포스터"]
+        )
+    }
+
+    func testReceivedFilesStoredOverflowMigratesToPoster() {
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.normalizedSelection("overflow"),
+            .posters
+        )
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.normalizedSelection("unknown"),
+            .details
+        )
+    }
+
+    func testReceivedFilesPosterUsesOverflowOnlyInLandscape() {
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.presentedStyle(
+                selectedStyle: .posters,
+                isLandscape: true
+            ),
+            .overflow
+        )
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.presentedStyle(
+                selectedStyle: .posters,
+                isLandscape: false
+            ),
+            .posters
+        )
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.presentedStyle(
+                selectedStyle: .thumbnails,
+                isLandscape: true
+            ),
+            .thumbnails
+        )
+    }
+
+    func testReceivedFilesOverflowBackgroundControlContract() {
+        XCTAssertEqual(
+            ReceivedFilesOverflowPresentationPolicy.backgroundControlPlacement,
+            .topTrailing
+        )
+        XCTAssertTrue(ReceivedFilesOverflowPresentationPolicy.toggledBackground(false))
+        XCTAssertFalse(ReceivedFilesOverflowPresentationPolicy.toggledBackground(true))
+    }
+
+    func testReceivedFilesThumbnailSourceContractKeepsEveryLayoutSquare() {
+        let proposedSizes = [
+            "자세히": CGSize(width: 56, height: 56),
+            "썸네일": CGSize(width: 220, height: 220),
+            "포스터": CGSize(width: 360, height: 360),
+            "오버플로우": CGSize(width: 360, height: 260),
+        ]
+
+        for (layout, proposedSize) in proposedSizes {
+            let requestSize = ReceivedFilesThumbnailPolicy.squareSize(proposedSize)
+            XCTAssertEqual(requestSize.width, requestSize.height, layout)
+            XCTAssertEqual(
+                requestSize.width,
+                max(proposedSize.width, proposedSize.height),
+                layout
+            )
+        }
+    }
+
     func testSuperThumbnailThermalPolicyBalancesSpeedAndHeat() {
         XCTAssertFalse(ThumbnailThermalPolicy.shouldPause(for: .nominal))
         XCTAssertNil(ThumbnailThermalPolicy.pacingDelayMilliseconds(for: .nominal))
