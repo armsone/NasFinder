@@ -691,7 +691,7 @@ struct FileBrowserView: View {
 
                 if downloadTask != nil {
                     FileOperationProgressBanner(
-                        title: "받은 파일에 저장 중…",
+                        title: "폰하드에 저장 중…",
                         progress: RemoteOperationProgress(
                             operationID: UUID(),
                             operation: .copy,
@@ -1794,8 +1794,8 @@ struct FileBrowserView: View {
                     downloadCompletedCount += 1
                 }
                 operationCoordinator.statusMessage = files.count == 1
-                    ? "받은 파일에 저장했습니다."
-                    : "파일 \(files.count)개를 받은 파일에 저장했습니다."
+                    ? "폰하드에 저장했습니다."
+                    : "파일 \(files.count)개를 폰하드에 저장했습니다."
             } catch is CancellationError {
                 // 사용자가 취소한 경우 완료된 파일은 그대로 보존합니다.
             } catch {

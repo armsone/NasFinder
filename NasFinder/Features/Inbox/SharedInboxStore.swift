@@ -30,7 +30,7 @@ final class SharedInboxStore: ObservableObject {
             }
             errorMessage = nil
         } catch {
-            errorMessage = "받은 파일 목록을 읽지 못했습니다: \(error.localizedDescription)"
+            errorMessage = "폰하드 파일 목록을 읽지 못했습니다: \(error.localizedDescription)"
         }
     }
 

@@ -49,16 +49,7 @@ struct WebHardFileStore: Sendable {
         if let rootURL {
             resolvedRoot = rootURL
         } else {
-            guard let applicationSupport = FileManager.default.urls(
-                for: .applicationSupportDirectory,
-                in: .userDomainMask
-            ).first else {
-                throw WebHardFileStoreError.invalidPath
-            }
-            resolvedRoot = applicationSupport.appendingPathComponent(
-                "WebHard",
-                isDirectory: true
-            )
+            resolvedRoot = try SharedInbox.storageURL()
         }
 
         try FileManager.default.createDirectory(
@@ -85,6 +76,9 @@ struct WebHardFileStore: Sendable {
             ],
             options: [.skipsHiddenFiles]
         ).compactMap { url in
+            guard directoryURL != rootURL || url.lastPathComponent != "manifest.json" else {
+                return nil
+            }
             let values = try url.resourceValues(forKeys: [
                 .isDirectoryKey,
                 .isRegularFileKey,

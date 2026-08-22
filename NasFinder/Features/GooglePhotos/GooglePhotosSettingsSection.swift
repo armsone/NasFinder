@@ -56,9 +56,9 @@ final class GooglePhotosConnectionSettingsModel: ObservableObject {
             try dependencies.removeCredential()
             isConnected = false
             resultMessage = revokeSucceeded
-                ? "Google 포토 연결을 해제했습니다. 받은 파일에 저장된 항목은 그대로 유지됩니다."
+                ? "Google 포토 연결을 해제했습니다. 폰하드에 저장된 항목은 그대로 유지됩니다."
                 : "이 기기의 Google 포토 연결 정보를 삭제했습니다. Google 계정 쪽 권한 해제 요청은 실패했으므로 "
-                    + "필요하면 Google 계정 설정에서 직접 해제해 주세요. 받은 파일에 저장된 항목은 그대로 유지됩니다."
+                    + "필요하면 Google 계정 설정에서 직접 해제해 주세요. 폰하드에 저장된 항목은 그대로 유지됩니다."
         } catch {
             refreshConnectionState()
             resultMessage = "Google 포토 연결 정보를 삭제하지 못했습니다. 잠시 후 다시 시도해 주세요."
@@ -106,7 +106,7 @@ struct GooglePhotosSettingsSection: View {
                     }
                     Button("취소", role: .cancel) {}
                 } message: {
-                    Text("이 기기에 저장된 Google 포토 인증 정보만 삭제됩니다. 이미 받은 파일에 저장된 항목과 Google Drive 연결은 그대로 유지됩니다.")
+                    Text("이 기기에 저장된 Google 포토 인증 정보만 삭제됩니다. 이미 폰하드에 저장된 항목과 Google Drive 연결은 그대로 유지됩니다.")
                 }
                 .alert("Google 포토", isPresented: resultMessageBinding) {
                     Button("확인", role: .cancel) {
@@ -117,7 +117,7 @@ struct GooglePhotosSettingsSection: View {
                 }
 
                 SettingsPanelDescription(
-                    "연결을 해제해도 받은 파일에 저장된 사진·동영상은 삭제되지 않습니다."
+                    "연결을 해제해도 폰하드에 저장된 사진·동영상은 삭제되지 않습니다."
                 )
             } header: {
                 SettingsSectionHeader(title: "Google 포토", systemImage: "photo.on.rectangle")

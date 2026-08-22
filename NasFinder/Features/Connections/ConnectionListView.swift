@@ -184,7 +184,6 @@ struct ConnectionListView: View {
     private var dashboardSections: some View {
         myFilesSection
         networkSection
-        photoTransferSection
         storageSection
         settingsSection
     }
@@ -255,26 +254,24 @@ struct ConnectionListView: View {
             NavigationLink {
                 ReceivedFilesView()
             } label: {
-                LabeledContent {
-                    Text(inboxSummary)
-                        .foregroundStyle(.secondary)
-                } label: {
-                    HStack(spacing: 7) {
-                        ThemedSymbol(
-                            systemName: "tray.and.arrow.down",
-                            size: 32,
-                            symbolSize: 17
-                        )
-                        Text("받은 파일")
-                    }
-                }
+                WebHardNetworkLocationRow(summary: inboxSummary)
             }
 
             NavigationLink {
-                WebHardServerView()
+                PhotoTransferView()
             } label: {
-                WebHardNetworkLocationRow()
+                HStack(spacing: 7) {
+                    ThemedSymbol(
+                        systemName: "photo.on.rectangle.angled",
+                        size: 32,
+                        symbolSize: 17
+                    )
+                    Text("Live Photos & Motion Photos")
+                }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
             }
+            .accessibilityHint("사진과 영상을 함께 보내는 화면을 엽니다.")
 
             ThumbnailCacheSettingsLink()
 
@@ -335,26 +332,6 @@ struct ConnectionListView: View {
         }
         .font(.subheadline)
         .foregroundStyle(.secondary)
-    }
-
-    private var photoTransferSection: some View {
-        Section {
-            NavigationLink {
-                PhotoTransferView()
-            } label: {
-                HStack(spacing: 7) {
-                    ThemedSymbol(
-                        systemName: "photo.on.rectangle.angled",
-                        size: 32,
-                        symbolSize: 17
-                    )
-                    Text("Live Photos & Motion Photos")
-                }
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityHint("사진과 영상을 함께 보내는 화면을 엽니다.")
-        }
     }
 
     private var settingsSection: some View {
@@ -421,7 +398,7 @@ struct ConnectionListView: View {
                     ReceivedFilesView()
                 } label: {
                     QuickLocationCard(
-                        title: "받은 파일",
+                        title: "폰하드",
                         subtitle: inboxStore.records.isEmpty
                             ? "다른 앱에서 파일 가져오기"
                             : inboxSummary,
@@ -430,7 +407,7 @@ struct ConnectionListView: View {
                     )
                 }
                 .buttonStyle(.plain)
-                .accessibilityHint("다른 앱에서 NasFinder로 받은 파일을 엽니다.")
+                .accessibilityHint("다른 앱에서 NasFinder로 가져온 폰하드 파일을 엽니다.")
 
                 NavigationLink {
                     FilesAppIntegrationGuideView(connectionCount: store.connections.count)
@@ -771,8 +748,14 @@ private struct WebNetworkLocationRow: View {
 }
 
 private struct WebHardNetworkLocationRow: View {
+    let summary: String?
+
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.system.rawValue
+
+    init(summary: String? = nil) {
+        self.summary = summary
+    }
 
     private var isEnamel: Bool {
         AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
@@ -795,10 +778,18 @@ private struct WebHardNetworkLocationRow: View {
             Text("폰하드")
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(.primary)
+
+            Spacer(minLength: 8)
+
+            if let summary {
+                Text(summary)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("폰하드")
-        .accessibilityHint("폰하드 설정을 엽니다.")
+        .accessibilityHint("폰하드 파일을 엽니다.")
     }
 }
 
@@ -816,7 +807,7 @@ private struct StorageOverviewCard: View {
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.primary)
 
-                Text("iPhone에 받은 파일과 연결된 원격 위치를 한눈에 확인하세요.")
+                Text("iPhone의 폰하드 파일과 연결된 원격 위치를 한눈에 확인하세요.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -829,7 +820,7 @@ private struct StorageOverviewCard: View {
                 spacing: 10
             ) {
                 StorageMetric(
-                    title: "받은 파일",
+                    title: "폰하드",
                     value: inboxCount == 0 ? "없음" : formattedByteCount(inboxByteCount),
                     detail: "\(inboxCount)개",
                     systemImage: "tray.full.fill",

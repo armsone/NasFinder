@@ -38,9 +38,12 @@ struct ReceivedFilesView: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var inboxStore: SharedInboxStore
+    @EnvironmentObject private var webHardController: WebHardServerController
     @AppStorage("receivedFilesLayoutStyle.v1") private var storedLayoutStyle =
         ReceivedFilesLayoutStyle.details.rawValue
     @AppStorage("receivedFilesOverflowDark.v1") private var overflowUsesDarkBackground = false
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
     @State private var previewItem: RemoteFileItem?
     @State private var isSelecting = false
     @State private var selectedRecordIDs: Set<SharedInboxRecord.ID> = []
@@ -53,29 +56,42 @@ struct ReceivedFilesView: View {
     @State private var isConfirmingSelectionDeletion = false
 
     var body: some View {
-        Group {
-            if inboxStore.records.isEmpty {
-                ContentUnavailableView {
-                    Label("받은 파일이 없습니다", systemImage: "tray")
-                } description: {
-                    Text("공유한 파일이 이곳에 보관됩니다.")
-                } actions: {
-                    Button("파일 가져오기", systemImage: "doc.badge.plus") {
-                        isImportingFromFiles = true
-                    }
-                    .buttonStyle(.borderedProminent)
-
-                    Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
-                        isImportingFromGooglePhotos = true
-                    }
-                    .buttonStyle(.bordered)
-                }
-            } else {
-                receivedFilesContent
+        VStack(spacing: 0) {
+            if !isSelecting {
+                WebHardConnectionPanel()
+                    .frame(maxWidth: 760)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+                    .padding(.bottom, 14)
             }
+
+            Group {
+                if inboxStore.records.isEmpty {
+                    ContentUnavailableView {
+                        Label("폰하드가 비어 있습니다", systemImage: "tray")
+                    } description: {
+                        Text("내가 저장하거나 다른 기기에서 보낸 파일이 이곳에 모입니다.")
+                    } actions: {
+                        Button("파일 가져오기", systemImage: "doc.badge.plus") {
+                            isImportingFromFiles = true
+                        }
+                        .buttonStyle(.borderedProminent)
+
+                        Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
+                            isImportingFromGooglePhotos = true
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                } else {
+                    receivedFilesContent
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .background(SkyBreezeBackground())
-        .navigationTitle(isSelecting ? "\(selectedRecords.count)개 선택" : "받은 파일")
+        .navigationTitle(
+            isSelecting ? "\(selectedRecords.count)개 선택" : (isEnamel ? "" : "폰하드")
+        )
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if isSelecting {
@@ -96,6 +112,17 @@ struct ReceivedFilesView: View {
                     }
                 }
             } else {
+                if isEnamel {
+                    ToolbarItem(placement: .principal) {
+                        HStack(spacing: 8) {
+                            PhoneHardMark(size: 26)
+                            Text("폰하드")
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                }
+
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if !inboxStore.records.isEmpty {
                         Menu {
@@ -123,9 +150,9 @@ struct ReceivedFilesView: View {
                             isImportingFromGooglePhotos = true
                         }
                     } label: {
-                        Image(systemName: "square.and.arrow.down")
+                        Image(systemName: "ellipsis.circle")
                     }
-                    .accessibilityLabel("가져오기")
+                    .accessibilityLabel("폰하드 메뉴")
 
                     if !inboxStore.records.isEmpty {
                         Button("선택") {
@@ -166,6 +193,7 @@ struct ReceivedFilesView: View {
                 previewItem = LocalInboxFileService.remoteItem(for: record)
             }
         }
+        .onAppear(perform: reloadInbox)
         .task(id: uploadabilityTaskID) {
             let records = inboxStore.records
             let refreshGeneration = uploadabilityRefreshGeneration
@@ -188,11 +216,14 @@ struct ReceivedFilesView: View {
         .onChange(of: Set(inboxStore.records.map(\.id))) { _, validRecordIDs in
             selectedRecordIDs.formIntersection(validRecordIDs)
         }
+        .onChange(of: webHardController.thumbnailGeneration) { _, _ in
+            reloadInbox()
+        }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
             uploadabilityRefreshGeneration &+= 1
         }
-        .alert("받은 파일 오류", isPresented: errorBinding) {
+        .alert("폰하드 오류", isPresented: errorBinding) {
             Button("확인", role: .cancel) {
                 inboxStore.errorMessage = nil
             }
@@ -283,6 +314,10 @@ struct ReceivedFilesView: View {
 
     private var layoutStyle: ReceivedFilesLayoutStyle {
         ReceivedFilesLayoutStyle(rawValue: storedLayoutStyle) ?? .details
+    }
+
+    private var isEnamel: Bool {
+        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
     }
 
     private var gridColumns: [GridItem] {
@@ -773,7 +808,7 @@ struct LocalInboxFileService: RemoteFileService {
 
     let connection = RemoteConnection(
         id: connectionID,
-        name: "받은 파일",
+        name: "폰하드",
         kind: .synology,
         host: "localhost",
         username: ""
@@ -819,7 +854,7 @@ private enum LocalInboxFileError: LocalizedError {
     case recordNotFound
 
     var errorDescription: String? {
-        "받은 파일을 찾을 수 없습니다. 목록을 새로 고친 뒤 다시 시도하세요."
+        "폰하드 파일을 찾을 수 없습니다. 목록을 새로 고친 뒤 다시 시도하세요."
     }
 }
 

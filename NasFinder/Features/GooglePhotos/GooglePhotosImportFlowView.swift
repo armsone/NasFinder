@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// 받은 파일 화면에서 시트로 표시되는 Google 포토 가져오기 흐름 컨테이너.
+/// 폰하드 화면에서 시트로 표시되는 Google 포토 가져오기 흐름 컨테이너.
 /// 사전 고지 → 인증/세션 준비 → 선택 대기 → 가져오기 진행 → 결과 순으로 단계를 보여준다.
 struct GooglePhotosImportFlowView: View {
     @Environment(\.dismiss) private var dismiss
@@ -84,7 +84,7 @@ struct GooglePhotosImportFlowView: View {
                 iconStyle: Color.secondary,
                 title: "가져오기를 취소했습니다",
                 detail: imported > 0
-                    ? "이미 가져온 \(imported)개 파일은 받은 파일에 그대로 유지됩니다."
+                    ? "이미 가져온 \(imported)개 파일은 폰하드에 그대로 유지됩니다."
                     : "가져온 파일이 없습니다."
             )
 

@@ -67,6 +67,38 @@ final class WebHardFileStoreTests: XCTestCase {
         XCTAssertThrowsError(try store.fileURL(path: "/link.txt"))
     }
 
+    func testListingHidesPhoneHardManifest() throws {
+        try Data("[]".utf8).write(
+            to: temporaryDirectory.appendingPathComponent(".nasfinder-manifest.json")
+        )
+        try Data("[]".utf8).write(
+            to: temporaryDirectory.appendingPathComponent("manifest.json")
+        )
+        try Data("visible".utf8).write(
+            to: temporaryDirectory.appendingPathComponent("사진.jpg")
+        )
+
+        XCTAssertEqual(try store.list(path: "/").map(\.name), ["사진.jpg"])
+    }
+
+    func testServerConnectionStateKeepsStartingServerClosable() {
+        XCTAssertFalse(WebHardServerState.stopped.isConnectionOpen)
+        XCTAssertFalse(WebHardServerState.stopped.isReadyForConnections)
+        XCTAssertEqual(WebHardServerState.stopped.connectionStatusTitle, "닫혀 있음")
+
+        XCTAssertTrue(WebHardServerState.starting.isConnectionOpen)
+        XCTAssertFalse(WebHardServerState.starting.isReadyForConnections)
+        XCTAssertEqual(WebHardServerState.starting.connectionStatusTitle, "여는 중")
+
+        XCTAssertTrue(WebHardServerState.ready(port: 8_080).isConnectionOpen)
+        XCTAssertTrue(WebHardServerState.ready(port: 8_080).isReadyForConnections)
+        XCTAssertEqual(WebHardServerState.ready(port: 8_080).connectionStatusTitle, "열려 있음")
+
+        XCTAssertFalse(WebHardServerState.failed("실패").isConnectionOpen)
+        XCTAssertFalse(WebHardServerState.failed("실패").isReadyForConnections)
+        XCTAssertEqual(WebHardServerState.failed("실패").connectionStatusTitle, "확인 필요")
+    }
+
     func testFolderArchiveHasZipHeadersAndFileName() throws {
         try store.createDirectory(path: "/Folder")
         let upload = try store.prepareUpload(path: "/Folder/hello.txt")

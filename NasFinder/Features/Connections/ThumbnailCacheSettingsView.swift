@@ -73,7 +73,7 @@ private struct ThumbnailCacheSettingsView: View {
                 }
                 .disabled(statistics.fileCount == 0)
             } footer: {
-                Text("원본 영상과 받은 파일은 삭제하지 않습니다.")
+                Text("원본 영상과 폰하드 파일은 삭제하지 않습니다.")
             }
         }
         .scrollContentBackground(.hidden)

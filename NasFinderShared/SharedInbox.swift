@@ -29,7 +29,8 @@ public enum SharedInbox {
     public static let appGroupIdentifier = "group.com.armsone.nasfinder"
 
     private static let inboxDirectoryName = "SharedInbox"
-    private static let manifestFilename = "manifest.json"
+    private static let manifestFilename = ".nasfinder-manifest.json"
+    private static let legacyManifestFilename = "manifest.json"
     private static let processLock = NSLock()
 
     public enum InboxError: LocalizedError, Sendable {
@@ -48,7 +49,7 @@ public enum SharedInbox {
             case .sourceUnavailable:
                 "공유된 임시 파일을 읽을 수 없습니다."
             case .duplicateRecord:
-                "이미 받은 파일과 식별자가 충돌했습니다."
+                "이미 있는 폰하드 파일과 식별자가 충돌했습니다."
             case let .coordinationFailed(message):
                 "공유 저장소를 조정하지 못했습니다: \(message)"
             }
@@ -58,8 +59,17 @@ public enum SharedInbox {
     public static func records() throws -> [SharedInboxRecord] {
         try withProcessLock {
             let locations = try prepareLocations()
-            return try readRecords(at: locations.manifestURL)
+            var result: [SharedInboxRecord] = []
+            try updateRecords(at: locations.manifestURL) { records in
+                records = try reconciledRecords(records, inboxURL: locations.inboxURL)
+                result = records
+            }
+            return result
         }
+    }
+
+    public static func storageURL() throws -> URL {
+        try withProcessLock { try prepareLocations().inboxURL }
     }
 
     public static func fileURL(for record: SharedInboxRecord) throws -> URL {
@@ -96,21 +106,15 @@ public enum SharedInbox {
 
             let existingIDs = Set(try readRecords(at: locations.manifestURL).map(\.id))
             let safeOriginalName = displayFilename(originalFilename, fallbackURL: sourceURL)
-            let safeExtension = safePathExtension(
-                from: safeOriginalName,
-                fallbackURL: sourceURL,
-                isDirectory: sourceValues.isDirectory == true
-            )
-
             var identifier: UUID
             var storedFilename: String
             var destinationURL: URL
             repeat {
                 identifier = UUID()
-                storedFilename = identifier.uuidString.lowercased()
-                if !safeExtension.isEmpty {
-                    storedFilename += ".\(safeExtension)"
-                }
+                storedFilename = uniqueStoredFilename(
+                    preferredName: safeOriginalName,
+                    inboxURL: locations.inboxURL
+                )
                 destinationURL = try validatedFileURL(
                     storedFilename: storedFilename,
                     inboxURL: locations.inboxURL
@@ -289,6 +293,87 @@ public enum SharedInbox {
         return try decoder.decode([SharedInboxRecord].self, from: data)
     }
 
+    private static func reconciledRecords(
+        _ records: [SharedInboxRecord],
+        inboxURL: URL
+    ) throws -> [SharedInboxRecord] {
+        let fileManager = FileManager.default
+        var reconciled: [SharedInboxRecord] = []
+        var representedPaths = Set<String>()
+        var representedDirectories = Set<String>()
+
+        for record in records {
+            guard record.storedFilename != legacyManifestFilename else { continue }
+            guard let url = try? validatedFileURL(
+                storedFilename: record.storedFilename,
+                inboxURL: inboxURL
+            ),
+            fileManager.fileExists(atPath: url.path),
+            let values = try? url.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .isDirectoryKey,
+                .isSymbolicLinkKey,
+            ]),
+            values.isSymbolicLink != true,
+            values.isRegularFile == true || values.isDirectory == true else {
+                continue
+            }
+            reconciled.append(record)
+            representedPaths.insert(record.storedFilename)
+            if values.isDirectory == true {
+                representedDirectories.insert(record.storedFilename)
+            }
+        }
+
+        guard let enumerator = fileManager.enumerator(
+            at: inboxURL,
+            includingPropertiesForKeys: [
+                .isRegularFileKey,
+                .isDirectoryKey,
+                .isSymbolicLinkKey,
+                .fileSizeKey,
+                .contentModificationDateKey,
+            ],
+            options: [.skipsHiddenFiles]
+        ) else { return reconciled }
+
+        for case let url as URL in enumerator {
+            let values = try url.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .isDirectoryKey,
+                .isSymbolicLinkKey,
+                .fileSizeKey,
+                .contentModificationDateKey,
+            ])
+            if values.isSymbolicLink == true {
+                if values.isDirectory == true { enumerator.skipDescendants() }
+                continue
+            }
+            guard values.isRegularFile == true else { continue }
+
+            let storedFilename = try relativeStoredFilename(for: url, inboxURL: inboxURL)
+            guard storedFilename != legacyManifestFilename,
+                  !representedPaths.contains(storedFilename),
+                  !representedDirectories.contains(where: {
+                      storedFilename.hasPrefix($0 + "/")
+                  }) else { continue }
+
+            reconciled.append(
+                SharedInboxRecord(
+                    id: UUID(),
+                    originalFilename: url.lastPathComponent,
+                    storedFilename: storedFilename,
+                    contentTypeIdentifier: nil,
+                    byteCount: Int64(values.fileSize ?? 0),
+                    importedAt: values.contentModificationDate ?? Date()
+                )
+            )
+            representedPaths.insert(storedFilename)
+        }
+
+        return reconciled
+    }
+
     /// Holds one cross-process write coordination for the complete read-modify-write.
     private static func updateRecords(
         at manifestURL: URL,
@@ -316,7 +401,9 @@ public enum SharedInbox {
                     records = []
                 }
 
+                let originalRecords = records
                 try mutation(&records)
+                guard records != originalRecords else { return }
                 let encoder = JSONEncoder()
                 encoder.dateEncodingStrategy = .iso8601
                 encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -333,24 +420,53 @@ public enum SharedInbox {
     }
 
     private static func validatedFileURL(storedFilename: String, inboxURL: URL) throws -> URL {
-        let basename = (storedFilename as NSString).lastPathComponent
+        let components = storedFilename.split(separator: "/", omittingEmptySubsequences: false)
         guard !storedFilename.isEmpty,
-              basename == storedFilename,
-              storedFilename != ".",
-              storedFilename != "..",
-              !storedFilename.contains("/"),
-              !storedFilename.contains("\\") else {
+              !storedFilename.hasPrefix("/"),
+              !storedFilename.hasSuffix("/"),
+              !storedFilename.contains("\\"),
+              components.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
             throw InboxError.unsafeFilename(storedFilename)
         }
 
-        let standardizedInboxURL = inboxURL.standardizedFileURL
-        let candidate = standardizedInboxURL
-            .appendingPathComponent(storedFilename, isDirectory: false)
-            .standardizedFileURL
-        guard candidate.deletingLastPathComponent() == standardizedInboxURL else {
+        let rootURL = inboxURL.standardizedFileURL.resolvingSymlinksInPath()
+        let candidate = components.reduce(rootURL) { partial, component in
+            partial.appendingPathComponent(String(component), isDirectory: false)
+        }.standardizedFileURL.resolvingSymlinksInPath()
+        guard candidate.path.hasPrefix(rootURL.path + "/") else {
             throw InboxError.unsafeFilename(storedFilename)
         }
         return candidate
+    }
+
+    private static func relativeStoredFilename(for url: URL, inboxURL: URL) throws -> String {
+        let rootPath = inboxURL.standardizedFileURL.resolvingSymlinksInPath().path
+        let itemPath = url.standardizedFileURL.resolvingSymlinksInPath().path
+        guard itemPath.hasPrefix(rootPath + "/") else {
+            throw InboxError.unsafeFilename(url.lastPathComponent)
+        }
+        return String(itemPath.dropFirst(rootPath.count + 1))
+    }
+
+    private static func uniqueStoredFilename(preferredName: String, inboxURL: URL) -> String {
+        let fileManager = FileManager.default
+        let safeName = preferredName.hasPrefix(".") ? "폰하드 파일" : preferredName
+        let requestedURL = inboxURL.appendingPathComponent(safeName, isDirectory: false)
+        if !fileManager.fileExists(atPath: requestedURL.path) { return safeName }
+
+        let extensionName = (safeName as NSString).pathExtension
+        let stem = (safeName as NSString).deletingPathExtension
+        for index in 1...9_999 {
+            let candidate = extensionName.isEmpty
+                ? "\(stem) (\(index))"
+                : "\(stem) (\(index)).\(extensionName)"
+            if !fileManager.fileExists(
+                atPath: inboxURL.appendingPathComponent(candidate).path
+            ) {
+                return candidate
+            }
+        }
+        return "\(UUID().uuidString)-\(safeName)"
     }
 
     private static func displayFilename(_ proposedName: String, fallbackURL: URL) -> String {
@@ -362,21 +478,6 @@ public enum SharedInbox {
 
         let fallback = fallbackURL.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
         return fallback.isEmpty ? "공유 파일" : fallback
-    }
-
-    private static func safePathExtension(
-        from filename: String,
-        fallbackURL: URL,
-        isDirectory: Bool
-    ) -> String {
-        let proposed = (filename as NSString).pathExtension.isEmpty
-            ? fallbackURL.pathExtension
-            : (filename as NSString).pathExtension
-        let allowed = CharacterSet.alphanumerics
-        let filteredScalars = proposed.unicodeScalars.filter { allowed.contains($0) }
-        let filtered = String(String.UnicodeScalarView(filteredScalars)).lowercased()
-        if !filtered.isEmpty { return String(filtered.prefix(20)) }
-        return isDirectory ? "livephoto" : ""
     }
 
     private static func allocatedByteCount(at url: URL) throws -> Int64 {

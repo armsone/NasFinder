@@ -21,8 +21,8 @@ struct GooglePhotosDisclosureView: View {
                         )
                         disclosureRow(
                             systemImage: "tray.and.arrow.down",
-                            title: "이 기기의 받은 파일에 저장",
-                            detail: "선택한 파일은 이 기기의 ‘받은 파일’에만 저장됩니다."
+                            title: "이 기기의 폰하드에 저장",
+                            detail: "선택한 파일은 이 기기의 ‘폰하드’에만 저장됩니다."
                         )
                         disclosureRow(
                             systemImage: "externaldrive",
@@ -37,7 +37,7 @@ struct GooglePhotosDisclosureView: View {
                         disclosureRow(
                             systemImage: "gearshape",
                             title: "언제든 삭제·연결 해제 가능",
-                            detail: "받은 파일에서 저장된 파일을 삭제할 수 있고, 설정에서 Google 포토 연결을 해제할 수 있습니다."
+                            detail: "폰하드에서 저장된 파일을 삭제할 수 있고, 설정에서 Google 포토 연결을 해제할 수 있습니다."
                         )
                     }
 
