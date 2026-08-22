@@ -1,6 +1,34 @@
+import ImageIO
 import QuickLookThumbnailing
 import SwiftUI
 import UniformTypeIdentifiers
+
+private enum ReceivedFilesLayoutStyle: String, CaseIterable, Identifiable {
+    case details
+    case thumbnails
+    case posters
+    case overflow
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .details: "자세히"
+        case .thumbnails: "썸네일"
+        case .posters: "포스터"
+        case .overflow: "오버플로우"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .details: "list.bullet"
+        case .thumbnails: "square.grid.3x3"
+        case .posters: "square.grid.2x2"
+        case .overflow: "rectangle.stack.fill"
+        }
+    }
+}
 
 struct ReceivedFilesView: View {
     private struct UploadabilityTaskID: Hashable {
@@ -10,6 +38,9 @@ struct ReceivedFilesView: View {
 
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var inboxStore: SharedInboxStore
+    @AppStorage("receivedFilesLayoutStyle.v1") private var storedLayoutStyle =
+        ReceivedFilesLayoutStyle.details.rawValue
+    @AppStorage("receivedFilesOverflowDark.v1") private var overflowUsesDarkBackground = false
     @State private var previewItem: RemoteFileItem?
     @State private var isSelecting = false
     @State private var selectedRecordIDs: Set<SharedInboxRecord.ID> = []
@@ -19,6 +50,7 @@ struct ReceivedFilesView: View {
     @State private var isChoosingUploadDestination = false
     @State private var isImportingFromFiles = false
     @State private var isImportingFromGooglePhotos = false
+    @State private var isConfirmingSelectionDeletion = false
 
     var body: some View {
         Group {
@@ -26,72 +58,77 @@ struct ReceivedFilesView: View {
                 ContentUnavailableView {
                     Label("받은 파일이 없습니다", systemImage: "tray")
                 } description: {
-                    Text("다른 앱의 공유 메뉴에서 NasFinder를 선택하면 이곳에 파일이 보관됩니다.")
+                    Text("공유한 파일이 이곳에 보관됩니다.")
                 } actions: {
+                    Button("파일 가져오기", systemImage: "doc.badge.plus") {
+                        isImportingFromFiles = true
+                    }
+                    .buttonStyle(.borderedProminent)
+
                     Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
                         isImportingFromGooglePhotos = true
                     }
                     .buttonStyle(.bordered)
                 }
             } else {
-                List {
-                    ForEach(inboxStore.records) { record in
-                        receivedFileRow(record)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                                if !isSelecting {
-                                    Button("삭제", systemImage: "trash", role: .destructive) {
-                                        inboxStore.delete(record)
-                                    }
-                                }
-                            }
-                            .contextMenu {
-                                if !isSelecting {
-                                    if isUploadableFile(record) {
-                                        Button("NAS로 보내기", systemImage: "arrow.up.doc") {
-                                            beginUpload(of: [record])
-                                        }
-                                    }
-
-                                    if let fileURL = try? SharedInbox.fileURL(for: record) {
-                                        ShareLink(item: fileURL) {
-                                            Label("공유", systemImage: "square.and.arrow.up")
-                                        }
-                                    }
-
-                                    Button("삭제", systemImage: "trash", role: .destructive) {
-                                        inboxStore.delete(record)
-                                    }
-                                }
-                            }
-                    }
-                }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .refreshable {
-                    reloadInbox()
-                }
+                receivedFilesContent
             }
         }
         .background(SkyBreezeBackground())
-        .navigationTitle("받은 파일")
+        .navigationTitle(isSelecting ? "\(selectedRecords.count)개 선택" : "받은 파일")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItemGroup(placement: .topBarTrailing) {
-                if !isSelecting {
-                    Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
-                        isImportingFromGooglePhotos = true
-                    }
-
-                    Button("파일에서 가져오기", systemImage: "doc.badge.plus") {
-                        isImportingFromFiles = true
+            if isSelecting {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(allRecordsAreSelected ? "전체 해제" : "전체 선택") {
+                        toggleAllSelection()
                     }
                 }
 
-                if !inboxStore.records.isEmpty {
-                    Button(isSelecting ? "완료" : "선택") {
-                        if isSelecting {
-                            endSelection()
-                        } else {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button("지우기", systemImage: "trash", role: .destructive) {
+                        isConfirmingSelectionDeletion = true
+                    }
+                    .disabled(selectedRecords.isEmpty)
+
+                    Button("완료") {
+                        endSelection()
+                    }
+                }
+            } else {
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    if !inboxStore.records.isEmpty {
+                        Menu {
+                            ForEach(ReceivedFilesLayoutStyle.allCases) { style in
+                                Button {
+                                    storedLayoutStyle = style.rawValue
+                                } label: {
+                                    Label(style.title, systemImage: style.systemImage)
+                                    if layoutStyle == style {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        } label: {
+                            Image(systemName: layoutStyle.systemImage)
+                        }
+                        .accessibilityLabel("보기")
+                    }
+
+                    Menu {
+                        Button("파일에서 가져오기", systemImage: "doc.badge.plus") {
+                            isImportingFromFiles = true
+                        }
+                        Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
+                            isImportingFromGooglePhotos = true
+                        }
+                    } label: {
+                        Image(systemName: "square.and.arrow.down")
+                    }
+                    .accessibilityLabel("가져오기")
+
+                    if !inboxStore.records.isEmpty {
+                        Button("선택") {
                             isSelecting = true
                         }
                     }
@@ -162,6 +199,14 @@ struct ReceivedFilesView: View {
         } message: {
             Text(inboxStore.errorMessage ?? "")
         }
+        .alert("선택한 파일을 지울까요?", isPresented: $isConfirmingSelectionDeletion) {
+            Button("취소", role: .cancel) {}
+            Button("지우기", role: .destructive) {
+                deleteSelectedRecords()
+            }
+        } message: {
+            Text("선택한 \(selectedRecords.count)개 파일이 이 기기에서 삭제됩니다.")
+        }
         .fullScreenCover(item: $previewItem) { item in
             let records = inboxStore.records
             let service = LocalInboxFileService(records: records)
@@ -188,6 +233,140 @@ struct ReceivedFilesView: View {
         ) {
             GooglePhotosImportFlowView(inboxStore: inboxStore)
         }
+    }
+
+    @ViewBuilder
+    private var receivedFilesContent: some View {
+        switch layoutStyle {
+        case .details:
+            List {
+                ForEach(inboxStore.records) { record in
+                    receivedFileRow(record)
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            if !isSelecting {
+                                Button("삭제", systemImage: "trash", role: .destructive) {
+                                    inboxStore.delete(record)
+                                }
+                            }
+                        }
+                        .contextMenu { recordContextMenu(record) }
+                }
+            }
+            .listStyle(.plain)
+            .scrollContentBackground(.hidden)
+            .refreshable { reloadInbox() }
+        case .thumbnails, .posters:
+            ScrollView {
+                LazyVGrid(columns: gridColumns, spacing: layoutStyle == .posters ? 20 : 14) {
+                    ForEach(inboxStore.records) { record in
+                        receivedFileTile(record, poster: layoutStyle == .posters)
+                            .contextMenu { recordContextMenu(record) }
+                    }
+                }
+                .padding(16)
+            }
+            .refreshable { reloadInbox() }
+        case .overflow:
+            FileBrowserCoverFlowView(
+                items: inboxStore.records,
+                usesDarkBackground: $overflowUsesDarkBackground,
+                itemName: { $0.originalFilename },
+                thumbnail: { record, size in
+                    let item = LocalInboxFileService.remoteItem(for: record)
+                    return receivedFileArtwork(for: item, record: record, requestSize: size)
+                },
+                onActivate: activate,
+                onShowActions: nil
+            )
+        }
+    }
+
+    private var layoutStyle: ReceivedFilesLayoutStyle {
+        ReceivedFilesLayoutStyle(rawValue: storedLayoutStyle) ?? .details
+    }
+
+    private var gridColumns: [GridItem] {
+        [GridItem(.adaptive(minimum: layoutStyle == .posters ? 164 : 104), spacing: 14)]
+    }
+
+    @ViewBuilder
+    private func recordContextMenu(_ record: SharedInboxRecord) -> some View {
+        if !isSelecting {
+            if isUploadableFile(record) {
+                Button("NAS로 보내기", systemImage: "arrow.up.doc") {
+                    beginUpload(of: [record])
+                }
+            }
+
+            if let fileURL = try? SharedInbox.fileURL(for: record) {
+                ShareLink(item: fileURL) {
+                    Label("공유", systemImage: "square.and.arrow.up")
+                }
+            }
+
+            Button("삭제", systemImage: "trash", role: .destructive) {
+                inboxStore.delete(record)
+            }
+        }
+    }
+
+    private func activate(_ record: SharedInboxRecord) {
+        if isSelecting {
+            toggleSelection(of: record)
+        } else {
+            previewItem = LocalInboxFileService.remoteItem(for: record)
+        }
+    }
+
+    private func receivedFileTile(_ record: SharedInboxRecord, poster: Bool) -> some View {
+        let item = LocalInboxFileService.remoteItem(for: record)
+        let selected = selectedRecordIDs.contains(record.id)
+        let requestSide: CGFloat = poster ? 360 : 220
+
+        return Button {
+            activate(record)
+        } label: {
+            VStack(alignment: .leading, spacing: poster ? 9 : 6) {
+                receivedFileArtwork(
+                    for: item,
+                    record: record,
+                    requestSize: CGSize(width: requestSide, height: requestSide)
+                )
+                .frame(maxWidth: .infinity)
+                .aspectRatio(1, contentMode: .fit)
+                .background(.quaternary.opacity(0.55))
+                .clipShape(RoundedRectangle(cornerRadius: poster ? 15 : 11))
+                .overlay(alignment: .topTrailing) {
+                    if isSelecting {
+                        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                            .font(.title2)
+                            .foregroundStyle(selected ? Color.accentColor : .secondary)
+                            .padding(8)
+                    }
+                }
+
+                Text(record.originalFilename)
+                    .font(poster ? .headline : .caption)
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+
+                Text(ByteCountFormatter.string(fromByteCount: record.byteCount, countStyle: .file))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+
+                if poster {
+                    Text(record.importedAt, format: .dateTime.year().month().day().hour().minute())
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(
+            isSelecting ? selectionAccessibilityLabel(for: record) : record.originalFilename
+        )
     }
 
     private func receivedFileRow(_ record: SharedInboxRecord) -> some View {
@@ -239,7 +418,6 @@ struct ReceivedFilesView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(isSelecting && !isUploadableFile(record))
             .accessibilityLabel(
                 isSelecting
                     ? selectionAccessibilityLabel(for: record)
@@ -263,31 +441,14 @@ struct ReceivedFilesView: View {
 
     private var uploadSelectionBar: some View {
         VStack(spacing: 10) {
-            HStack {
-                Label("\(selectedRecords.count)개 선택", systemImage: "checkmark.circle.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .monospacedDigit()
-
-                Spacer()
-
-                Button(allRecordsAreSelected ? "전체 해제" : "전체 선택") {
-                    if allRecordsAreSelected {
-                        selectedRecordIDs.removeAll()
-                    } else {
-                        selectedRecordIDs = uploadableRecordIDs
-                    }
-                }
-                .font(.subheadline.weight(.semibold))
-            }
-
             Button("NAS로 보내기", systemImage: "arrow.up.doc") {
-                beginUpload(of: selectedRecords)
+                beginUpload(of: selectedUploadableRecords)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .frame(maxWidth: .infinity)
-            .disabled(selectedRecords.isEmpty)
-            .accessibilityLabel("선택한 파일 \(selectedRecords.count)개를 NAS로 보내기")
+            .disabled(selectedUploadableRecords.isEmpty)
+            .accessibilityLabel("선택한 파일 \(selectedUploadableRecords.count)개를 NAS로 보내기")
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
@@ -298,8 +459,12 @@ struct ReceivedFilesView: View {
 
     private var selectedRecords: [SharedInboxRecord] {
         inboxStore.records.filter {
-            selectedRecordIDs.contains($0.id) && isUploadableFile($0)
+            selectedRecordIDs.contains($0.id)
         }
+    }
+
+    private var selectedUploadableRecords: [SharedInboxRecord] {
+        selectedRecords.filter(isUploadableFile)
     }
 
     private var uploadabilityTaskID: UploadabilityTaskID {
@@ -310,11 +475,26 @@ struct ReceivedFilesView: View {
     }
 
     private var allRecordsAreSelected: Bool {
-        !uploadableRecordIDs.isEmpty && selectedRecordIDs == uploadableRecordIDs
+        let recordIDs = Set(inboxStore.records.map(\.id))
+        return !recordIDs.isEmpty && selectedRecordIDs == recordIDs
+    }
+
+    private func toggleAllSelection() {
+        if allRecordsAreSelected {
+            selectedRecordIDs.removeAll()
+        } else {
+            selectedRecordIDs = Set(inboxStore.records.map(\.id))
+        }
+    }
+
+    private func deleteSelectedRecords() {
+        let records = selectedRecords
+        guard !records.isEmpty else { return }
+        inboxStore.delete(records)
+        endSelection()
     }
 
     private func toggleSelection(of record: SharedInboxRecord) {
-        guard isUploadableFile(record) else { return }
         if selectedRecordIDs.contains(record.id) {
             selectedRecordIDs.remove(record.id)
         } else {
@@ -377,23 +557,26 @@ struct ReceivedFilesView: View {
         let size = CGSize(width: 56, height: 56)
         let shape = RoundedRectangle(cornerRadius: 9)
 
-        Group {
-            if item.isImage || item.isVideo || item.contentType.conforms(to: .pdf) {
-                LocalInboxThumbnailView(
-                    record: record,
-                    item: item,
-                    size: size
-                )
-            } else {
-                Image(systemName: item.systemImage)
-                    .font(.title2)
-                    .foregroundStyle(iconColor(for: item))
-            }
-        }
+        receivedFileArtwork(for: item, record: record, requestSize: size)
         .frame(width: size.width, height: size.height)
         .background(.quaternary.opacity(0.55), in: shape)
         .clipShape(shape)
         .accessibilityHidden(true)
+    }
+
+    @ViewBuilder
+    private func receivedFileArtwork(
+        for item: RemoteFileItem,
+        record: SharedInboxRecord,
+        requestSize: CGSize
+    ) -> some View {
+        if item.isImage || item.isVideo || item.contentType.conforms(to: .pdf) {
+            LocalInboxThumbnailView(record: record, item: item, size: requestSize)
+        } else {
+            Image(systemName: item.systemImage)
+                .font(.system(size: min(requestSize.width, requestSize.height) * 0.42))
+                .foregroundStyle(iconColor(for: item))
+        }
     }
 
     private func sequentialMediaItems(
@@ -454,11 +637,15 @@ private struct LocalInboxThumbnailView: View {
                     .background(.ultraThinMaterial, in: Circle())
             }
         }
-        .frame(width: size.width, height: size.height)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .clipped()
-        .task(id: record.id) {
+        .task(id: thumbnailTaskID) {
             await loadThumbnail()
         }
+    }
+
+    private var thumbnailTaskID: String {
+        "\(record.id.uuidString)-\(Int(size.width.rounded()))x\(Int(size.height.rounded()))"
     }
 
     @MainActor
@@ -468,6 +655,34 @@ private struct LocalInboxThumbnailView: View {
         defer { isLoading = false }
 
         guard let fileURL = try? SharedInbox.fileURL(for: record) else { return }
+        let maximumPixelSize = Int(
+            ceil(max(size.width, size.height) * UIScreen.main.scale)
+        )
+        let cacheKey = RemoteThumbnailCacheKey.remoteData(
+            for: item,
+            size: thumbnailSize(for: maximumPixelSize)
+        )
+        if let cachedData = await SuperThumbnailCache.shared.data(forKey: cacheKey),
+           let cachedImage = try? await RemoteThumbnailImageDecoder.downsample(
+            data: cachedData,
+            maximumPixelSize: maximumPixelSize
+           ) {
+            guard !Task.isCancelled else { return }
+            image = UIImage(cgImage: cachedImage.image)
+            return
+        }
+
+        if item.isImage,
+           let decodedImage = await LocalInboxImageThumbnailGenerator.generate(
+            fileURL: fileURL,
+            maximumPixelSize: maximumPixelSize
+           ) {
+            guard !Task.isCancelled else { return }
+            image = decodedImage
+            await storeInSuperThumbnailCache(decodedImage, forKey: cacheKey)
+            return
+        }
+
         let request = QLThumbnailGenerator.Request(
             fileAt: fileURL,
             size: size,
@@ -478,6 +693,53 @@ private struct LocalInboxThumbnailView: View {
             .generateBestRepresentation(for: request) else { return }
         guard !Task.isCancelled else { return }
         image = representation.uiImage
+        await storeInSuperThumbnailCache(representation.uiImage, forKey: cacheKey)
+    }
+
+    private func thumbnailSize(for maximumPixelSize: Int) -> RemoteThumbnailSize {
+        if maximumPixelSize <= 360 { return .small }
+        if maximumPixelSize <= 1_024 { return .medium }
+        return .large
+    }
+
+    private func storeInSuperThumbnailCache(_ image: UIImage, forKey key: String) async {
+        guard let data = image.jpegData(compressionQuality: 0.84) else { return }
+        await SuperThumbnailCache.shared.store(data, forKey: key)
+    }
+}
+
+private struct LocalInboxSendableCGImage: @unchecked Sendable {
+    let image: CGImage
+}
+
+private enum LocalInboxImageThumbnailGenerator {
+    static func generate(fileURL: URL, maximumPixelSize: Int) async -> UIImage? {
+        let boundedMaximumPixelSize = max(maximumPixelSize, 1)
+        let decoded = await Task.detached(priority: .userInitiated) {
+            guard !Task.isCancelled else { return nil as LocalInboxSendableCGImage? }
+            return autoreleasepool {
+                let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+                guard let source = CGImageSourceCreateWithURL(
+                    fileURL as CFURL,
+                    sourceOptions
+                ), CGImageSourceGetCount(source) > 0 else { return nil }
+
+                let thumbnailOptions = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceShouldCacheImmediately: true,
+                    kCGImageSourceThumbnailMaxPixelSize: boundedMaximumPixelSize,
+                ] as CFDictionary
+                guard let image = CGImageSourceCreateThumbnailAtIndex(
+                    source,
+                    0,
+                    thumbnailOptions
+                ) else { return nil }
+                return LocalInboxSendableCGImage(image: image)
+            }
+        }.value
+        guard !Task.isCancelled, let decoded else { return nil }
+        return UIImage(cgImage: decoded.image)
     }
 }
 

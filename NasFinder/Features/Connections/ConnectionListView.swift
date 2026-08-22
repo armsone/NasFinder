@@ -228,11 +228,13 @@ struct ConnectionListView: View {
             .buttonStyle(.plain)
             .navigationLinkIndicatorVisibility(.hidden)
 
-            Button(
-                store.connections.isEmpty ? "네트워크를 추가해 주세요" : "네트워크 추가",
-                systemImage: "plus"
-            ) {
+            Button {
                 isAddingConnection = true
+            } label: {
+                HStack(spacing: 7) {
+                    ThemedSymbol(systemName: "plus", size: 32, symbolSize: 17)
+                    Text(store.connections.isEmpty ? "네트워크를 추가해 주세요" : "네트워크 추가")
+                }
             }
             .font(.subheadline)
             .foregroundStyle(.secondary)
@@ -241,10 +243,11 @@ struct ConnectionListView: View {
             )
         } header: {
             sectionHeader("네트워크", systemImage: "network")
+                .padding(.top, 8)
         } footer: {
             Text(networkFooterText)
                 .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .padding(.top, -4)
         }
@@ -264,7 +267,14 @@ struct ConnectionListView: View {
                     Text(inboxSummary)
                         .foregroundStyle(.secondary)
                 } label: {
-                    Label("받은 파일", systemImage: "tray.and.arrow.down")
+                    HStack(spacing: 7) {
+                        ThemedSymbol(
+                            systemName: "tray.and.arrow.down",
+                            size: 32,
+                            symbolSize: 17
+                        )
+                        Text("받은 파일")
+                    }
                 }
             }
 
@@ -284,10 +294,9 @@ struct ConnectionListView: View {
                 isImportingFromFiles = true
             } label: {
                 HStack(spacing: 12) {
-                    Image(systemName: "folder")
-                        .font(.body.weight(.medium))
+                    ThemedSymbol(systemName: "folder", size: 32, symbolSize: 17)
                         .foregroundStyle(.blue)
-                        .frame(width: 28)
+                        .frame(width: 32)
                         .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: 3) {
@@ -335,7 +344,14 @@ struct ConnectionListView: View {
             NavigationLink {
                 PhotoTransferView()
             } label: {
-                Label("Live Photos & Motion Photos", systemImage: "photo.on.rectangle.angled")
+                HStack(spacing: 7) {
+                    ThemedSymbol(
+                        systemName: "photo.on.rectangle.angled",
+                        size: 32,
+                        symbolSize: 17
+                    )
+                    Text("Live Photos & Motion Photos")
+                }
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -348,7 +364,10 @@ struct ConnectionListView: View {
             NavigationLink {
                 AppSettingsView(connectionCount: store.connections.count)
             } label: {
-                Label("설정", systemImage: "gearshape")
+                HStack(spacing: 7) {
+                    ThemedSymbol(systemName: "gearshape", size: 32, symbolSize: 17)
+                    Text("설정")
+                }
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -594,14 +613,14 @@ struct ConnectionListView: View {
 
     private var dashboardLogo: some View {
         Button(action: openRememberedLocation) {
-            HStack(spacing: 7) {
+            HStack(spacing: 8) {
                 Image(currentLogoAssetName)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 44, height: 44)
-                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .frame(width: 38, height: 38)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
                     .overlay {
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        RoundedRectangle(cornerRadius: 9, style: .continuous)
                             .stroke(.primary.opacity(0.08), lineWidth: 0.5)
                     }
 
@@ -610,6 +629,7 @@ struct ConnectionListView: View {
                     .foregroundStyle(.primary.opacity(0.82))
                     .fixedSize(horizontal: true, vertical: false)
             }
+            .padding(.vertical, 3)
             .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.plain)
@@ -662,8 +682,8 @@ struct ConnectionListView: View {
     }
 
     private func sectionHeader(_ title: String, systemImage: String) -> some View {
-        HStack(spacing: 3) {
-            Image(systemName: systemImage)
+        HStack(spacing: selectedTheme == .skeuomorphism ? 7 : 3) {
+            ThemedSymbol(systemName: systemImage)
             Text(title)
             Spacer(minLength: 0)
         }
@@ -713,7 +733,7 @@ private struct WebNetworkLocationRow: View {
     var body: some View {
         HStack(spacing: 4) {
             HStack(spacing: 13) {
-                Image(systemName: "globe")
+                ThemedSymbol(systemName: "globe", size: 32, symbolSize: 17)
                     .font(.title3)
                     .foregroundStyle(SkyBreezeTheme.browserOrange)
                     .frame(width: 32, height: 32)
@@ -723,7 +743,7 @@ private struct WebNetworkLocationRow: View {
                     HStack(spacing: 6) {
                         Text("Browser")
                             .font(.subheadline.weight(.medium))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(.primary)
 
                         Text("WWW")
                             .font(.caption2.weight(.semibold))
@@ -741,7 +761,7 @@ private struct WebNetworkLocationRow: View {
 
             Image(systemName: "arrow.right")
                 .font(.body.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SkyBreezeTheme.accent)
                 .frame(width: 44, height: 48)
                 .contentShape(Rectangle())
                 .accessibilityHidden(true)
@@ -753,15 +773,27 @@ private struct WebNetworkLocationRow: View {
 }
 
 private struct WebHardNetworkLocationRow: View {
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
+    private var isEnamel: Bool {
+        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+    }
+
     var body: some View {
         HStack(spacing: 4) {
             HStack(spacing: 13) {
-                Image("PhoneHardLogo")
-                    .resizable()
-                    .scaledToFit()
-                    .frame(width: 32, height: 32)
-                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .accessibilityHidden(true)
+                if isEnamel {
+                    PhoneHardMark(size: 32)
+                        .accessibilityHidden(true)
+                } else {
+                    Image("PhoneHardLogo")
+                        .resizable()
+                        .scaledToFit()
+                        .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                        .frame(width: 32, height: 32)
+                        .accessibilityHidden(true)
+                }
 
                 Text("폰하드")
                     .font(.subheadline.weight(.medium))
@@ -775,7 +807,7 @@ private struct WebHardNetworkLocationRow: View {
 
             Image(systemName: "arrow.right")
                 .font(.body.weight(.medium))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(SkyBreezeTheme.accent)
                 .frame(width: 44, height: 48)
                 .contentShape(Rectangle())
                 .accessibilityHidden(true)
@@ -1012,7 +1044,11 @@ private struct NetworkLocationCard: View {
         HStack(spacing: 4) {
             Button(action: requestOpening) {
                 HStack(spacing: 13) {
-                    Image(systemName: connection.kind.systemImage)
+                    ThemedSymbol(
+                        systemName: connection.kind.systemImage,
+                        size: 32,
+                        symbolSize: 17
+                    )
                         .font(.title3)
                         .foregroundStyle(connection.kind.dashboardTint)
                         .frame(width: 32, height: 32)
@@ -1102,16 +1138,32 @@ private struct NetworkLocationCard: View {
 
 private struct AddNetworkLocationCard: View {
     let action: () -> Void
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
+    private var isBKStyle: Bool {
+        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+    }
 
     var body: some View {
         Button(action: action) {
             HStack(spacing: 13) {
-                Image(systemName: "plus")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.blue)
-                    .frame(width: 46, height: 46)
-                    .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 13))
-                    .accessibilityHidden(true)
+                Group {
+                    if isBKStyle {
+                        ThemedSymbol(systemName: "plus", size: 32, symbolSize: 17)
+                    } else {
+                        Image(systemName: "plus")
+                            .font(.title3.weight(.semibold))
+                            .foregroundStyle(.blue)
+                            .frame(width: 46, height: 46)
+                            .background(
+                                .blue.opacity(0.12),
+                                in: RoundedRectangle(cornerRadius: 13)
+                            )
+                    }
+                }
+                .frame(width: 46, height: 46)
+                .accessibilityHidden(true)
 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("네트워크 추가")

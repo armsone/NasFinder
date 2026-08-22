@@ -5,7 +5,6 @@ struct AppSettingsView: View {
     @ObservedObject private var screenAwakeController = ScreenAwakeController.shared
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.system.rawValue
-    @State private var themeIconError: String?
 
     private var selectedTheme: AppThemePreference {
         .resolved(selectedThemeRawValue)
@@ -32,24 +31,6 @@ struct AppSettingsView: View {
         .background(SkyBreezeBackground())
         .navigationTitle("설정")
         .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: selectedThemeRawValue, initial: true) { _, rawValue in
-            guard AppThemePreference.resolved(rawValue) == .digitalRain else { return }
-            AppIconChoice.apply(.vibeCoder) { errorMessage in
-                themeIconError = errorMessage
-            }
-        }
-        .alert("아이콘을 변경할 수 없습니다", isPresented: themeIconErrorBinding) {
-            Button("확인", role: .cancel) { themeIconError = nil }
-        } message: {
-            Text(themeIconError ?? "잠시 후 다시 시도해 주세요.")
-        }
-    }
-
-    private var themeIconErrorBinding: Binding<Bool> {
-        Binding(
-            get: { themeIconError != nil },
-            set: { if !$0 { themeIconError = nil } }
-        )
     }
 
     private var screenAwakeSection: some View {
@@ -63,7 +44,7 @@ struct AppSettingsView: View {
 
             SettingsPanelDescription(screenAwakeController.mode.description)
         } header: {
-            SettingsSectionHeader(title: "화면 꺼짐 방지", systemImage: "sun.max")
+            SettingsSectionHeader(title: "화면", systemImage: "sun.max")
         }
     }
 
@@ -72,23 +53,16 @@ struct AppSettingsView: View {
             GeometryReader { geometry in
                 let spacing: CGFloat = 8
                 let cardWidth = (geometry.size.width - spacing * 2) / 3
-                VStack(spacing: spacing) {
-                    HStack(spacing: spacing) {
-                        ForEach(Array(AppThemePreference.allCases.prefix(3))) { theme in
-                            themeCard(theme)
-                                .frame(width: cardWidth)
-                        }
+                LazyVGrid(
+                    columns: Array(repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: 3),
+                    spacing: spacing
+                ) {
+                    ForEach(AppThemePreference.allCases) { theme in
+                        themeCard(theme)
                     }
-                    HStack(spacing: spacing) {
-                        ForEach(Array(AppThemePreference.allCases.dropFirst(3))) { theme in
-                            themeCard(theme)
-                                .frame(width: cardWidth)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
                 }
             }
-            .frame(height: 216)
+            .frame(height: 328)
             .listRowInsets(
                 EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
             )
@@ -238,6 +212,11 @@ private struct ThemePreviewBackground: View {
                         .opacity(0.92)
                 } else if theme == .workbench {
                     WorkbenchDecoration(size: geometry.size)
+                } else if theme == .skeuomorphism {
+                    Circle()
+                        .stroke(.white.opacity(0.75), lineWidth: 7)
+                        .shadow(color: .black.opacity(0.24), radius: 2, x: 1, y: 2)
+                        .padding(18)
                 }
             }
         }
@@ -283,6 +262,16 @@ private struct ThemePreviewBackground: View {
                 colors: [
                     Color(red: 0.08, green: 0.12, blue: 0.18),
                     Color(red: 0.025, green: 0.04, blue: 0.065),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        case .skeuomorphism:
+            LinearGradient(
+                colors: [
+                    Color(red: 0.78, green: 0.78, blue: 0.76),
+                    Color(red: 0.98, green: 0.975, blue: 0.96),
+                    .white,
                 ],
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing

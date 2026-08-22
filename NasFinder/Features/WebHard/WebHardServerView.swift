@@ -187,6 +187,8 @@ struct WebHardServerView: View {
     private var storedLayoutStyle = WebHardFileLayoutStyle.smallThumbnails.rawValue
     @AppStorage("browser.coverFlowBackground.v1")
     private var coverFlowUsesDarkBackground = false
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
     @State private var shareItem: WebHardShareItem?
     @State private var deleteCandidate: WebHardFileItem?
 
@@ -195,6 +197,10 @@ struct WebHardServerView: View {
             forServiceIdentifier: "webHard",
             theme: .current
         )
+    }
+
+    private var isEnamel: Bool {
+        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
     }
 
     var body: some View {
@@ -207,12 +213,22 @@ struct WebHardServerView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SkyBreezeBackground())
-        .navigationTitle("폰하드")
+        .navigationTitle(isEnamel ? "" : "폰하드")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(showsCoverFlow ? .hidden : .visible, for: .navigationBar)
         .tint(serviceColor)
         .toolbar {
             if !showsCoverFlow {
+                if isEnamel {
+                    ToolbarItem(placement: .principal) {
+                        HStack(spacing: 8) {
+                            PhoneHardMark(size: 26)
+                            Text("폰하드")
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                        }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("주소 새로고침", systemImage: "arrow.clockwise") {
                         controller.refreshAddresses()
@@ -413,21 +429,13 @@ struct WebHardServerView: View {
     }
 
     private var webHardLogo: some View {
-        ZStack(alignment: .bottomTrailing) {
-            Image(systemName: "externaldrive.fill.badge.wifi")
-                .font(.title3)
-                .foregroundStyle(serviceColor)
-                .frame(width: 34, height: 34)
-            Text(ThemeServicePalette.badgeLetter(forServiceIdentifier: "webHard"))
-                .font(.system(size: 7, weight: .bold, design: .rounded))
-                .foregroundStyle(
-                    ThemeServicePalette.foregroundColor(
-                        forServiceIdentifier: "webHard",
-                        theme: .current
-                    )
-                )
-                .frame(width: 13, height: 13)
-                .background(serviceColor, in: Circle())
+        Group {
+            if isEnamel {
+                PhoneHardMark(size: 34)
+            } else {
+                ThemedSymbol(systemName: "externaldrive.fill.badge.wifi", size: 34, symbolSize: 18)
+                    .foregroundStyle(serviceColor)
+            }
         }
         .accessibilityLabel("폰하드")
     }

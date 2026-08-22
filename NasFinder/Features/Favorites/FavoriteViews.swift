@@ -92,7 +92,7 @@ struct FavoriteShelfView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if favoriteStore.items.isEmpty {
-                Text("파일이나 폴더를 길게 눌러 즐겨찾기에 추가하세요.")
+                Text("길게 눌러 즐겨찾기에 추가하세요.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)

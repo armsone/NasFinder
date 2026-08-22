@@ -9,7 +9,7 @@ final class AppThemePreferenceTests: XCTestCase {
     }
 
     func testAllSelectableThemesHaveStableUniqueValues() {
-        XCTAssertEqual(AppThemePreference.allCases.count, 6)
+        XCTAssertEqual(AppThemePreference.allCases.count, 7)
         XCTAssertEqual(
             Set(AppThemePreference.allCases.map(\.rawValue)).count,
             AppThemePreference.allCases.count
@@ -97,5 +97,6 @@ final class AppThemePreferenceTests: XCTestCase {
         XCTAssertEqual(AppThemePreference.digitalRain.preferredColorScheme, .dark)
         XCTAssertEqual(AppThemePreference.windyMeadow.preferredColorScheme, .light)
         XCTAssertEqual(AppThemePreference.workbench.preferredColorScheme, .dark)
+        XCTAssertEqual(AppThemePreference.skeuomorphism.preferredColorScheme, .light)
     }
 }

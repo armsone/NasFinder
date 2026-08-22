@@ -8,6 +8,7 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
     case digitalRain
     case windyMeadow
     case workbench
+    case skeuomorphism
 
     static let storageKey = "app.theme.preference.v1"
 
@@ -21,6 +22,7 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
         case .digitalRain: "Vibe Coder"
         case .windyMeadow: "Windy Meadow"
         case .workbench: "Workbench"
+        case .skeuomorphism: "BK Style"
         }
     }
 
@@ -32,6 +34,7 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
         case .digitalRain: "Black · Mint"
         case .windyMeadow: "Sky · Meadow"
         case .workbench: "Slate · Syntax"
+        case .skeuomorphism: "White Enamel · Chrome"
         }
     }
 
@@ -43,13 +46,14 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
         case .digitalRain: "terminal.fill"
         case .windyMeadow: "wind"
         case .workbench: "chevron.left.forwardslash.chevron.right"
+        case .skeuomorphism: "dial.medium"
         }
     }
 
     var preferredColorScheme: ColorScheme? {
         switch self {
         case .system: nil
-        case .day, .windyMeadow: .light
+        case .day, .windyMeadow, .skeuomorphism: .light
         case .night, .digitalRain, .workbench: .dark
         }
     }
@@ -79,6 +83,7 @@ enum SkyBreezeTheme {
         case .digitalRain: Color(red: 0.18, green: 0.91, blue: 0.72)
         case .windyMeadow: Color(red: 0.05, green: 0.55, blue: 0.76)
         case .workbench: Color(red: 0.36, green: 0.78, blue: 1.00)
+        case .skeuomorphism: Color(red: 0.894, green: 0.118, blue: 0.145)
         default: Color(uiColor: .systemBlue)
         }
     }
@@ -101,6 +106,7 @@ enum SkyBreezeTheme {
         case .digitalRain: Color(red: 0.23, green: 0.84, blue: 0.69)
         case .windyMeadow: Color(red: 0.04, green: 0.48, blue: 0.68)
         case .workbench: Color(red: 0.36, green: 0.78, blue: 1.00)
+        case .skeuomorphism: Color(red: 0.22, green: 0.25, blue: 0.27)
         default:
             adaptiveColor(
                 light: (0.08, 0.47, 0.70),
@@ -113,6 +119,7 @@ enum SkyBreezeTheme {
         switch AppThemePreference.current {
         case .digitalRain: Color(red: 0.90, green: 0.98, blue: 0.95)
         case .workbench: Color(red: 0.92, green: 0.95, blue: 0.98)
+        case .skeuomorphism: Color(red: 0.08, green: 0.09, blue: 0.10)
         default: Color(uiColor: .label)
         }
     }
@@ -121,6 +128,7 @@ enum SkyBreezeTheme {
         switch AppThemePreference.current {
         case .digitalRain: Color(red: 0.60, green: 0.75, blue: 0.70)
         case .workbench: Color(red: 0.61, green: 0.69, blue: 0.76)
+        case .skeuomorphism: Color(red: 0.34, green: 0.36, blue: 0.38)
         default: Color(uiColor: .secondaryLabel)
         }
     }
@@ -130,6 +138,7 @@ enum SkyBreezeTheme {
         case .digitalRain: Color(red: 0.035, green: 0.105, blue: 0.095)
         case .windyMeadow: Color(red: 0.985, green: 0.975, blue: 0.91)
         case .workbench: Color(red: 0.075, green: 0.105, blue: 0.145)
+        case .skeuomorphism: Color(red: 0.985, green: 0.982, blue: 0.972)
         default:
             Color(
                 uiColor: UIColor { traits in
@@ -146,6 +155,7 @@ enum SkyBreezeTheme {
         case .digitalRain: Color(red: 0.10, green: 0.32, blue: 0.27)
         case .windyMeadow: Color(red: 0.62, green: 0.73, blue: 0.40)
         case .workbench: Color(red: 0.20, green: 0.29, blue: 0.37)
+        case .skeuomorphism: Color(red: 0.58, green: 0.60, blue: 0.61)
         default:
             adaptiveColor(
                 light: (0.75, 0.89, 0.95),
@@ -159,6 +169,7 @@ enum SkyBreezeTheme {
         case .digitalRain: Color(red: 0.012, green: 0.045, blue: 0.042)
         case .windyMeadow: Color(red: 0.93, green: 0.96, blue: 0.82)
         case .workbench: Color(red: 0.035, green: 0.055, blue: 0.08)
+        case .skeuomorphism: Color(red: 0.925, green: 0.918, blue: 0.902)
         default:
             adaptiveColor(
                 light: (0.955, 0.985, 0.995),
@@ -190,6 +201,12 @@ enum SkyBreezeTheme {
                 Color(red: 0.07, green: 0.10, blue: 0.15),
                 Color(red: 0.035, green: 0.055, blue: 0.08),
                 Color(red: 0.055, green: 0.12, blue: 0.18),
+            ]
+        case .skeuomorphism:
+            colors = [
+                Color(red: 0.86, green: 0.85, blue: 0.83),
+                Color(red: 0.97, green: 0.965, blue: 0.95),
+                .white,
             ]
         case .night:
             colors = [
@@ -337,6 +354,8 @@ enum ThemeServicePalette {
             return base.blended(toward: (0, 0, 0), amount: 0.04)
         case .workbench:
             return base.blended(toward: (0.72, 0.86, 1.0), amount: 0.05)
+        case .skeuomorphism:
+            return base.blended(toward: (0.28, 0.28, 0.28), amount: 0.10)
         case .system, .day:
             return base
         }
@@ -397,6 +416,13 @@ enum ThemeServicePalette {
                 ThemeServiceStyle(hex: 0x65D6AD),
                 ThemeServiceStyle(hex: 0xF4C76B),
                 ThemeServiceStyle(hex: 0xC792EA),
+            ]
+        case .skeuomorphism:
+            [
+                ThemeServiceStyle(hex: 0xE41E25),
+                ThemeServiceStyle(hex: 0x6F7478),
+                ThemeServiceStyle(hex: 0xB7BBC0),
+                ThemeServiceStyle(hex: 0x34383B),
             ]
         case .night:
             [0x0A84FF, 0x30D158, 0xFF9F0A, 0xBF5AF2].map(ThemeServiceStyle.init(hex:))
@@ -478,6 +504,143 @@ struct WorkbenchDecoration: View {
     }
 }
 
+struct ThemedSymbol: View {
+    let systemName: String
+    var size: CGFloat = 25
+    var symbolSize: CGFloat? = nil
+    var showsStatus = false
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
+    private var isSkeuomorphic: Bool {
+        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+    }
+
+    var body: some View {
+        if isSkeuomorphic {
+            Image(systemName: systemName)
+                .font(.system(size: symbolSize ?? size * 0.52, weight: .semibold))
+                .foregroundStyle(Color(red: 0.16, green: 0.17, blue: 0.18))
+                .frame(width: size, height: size)
+                .background {
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [.white, Color(red: 0.82, green: 0.82, blue: 0.80)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .shadow(color: .white.opacity(0.90), radius: max(1, size * 0.04), x: -1, y: -1)
+                        .shadow(color: .black.opacity(0.24), radius: max(2, size * 0.08), x: 1, y: max(2, size * 0.06))
+                }
+                .overlay {
+                    Circle()
+                        .stroke(
+                            LinearGradient(
+                                colors: [.white, Color(red: 0.36, green: 0.38, blue: 0.40)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: max(1.5, size * 0.04)
+                        )
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if showsStatus {
+                        Circle()
+                            .fill(Color(red: 0.894, green: 0.118, blue: 0.145))
+                            .frame(width: max(4, size * 0.16), height: max(4, size * 0.16))
+                            .overlay(Circle().stroke(.white.opacity(0.85), lineWidth: 0.5))
+                    }
+                }
+        } else {
+            Image(systemName: systemName)
+        }
+    }
+}
+
+struct PhoneHardMark: View {
+    let size: CGFloat
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        colors: [Color(white: 0.22), Color(white: 0.055)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+
+            VStack(alignment: .leading, spacing: size * 0.015) {
+                Text("Phone")
+                    .font(.system(size: size * 0.225, weight: .black, design: .rounded))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                Text("Hard")
+                    .font(.system(size: size * 0.285, weight: .black, design: .rounded))
+                    .foregroundStyle(Color(white: 0.075))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: size * 0.36)
+                    .background {
+                        RoundedRectangle(cornerRadius: size * 0.075, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color(red: 1.00, green: 0.56, blue: 0.08),
+                                        Color(red: 0.96, green: 0.32, blue: 0.00),
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                            .overlay(alignment: .top) {
+                                Color.white.opacity(0.35)
+                                    .frame(height: max(0.5, size * 0.018))
+                                    .clipShape(Capsule())
+                                    .padding(.horizontal, size * 0.045)
+                            }
+                    }
+            }
+            .padding(size * 0.105)
+        }
+        .frame(width: size, height: size)
+        .overlay {
+            RoundedRectangle(cornerRadius: size * 0.22, style: .continuous)
+                .stroke(
+                    LinearGradient(
+                        colors: [.white.opacity(0.95), Color(white: 0.36), .white.opacity(0.42)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: max(1, size * 0.045)
+                )
+        }
+        .overlay(alignment: .topTrailing) {
+            Circle()
+                .fill(
+                    LinearGradient(
+                        colors: [.white, Color(white: 0.34)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: size * 0.09, height: size * 0.09)
+                .overlay {
+                    Capsule()
+                        .fill(Color(white: 0.26))
+                        .frame(width: size * 0.055, height: max(0.5, size * 0.012))
+                }
+                .padding(size * 0.075)
+        }
+        .shadow(color: .black.opacity(0.24), radius: size * 0.08, y: size * 0.055)
+    }
+}
+
 struct SkyBreezeBackground: View {
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
@@ -508,9 +671,10 @@ struct SkyBreezeBackground: View {
         switch selectedTheme {
         case .digitalRain:
             CodeRainDecoration(size: size)
+                .opacity(0.78)
         case .windyMeadow:
             Ellipse()
-                .fill(Color(red: 0.43, green: 0.68, blue: 0.20).opacity(0.24))
+                .fill(Color(red: 0.43, green: 0.68, blue: 0.20).opacity(0.18))
                 .frame(width: size.width * 1.35, height: size.height * 0.46)
                 .offset(x: -size.width * 0.18, y: size.height * 0.58)
             Image(systemName: "wind")
@@ -520,18 +684,32 @@ struct SkyBreezeBackground: View {
                         weight: .ultraLight
                     )
                 )
-                .foregroundStyle(.white.opacity(0.24))
+                .foregroundStyle(.white.opacity(0.18))
                 .offset(x: size.width * 0.24, y: 112)
         case .workbench:
             WorkbenchDecoration(size: size)
+                .opacity(0.78)
+        case .skeuomorphism:
+            Circle()
+                .stroke(
+                    LinearGradient(
+                        colors: [.white.opacity(0.95), .black.opacity(0.18)],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    ),
+                    lineWidth: max(size.width * 0.025, 8)
+                )
+                .frame(width: size.width * 0.72, height: size.width * 0.72)
+                .offset(x: size.width * 0.32, y: 38)
+                .opacity(0.32)
         default:
             Image(systemName: "cloud.fill")
                 .font(.system(size: max(min(size.width * 0.42, 190), 1)))
-                .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.06 : 0.38))
+                .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.045 : 0.28))
                 .offset(x: size.width * 0.28, y: 34)
             Image(systemName: "cloud.fill")
                 .font(.system(size: max(min(size.width * 0.24, 110), 1)))
-                .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.04 : 0.24))
+                .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.03 : 0.17))
                 .offset(x: -size.width * 0.34, y: 122)
             Image(systemName: "wind")
                 .font(
@@ -540,7 +718,7 @@ struct SkyBreezeBackground: View {
                         weight: .ultraLight
                     )
                 )
-                .foregroundStyle(SkyBreezeTheme.accent.opacity(0.10))
+                .foregroundStyle(SkyBreezeTheme.accent.opacity(0.07))
                 .offset(x: size.width * 0.24, y: 210)
         }
     }

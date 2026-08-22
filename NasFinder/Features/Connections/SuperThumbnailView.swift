@@ -3,8 +3,26 @@ import UIKit
 
 struct SuperThumbnailMark: View {
     var compact = false
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
+    private var isEnamel: Bool {
+        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+    }
 
     var body: some View {
+        if isEnamel {
+            ThemedSymbol(
+                systemName: "photo.on.rectangle.angled",
+                size: compact ? 32 : 82,
+                symbolSize: compact ? 17 : 40
+            )
+        } else {
+            originalMark
+        }
+    }
+
+    private var originalMark: some View {
         ZStack {
             RoundedRectangle(cornerRadius: compact ? 8 : 20, style: .continuous)
                 .fill(

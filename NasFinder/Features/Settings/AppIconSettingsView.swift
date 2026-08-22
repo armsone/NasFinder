@@ -7,6 +7,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
     case vibeCoder
     case cyberVault
     case networkNAS
+    case enamelNAS
 
     var id: String { rawValue }
 
@@ -14,9 +15,10 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         switch self {
         case .blueNAS: "블루 NAS"
         case .purpleNAS: "퍼플 NAS"
-        case .vibeCoder: "바이브 코더"
+        case .vibeCoder: "Vibe Coder"
         case .cyberVault: "사이버 볼트"
         case .networkNAS: "네트워크 NAS"
+        case .enamelNAS: "BK Style"
         }
     }
 
@@ -27,6 +29,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         case .vibeCoder: "AppIconVibeCoderPreview"
         case .cyberVault: "AppIconCyberVaultPreview"
         case .networkNAS: "AppIconNetworkNASPreview"
+        case .enamelNAS: "AppIconEnamelPreview"
         }
     }
 
@@ -37,6 +40,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         case .vibeCoder: "AppIconVibeCoder"
         case .cyberVault: "AppIconCyberVault"
         case .networkNAS: "AppIconNetworkNAS"
+        case .enamelNAS: "AppIconEnamel"
         }
     }
 
@@ -88,10 +92,17 @@ struct AppIconSettingsView: View {
 struct AppIconPickerSection: View {
     var compact = false
 
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
     @State private var selectedIcon = AppIconChoice.blueNAS
     @State private var isChangingIcon = false
     @State private var pendingIcon: AppIconChoice?
     @State private var errorMessage: String?
+
+    private var isEnamelTheme: Bool {
+        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+    }
 
     var body: some View {
         Group {
@@ -99,11 +110,12 @@ struct AppIconPickerSection: View {
                 VStack(spacing: 10) {
                     LazyVGrid(
                         columns: [
-                            GridItem(.flexible(), spacing: 16, alignment: .top),
-                            GridItem(.flexible(), spacing: 16, alignment: .top),
+                            GridItem(.flexible(), spacing: 8, alignment: .top),
+                            GridItem(.flexible(), spacing: 8, alignment: .top),
+                            GridItem(.flexible(), spacing: 8, alignment: .top),
                         ],
                         alignment: .center,
-                        spacing: 16
+                        spacing: 8
                     ) {
                         ForEach(AppIconChoice.allCases) { icon in
                             Button {
@@ -112,6 +124,7 @@ struct AppIconPickerSection: View {
                                 VStack(spacing: 8) {
                                     Image(icon.previewAssetName)
                                         .resizable()
+                                        .interpolation(.high)
                                         .scaledToFit()
                                         .frame(width: iconSide, height: iconSide)
                                         .clipShape(
@@ -143,9 +156,25 @@ struct AppIconPickerSection: View {
                                     .font(.caption.weight(.medium))
                                     .frame(maxWidth: .infinity)
                                 }
+                                .padding(8)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 104)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                                }
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .stroke(
+                                            selectedIcon == icon
+                                                ? Color.accentColor.opacity(0.75)
+                                                : Color.primary.opacity(0.08),
+                                            lineWidth: selectedIcon == icon ? 1.5 : 1
+                                        )
+                                }
                             }
                             .buttonStyle(.plain)
-                            .disabled(isChangingIcon || selectedIcon == icon)
+                            .disabled(isChangingIcon || selectedIcon == icon || isEnamelTheme)
                             .frame(maxWidth: .infinity)
                             .contentShape(Rectangle())
                             .accessibilityLabel("\(icon.title) 아이콘")
@@ -154,17 +183,22 @@ struct AppIconPickerSection: View {
                     }
 
                     Divider()
-                    SettingsPanelDescription("선택한 아이콘은 홈 화면과 앱 보관함에 적용됩니다.")
+                    SettingsPanelDescription(
+                        isEnamelTheme
+                            ? "BK Style에서는 같은 이름의 앱 아이콘을 사용합니다."
+                            : "선택한 아이콘은 홈 화면과 앱 보관함에 적용됩니다."
+                    )
                 }
                 .padding(.vertical, 6)
+                .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
             } header: {
                 SettingsSectionHeader(title: "앱 아이콘", systemImage: "app.badge")
             }
         }
         .task {
-            selectedIcon = AppIconChoice.current(
-                alternateIconName: UIApplication.shared.alternateIconName
-            )
+            selectedIcon = isEnamelTheme
+                ? .enamelNAS
+                : AppIconChoice.current(alternateIconName: UIApplication.shared.alternateIconName)
         }
         .alert("아이콘을 변경할 수 없습니다", isPresented: errorBinding) {
             Button("확인", role: .cancel) {
@@ -175,8 +209,8 @@ struct AppIconPickerSection: View {
         }
     }
 
-    private var iconSide: CGFloat { compact ? 72 : 96 }
-    private var iconCornerRadius: CGFloat { compact ? 16 : 21 }
+    private var iconSide: CGFloat { compact ? 54 : 60 }
+    private var iconCornerRadius: CGFloat { compact ? 12 : 13 }
 
     private var errorBinding: Binding<Bool> {
         Binding(
@@ -210,10 +244,16 @@ struct AppIconPickerSection: View {
 struct SettingsSectionHeader: View {
     let title: String
     let systemImage: String
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
+    private var selectedTheme: AppThemePreference {
+        .resolved(selectedThemeRawValue)
+    }
 
     var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: systemImage)
+        HStack(spacing: selectedTheme == .skeuomorphism ? 7 : 3) {
+            ThemedSymbol(systemName: systemImage)
             Text(title)
             Spacer(minLength: 0)
         }

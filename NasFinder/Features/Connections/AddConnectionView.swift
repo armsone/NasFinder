@@ -195,9 +195,12 @@ struct AddConnectionView: View {
     }
 
     private var serverSection: some View {
-        Section("서버") {
-            TextField("표시 이름 (예: 우리집 NAS)", text: $name)
-            TextField("호스트 (예: nas.example.com)", text: $host)
+        Section {
+            Text("필수 항목을 입력하면 연결할 수 있습니다.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("표시 이름 · 필수 (예: 우리집 NAS)", text: $name)
+            TextField("서버 주소 · 필수 (예: nas.example.com)", text: $host)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
@@ -206,7 +209,7 @@ struct AddConnectionView: View {
                     .font(.caption)
                     .foregroundStyle(.red)
             }
-            LabeledContent("포트") {
+            LabeledContent("포트 · 필수") {
                 TextField(String(kind.defaultPort), value: $port, format: .number.grouping(.never))
                     .keyboardType(.numberPad)
                     .multilineTextAlignment(.trailing)
@@ -234,7 +237,7 @@ struct AddConnectionView: View {
             }
 
             if kind == .synology || kind == .webDAV {
-                Toggle("HTTPS 사용", isOn: $usesTLS)
+                Toggle("보안 연결(HTTPS)", isOn: $usesTLS)
                     .disabled(parsedServerAddress?.inferredTLS != nil)
                 if parsedServerAddress?.inferredTLS != nil {
                     Text("주소의 http:// 또는 https:// 표시에 맞춰 보안 연결 설정을 사용합니다.")
@@ -243,21 +246,25 @@ struct AddConnectionView: View {
                 }
             }
 
-            LabeledContent("시작 위치") {
+            LabeledContent("시작 폴더 · 선택") {
                 TextField(rootPathPlaceholder, text: $rootPath)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
                     .multilineTextAlignment(.trailing)
             }
+        } header: {
+            Text("서버")
+        } footer: {
+            Text("시작 폴더를 변경하지 않으면 서비스의 기본 위치에서 시작합니다.")
         }
     }
 
     private var passwordSection: some View {
         Section("로그인") {
-            TextField("사용자 이름", text: $username)
+            TextField("사용자 이름 · 필수", text: $username)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
-            SecureField("비밀번호", text: $password)
+            SecureField("비밀번호 · 필수", text: $password)
                 .textContentType(.password)
         }
     }
@@ -341,8 +348,7 @@ struct AddConnectionView: View {
             kind = candidate
         } label: {
             VStack(spacing: 5) {
-                Image(systemName: candidate.systemImage)
-                    .font(.body.weight(.medium))
+                ThemedSymbol(systemName: candidate.systemImage)
                 Text(candidate.compactTitle)
                     .font(.caption.weight(isSelected ? .semibold : .regular))
                     .lineLimit(1)

@@ -46,6 +46,27 @@ final class SharedInboxStore: ObservableObject {
         }
     }
 
+    func delete(_ recordsToDelete: [SharedInboxRecord]) {
+        guard !recordsToDelete.isEmpty else { return }
+
+        var failedFilenames: [String] = []
+        for record in recordsToDelete {
+            do {
+                try SharedInbox.delete(record)
+                records.removeAll { $0.id == record.id }
+            } catch {
+                failedFilenames.append(record.originalFilename)
+            }
+        }
+
+        if failedFilenames.isEmpty {
+            errorMessage = nil
+        } else {
+            reload()
+            errorMessage = "일부 파일을 삭제하지 못했습니다: \(failedFilenames.joined(separator: ", "))"
+        }
+    }
+
     func sceneDidBecomeActive() {
         reload()
     }
