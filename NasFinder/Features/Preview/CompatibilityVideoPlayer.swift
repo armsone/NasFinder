@@ -809,7 +809,7 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                             media: fastMedia,
                             stream: fastStream,
                             dimensions: maximumDimensions(for: size),
-                            snapshotPosition: 0.3,
+                            snapshotPosition: SuperThumbnailVideoFramePolicy.primaryPosition,
                             preciseSeek: true,
                             closesStreamOnSuccess: true,
                             timeout: min(try remainingGenerationTime(), .seconds(20))
@@ -892,7 +892,9 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                 deadline = clock.now.advanced(by: .seconds(95))
             }
             let dimensions = maximumDimensions(for: size)
-            let initialPosition: Float = 0.3
+            // Primary frame at exactly duration * 3/13; a retry at 6/13 only
+            // when the primary frame is at least 50% black.
+            let initialPosition = SuperThumbnailVideoFramePolicy.primaryPosition
             let preciseSeekTimeout = min(timeout, .seconds(14))
             let initialOperation = CompatibilityVideoThumbnailOperation()
             defer {
@@ -1004,7 +1006,7 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                                 media: recoveryMedia,
                                 stream: nil,
                                 dimensions: dimensions,
-                                snapshotPosition: 0.65,
+                                snapshotPosition: initialPosition,
                                 preciseSeek: false,
                                 closesStreamOnSuccess: true,
                                 timeout: min(
@@ -1033,7 +1035,7 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                                 media: sequentialMedia,
                                 stream: nil,
                                 dimensions: dimensions,
-                                position: 0,
+                                position: initialPosition,
                                 timeout: min(
                                     try remainingGenerationTime(),
                                     .seconds(20)
@@ -1120,16 +1122,26 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                     }
                     do {
                         let retryTimeout = try remainingGenerationTime()
-                        image = try await retryOperation.generate(
+                        let retryImage = try await retryOperation.generate(
                             media: retryMedia,
                             stream: retryStream,
                             dimensions: dimensions,
-                            snapshotPosition: initialPosition
-                                + (1 - initialPosition) / 2,
+                            snapshotPosition: SuperThumbnailVideoFramePolicy.retryPosition,
                             preciseSeek: true,
                             closesStreamOnSuccess: true,
                             timeout: min(preciseSeekTimeout, retryTimeout)
                         )
+                        // A retry that is also at least 50% black keeps the
+                        // primary frame instead of trading one black frame
+                        // for another.
+                        let selection = SuperThumbnailVideoFramePolicy.selectedFrame(
+                            primaryIsBlack: true,
+                            retryIsBlack: RemoteVideoThumbnailQuality
+                                .isAtLeast50PercentBlack(retryImage)
+                        )
+                        if selection == .retry {
+                            image = retryImage
+                        }
                     } catch is CancellationError {
                         if let retryStream {
                             transferredBytes = transferredBeforeRetry

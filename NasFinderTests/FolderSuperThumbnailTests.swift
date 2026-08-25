@@ -53,6 +53,21 @@ final class FolderSuperThumbnailTests: XCTestCase {
         )
     }
 
+    /// The Mac helper already blurs a skin-tone dominant folder sheet once
+    /// (1.5 pt on the final sheet). Display consumers that blur file
+    /// thumbnails must not add a second blur to folder sheets.
+    func testFolderSheetsNeverReceiveDisplayTimeSkinToneBlur() {
+        XCTAssertFalse(FolderSuperThumbnailDisplayPolicy.appliesDisplayTimeSkinToneBlur)
+        XCTAssertFalse(
+            FolderSuperThumbnailDisplayPolicy.detectsSkinToneDominance(requestedByConsumer: true)
+        )
+        XCTAssertFalse(
+            FolderSuperThumbnailDisplayPolicy.detectsSkinToneDominance(requestedByConsumer: false)
+        )
+        // File thumbnails keep the consumer's own policy.
+        XCTAssertTrue(SkinToneBlurPolicy.shouldBlur(skinToneCount: 42, sampleCount: 100))
+    }
+
     func testFolderSheetLookupFindsGeneratedRecordEmptyMarkerAndMissingState() async {
         let storage = FolderVaultTestStorage()
         let service = FolderVaultTestService(storage: storage)

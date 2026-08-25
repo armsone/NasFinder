@@ -6,9 +6,9 @@ repository_root="${package_root:h}"
 build_root="${package_root}/.build-release"
 output_app="${1:-${package_root}/dist/NasFinder Super Thumbnail.app}"
 icon_source="${repository_root}/NasFinder/Resources/Assets.xcassets/AppIconCyberVault.appiconset/AppIconCyberVault-1024.png"
-app_version="${APP_VERSION:-2.1.4}"
-build_number="${BUILD_NUMBER:-202608251621}"
-build_stamp="${DISPLAY_BUILD_NUMBER:-202608251621}"
+app_version="${APP_VERSION:-2.2.0}"
+build_number="${BUILD_NUMBER:-202608252025}"
+build_stamp="${DISPLAY_BUILD_NUMBER:-202608252025}"
 
 CLANG_MODULE_CACHE_PATH="${build_root}/module-cache" \
 SWIFTPM_MODULECACHE_OVERRIDE="${build_root}/module-cache" \

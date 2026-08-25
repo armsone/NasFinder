@@ -54,9 +54,22 @@ enum FolderContactSheetPlanner {
 enum SheetSkinTonePolicy {
     static let requiredFraction = 0.42
     static let sampleSide = 12
-    /// The 384 px sheet is displayed at roughly 192 pt on a 2x screen, so a
-    /// blur visually equivalent to 2 points is 4 pixels of Gaussian radius.
-    static let blurRadiusPixels = 4.0
+    /// The blur is applied exactly once, to the final sheet, at 1.5 logical
+    /// points. The 384 px sheet is displayed at roughly 192 pt on a 2x
+    /// screen, so 1.5 pt is 3 px of Gaussian radius at that reference.
+    /// Parents compose from unblurred child tiles, so a parent's final blur
+    /// never compounds with a child's blur.
+    static let blurRadiusPoints = 1.5
+    static let referenceSheetPixelSize = 384
+    static let referenceDisplayPointSize = 192
+
+    static var blurRadiusPixels: Double {
+        blurRadiusPixels(forSheetPixelSize: referenceSheetPixelSize)
+    }
+
+    static func blurRadiusPixels(forSheetPixelSize side: Int) -> Double {
+        blurRadiusPoints * Double(side) / Double(referenceDisplayPointSize)
+    }
 
     static func shouldBlur(skinToneCount: Int, sampleCount: Int) -> Bool {
         guard sampleCount > 0 else { return false }
@@ -105,6 +118,46 @@ enum SheetSkinTonePolicy {
             }
         }
         return shouldBlur(skinToneCount: skinToneCount, sampleCount: width * height)
+    }
+}
+
+/// Run-scoped store of unblurred, tile-sized folder sheets keyed by folder
+/// path. Folder processing is deepest-first, so a parent finds each child's
+/// unblurred tile here instead of reading the child's blurred sheet from the
+/// vault. A parent evicts its children's tiles after composing, which keeps
+/// the cache bounded to folders whose parent has not been processed yet.
+final class FolderSheetTileCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var tiles: [String: CGImage] = [:]
+
+    init() {}
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return tiles.count
+    }
+
+    func tile(for folder: URL) -> CGImage? {
+        lock.lock()
+        defer { lock.unlock() }
+        return tiles[Self.key(for: folder)]
+    }
+
+    func store(_ tile: CGImage, for folder: URL) {
+        lock.lock()
+        defer { lock.unlock() }
+        tiles[Self.key(for: folder)] = tile
+    }
+
+    func removeTile(for folder: URL) {
+        lock.lock()
+        defer { lock.unlock() }
+        tiles.removeValue(forKey: Self.key(for: folder))
+    }
+
+    private static func key(for folder: URL) -> String {
+        folder.standardizedFileURL.path
     }
 }
 
@@ -161,9 +214,14 @@ extension VaultProcessor {
     /// listing; the write itself stays atomic and claim-coordinated. Throws
     /// for unreadable folders and on cancellation so those folders are never
     /// recorded as successful and remain retryable.
+    ///
+    /// `tileCache` shares unblurred child tiles across one run. Without it a
+    /// child folder tile is rebuilt from that child's unblurred sources; the
+    /// blurred sheet stored in the vault is never used as a tile source.
     static func processFolder(
         _ folder: FolderEntry,
-        workerID: String
+        workerID: String,
+        tileCache: FolderSheetTileCache? = nil
     ) throws -> FolderProcessingResult {
         try Task.checkCancellation()
         let children = try visibleChildren(of: folder.url)
@@ -204,14 +262,33 @@ extension VaultProcessor {
             tileImage(
                 for: child,
                 in: folder.url,
+                maxPixelSize: tilePixelSize,
+                tileCache: tileCache,
                 usedChildFolderSheets: &usedChildFolderSheets
             )
         }
         try Task.checkCancellation()
-        var sheet = try composeSheet(tiles: tiles)
+        let unblurredSheet = try composeSheet(tiles: tiles, side: sheetPixelSize)
+        if let tileCache {
+            // The parent reuses this unblurred tile. The children's tiles are
+            // no longer needed once this sheet exists.
+            if let tile = downscaled(unblurredSheet, to: tilePixelSize) {
+                tileCache.store(tile, for: folder.url)
+            }
+            for child in children where child.isDirectory {
+                tileCache.removeTile(
+                    for: folder.url.appendingPathComponent(child.name, isDirectory: true)
+                )
+            }
+        }
+        // Exactly one blur, on the final sheet only.
+        var sheet = unblurredSheet
         let didBlur = SheetSkinTonePolicy.isSkinToneDominant(sheet)
         if didBlur {
-            sheet = try blurred(sheet, radius: SheetSkinTonePolicy.blurRadiusPixels)
+            sheet = try blurred(
+                sheet,
+                radius: SheetSkinTonePolicy.blurRadiusPixels(forSheetPixelSize: sheetPixelSize)
+            )
         }
         let data = try jpegData(from: sheet, quality: 0.82)
         try Task.checkCancellation()
@@ -237,11 +314,12 @@ extension VaultProcessor {
         )
     }
 
-    /// The already-generated vault artwork a sheet tile reuses, if any.
-    /// A child folder resolves to its own folder sheet inside this folder's
-    /// vault; a media file resolves to its file Super Thumbnail. Both come
-    /// from earlier phases of the same run or previous runs, so composing a
-    /// sheet never triggers recursive generation.
+    /// The already-generated vault artwork for a child, if any. A media file
+    /// resolves to its file Super Thumbnail, which sheet composition reuses
+    /// directly. A child folder resolves to its stored folder sheet; that
+    /// sheet may already be blurred, so composition never uses it as a tile
+    /// source and instead takes the unblurred tile from
+    /// `unblurredFolderTile(for:maxPixelSize:tileCache:)`.
     static func tileArtworkURL(for child: FolderSheetChild, in folder: URL) -> URL? {
         let vault = folder.appendingPathComponent(
             NasFinderVaultCompatibility.directoryName,
@@ -289,27 +367,89 @@ extension VaultProcessor {
     private static func tileImage(
         for child: FolderSheetChild,
         in folder: URL,
+        maxPixelSize: Int,
+        tileCache: FolderSheetTileCache?,
         usedChildFolderSheets: inout Int
     ) -> CGImage? {
+        if child.isDirectory {
+            let childURL = folder.appendingPathComponent(child.name, isDirectory: true)
+            guard let tile = unblurredFolderTile(
+                for: childURL,
+                maxPixelSize: maxPixelSize,
+                tileCache: tileCache
+            ) else {
+                return placeholderTile(isDirectory: true, side: maxPixelSize)
+            }
+            usedChildFolderSheets += 1
+            return tile
+        }
         guard let artworkURL = tileArtworkURL(for: child, in: folder) else {
-            return placeholderTile(isDirectory: child.isDirectory)
+            return placeholderTile(isDirectory: false, side: maxPixelSize)
         }
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: tilePixelSize,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
         ]
         guard let source = CGImageSourceCreateWithURL(artworkURL as CFURL, nil),
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
         else {
-            return placeholderTile(isDirectory: child.isDirectory)
+            return placeholderTile(isDirectory: false, side: maxPixelSize)
         }
-        if child.isDirectory { usedChildFolderSheets += 1 }
         return image
     }
 
-    private static func placeholderTile(isDirectory: Bool) -> CGImage? {
-        let side = tilePixelSize
+    /// Unblurred tile for a child folder. Prefers the tile the child stored
+    /// in `tileCache` before its own blur; otherwise rebuilds a mini sheet
+    /// from the child's unblurred sources (file thumbnails and, recursively,
+    /// its own child folders). Returns `nil` for unreadable or empty folders
+    /// so the caller draws a placeholder.
+    static func unblurredFolderTile(
+        for folderURL: URL,
+        maxPixelSize: Int,
+        tileCache: FolderSheetTileCache?
+    ) -> CGImage? {
+        if let cached = tileCache?.tile(for: folderURL) {
+            return cached
+        }
+        guard let children = try? visibleChildren(of: folderURL),
+              !children.isEmpty else { return nil }
+        var nestedFolderSheets = 0
+        let nestedSide = max(maxPixelSize / 3, 1)
+        let tiles = FolderContactSheetPlanner.plan(children: children).map { child in
+            tileImage(
+                for: child,
+                in: folderURL,
+                maxPixelSize: nestedSide,
+                tileCache: tileCache,
+                usedChildFolderSheets: &nestedFolderSheets
+            )
+        }
+        guard let sheet = try? composeSheet(tiles: tiles, side: maxPixelSize) else {
+            return nil
+        }
+        if maxPixelSize == tilePixelSize {
+            tileCache?.store(sheet, for: folderURL)
+        }
+        return sheet
+    }
+
+    private static func downscaled(_ image: CGImage, to side: Int) -> CGImage? {
+        guard let context = CGContext(
+            data: nil,
+            width: side,
+            height: side,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+        return context.makeImage()
+    }
+
+    private static func placeholderTile(isDirectory: Bool, side: Int) -> CGImage? {
         guard let context = CGContext(
             data: nil,
             width: side,
@@ -347,9 +487,8 @@ extension VaultProcessor {
         return context.makeImage()
     }
 
-    private static func composeSheet(tiles: [CGImage?]) throws -> CGImage {
-        let side = sheetPixelSize
-        let tileSide = tilePixelSize
+    private static func composeSheet(tiles: [CGImage?], side: Int) throws -> CGImage {
+        let cellSide = CGFloat(side) / 3
         guard let context = CGContext(
             data: nil,
             width: side,
@@ -370,10 +509,10 @@ extension VaultProcessor {
             // Core Graphics origin is bottom-left; the first child appears in
             // the visual top-left cell.
             let cell = CGRect(
-                x: CGFloat(column * tileSide),
-                y: CGFloat(side - (row + 1) * tileSide),
-                width: CGFloat(tileSide),
-                height: CGFloat(tileSide)
+                x: CGFloat(column) * cellSide,
+                y: CGFloat(side) - CGFloat(row + 1) * cellSide,
+                width: cellSide,
+                height: cellSide
             )
             context.saveGState()
             context.clip(to: cell)

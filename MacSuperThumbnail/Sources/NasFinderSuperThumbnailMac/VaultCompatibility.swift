@@ -276,18 +276,53 @@ enum VaultProcessor {
         return try jpegData(from: image, quality: 0.82)
     }
 
+    /// Primary frame at exactly `duration * 3/13` with zero tolerance. Only a
+    /// primary frame that is at least 50% black triggers one retry at exactly
+    /// `duration * 6/13`; the retry is used only when it is below 50% black,
+    /// otherwise (black retry or failed retry) the primary frame is kept.
     private static func videoThumbnailData(for url: URL) async throws -> Data {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.5, preferredTimescale: 600)
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.5, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = .zero
+        generator.requestedTimeToleranceAfter = .zero
         let duration = try await asset.load(.duration)
-        let seconds = duration.seconds.isFinite ? duration.seconds : 0
-        let captureTime = CMTime(seconds: min(max(seconds * 0.1, 0), 3), preferredTimescale: 600)
-        let image = try await generator.image(at: captureTime).image
-        return try jpegData(from: image, quality: 0.82)
+        let primary = try await generator.image(
+            at: captureTime(duration: duration, ratio: SuperThumbnailVideoFramePolicy.primaryRatio)
+        ).image
+        var chosen = primary
+        let primaryIsBlack = VideoFrameBlackPolicy.isAtLeast50PercentBlack(primary)
+        if SuperThumbnailVideoFramePolicy.shouldCaptureRetry(primaryIsBlack: primaryIsBlack) {
+            try Task.checkCancellation()
+            let retry = try? await generator.image(
+                at: captureTime(duration: duration, ratio: SuperThumbnailVideoFramePolicy.retryRatio)
+            ).image
+            let selection = SuperThumbnailVideoFramePolicy.selectedFrame(
+                primaryIsBlack: primaryIsBlack,
+                retryIsBlack: retry.map(VideoFrameBlackPolicy.isAtLeast50PercentBlack)
+            )
+            if selection == .retry, let retry {
+                chosen = retry
+            }
+        }
+        return try jpegData(from: chosen, quality: 0.82)
+    }
+
+    /// Exact rational multiple of the asset duration in the asset's own
+    /// timescale. Unknown or non-positive durations fall back to time zero.
+    static func captureTime(
+        duration: CMTime,
+        ratio: (multiplier: Int, divisor: Int)
+    ) -> CMTime {
+        guard duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0 else {
+            return .zero
+        }
+        return CMTimeMultiplyByRatio(
+            duration,
+            multiplier: Int32(ratio.multiplier),
+            divisor: Int32(ratio.divisor)
+        )
     }
 
     static func jpegData(from image: CGImage, quality: Double) throws -> Data {

@@ -22,7 +22,33 @@ struct NasFinderApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ConnectionListView()
+            adaptiveRootView
+        }
+    }
+
+    private var isRunningOnMac: Bool {
+        #if targetEnvironment(macCatalyst)
+        true
+        #else
+        ProcessInfo.processInfo.isiOSAppOnMac
+        #endif
+    }
+
+    @ViewBuilder
+    private var adaptiveRootView: some View {
+        if isRunningOnMac {
+            GeometryReader { _ in
+                configuredRootView
+                    .environment(\.dynamicTypeSize, .accessibility3)
+                    .controlSize(.large)
+            }
+        } else {
+            configuredRootView
+        }
+    }
+
+    private var configuredRootView: some View {
+        ConnectionListView()
                 .environmentObject(connectionStore)
                 .environmentObject(inboxStore)
                 .environmentObject(favoriteStore)
@@ -42,6 +68,9 @@ struct NasFinderApp: App {
                     await FileProviderThumbnailCache.shared.migrateExistingCachesIfNeeded()
                     browserFavoritesStore.importPendingSharedArchives()
                     inboxStore.reload()
+                    #if targetEnvironment(macCatalyst)
+                    MacDirectUpdateManager.shared.checkAtStartupIfNeeded()
+                    #endif
                 }
                 .onOpenURL { url in
                     Task {
@@ -73,7 +102,6 @@ struct NasFinderApp: App {
                         webHardServerController.applicationDidEnterBackground()
                     }
                 }
-        }
     }
 
     private var themeIconErrorBinding: Binding<Bool> {
@@ -84,27 +112,29 @@ struct NasFinderApp: App {
     }
 
     private func synchronizeAppIcon(from oldRawValue: String, to newRawValue: String) {
-        let oldTheme = AppThemePreference.resolved(oldRawValue)
-        let newTheme = AppThemePreference.resolved(newRawValue)
-        let icon: AppIconChoice
+        // On a Mac (Designed for iPad) the theme applies through AppStorage
+        // as usual, but exit before even reading the unsupported
+        // alternate-icon API and never raise an alert.
+        guard !AppIconAvailabilityPolicy.isIOSAppOnMac else { return }
 
-        if newTheme == .skeuomorphism {
-            let current = AppIconChoice.current(
-                alternateIconName: UIApplication.shared.alternateIconName
-            )
-            if current != .enamelNAS {
-                appIconBeforeEnamelRawValue = current.rawValue
-            }
-            icon = .enamelNAS
-        } else if oldTheme == .skeuomorphism {
-            icon = AppIconChoice(rawValue: appIconBeforeEnamelRawValue) ?? .blueNAS
-        } else if newTheme == .digitalRain {
-            icon = .vibeCoder
-        } else {
+        let currentIcon = AppIconChoice.current(
+            alternateIconName: UIApplication.shared.alternateIconName
+        )
+        guard let synchronization = AppIconAvailabilityPolicy.themeSynchronization(
+            from: AppThemePreference.resolved(oldRawValue),
+            to: AppThemePreference.resolved(newRawValue),
+            currentIcon: currentIcon,
+            iconBeforeEnamel: AppIconChoice(rawValue: appIconBeforeEnamelRawValue),
+            isIOSAppOnMac: AppIconAvailabilityPolicy.isIOSAppOnMac
+        ) else {
             return
         }
 
-        AppIconChoice.apply(icon) { errorMessage in
+        if synchronization.remembersCurrentIcon {
+            appIconBeforeEnamelRawValue = currentIcon.rawValue
+        }
+
+        AppIconChoice.apply(synchronization.icon) { errorMessage in
             themeIconError = errorMessage
         }
     }

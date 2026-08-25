@@ -53,6 +53,13 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         _ icon: AppIconChoice,
         completion: @escaping @MainActor @Sendable (String?) -> Void = { _ in }
     ) {
+        // Designed-for-iPad on Mac: the alternate-icon API is unsupported and
+        // the Mac keeps one fixed icon, so finish silently without touching
+        // UIApplication and without reporting an error.
+        guard !AppIconAvailabilityPolicy.isIOSAppOnMac else {
+            completion(nil)
+            return
+        }
         guard UIApplication.shared.supportsAlternateIcons else {
             completion(AppIconChangeError.unsupported.localizedDescription)
             return
@@ -104,7 +111,19 @@ struct AppIconPickerSection: View {
         AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
     }
 
+    private var showsIconPicker: Bool {
+        AppIconAvailabilityPolicy.showsIconPicker(
+            isIOSAppOnMac: AppIconAvailabilityPolicy.isIOSAppOnMac
+        )
+    }
+
     var body: some View {
+        if showsIconPicker {
+            pickerSection
+        }
+    }
+
+    private var pickerSection: some View {
         Group {
             Section {
                 VStack(spacing: 10) {
@@ -222,8 +241,15 @@ struct AppIconPickerSection: View {
     }
 
     private func select(_ icon: AppIconChoice) {
-        guard UIApplication.shared.supportsAlternateIcons else {
-            errorMessage = "이 기기에서는 대체 앱 아이콘을 지원하지 않습니다."
+        guard AppIconAvailabilityPolicy.canChangeIcon(
+            isIOSAppOnMac: AppIconAvailabilityPolicy.isIOSAppOnMac,
+            supportsAlternateIcons: UIApplication.shared.supportsAlternateIcons
+        ) else {
+            // The picker is not shown on the Mac; on iPhone/iPad this only
+            // fires when the system itself reports no alternate-icon support.
+            if !AppIconAvailabilityPolicy.isIOSAppOnMac {
+                errorMessage = "이 기기에서는 대체 앱 아이콘을 지원하지 않습니다."
+            }
             return
         }
 

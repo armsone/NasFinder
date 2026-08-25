@@ -64,11 +64,15 @@ struct ConnectionListView: View {
     @State private var navigationIdentity = UUID()
 
     private var isRunningOnMac: Bool {
+        #if targetEnvironment(macCatalyst)
+        true
+        #else
         ProcessInfo.processInfo.isiOSAppOnMac
+        #endif
     }
 
     private var dashboardContentMaxWidth: CGFloat? {
-        isRunningOnMac ? 760 : nil
+        isRunningOnMac ? 1_520 : nil
     }
 
     init() {
@@ -87,7 +91,7 @@ struct ConnectionListView: View {
                 dashboardSections
             }
             .frame(maxWidth: dashboardContentMaxWidth)
-            .environment(\.defaultMinListRowHeight, isRunningOnMac ? 36 : 44)
+            .environment(\.defaultMinListRowHeight, isRunningOnMac ? 72 : 44)
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(SkyBreezeBackground())
@@ -193,6 +197,7 @@ struct ConnectionListView: View {
                 returnToDashboard()
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SkyBreezeBackground())
         .id(navigationIdentity)
     }
@@ -548,7 +553,10 @@ struct ConnectionListView: View {
     }
 
     private var pageHorizontalPadding: CGFloat {
-        horizontalSizeClass == .regular ? 24 : 16
+        if isRunningOnMac {
+            return horizontalSizeClass == .regular ? 48 : 32
+        }
+        return horizontalSizeClass == .regular ? 24 : 16
     }
 
     private var inboxByteCount: Int64 {
@@ -564,7 +572,10 @@ struct ConnectionListView: View {
     }
 
     private var currentLogoAssetName: String {
-        AppIconChoice.current(
+        guard !AppIconAvailabilityPolicy.isIOSAppOnMac else {
+            return AppIconAvailabilityPolicy.fixedMacIcon.previewAssetName
+        }
+        return AppIconChoice.current(
             alternateIconName: UIApplication.shared.alternateIconName
         ).previewAssetName
     }
@@ -578,11 +589,14 @@ struct ConnectionListView: View {
             selectNextTheme()
         } label: {
             Image(systemName: selectedTheme.systemImage)
-                .font(.system(size: 9, weight: .bold))
+                .font(.system(size: isRunningOnMac ? 12 : 9, weight: .bold))
                 .foregroundStyle(
                     selectedTheme.preferredColorScheme == .dark ? .white : .black.opacity(0.72)
                 )
-                .frame(width: 38, height: 18)
+                .frame(
+                    width: isRunningOnMac ? 51 : 38,
+                    height: isRunningOnMac ? 24 : 18
+                )
                 .background {
                     Capsule()
                         .fill(
@@ -611,14 +625,25 @@ struct ConnectionListView: View {
 
     private var dashboardLogo: some View {
         Button(action: openRememberedLocation) {
-            HStack(spacing: 8) {
+            HStack(spacing: isRunningOnMac ? 11 : 8) {
                 Image(currentLogoAssetName)
                     .resizable()
                     .scaledToFill()
-                    .frame(width: 38, height: 38)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .frame(
+                        width: isRunningOnMac ? 51 : 38,
+                        height: isRunningOnMac ? 51 : 38
+                    )
+                    .clipShape(
+                        RoundedRectangle(
+                            cornerRadius: isRunningOnMac ? 12 : 9,
+                            style: .continuous
+                        )
+                    )
                     .overlay {
-                        RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        RoundedRectangle(
+                            cornerRadius: isRunningOnMac ? 12 : 9,
+                            style: .continuous
+                        )
                             .stroke(.primary.opacity(0.08), lineWidth: 0.5)
                     }
 
@@ -627,7 +652,7 @@ struct ConnectionListView: View {
                     .foregroundStyle(.primary.opacity(0.82))
                     .fixedSize(horizontal: true, vertical: false)
             }
-            .padding(.vertical, 3)
+            .padding(.vertical, isRunningOnMac ? 4 : 3)
             .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.plain)

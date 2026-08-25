@@ -5,13 +5,20 @@ struct AppSettingsView: View {
     @ObservedObject private var screenAwakeController = ScreenAwakeController.shared
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.system.rawValue
+    #if targetEnvironment(macCatalyst)
+    @ObservedObject private var updateManager = MacDirectUpdateManager.shared
+    #endif
 
     private var selectedTheme: AppThemePreference {
         .resolved(selectedThemeRawValue)
     }
 
     private var isRunningOnMac: Bool {
+        #if targetEnvironment(macCatalyst)
+        true
+        #else
         ProcessInfo.processInfo.isiOSAppOnMac
+        #endif
     }
 
     var body: some View {
@@ -21,17 +28,125 @@ struct AppSettingsView: View {
             screenAwakeSection
             filesAppIntegrationSection
             GooglePhotosSettingsSection()
+            #if targetEnvironment(macCatalyst)
+            macUpdateSection
+            #endif
             openSourceSection
             creatorSection
         }
-        .frame(maxWidth: isRunningOnMac ? 680 : nil)
-        .environment(\.defaultMinListRowHeight, isRunningOnMac ? 36 : 44)
+        .frame(maxWidth: isRunningOnMac ? 1_360 : nil)
+        .environment(\.defaultMinListRowHeight, isRunningOnMac ? 72 : 44)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(SkyBreezeBackground())
         .navigationTitle("설정")
         .navigationBarTitleDisplayMode(.inline)
     }
+
+    #if targetEnvironment(macCatalyst)
+    private var macUpdateSection: some View {
+        Section {
+            Toggle("업데이트 자동 다운로드", isOn: $updateManager.automaticallyDownloadsUpdates)
+
+            updateStatusView
+
+            HStack(spacing: 12) {
+                updatePrimaryButton
+                updateSecondaryButtons
+            }
+        } header: {
+            SettingsSectionHeader(title: "Mac 업데이트", systemImage: "arrow.down.circle")
+        } footer: {
+            Text("Mac용 직접 배포판에서만 사용합니다. 설치는 확인된 DMG를 연 뒤 사용자가 직접 진행합니다.")
+        }
+    }
+
+    @ViewBuilder
+    private var updateStatusView: some View {
+        switch updateManager.state {
+        case .idle:
+            SettingsPanelDescription("새 버전이 있는지 확인할 수 있습니다.")
+        case .checking:
+            Label("업데이트 확인 중", systemImage: "arrow.triangle.2.circlepath")
+        case .latest:
+            Label("최신 버전 사용 중", systemImage: "checkmark.circle")
+                .foregroundStyle(.secondary)
+        case .available(let release):
+            updateReleaseSummary(release, title: "새 버전 발견")
+        case .downloading(let release, let progress, let isPaused):
+            VStack(alignment: .leading, spacing: 8) {
+                updateReleaseSummary(release, title: isPaused ? "다운로드 일시정지" : "다운로드 중")
+                ProgressView(value: progress)
+                    .accessibilityValue("\(Int(progress * 100))퍼센트")
+            }
+        case .installReady(let release, _):
+            updateReleaseSummary(release, title: "설치 준비됨")
+            if updateManager.didHandoffInstaller {
+                SettingsPanelDescription("DMG를 열었습니다. Finder에서 NasFinder를 설치해 주세요.")
+            }
+        case .error(let message, _):
+            Label(message, systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.red)
+        }
+    }
+
+    private func updateReleaseSummary(_ release: DirectUpdateRelease, title: String) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(title).font(.subheadline.weight(.semibold))
+            Text("NasFinder \(release.version) · 빌드 \(release.build) · \(formattedSize(release.expectedByteCount))")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            if let firstNote = release.releaseNotes
+                .split(whereSeparator: \.isNewline)
+                .map(String.init)
+                .first(where: { !$0.contains(":") && !$0.isEmpty }) {
+                Text(firstNote)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(3)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var updatePrimaryButton: some View {
+        switch updateManager.state {
+        case .available:
+            Button("다운로드") { updateManager.downloadAvailableUpdate() }
+        case .installReady:
+            Button("DMG 열기") { updateManager.handoffInstaller() }
+        case .error:
+            Button("다시 시도") { updateManager.retry() }
+        case .idle, .latest:
+            Button("업데이트 확인") { updateManager.checkForUpdates() }
+        case .checking, .downloading:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var updateSecondaryButtons: some View {
+        switch updateManager.state {
+        case .downloading(_, _, let isPaused):
+            Button(isPaused ? "계속" : "일시정지") {
+                if isPaused {
+                    updateManager.resumeDownload()
+                } else {
+                    updateManager.pauseDownload()
+                }
+            }
+            Button("취소", role: .cancel) { updateManager.cancelDownload() }
+        case .checking:
+            Button("취소", role: .cancel) { updateManager.cancelDownload() }
+        default:
+            EmptyView()
+        }
+    }
+
+    private func formattedSize(_ byteCount: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: byteCount, countStyle: .file)
+    }
+    #endif
 
     private var screenAwakeSection: some View {
         Section {

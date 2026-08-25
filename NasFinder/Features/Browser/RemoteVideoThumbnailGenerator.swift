@@ -365,11 +365,23 @@ private final class RemoteVideoThumbnailDeadlineRace<Value: Sendable>: @unchecke
 }
 
 enum RemoteVideoThumbnailQuality {
+    /// A sampled pixel counts as black when its grayscale value (0...1) is at
+    /// most this luminance.
+    static let blackPixelMaximumLuminance = 0.05
+    /// A frame is black when black pixels cover at least this share of the
+    /// full sampled image. The comparison is inclusive: exactly 50% is black.
+    static let blackCoverageThreshold = 0.5
+
+    static func isBlack(blackPixelCount: Int, sampleCount: Int) -> Bool {
+        guard sampleCount > 0 else { return false }
+        return Double(blackPixelCount) / Double(sampleCount) >= blackCoverageThreshold
+    }
+
     static func isAtLeast50PercentBlack(_ image: CGImage) -> Bool {
         let values = grayscaleSamples(from: image)
         guard !values.isEmpty else { return false }
-        let blackPixels = values.lazy.filter { $0 <= 0.05 }.count
-        return Double(blackPixels) / Double(values.count) >= 0.5
+        let blackPixels = values.lazy.filter { $0 <= blackPixelMaximumLuminance }.count
+        return isBlack(blackPixelCount: blackPixels, sampleCount: values.count)
     }
 
     /// Rejects near-uniform black or white intro frames while retaining normal

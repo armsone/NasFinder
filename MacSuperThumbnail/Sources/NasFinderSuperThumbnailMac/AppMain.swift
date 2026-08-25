@@ -260,6 +260,9 @@ final class SuperThumbnailMacModel: ObservableObject {
                 var folderGeneratedCount = 0
                 var folderEmptyCount = 0
                 var folderFailedCount = 0
+                // Unblurred child tiles for this run so a parent sheet never
+                // re-blurs an already blurred child sheet.
+                let folderTileCache = FolderSheetTileCache()
                 for folder in folders {
                     try Task.checkCancellation()
                     while isPaused {
@@ -269,7 +272,11 @@ final class SuperThumbnailMacModel: ObservableObject {
                     currentName = "폴더 · \(folder.url.lastPathComponent)"
                     do {
                         let result = try await Task.detached(priority: .utility) {
-                            try VaultProcessor.processFolder(folder, workerID: worker)
+                            try VaultProcessor.processFolder(
+                                folder,
+                                workerID: worker,
+                                tileCache: folderTileCache
+                            )
                         }.value
                         switch result.state {
                         case .generated:

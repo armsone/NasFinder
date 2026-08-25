@@ -47,6 +47,17 @@ enum FolderSuperThumbnailDisplayPolicy {
         item.isDirectory
     }
 
+    /// Folder sheets already carry their single producer-side skin-tone blur
+    /// (1.5 pt on the final 384 px sheet). Display consumers must not add a
+    /// second blur, even when they blur file thumbnails.
+    static let appliesDisplayTimeSkinToneBlur = false
+
+    static func detectsSkinToneDominance(
+        requestedByConsumer: Bool
+    ) -> Bool {
+        requestedByConsumer && appliesDisplayTimeSkinToneBlur
+    }
+
     /// How long a lookup result without a sheet stays negatively cached. An
     /// indexed empty folder is stable; a missing record stays retryable soon.
     static func negativeCacheDuration(

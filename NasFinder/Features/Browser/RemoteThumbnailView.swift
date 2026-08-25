@@ -256,7 +256,8 @@ final class RemoteThumbnailLoader: ObservableObject {
                 service: service,
                 size: size,
                 reloadVersion: reloadVersion,
-                detectSkinToneDominance: detectSkinToneDominance
+                detectSkinToneDominance: FolderSuperThumbnailDisplayPolicy
+                    .detectsSkinToneDominance(requestedByConsumer: detectSkinToneDominance)
             )
             return
         }

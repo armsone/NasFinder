@@ -30,7 +30,11 @@ struct PhotoTransferView: View {
     private let previewLoader = PhotoTransferSelectionPreviewLoader()
 
     private var isRunningOnMac: Bool {
+        #if targetEnvironment(macCatalyst)
+        true
+        #else
         ProcessInfo.processInfo.isiOSAppOnMac
+        #endif
     }
 
     private var summary: PhotoTransferSelectionSummary {
@@ -48,8 +52,8 @@ struct PhotoTransferView: View {
                 pairingSection
             }
         }
-        .frame(maxWidth: isRunningOnMac ? 680 : nil)
-        .environment(\.defaultMinListRowHeight, isRunningOnMac ? 36 : 44)
+        .frame(maxWidth: isRunningOnMac ? 907 : nil)
+        .environment(\.defaultMinListRowHeight, isRunningOnMac ? 72 : 44)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(SkyBreezeBackground())

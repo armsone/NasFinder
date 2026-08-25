@@ -183,7 +183,142 @@ final class FolderSuperThumbnailTests: XCTestCase {
         XCTAssertFalse(SheetSkinTonePolicy.shouldBlur(skinToneCount: 60, sampleCount: 144))
         XCTAssertTrue(SheetSkinTonePolicy.isSkinTone(red: 200, green: 120, blue: 90))
         XCTAssertFalse(SheetSkinTonePolicy.isSkinTone(red: 40, green: 140, blue: 240))
-        XCTAssertEqual(SheetSkinTonePolicy.blurRadiusPixels, 4.0)
+        // 1.5 pt at the 384 px / 192 pt reference is 3 px; the radius scales
+        // with the sheet size so it is never re-derived per consumer.
+        XCTAssertEqual(SheetSkinTonePolicy.blurRadiusPoints, 1.5)
+        XCTAssertEqual(SheetSkinTonePolicy.blurRadiusPixels, 3.0)
+        XCTAssertEqual(SheetSkinTonePolicy.blurRadiusPixels(forSheetPixelSize: 384), 3.0)
+        XCTAssertEqual(SheetSkinTonePolicy.blurRadiusPixels(forSheetPixelSize: 192), 1.5)
+    }
+
+    /// A parent must compose from the child's unblurred tile, not from the
+    /// blurred sheet stored in the vault, so the final 1.5 pt blur is applied
+    /// exactly once per sheet. Sharpness is measured as the number of
+    /// transitional luminance pixels between the dark and skin-tone tiles: a
+    /// blurred edge spreads over several pixels, a sharp edge over about one.
+    func testParentSheetUsesUnblurredChildTileSoBlurNeverCompounds() async throws {
+        let root = try makeTemporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("parent", isDirectory: true)
+        let child = parent.appendingPathComponent("child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        // 5 skin-tone tiles (>= 42% of the sheet) and 4 near-black tiles give
+        // the child sheet a blur and strong edges between neighbouring tiles.
+        var sources: [(String, (Double, Double, Double))] = []
+        for index in 1...4 { sources.append(("dark-\(index).png", (0.02, 0.02, 0.02))) }
+        for index in 1...5 { sources.append(("skin-\(index).png", (0.78, 0.47, 0.35))) }
+        for (name, color) in sources {
+            let imageURL = child.appendingPathComponent(name)
+            try makePNG(color: color).write(to: imageURL)
+            let values = try imageURL.resourceValues(forKeys: [.fileSizeKey])
+            _ = try await VaultProcessor.process(
+                MediaFile(url: imageURL, kind: .image, size: Int64(values.fileSize ?? 0)),
+                workerID: "test-worker"
+            )
+        }
+
+        let cache = FolderSheetTileCache()
+        let childResult = try VaultProcessor.processFolder(
+            FolderEntry(url: child, depth: 2),
+            workerID: "test-worker",
+            tileCache: cache
+        )
+        XCTAssertTrue(childResult.didBlur)
+        XCTAssertEqual(cache.count, 1)
+
+        let childSheetURL = parent
+            .appendingPathComponent(NasFinderVaultCompatibility.directoryName)
+            .appendingPathComponent(
+                NasFinderVaultCompatibility.folderThumbnailFilename(folderName: "child")
+            )
+        let blurredChildSheet = try XCTUnwrap(loadImage(at: childSheetURL))
+        let blurredTransitional = transitionalPixelCount(
+            in: blurredChildSheet,
+            scaledTo: 128,
+            region: CGRect(x: 0, y: 0, width: 128, height: 128)
+        )
+        XCTAssertGreaterThan(blurredTransitional, 0)
+
+        // The cached tile was captured before the child's blur.
+        let cachedTile = try XCTUnwrap(cache.tile(for: child))
+        XCTAssertEqual(cachedTile.width, 128)
+        let cachedTransitional = transitionalPixelCount(
+            in: cachedTile,
+            scaledTo: 128,
+            region: CGRect(x: 0, y: 0, width: 128, height: 128)
+        )
+        XCTAssertLessThan(cachedTransitional, blurredTransitional)
+
+        let parentSheetURL = root
+            .appendingPathComponent(NasFinderVaultCompatibility.directoryName)
+            .appendingPathComponent(
+                NasFinderVaultCompatibility.folderThumbnailFilename(folderName: "parent")
+            )
+        // Cached path first, then the rebuild path without a cache. Both must
+        // produce a parent tile that is sharper than the blurred child sheet.
+        for tileCache in [cache, nil] {
+            let parentResult = try VaultProcessor.processFolder(
+                FolderEntry(url: parent, depth: 1),
+                workerID: "test-worker",
+                tileCache: tileCache
+            )
+            XCTAssertEqual(parentResult.state, .generated)
+            XCTAssertEqual(parentResult.usedChildFolderSheetCount, 1)
+            // One skin-tone tile out of nine never reaches 42%.
+            XCTAssertFalse(parentResult.didBlur)
+            let parentSheet = try XCTUnwrap(loadImage(at: parentSheetURL))
+            XCTAssertEqual(parentSheet.width, 384)
+            // The child occupies the visual top-left cell, which is the
+            // first 128 rows and columns of the bitmap.
+            let parentTileTransitional = transitionalPixelCount(
+                in: parentSheet,
+                scaledTo: 384,
+                region: CGRect(x: 0, y: 0, width: 128, height: 128)
+            )
+            XCTAssertLessThan(
+                parentTileTransitional,
+                blurredTransitional,
+                tileCache == nil ? "rebuild path" : "cache path"
+            )
+        }
+        // The parent evicted the child's tile and stored its own.
+        XCTAssertNil(cache.tile(for: child))
+        XCTAssertNotNil(cache.tile(for: parent))
+    }
+
+    private func loadImage(at url: URL) -> CGImage? {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+        return CGImageSourceCreateImageAtIndex(source, 0, nil)
+    }
+
+    /// Counts grayscale pixels strictly between the near-black tile (~0.02)
+    /// and the skin-tone tile (~0.55) luminance inside `region` of the image
+    /// drawn into a `side` x `side` grayscale bitmap. Row 0 is the top row.
+    private func transitionalPixelCount(
+        in image: CGImage,
+        scaledTo side: Int,
+        region: CGRect
+    ) -> Int {
+        var pixels = [UInt8](repeating: 0, count: side * side)
+        guard let context = CGContext(
+            data: &pixels,
+            width: side,
+            height: side,
+            bitsPerComponent: 8,
+            bytesPerRow: side,
+            space: CGColorSpaceCreateDeviceGray(),
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+        ) else { return 0 }
+        context.interpolationQuality = .medium
+        context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+        var count = 0
+        for row in Int(region.minY)..<Int(region.maxY) {
+            for column in Int(region.minX)..<Int(region.maxX) {
+                let value = Double(pixels[row * side + column]) / 255
+                if value > 0.12, value < 0.42 { count += 1 }
+            }
+        }
+        return count
     }
 
     func testSkinToneDominantSheetIsBlurred() async throws {

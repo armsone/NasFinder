@@ -16,15 +16,15 @@ Sparkle 업데이트 서명에는 EdDSA 키 쌍이 필요합니다.
 ```sh
 # 1. 유니버설 앱 빌드, Sparkle 프레임워크 임베드, Info.plist 업데이터 키 삽입, 서명
 SIGN_IDENTITY="Developer ID Application: ..." \
-APP_VERSION=2.1.4 \
-BUILD_NUMBER=202608251621 \
-DISPLAY_BUILD_NUMBER=202608251621 \
+APP_VERSION=2.2.0 \
+BUILD_NUMBER=202608252025 \
+DISPLAY_BUILD_NUMBER=202608252025 \
 MacSuperThumbnail/build_app.sh
 
 # 2. drag-to-Applications DMG 생성 (+ 서명 + 공증)
 SIGN_IDENTITY="Developer ID Application: ..." \
 NOTARY_PROFILE="notary-profile-name" \
-APP_VERSION=2.1.4 \
+APP_VERSION=2.2.0 \
 MacSuperThumbnail/make_dmg.sh
 
 # 3. 서명된 appcast 갱신
