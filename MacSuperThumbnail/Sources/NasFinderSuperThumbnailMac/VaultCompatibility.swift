@@ -34,6 +34,31 @@ enum NasFinderVaultCompatibility {
             + digest.map { String(format: "%02x", $0) }.joined()
             + ".jpg"
     }
+
+    /// Folder Super Thumbnail records use a name-only identity so any client
+    /// can resolve them from a plain directory listing. Directory size and
+    /// modification dates differ between protocols and must stay out of the
+    /// digest. The `v1-folder-` prefix can never collide with file records.
+    static func folderThumbnailFilename(folderName: String) -> String {
+        "v\(engineVersion)-folder-" + folderIdentityDigest(folderName: folderName) + ".jpg"
+    }
+
+    /// Explicit indexed state for folders without any visible child. The
+    /// marker keeps re-runs cheap while unreadable or cancelled folders leave
+    /// no record and therefore remain retryable.
+    static func folderEmptyMarkerFilename(folderName: String) -> String {
+        "v\(engineVersion)-folder-" + folderIdentityDigest(folderName: folderName) + ".empty"
+    }
+
+    private static func folderIdentityDigest(folderName: String) -> String {
+        let identity = [
+            "engine=\(engineVersion)",
+            "kind=folder",
+            "name=\(folderName.precomposedStringWithCanonicalMapping)",
+        ].joined(separator: "|")
+        let digest = SHA256.hash(data: Data(identity.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
 }
 
 enum SupportedMedia {
@@ -74,7 +99,7 @@ private struct VaultWorkerRecord: Codable {
     let expiresAt: Date
 }
 
-private struct VaultLeaseRecord: Codable {
+struct VaultLeaseRecord: Codable {
     let workerID: String
     let token: String
     let expiresAt: Date
@@ -98,11 +123,11 @@ enum VaultProcessorError: LocalizedError {
 }
 
 enum VaultProcessor {
-    private static let fileManager = FileManager.default
+    static let fileManager = FileManager.default
     private static let workerLifetime: TimeInterval = 90
-    private static let leaseLifetime: TimeInterval = 180
-    private static let leaseRecordName = ".owner.json"
-    private static let maxPixelSize = 384
+    static let leaseLifetime: TimeInterval = 180
+    static let leaseRecordName = ".owner.json"
+    static let maxPixelSize = 384
 
     static func discoverMedia(in root: URL) throws -> [MediaFile] {
         let keys: Set<URLResourceKey> = [
@@ -208,7 +233,7 @@ enum VaultProcessor {
         )
     }
 
-    private static func acquireClaim(at claim: URL, workerID: String) throws {
+    static func acquireClaim(at claim: URL, workerID: String) throws {
         if fileManager.fileExists(atPath: claim.path) {
             let owner = claim.appendingPathComponent(leaseRecordName)
             if let data = try? Data(contentsOf: owner),
@@ -262,7 +287,7 @@ enum VaultProcessor {
         return try jpegData(from: image, quality: 0.82)
     }
 
-    private static func jpegData(from image: CGImage, quality: Double) throws -> Data {
+    static func jpegData(from image: CGImage, quality: Double) throws -> Data {
         let output = NSMutableData()
         guard let destination = CGImageDestinationCreateWithData(
             output,

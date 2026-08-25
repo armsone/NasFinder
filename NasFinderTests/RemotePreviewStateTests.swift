@@ -1635,6 +1635,7 @@ final class RemotePreviewStateTests: XCTestCase {
             rootPath: "/share",
             recursively: true,
             requiresExternalPower: false,
+            allowsConstrainedRun: true,
             generationMode: .completeFile,
             service: service
         )

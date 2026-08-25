@@ -5,7 +5,7 @@ package_root="${0:A:h}"
 dist_dir="${package_root}/dist"
 appcast_path="${dist_dir}/nasfinder-super-thumbnail.xml"
 key_account="${SPARKLE_KEY_ACCOUNT:-NasFinderSuperThumbnail}"
-app_version="${APP_VERSION:-2.0.0}"
+app_version="${APP_VERSION:-2.1.0}"
 download_url_prefix="${DOWNLOAD_URL_PREFIX:-https://github.com/armsone/NasFinder/releases/download/mac-super-thumbnail-v${app_version}/}"
 release_notes_link="${RELEASE_NOTES_LINK:-https://github.com/armsone/NasFinder/releases/tag/mac-super-thumbnail-v${app_version}}"
 

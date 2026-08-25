@@ -200,6 +200,7 @@ struct FileBrowserView: View {
     @State private var isRequestingCoverFlowOrientation = false
     @State private var coverFlowEnteredFromPoster = false
     @State private var suppressAutomaticCoverFlowUntil = Date.distantPast
+    @State private var browserContentSize = CGSize.zero
     @State private var ownsAutomaticThumbnailPreheat = false
     @State private var automaticThumbnailRestartTask: Task<Void, Never>?
     @State private var downloadTask: Task<Void, Never>?
@@ -343,11 +344,15 @@ struct FileBrowserView: View {
         .onChange(of: layoutStyle, initial: true) { _, style in
             updateCoverFlowOrientation(for: style)
         }
-        .modifier(
-            FileBrowserDeviceRotationModifier(
-                onChange: handleDeviceOrientationChange
-            )
-        )
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { updateBrowserContentSize(proxy.size) }
+                    .onChange(of: proxy.size) { _, size in
+                        updateBrowserContentSize(size)
+                    }
+            }
+        }
         .task {
             await RemoteThumbnailDiskCache.shared.clearTransientFailures()
             await viewModel.load()
@@ -475,6 +480,10 @@ struct FileBrowserView: View {
             if isSelecting, viewModel.items.isEmpty {
                 endSelection()
             }
+            reconcileAutomaticCoverFlow()
+        }
+        .onChange(of: isSelecting) { _, _ in
+            reconcileAutomaticCoverFlow()
         }
         .onChange(of: shareCoordinator.preparedShare?.id) { _, preparedID in
             if preparedID != nil {
@@ -769,13 +778,25 @@ struct FileBrowserView: View {
         }
     }
 
-    private func handleDeviceOrientationChange(_ orientation: UIDeviceOrientation) {
+    private func updateBrowserContentSize(_ size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        browserContentSize = size
+        reconcileAutomaticCoverFlow()
+    }
+
+    private func reconcileAutomaticCoverFlow() {
         guard Date.now >= suppressAutomaticCoverFlowUntil else { return }
-        if orientation.isLandscape,
+        let shouldPresent = FileBrowserOverflowPresentationPolicy
+            .shouldPresentPosterAsOverflow(
+                contentSize: browserContentSize,
+                isSelecting: isSelecting,
+                hasItems: !displayedItems.isEmpty
+            )
+        if shouldPresent,
            layoutStyle == .largeThumbnails {
             coverFlowEnteredFromPoster = true
             storedLayoutStyle = LayoutStyle.coverFlow.rawValue
-        } else if orientation.isPortrait,
+        } else if !shouldPresent,
                   layoutStyle == .coverFlow,
                   coverFlowEnteredFromPoster {
             storedLayoutStyle = LayoutStyle.largeThumbnails.rawValue

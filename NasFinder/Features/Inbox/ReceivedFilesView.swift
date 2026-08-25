@@ -42,9 +42,18 @@ enum ReceivedFilesLayoutPresentationPolicy {
 
     static func presentedStyle(
         selectedStyle: ReceivedFilesLayoutStyle,
-        isLandscape: Bool
+        contentSize: CGSize,
+        isSelecting: Bool,
+        hasRecords: Bool
     ) -> ReceivedFilesLayoutStyle {
-        selectedStyle == .posters && isLandscape ? .overflow : selectedStyle
+        selectedStyle == .posters
+            && FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
+                contentSize: contentSize,
+                isSelecting: isSelecting,
+                hasItems: hasRecords
+            )
+            ? .overflow
+            : selectedStyle
     }
 
     static func usesCoverFlowChrome(
@@ -81,7 +90,7 @@ struct ReceivedFilesView: View {
     @State private var isImportingFromFiles = false
     @State private var isImportingFromGooglePhotos = false
     @State private var isConfirmingSelectionDeletion = false
-    @State private var isLandscape = false
+    @State private var contentSize = CGSize.zero
 
     var body: some View {
         Group {
@@ -477,7 +486,9 @@ struct ReceivedFilesView: View {
     private var presentedLayoutStyle: ReceivedFilesLayoutStyle {
         ReceivedFilesLayoutPresentationPolicy.presentedStyle(
             selectedStyle: layoutStyle,
-            isLandscape: isLandscape
+            contentSize: contentSize,
+            isSelecting: isSelecting,
+            hasRecords: !inboxStore.records.isEmpty
         )
     }
 
@@ -499,7 +510,7 @@ struct ReceivedFilesView: View {
 
     private func updateOrientation(for size: CGSize) {
         guard size.width > 0, size.height > 0 else { return }
-        isLandscape = size.width > size.height
+        contentSize = size
     }
 
     @ViewBuilder

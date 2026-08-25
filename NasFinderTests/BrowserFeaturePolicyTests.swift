@@ -25,23 +25,47 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         XCTAssertEqual(
             ReceivedFilesLayoutPresentationPolicy.presentedStyle(
                 selectedStyle: .posters,
-                isLandscape: true
+                contentSize: CGSize(width: 900, height: 600),
+                isSelecting: false,
+                hasRecords: true
             ),
             .overflow
         )
         XCTAssertEqual(
             ReceivedFilesLayoutPresentationPolicy.presentedStyle(
                 selectedStyle: .posters,
-                isLandscape: false
+                contentSize: CGSize(width: 600, height: 900),
+                isSelecting: false,
+                hasRecords: true
             ),
             .posters
         )
         XCTAssertEqual(
             ReceivedFilesLayoutPresentationPolicy.presentedStyle(
                 selectedStyle: .thumbnails,
-                isLandscape: true
+                contentSize: CGSize(width: 900, height: 600),
+                isSelecting: false,
+                hasRecords: true
             ),
             .thumbnails
+        )
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.presentedStyle(
+                selectedStyle: .posters,
+                contentSize: CGSize(width: 900, height: 600),
+                isSelecting: true,
+                hasRecords: true
+            ),
+            .posters
+        )
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.presentedStyle(
+                selectedStyle: .posters,
+                contentSize: CGSize(width: 900, height: 600),
+                isSelecting: false,
+                hasRecords: false
+            ),
+            .posters
         )
     }
 
@@ -151,6 +175,83 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         XCTAssertEqual(
             FileBrowserCoverFlowBackground(usesDarkBackground: true),
             .dark
+        )
+    }
+
+    func testCoverFlowGeometryUsesLargestSafeSquareWithoutLargeScreenCap() {
+        let layout = FileBrowserCoverFlowGeometryPolicy.geometry(
+            in: CGSize(width: 1_360, height: 960),
+            safeAreaTop: 24,
+            safeAreaLeading: 0,
+            safeAreaBottom: 20,
+            safeAreaTrailing: 0
+        )
+
+        let expectedWidth = 1_360
+            - FileBrowserCoverFlowGeometryPolicy.horizontalInset * 2
+        let expectedHeight = 960
+            - (24 + FileBrowserCoverFlowGeometryPolicy.chromeClearance)
+            - 20
+            - FileBrowserCoverFlowGeometryPolicy.reflectionReserve
+        XCTAssertEqual(layout.centerSide, min(expectedWidth, expectedHeight))
+        XCTAssertGreaterThan(layout.centerSide, 460)
+        XCTAssertEqual(
+            layout.squareCenterY,
+            24
+                + FileBrowserCoverFlowGeometryPolicy.chromeClearance
+                + expectedHeight / 2
+        )
+        XCTAssertLessThanOrEqual(
+            layout.squareBottom
+                + FileBrowserCoverFlowGeometryPolicy.reflectionReserve,
+            960 - 20
+        )
+    }
+
+    func testCoverFlowGeometryAdaptsToPhoneAndSafeAreaInsets() {
+        let layout = FileBrowserCoverFlowGeometryPolicy.geometry(
+            in: CGSize(width: 844, height: 390),
+            safeAreaTop: 0,
+            safeAreaLeading: 47,
+            safeAreaBottom: 21,
+            safeAreaTrailing: 47
+        )
+        let expectedHeight = 390
+            - FileBrowserCoverFlowGeometryPolicy.chromeClearance
+            - 21
+            - FileBrowserCoverFlowGeometryPolicy.reflectionReserve
+        XCTAssertEqual(layout.centerSide, expectedHeight)
+        XCTAssertGreaterThan(layout.centerSide, 0)
+    }
+
+    func testAutomaticOverflowUsesActualBoundsAndNeverSelectionOrEmptyState() {
+        XCTAssertTrue(
+            FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
+                contentSize: CGSize(width: 1_200, height: 700),
+                isSelecting: false,
+                hasItems: true
+            )
+        )
+        XCTAssertFalse(
+            FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
+                contentSize: CGSize(width: 1_200, height: 700),
+                isSelecting: true,
+                hasItems: true
+            )
+        )
+        XCTAssertFalse(
+            FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
+                contentSize: CGSize(width: 1_200, height: 700),
+                isSelecting: false,
+                hasItems: false
+            )
+        )
+        XCTAssertFalse(
+            FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
+                contentSize: CGSize(width: 700, height: 1_200),
+                isSelecting: false,
+                hasItems: true
+            )
         )
     }
 

@@ -1,0 +1,920 @@
+contract_version: 1
+product_id: nasfinder
+reference_inventory:
+  member: ios
+  revision: "d7735c6cbbdf539cceee10faaab954d45ee5deef+dirty"
+  scanned_roots:
+    - NasFinder
+    - NasFinderTests
+    - NasFinderShare
+    - NasFinderShared
+    - NasFinderFileProvider
+    - NasFinderDocumentPicker
+    - NasFinderWidget
+    - MacSuperThumbnail/Sources
+    - MacSuperThumbnail/Tests
+    - NasFinder/Resources/Assets.xcassets
+    - NasFinder.xcodeproj/project.pbxproj
+    - "Info.plist and entitlement/privacy manifests for every target"
+  uncovered_source_refs: []
+  source_dirty_scope:
+    - "NasFinder/Info.plist: uncommitted ITSAppUsesNonExemptEncryption=false; included as current product metadata"
+    - "AGENTS.md and untracked CLAUDE.md/docs/3525 are not product behavior and were not adopted as capabilities"
+  exclusions:
+    - "Build scripts, Git hooks, README/release prose and generated .build/dist products: delivery tooling or derived output, not runtime product behavior"
+    - "Asset pixel appearance is catalogued as visual evidence only; no screenshot or runtime visual parity is claimed"
+  inventory_limitations:
+    - "Source and tests were statically inventoried only. No Apple target was built, run, installed, or screenshot-verified during contract creation."
+    - "Runtime behavior that depends on real NAS firmware, credentials, network topology, Files app, PhotoKit, camera, or Google APIs remains open until fixture and device verification."
+    - "Android source, manifest, resources and JVM tests were inventoried on 2026-08-25; current device/runtime and deterministic Matchup evidence remains incomplete."
+
+counterpart_inventory:
+  member: android
+  revision: "cad9ee0281bbc927531f84d13a131178523b23c7+dirty"
+  scanned_roots:
+    - app/src/main/java
+    - app/src/main/AndroidManifest.xml
+    - app/src/main/res
+    - app/src/test/java
+    - app/build.gradle.kts
+  inventory_limitations:
+    - "Source refs and focused JVM tests prove implementation only, not live NAS/cloud/device behavior."
+    - "The 2026-08-15 SM-F968N report predates the current dirty sync changes and is retained only as partial historical runtime evidence."
+    - "No current phone/tablet/foldable/Google TV screenshot catalog was captured."
+
+capabilities:
+  - id: app.shell.routes_lifecycle
+    purpose: "Launch into the connection-centered shell, route deep links and shared inbox work, and preserve app-wide lifecycle behavior."
+    source_refs: ["NasFinder/App/NasFinderApp.swift:NasFinderApp", "NasFinder/Features/Connections/ConnectionListView.swift:ConnectionListView", "NasFinder/Info.plist:URL/document/orientation declarations"]
+    entry_points: ["app launch", "nasfinder:// deep link", "open document", "scene phase change"]
+    preconditions: ["a supported Apple device", "optional persisted stores"]
+    inputs: ["scene phase", "URL/document activity", "connection and inbox stores"]
+    normal_result: "The root list, sheets and destination routes remain reachable; activation refreshes shared state and backgrounding stops work that cannot continue safely. Brief route changes do not flash a center-screen busy spinner; sustained work uses a thin neutral progress line."
+    states: [launching, active, inactive, background, routed, error]
+    algorithms_and_thresholds: ["iPhone supports portrait and both landscapes; iPad also supports upside-down portrait", "multiple scenes and indirect input are enabled", "Android suppresses the global busy indicator for the first 180 ms and never uses a center-screen spinner for route changes"]
+    data_contracts: ["nasfinder URL scheme", "public.content/data/image/movie/audiovisual document types"]
+    producer_consumer_routes: ["Info.plist URL/document declaration -> SwiftUI app openURL handlers -> root feature sheet/destination"]
+    persistence_relaunch: "Connection, preference, favorite, inbox and browser-location stores restore independently on relaunch."
+    permissions_privacy_security: ["Local network, camera and photo usage descriptions are declared", "ITSAppUsesNonExemptEncryption=false is current dirty metadata"]
+    background_lifecycle: "Scene phase is propagated to screen-awake, import, transfer and server controllers; task owners cancel or pause as specified by their capabilities."
+    gestures_accessibility: ["System navigation, keyboard/indirect input and VoiceOver semantics remain available"]
+    supported_devices_layouts: ["iPhone", "iPad", "Designed for iPad on Mac where available", "resizable regular/compact content bounds"]
+    visual_reference: "ConnectionListView and presented destinations; screenshot verification pending"
+    platform_adaptations: {ios: ["SwiftUI scenes, sheets and navigation"], android: ["Activity/navigation/back stack must preserve the same reachable product states; system Back returns to the previous screen before exiting"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/App/NasFinderApp.swift", "NasFinder/Info.plist"], tests: ["NasFinderTests/ConnectionTests.swift"], evidence: ["static source inventory"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["MainActivity.kt", "NasFinderApp.kt", "AndroidManifest.xml"], tests: ["ExternalEntryRouteParserTest", "AppEntryRouteParserTest", "ReleasePlatformContractTest"], evidence: ["old SM-F968N launch/deep-link trace; current build not re-run"]}
+    dependencies: [connections.persistence_credentials, settings.theme_icons, inbox.shared_storage]
+    parity_row_ids: [app-shell]
+
+  - id: settings.theme_icons_awake
+    purpose: "Let users choose appearance, alternate icon and screen-awake policy with durable preferences."
+    source_refs: ["NasFinder/App/SkyBreezeTheme.swift", "NasFinder/App/ScreenAwakeController.swift", "NasFinder/Features/Settings/AppSettingsView.swift", "NasFinder/Features/Settings/AppIconSettingsView.swift", "NasFinder/Resources/Assets.xcassets"]
+    entry_points: ["root settings", "theme and icon sections"]
+    preconditions: ["alternate icons supported for icon switching"]
+    inputs: ["system/light/dark/day/vibe/cyber/workbench theme choice", "icon choice", "automatic/always/never awake mode"]
+    normal_result: "Theme tokens, service badges and decoration update consistently; icon and awake mode apply and persist."
+    states: [idle, selecting, applying, applied, unsupported, error]
+    algorithms_and_thresholds: ["unknown stored theme falls back to system", "automatic awake only while app active and one or more tracked activities are active"]
+    data_contracts: ["UserDefaults/AppStorage stable raw values", "registered alternate icon asset names"]
+    producer_consumer_routes: ["settings selection -> AppStorage/controller -> every themed view, UIApplication idle timer and icon API"]
+    persistence_relaunch: "Theme, icon and awake selection restore across relaunch."
+    permissions_privacy_security: ["No content leaves device"]
+    background_lifecycle: "Automatic mode releases the idle timer when app is inactive or final activity finishes."
+    gestures_accessibility: ["Selectable rows/cards expose names, state and sufficient targets"]
+    supported_devices_layouts: ["iPhone/iPad/Mac-compatible adaptive settings"]
+    visual_reference: "SkyBreezeTheme tokens and icon preview assets; runtime visual verification pending"
+    platform_adaptations: {ios: ["UIApplication alternate icons and idleTimerDisabled"], android: ["Use supported launcher aliases/shortcuts where possible and FLAG_KEEP_SCREEN_ON with equivalent lifecycle"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/App/SkyBreezeTheme.swift", "NasFinder/App/ScreenAwakeController.swift", "NasFinder/Features/Settings/AppIconSettingsView.swift"], tests: ["NasFinderTests/AppThemePreferenceTests.swift", "NasFinderTests/AppIconChoiceTests.swift", "NasFinderTests/ScreenAwakeControllerTests.swift"], evidence: ["static tests inventoried"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["AppSettingsRepository.kt", "AppIconController.kt", "NasFinderTheme.kt"], tests: ["AppThemeParityTest", "AppIconSwitchPolicyTest", "LauncherIconAssetContractTest"], evidence: ["old device settings/two alias transitions; current full matrix pending"]}
+    dependencies: [app.shell.routes_lifecycle]
+    parity_row_ids: [settings-theme, settings-icons, settings-awake]
+
+  - id: connections.model_address_validation
+    purpose: "Represent every supported remote service and normalize safe connection addresses and roots."
+    source_refs: ["NasFinder/Core/Models/Connection.swift", "NasFinder/Core/Models/ServerAddressParser.swift", "NasFinder/Core/Services/RemotePath.swift", "NasFinder/Core/Services/RemoteFileServiceFactory.swift"]
+    entry_points: ["add/edit connection"]
+    preconditions: ["supported connection kind selected"]
+    inputs: ["Synology, SFTP, SMB, WebDAV, FTP, Dropbox, OneDrive or Google Drive settings"]
+    normal_result: "Address, scheme, host, port and root are normalized without allowing embedded credentials or unsafe paths; factory selects the matching backend."
+    states: [editing, invalid, normalized, ready, unsupported]
+    algorithms_and_thresholds: ["Synology TLS defaults 5001/5000 and toggle changes only implicit standard ports", "SFTP dot-root is preserved", "IPv6 brackets are normalized"]
+    data_contracts: ["RemoteConnection UUID/kind/name/host/port/root", "cloud stable remoteIdentifier separate from path"]
+    producer_consumer_routes: ["AddConnectionView -> ServerAddressParser -> RemoteConnection -> service factory/file provider domain"]
+    persistence_relaunch: "Normalized connection metadata persists; cloud identity survives path changes."
+    permissions_privacy_security: ["Reject embedded URL credentials and path escape"]
+    background_lifecycle: "No background work until a test or browse starts."
+    gestures_accessibility: ["Form fields expose service-specific labels and validation messages"]
+    supported_devices_layouts: ["all app-supported layouts"]
+    visual_reference: "AddConnectionView forms; screenshot verification pending"
+    platform_adaptations: {ios: ["SwiftUI Form and Apple URL parsing"], android: ["Native form and URI parser; identical accepted/rejected address semantics"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Core/Models/Connection.swift", "NasFinder/Core/Models/ServerAddressParser.swift"], tests: ["NasFinderTests/ConnectionTests.swift"], evidence: ["address unit cases"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["Models.kt", "RemoteFileService.kt", "NasFinderViewModel.kt"], tests: ["ModelsTest", "TransferContractsTest"], evidence: ["eight forms seen on old device; normalization remains unit-only"]}
+    dependencies: []
+    parity_row_ids: [connections-model]
+
+  - id: connections.persistence_credentials
+    purpose: "Save, reorder, prefer, edit and remove connections without exposing secrets."
+    source_refs: ["NasFinder/Core/Services/ConnectionStore.swift", "NasFinder/Core/Services/KeychainCredentialStore.swift", "NasFinder/Core/Services/SynologySessionStore.swift", "NasFinder/Core/Services/CloudOAuthConfiguration.swift", "NasFinder/Core/Services/CloudOAuthAuthorizer.swift", "NasFinder/Core/Models/Connection.swift"]
+    entry_points: ["connection list", "add/edit/delete/reorder", "preferred connection"]
+    preconditions: ["valid normalized connection"]
+    inputs: ["metadata", "password, Dropbox/OneDrive/Google Drive OAuth or S3 credential", "preferred state", "remembered browser location"]
+    normal_result: "Metadata persists separately from Keychain secrets; corresponding Files domain is added/updated/removed only for supported backends."
+    states: [loading, empty, populated, saving, deleting, keychain_error, domain_error]
+    algorithms_and_thresholds: ["cleared preferred connection stays cleared", "remembered path falls back inside configured root"]
+    data_contracts: ["connection JSON/defaults", "Keychain service/account/access-group records", "RememberedBrowserLocation"]
+    producer_consumer_routes: ["connection UI -> provider CloudOAuthConfiguration/CloudOAuthAuthorizer where needed -> ConnectionStore -> metadata defaults + KeychainCredentialStore -> browser/file provider"]
+    persistence_relaunch: "Connections/order/preference/location and secrets restore; sessions are reused until invalid."
+    permissions_privacy_security: ["Secrets never enter metadata JSON", "shared Keychain access group is $(AppIdentifierPrefix)com.armsone.nasfinder.shared"]
+    background_lifecycle: "File Provider domain reconciliation runs asynchronously after store changes and launch restoration."
+    gestures_accessibility: ["reorder/delete/edit controls have named actions"]
+    supported_devices_layouts: ["all app-supported layouts", "Files app integration"]
+    visual_reference: "ConnectionListView/AddConnectionView; runtime pending"
+    platform_adaptations: {ios: ["Keychain and NSFileProvider domains"], android: ["Encrypted credential storage and Android document-provider roots with the same secret separation"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Core/Services/ConnectionStore.swift", "NasFinder/Core/Services/KeychainCredentialStore.swift"], tests: ["NasFinderTests/ConnectionTests.swift", "NasFinderTests/DocumentProviderConfigurationTests.swift"], evidence: ["static persistence tests"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["ConnectionRepository.kt", "CredentialVault.kt", "OAuthStores.kt"], tests: ["ModelsTest", "OAuthSecurityPolicyTest", "DocumentsProviderConnectionParityTest"], evidence: ["static source/JVM only"]}
+    dependencies: [connections.model_address_validation, files.provider_integration]
+    parity_row_ids: [connections-store]
+
+  - id: connections.add_test_diagnostics
+    purpose: "Test a connection before saving and show safe, actionable failure stages."
+    source_refs: ["NasFinder/Features/Connections/AddConnectionView.swift", "NasFinder/Core/Services/SFTPConnectionDiagnostics.swift", "NasFinder/Core/Services/SynologyConnectionDiagnostics.swift", "NasFinder/Core/Models/NasFinderError.swift"]
+    entry_points: ["Test connection", "Save changed connection"]
+    preconditions: ["current form inputs are syntactically valid"]
+    inputs: ["current configuration", "transport/authentication/backend result"]
+    normal_result: "Unverified changed inputs are tested exactly once before save; success records the verified configuration."
+    states: [idle, testing_address, testing_transport, testing_tls, testing_authentication, testing_subsystem, testing_root, verified, failed, cancelled]
+    algorithms_and_thresholds: ["diagnostic reference maps known timeout/TLS/auth/subsystem stages without exposing arbitrary underlying error descriptions"]
+    data_contracts: ["ConnectionTestConfiguration equality", "typed diagnostic stage/result"]
+    producer_consumer_routes: ["form -> service testConnection -> typed diagnostics -> user-facing result -> store"]
+    persistence_relaunch: "Only saved connection persists; transient diagnostics do not."
+    permissions_privacy_security: ["Do not display credentials, server response bodies or raw sensitive errors"]
+    background_lifecycle: "User cancellation normalizes transport cancellation and does not present it as failure."
+    gestures_accessibility: ["progress and failure stage announced"]
+    supported_devices_layouts: ["all app-supported layouts"]
+    visual_reference: "AddConnectionView diagnostic panel; runtime pending"
+    platform_adaptations: {ios: ["Network/URLSession/NIO error mapping"], android: ["Map platform transport errors to the same product stages"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Connections/AddConnectionView.swift"], tests: ["NasFinderTests/ConnectionTests.swift"], evidence: ["diagnostic mapping tests"]}
+      android: {status: partial_source_implemented_runtime_unverified, source_refs: ["NasFinderApp.kt", "NasFinderViewModel.kt", "RemoteFileService.kt"], tests: ["ModelsTest", "SynologyAndFtpPolicyTest", "SftpAndSmbPolicyTest"], evidence: ["canonical staged diagnostic state parity incomplete"]}
+    dependencies: [connections.model_address_validation, remote.backends_protocols]
+    parity_row_ids: [connections-test]
+
+  - id: remote.backends_protocols
+    purpose: "List, download, range-read and test files across every configured remote protocol."
+    source_refs: ["NasFinder/Core/Services/RemoteFileService.swift", "NasFinder/Core/Services/RemoteFileServiceFactory.swift", "NasFinder/Core/Services/SynologyFileService.swift", "NasFinder/Core/Services/SFTPFileService.swift", "NasFinder/Core/Services/SMBFileService.swift", "NasFinder/Core/Services/WebDAVFileService.swift", "NasFinder/Core/Services/FTPFileService.swift", "NasFinder/Core/Services/CloudDriveFileService.swift", "NasFinder/Core/Utilities/FormURLEncoder.swift", "NasFinder/Core/Services/SynologyMultipartFormData.swift"]
+    entry_points: ["open connection/folder", "preview/download", "connection test"]
+    preconditions: ["valid connection and credential"]
+    inputs: ["directory path", "RemoteFileItem", "optional range and progress callback"]
+    normal_result: "Backends return common RemoteFileItem semantics and byte-correct downloads/range reads, while cancellation and typed failures stay consistent."
+    states: [idle, authenticating, listing, downloading, ranged_reading, completed, cancelled, error]
+    algorithms_and_thresholds: ["download completion uses actual local size when listing size is stale", "progress fraction clamps to 0...1", "range requests are bounded and full-response fallback is rejected when unsafe"]
+    data_contracts: ["RemoteFileService protocol", "RemoteFileItem identity/kind/path/size/modifiedAt/remoteIdentifier", "RemoteDownloadProgress and integrity error"]
+    producer_consumer_routes: ["factory -> backend -> browser/preview/thumbnail/file-provider/download cache"]
+    persistence_relaunch: "Downloaded cache and credentials may persist; active tasks do not."
+    permissions_privacy_security: ["Use configured TLS/host-key/auth policy", "do not leak bodies or credentials in errors"]
+    background_lifecycle: "Task cancellation closes transports and late completions cannot report success."
+    gestures_accessibility: ["network progress and retry/cancel actions exposed by consuming UI"]
+    supported_devices_layouts: ["all supported clients; behavior independent of layout"]
+    visual_reference: "none; protocol behavior"
+    platform_adaptations: {ios: ["URLSession, NIO, SMB client"], android: ["Native/equivalent protocol libraries must produce identical common records, errors and cancellation"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Core/Services/RemoteFileService.swift"], tests: ["NasFinderTests/SynologyFileServiceTests.swift", "NasFinderTests/SFTPTaskCancellationBridgeTests.swift", "NasFinderTests/URLSessionProgressDownloaderTests.swift"], evidence: ["mock/fixture tests only"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["RemoteFileService.kt", "SftpFileService.kt", "SmbFileService.kt", "CloudDriveFileService.kt"], tests: ["RemoteRangeContractTest", "SynologyAndFtpPolicyTest", "SftpAndSmbPolicyTest", "WebDavFileServiceTest", "CloudDriveFileServiceTest"], evidence: ["live Synology list/range only"]}
+    dependencies: [connections.persistence_credentials]
+    parity_row_ids: [backend-contract]
+
+  - id: remote.synology_sessions_mutations
+    purpose: "Use DSM APIs with reusable sessions and full file mutation progress/conflict behavior."
+    source_refs: ["NasFinder/Core/Services/SynologyFileService.swift", "NasFinder/Core/Services/SynologySessionStore.swift", "NasFinder/Core/Services/SynologyConnectionDiagnostics.swift", "NasFinder/Core/Services/SynologyMultipartFormData.swift"]
+    entry_points: ["Synology browser and file actions"]
+    preconditions: ["Synology connection"]
+    inputs: ["DSM endpoint/root", "operation and conflict policy", "local upload file"]
+    normal_result: "Stored sessions are reused, one relogin is shared after expiry, and create/rename/delete/copy/move/upload report typed outcomes."
+    states: [session_reused, logging_in, relogging, operating, polling, partial, completed, cancelled, error]
+    algorithms_and_thresholds: ["delete and copy/move poll DSM task status", "multipart upload is disk-backed with file part last", "keep-both chooses an available name without overwrite"]
+    data_contracts: ["DSM API envelopes/versioned parameters", "session Keychain record", "RemoteOperationResult"]
+    producer_consumer_routes: ["browser operation -> SynologyFileService -> DSM API -> operation coordinator/banner"]
+    persistence_relaunch: "Valid DSM session persists in shared Keychain and is replaced when expired."
+    permissions_privacy_security: ["HTTP/TLS follows configured endpoint", "session IDs stored as secrets"]
+    background_lifecycle: "Cancelled server tasks are stopped where supported and partial results retained."
+    gestures_accessibility: ["consumer UI presents progress/cancel/retry"]
+    supported_devices_layouts: ["layout independent"]
+    visual_reference: "file-operation banners"
+    platform_adaptations: {ios: ["URLSession DSM requests"], android: ["same DSM API versions, conflict parameters and partial-result semantics"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Core/Services/SynologyFileService.swift"], tests: ["NasFinderTests/SynologyFileServiceTests.swift"], evidence: ["mock HTTP tests"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["RemoteFileService.kt", "ConnectionRepository.kt"], tests: ["SynologyAndFtpPolicyTest", "RemoteRangeContractTest"], evidence: ["live listing/MOV thumbnail only; mutations pending"]}
+    dependencies: [remote.backends_protocols, files.operations]
+    parity_row_ids: [backend-synology]
+
+  - id: remote.sftp_security_mutations
+    purpose: "Browse and mutate SFTP safely inside the configured root while verifying server host keys."
+    source_refs: ["NasFinder/Core/Services/SFTPFileService.swift", "NasFinder/Core/Services/SFTPFileMutationSupport.swift", "NasFinder/Core/Services/NasFinderSSHHostKeyValidator.swift", "NasFinder/Core/Services/SFTPConnectionDiagnostics.swift"]
+    entry_points: ["SFTP browser/file action", "first host-key connection"]
+    preconditions: ["SFTP connection and credential"]
+    inputs: ["relative or absolute configured root", "remote entries", "conflict policy", "presented host key"]
+    normal_result: "Paths cannot escape root, symlinks are not treated as folders, host-key trust is explicit, and operations cancel by closing transport."
+    states: [connecting, trust_required, authenticated, operating, completed, cancelled, error]
+    algorithms_and_thresholds: ["component-boundary containment", "configured root itself cannot be mutated", "replace rejects directories; keep-both preserves extension"]
+    data_contracts: ["SFTPRemoteEntry", "typed SFTP mutation errors", "trusted host-key record"]
+    producer_consumer_routes: ["browser -> SFTP service -> NIO SSH/SFTP -> coordinator"]
+    persistence_relaunch: "Trusted host identity and credentials persist according to Keychain policy; operations do not."
+    permissions_privacy_security: ["Never silently accept an unknown or changed host key"]
+    background_lifecycle: "Cancellation bridge closes transport and normalizes uncooperative reads."
+    gestures_accessibility: ["trust prompt communicates host identity and consequence"]
+    supported_devices_layouts: ["layout independent"]
+    visual_reference: "host-key and operation prompts; runtime pending"
+    platform_adaptations: {ios: ["NIOSSH/SFTP"], android: ["Equivalent SSH host-key verification and root containment"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Core/Services/SFTPFileService.swift"], tests: ["NasFinderTests/SFTPFileMutationSupportTests.swift", "NasFinderTests/SFTPTaskCancellationBridgeTests.swift"], evidence: ["unit tests"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["SftpFileService.kt", "CredentialVault.kt", "SafSftpMutationPolicy.kt"], tests: ["SftpAndSmbPolicyTest", "SafSftpMutationPolicyTest", "TransferContractsTest"], evidence: ["no live SSH server"]}
+    dependencies: [remote.backends_protocols, files.operations]
+    parity_row_ids: [backend-sftp]
+
+  - id: files.browser_navigation_search_sort
+    purpose: "Browse remote folders with safe root-bounded navigation, visibility rules, search, sorting and remembered location."
+    source_refs: ["NasFinder/Features/Browser/FileBrowserContainerView.swift", "NasFinder/Features/Browser/FileBrowserView.swift", "NasFinder/Features/Browser/FileBrowserViewModel.swift", "NasFinder/Core/Models/RemoteFileVisibilityPolicy.swift", "NasFinder/Core/Models/RemoteFileItem.swift", "NasFinder/Core/Services/RemotePath.swift"]
+    entry_points: ["connection selection", "favorite folder", "remembered location"]
+    preconditions: ["available backend"]
+    inputs: ["folder path", "query", "name/date/size/kind sort", "direction", "folder/name-language priority"]
+    normal_result: "Visible children load, dot-prefixed names stay hidden, search is case/diacritic insensitive, and path/parent actions cannot escape root. Selecting a saved NAS connection always opens its normalized root as a fresh entry, while the dashboard NasFinder logo is the separate explicit shortcut to the remembered last folder. System Back/toolbar Back pops preview, panel, selection or one folder level in that order; it exits the app only when already at the product root."
+    states: [idle, loading, populated, empty, searching, refreshing, cancelled, error]
+    algorithms_and_thresholds: ["hierarchical Back priority: dismiss transient preview/panel -> leave selection -> parent folder within configured root -> connection/root screen -> only then OS exit", "folders-first optional", "natural name order", "missing date/size metadata remains last both directions", "Korean/numeric/foreign name priority applies before name direction"]
+    data_contracts: ["RemoteFileItem", "FileBrowserSortOptions", "path breadcrumb components"]
+    producer_consumer_routes: ["route -> ViewModel.list -> visibility/search/sorter -> selected layout"]
+    persistence_relaunch: "Sort options and last safe browser location remain stored, but only the dashboard logo resumes that location; selecting a saved connection starts at its normalized root."
+    permissions_privacy_security: ["Root containment and dot-file hiding"]
+    background_lifecycle: "Superseded listing cancels; reload requested during load waits then starts a new request."
+    gestures_accessibility: ["tap folder/file, pull/explicit refresh, search and sort controls expose labels"]
+    supported_devices_layouts: ["compact phone", "regular tablet/Mac-compatible split or expanded content"]
+    visual_reference: "FileBrowserView states; Matchup pending"
+    platform_adaptations: {ios: ["SwiftUI navigation/search"], android: ["Native navigation and Back preserve the same folder stack and root boundary"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/FileBrowserView.swift", "NasFinder/Features/Browser/FileBrowserViewModel.swift"], tests: ["NasFinderTests/FileBrowserItemSorterTests.swift", "NasFinderTests/RemoteFileVisibilityPolicyTests.swift", "NasFinderTests/ConnectionTests.swift"], evidence: ["unit tests"]}
+      android: {status: source_implemented_runtime_verified, source_refs: ["NasFinderApp.kt", "NasFinderViewModel.kt", "BrowserPreferencesStorage.kt"], tests: ["BrowserOrderingTest", "BrowserPreferencesStorageTest", "ModelsTest", "InboxParityContractTest"], evidence: ["SM-F968N trace: saved hastree connection opened `/`; dashboard logo separately resumed `/photo`"]}
+    dependencies: [remote.backends_protocols]
+    parity_row_ids: [browser-navigation]
+
+  - id: files.browser_layouts_responsive
+    purpose: "Present Details, Thumbnails, Posters and immersive Overflow with one selection/open/action meaning across responsive sizes."
+    source_refs: ["NasFinder/Features/Browser/FileBrowserView.swift", "NasFinder/Features/Browser/FileBrowserCoverFlowView.swift", "NasFinder/Features/Browser/RemoteThumbnailView.swift", "NasFinderTests/BrowserFeaturePolicyTests.swift"]
+    entry_points: ["browser layout menu", "poster landscape automatic transition"]
+    preconditions: ["not in incompatible selection/empty state for immersive transition"]
+    inputs: ["saved layout", "content bounds/aspect", "items", "live drag position/velocity", "background choice"]
+    normal_result: "Details is an information list, thumbnails a dense square grid, posters larger cards, and overflow a centered square hero with spatial adjacent cards that fills useful horizontal bounds without becoming tiny on tablets/foldables; every reflected card fades continuously to transparent at its lower edge. Overflow's top-right More menu keeps background selection and also exposes the same base view-mode choices as the normal browser menu. Overflow hides the device status bar so time, network, Wi-Fi and battery do not intrude on the immersive surface."
+    states: [details, thumbnails, posters, overflow, dragging, settling, empty, selection]
+    algorithms_and_thresholds: ["poster automatically renders overflow in landscape/wide content without overwriting saved poster selection", "center card is always square and expands to the largest square that fits the safe content rectangle after top chrome, bottom reflection/floor and minimum edge insets are reserved", "there is no universal 460pt/dp or other fixed large-screen maximum; phone, tablet, split-window and tri-fold use the same content-bounds formula", "the centered square is vertically centered in the remaining usable rectangle rather than pinned to a bottom baseline that leaves excessive empty space above", "adjacent cards scale/spread from the computed center side and remain visibly browsable without reducing the center square merely because the screen is wide", "every reflection uses an offscreen alpha mask whose opacity reaches zero at the lower edge without a hard clipping line", "preload follows live drag", "momentum continues swipe direction, is capped at 3 cards and never reverses", "slow drag selects card under finger"]
+    data_contracts: ["stored layout style", "cover-flow background choice", "selected item ID/index"]
+    producer_consumer_routes: ["layout preference + geometry -> FileBrowserView -> CoverFlow policy -> shared thumbnail/cache"]
+    persistence_relaunch: "User-selected base layout/background restore; automatic poster-to-overflow is transient."
+    permissions_privacy_security: ["No additional permission"]
+    background_lifecycle: "Thumbnail requests are cancelled/preheated with visible range changes."
+    gestures_accessibility: ["horizontal drag selection", "tap open", "long press/context action", "Overflow back arrow short tap returns one level and 450ms long press returns to the dashboard without double firing", "keyboard/pointer equivalents", "center/adjacent items have names and positions"]
+    supported_devices_layouts: ["iPhone portrait/landscape", "iPad split/fullscreen", "Mac-compatible resizable window", "Android phone/tablet/foldable/TV must use content bounds rather than device-name breakpoints"]
+    visual_reference: "iOS FileBrowserCoverFlowView is the source implementation reference; runtime screenshot verification remains pending"
+    platform_adaptations: {ios: ["FileBrowserCoverFlowGeometryPolicy derives the largest centered square from live safe content bounds after explicit chrome and reflection reserves; FileBrowserOverflowPresentationPolicy uses content bounds, item availability and selection state instead of physical-device orientation; the same policies feed Browser, Received Files and WebHard while preserving their local item/selection state across size changes"], android: ["Compose/View geometry may differ internally but must use the same safe-content largest-square rule; phone/tablet/tri-fold/foldable may not retain a small phone cap or bottom-pin the cards; TV adds D-pad traversal"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/FileBrowserCoverFlowView.swift", "NasFinder/Features/Browser/FileBrowserView.swift", "NasFinder/Features/Inbox/ReceivedFilesView.swift", "NasFinder/Features/WebHard/WebHardServerView.swift"], tests: ["NasFinderTests/BrowserFeaturePolicyTests.swift"], evidence: ["generic iOS signed build-for-testing succeeded for BrowserFeaturePolicyTests", "device test execution was blocked because BK_iPhone17pro was locked", "responsive geometry, actual-bounds presentation, selection and empty-state policies have unit-test coverage in source", "Matchup screenshots not yet captured"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["NasFinderApp.kt", "WebHardScreen.kt", "MediaViewerPolicy.kt"], tests: ["DocumentsThumbnailPolicyTest", "InboxParityContractTest", "RemoteRangeMediaSourceTest"], evidence: ["SM-F968N runtime: Overflow long-press returned to dashboard once; More showed all base view modes and both backgrounds; status bar was absent", "phone/tablet/foldable/TV paired Matchup remains pending"]}
+    dependencies: [files.browser_navigation_search_sort, thumbnails.display_cache_pipeline]
+    parity_row_ids: [browser-details, browser-thumbnails, browser-posters, browser-overflow]
+
+  - id: files.selection_context_actions
+    purpose: "Select one or many browser items and route folder, file, download, info and deferred panel actions exclusively."
+    source_refs: ["NasFinder/Features/Browser/FileBrowserInteractionCoordinator.swift", "NasFinder/Features/Browser/RemoteFileInfoView.swift", "NasFinder/Features/Browser/FileBrowserView.swift"]
+    entry_points: ["tap", "selection mode", "context menu", "more/info"]
+    preconditions: ["loaded browser item"]
+    inputs: ["activation type", "ordered selection", "pending panel action"]
+    normal_result: "Folders navigate, files preview, selection changes only selection, downloads exclude folders and keep selection order, and panel actions execute once after dismissal."
+    states: [idle, selecting, panel_presented, pending_action, executing, cleared]
+    algorithms_and_thresholds: ["panel action is one-shot after disappearance", "dismiss without action clears pending action"]
+    data_contracts: ["Activation and Panel enums", "ordered selected IDs"]
+    producer_consumer_routes: ["gesture/menu -> interaction coordinator -> browser route/operation/preview"]
+    persistence_relaunch: "Selection and panels are session-only."
+    permissions_privacy_security: ["Destructive actions require explicit context/confirmation"]
+    background_lifecycle: "Pending UI action clears if view disappears without commitment."
+    gestures_accessibility: ["tap/long press/context menu/multi-select and named info/action controls"]
+    supported_devices_layouts: ["touch, pointer and keyboard layouts"]
+    visual_reference: "browser context/panel UI; pending"
+    platform_adaptations: {ios: ["contextMenu/sheets"], android: ["long-press/contextual action mode/bottom sheet with same one-shot semantics"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/FileBrowserInteractionCoordinator.swift"], tests: ["NasFinderTests/FileBrowserInteractionCoordinatorTests.swift"], evidence: ["unit tests"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["NasFinderApp.kt", "NasFinderViewModel.kt"], tests: ["InboxParityContractTest", "InboxBatchContractsTest"], evidence: ["static source/JVM only"]}
+    dependencies: [files.browser_navigation_search_sort, preview.remote_media]
+    parity_row_ids: [browser-actions]
+
+  - id: files.operations
+    purpose: "Create folders and perform upload, rename, delete, copy, move and paste with conflict, progress, cancellation and partial results."
+    source_refs: ["NasFinder/Core/Models/RemoteFileOperation.swift", "NasFinder/Features/Browser/FileOperationCoordinator.swift", "NasFinder/Features/Browser/FileBrowserView.swift:FileOperationProgressBanner/FileOperationStatusBanner"]
+    entry_points: ["browser action menus", "document/image picker upload", "clipboard paste"]
+    preconditions: ["backend capability supports requested mutation"]
+    inputs: ["source items/local files", "destination", "fail/skip/replace/keepBoth policy", "copy/move strategy"]
+    normal_result: "Safe names/paths mutate only intended items; batch work continues after item failures, reports each outcome, refreshes once, and retains partial success on cancellation."
+    states: [preparing, running, cancelling, refreshing, completed, partial, failed, cancelled]
+    algorithms_and_thresholds: ["unsafe names/path escape rejected before backend mutation", "folder replace rejected", "keep-both preserves extension and increments suffix", "a second operation is blocked through cancellation refresh"]
+    data_contracts: ["RemoteOperationContext/Progress/Result/Issue/Outcome", "FileClipboardPayload", "LocalUploadSource"]
+    producer_consumer_routes: ["browser/picker -> FileOperationCoordinator -> backend -> progress/status banners -> one refresh"]
+    persistence_relaunch: "Clipboard/session operation state does not promise relaunch resume."
+    permissions_privacy_security: ["Path traversal and unintended overwrite prevention", "destructive confirmation"]
+    background_lifecycle: "Cancellation checked between and during items; cleanup failures remain in result."
+    gestures_accessibility: ["progress, cancel and item outcome are readable/announced"]
+    supported_devices_layouts: ["all app-supported layouts"]
+    visual_reference: "operation banners and conflict prompts; pending"
+    platform_adaptations: {ios: ["Swift concurrency and system pickers"], android: ["coroutines/SAF with identical batch/conflict/result semantics"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/FileOperationCoordinator.swift", "NasFinder/Core/Models/RemoteFileOperation.swift"], tests: ["NasFinderTests/FileOperationCoordinatorTests.swift", "NasFinderTests/RemoteFileOperationTests.swift"], evidence: ["unit tests"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["RemoteFileService.kt", "SftpFileService.kt", "SmbFileService.kt", "CloudDriveFileService.kt", "NasFinderViewModel.kt"], tests: ["SynologyAndFtpPolicyTest", "SftpAndSmbPolicyTest", "WebDavFileServiceTest", "CloudDriveFileServiceTest", "TransferContractsTest"], evidence: ["live mutation matrix missing"]}
+    dependencies: [remote.backends_protocols]
+    parity_row_ids: [file-operations]
+
+  - id: favorites.remote_shelf_list
+    purpose: "Save remote files/folders as ordered favorites and browse them as a visual shelf or list."
+    source_refs: ["NasFinder/Core/Models/FavoriteItem.swift", "NasFinder/Core/Services/FavoriteStore.swift", "NasFinder/Features/Favorites/FavoriteViews.swift"]
+    entry_points: ["favorite toggle", "favorites shelf/list"]
+    preconditions: ["remote item/connection exists"]
+    inputs: ["item identity", "remove/reorder", "thumbnail children for folder mosaic"]
+    normal_result: "Favorites persist stable cloud identity, support folders, exact-ID removal/reorder, and show up to the first nine media children in folder mosaics."
+    states: [empty, populated, loading_preview, reordering, error]
+    algorithms_and_thresholds: ["mosaic first nine media files", "reorder begins only after long horizontal movement", "skin-tone blur requires dominant sample fraction policy"]
+    data_contracts: ["FavoriteItem Codable with legacy path identity migration"]
+    producer_consumer_routes: ["browser toggle -> FavoriteStore -> shelf/list -> favorite destination browser/preview"]
+    persistence_relaunch: "Items and order persist in defaults/archive."
+    permissions_privacy_security: ["No credentials stored in favorite payload"]
+    background_lifecycle: "Preview loads cancel with disappearing cells."
+    gestures_accessibility: ["tap open", "long horizontal drag reorder", "context remove", "separate labels/actions"]
+    supported_devices_layouts: ["adaptive shelf/list"]
+    visual_reference: "FavoriteShelfView/FavoriteListView; Matchup pending"
+    platform_adaptations: {ios: ["SwiftUI drag/context menu"], android: ["same ordering thresholds/outcomes with native drag"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Favorites/FavoriteViews.swift"], tests: ["NasFinderTests/FavoriteStoreTests.swift"], evidence: ["unit tests"]}
+      android: {status: partial_source_implemented_runtime_unverified, source_refs: ["FavoriteRepository.kt", "Favorites.kt", "NasFinderApp.kt"], tests: [], evidence: ["shelf/toggle source exists; no targeted favorite test or runtime evidence"]}
+    dependencies: [thumbnails.display_cache_pipeline, files.browser_navigation_search_sort]
+    parity_row_ids: [favorites]
+
+  - id: thumbnails.display_cache_pipeline
+    purpose: "Show useful thumbnails consistently in every list/grid/poster/overflow/favorite/inbox/provider consumer with bounded decode and durable invalidation."
+    source_refs: ["NasFinder/Features/Browser/RemoteThumbnailView.swift", "NasFinder/Features/Browser/FileProviderThumbnailCache.swift", "NasFinder/Features/Browser/SuperThumbnailCache.swift", "NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Connections/ThumbnailCacheSettingsView.swift", "NasFinderFileProvider/ThumbnailCache.swift"]
+    entry_points: ["any thumbnail-bearing cell", "preheat", "Files thumbnail request"]
+    preconditions: ["supported media/document type or available server/vault thumbnail"]
+    inputs: ["connection/item identity", "modifiedAt", "requested display size", "cache limit"]
+    normal_result: "Consumers discover the same thumbnail bytes through memory/disk/provider/super caches, downsample to needed pixels, invalidate on modification/folder refresh, and fall back to a type icon/retryable state rather than an incorrect image."
+    states: [idle, memory_hit, disk_hit, provider_hit, loading, decoded, placeholder, failed, cancelled]
+    algorithms_and_thresholds: ["remote data key is shared across rendered sizes and includes modification date", "decoder bounds pixel dimensions", "late stores after folder invalidation are rejected", "remote work limiter maximum concurrent work is 3"]
+    data_contracts: ["JPEG/image bytes", "SHA/cache key", "automatic persisted disk-limit choice", "main-thread cache-change notifications"]
+    producer_consumer_routes: ["backend/vault/local generator -> memory/disk caches -> RemoteThumbnailView/FileProvider/favorites/browser/inbox/overflow"]
+    persistence_relaunch: "Disk caches and supported limits persist; memory and active tasks do not."
+    permissions_privacy_security: ["Cache is app/provider private; invalid bytes rejected"]
+    background_lifecycle: "Offscreen/superseded tasks cancel; thermal/network policies pace generation."
+    gestures_accessibility: ["Thumbnail is decorative where text names the item; loading/error does not replace the file name"]
+    supported_devices_layouts: ["decode target follows actual cell pixels across phone/tablet/Mac/TV"]
+    visual_reference: "RemoteThumbnailView and all four browser layouts; visual verification pending"
+    platform_adaptations: {ios: ["ImageIO/QuickLook/File Provider caches"], android: ["Bitmap decoder/Coil-style cache and DocumentsProvider thumbnail path with identical producer/fallback/invalidation chain"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/RemoteThumbnailView.swift", "NasFinderFileProvider/ThumbnailCache.swift"], tests: ["NasFinderTests/RemoteThumbnailCacheKeyTests.swift", "NasFinderTests/RemoteThumbnailDiskCacheTests.swift", "NasFinderTests/RemoteThumbnailImageDecoderTests.swift", "NasFinderTests/FileProviderThumbnailCacheTests.swift"], evidence: ["cache/decoder tests"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["RemoteThumbnailRepository.kt", "DocumentsThumbnailPolicy.kt", "NasFinderDocumentsProvider.kt"], tests: ["RemoteThumbnailCacheTest", "DocumentsThumbnailPolicyTest"], evidence: ["old Synology MOV trace; current Vault consumers/cold cache pending"]}
+    dependencies: [remote.backends_protocols, thumbnails.super_pipeline]
+    parity_row_ids: [thumbnail-pipeline]
+
+  - id: thumbnails.remote_video_generation
+    purpose: "Generate representative remote video thumbnails without routinely downloading whole large files."
+    source_refs: ["NasFinder/Features/Browser/RemoteVideoThumbnailGenerator.swift", "NasFinder/Core/Services/SFTPFileService.swift:SFTPAdaptiveVideoThumbnailRangePlan/SFTPVideoThumbnailRangePlan", "NasFinder/Features/Preview/CompatibilityVideoPlayer.swift:CompatibilityRemoteVideoThumbnailGenerator", "NasFinder/Core/Services/URLSessionBoundedRangeReader.swift"]
+    entry_points: ["cell thumbnail miss", "Super Thumbnail run"]
+    preconditions: ["video item and range-capable or downloadable backend"]
+    inputs: ["file size/format", "small/normal/complete mode", "byte budget/timeouts"]
+    normal_result: "Routing tries backend thumbnail where appropriate, bounded AVFoundation ranges, compatibility/VLC snapshot, then limited local fallback; flat white/black or >=50% black frames retry instead of poisoning cache."
+    states: [routing, backend, av_range, compatibility_range, local_fallback, quality_retry, success, budget_exhausted, timeout, cancelled, failed]
+    algorithms_and_thresholds: ["SFTP complete-file super budget 18,000,000 bytes", "Synology super budget 256 MiB", "cellular budget 24 MiB", "complete local file ceiling 64 GiB", "small range plan <=640 KiB", "quality retries when black pixels are at least 50%"]
+    data_contracts: ["RemoteVideoThumbnailGenerationResult with processing path/transferred bytes", "bounded range segments and traffic leases"]
+    producer_consumer_routes: ["thumbnail miss/preheater -> routing policy -> backend/range/player snapshot -> JPEG cache -> every thumbnail consumer"]
+    persistence_relaunch: "Successful JPEG persists in disk/super/vault caches; attempt task/budget session does not survive except queue report."
+    permissions_privacy_security: ["No whole-file overread beyond declared policy/budget"]
+    background_lifecycle: "Timeout and cancellation release traffic/work permits; cancelled compatibility generation cannot block the next item."
+    gestures_accessibility: ["Generation is background behavior; consumer retains item label and retry state"]
+    supported_devices_layouts: ["layout independent; generated resolution fits cache target"]
+    visual_reference: "thumbnail quality only; runtime fixture verification pending"
+    platform_adaptations: {ios: ["AVFoundation/VLCKit"], android: ["MediaMetadataRetriever/Media3/compatibility decoder may differ but routing, budgets, quality rejection and fallbacks are invariant"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/RemoteVideoThumbnailGenerator.swift"], tests: ["NasFinderTests/SFTPAdaptiveThumbnailPlanTests.swift", "NasFinderTests/SFTPVideoThumbnailRangePlanTests.swift", "NasFinderTests/RemotePreviewStateTests.swift"], evidence: ["range/quality tests; real NAS matrix pending"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["RemoteThumbnailRepository.kt"], tests: ["RemoteThumbnailCacheTest", "RemoteRangeContractTest"], evidence: ["10 Synology MOV/57 requests/2.3MB on old build; other codecs pending"]}
+    dependencies: [remote.backends_protocols, preview.compatibility_video, thumbnails.display_cache_pipeline]
+    parity_row_ids: [thumbnail-video]
+
+  - id: thumbnails.super_pipeline
+    purpose: "Create Super Thumbnails for every eligible photo and video, resume failures, share work across devices and optionally store/restores results on the NAS."
+    source_refs: ["NasFinder/Features/Connections/SuperThumbnailView.swift", "NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Browser/SuperThumbnailQueueStore.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift", "NasFinder/Features/Browser/SuperThumbnailCache.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/AppMain.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/VaultCompatibility.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/UpdateController.swift", "MacSuperThumbnail/Package.swift", "MacSuperThumbnail/Package.resolved"]
+    entry_points: ["Super Thumbnail settings/link", "hidden five-tap start", "Mac helper folder selection"]
+    preconditions: ["eligible connection/folder", "network/power/thermal policy", "photos or videos present"]
+    inputs: ["media scope always photos+videos for full run", "generation mode", "vault enabled/timing now/later", "resume report"]
+    normal_result: "The recursive queue discovers eligible media, prioritizes prior failures then unfinished stages, uses/reuses local automatic cache, publishes successes, and reports generated/cached/failed/remaining/bytes/ETA."
+    states: [checking_requirements, discovering, running, paused, waiting_network, waiting_power, waiting_thermal, cancelling, cancelled, completed, partial, failed]
+    algorithms_and_thresholds: ["hidden start counts down after five taps", "fair thermal pacing delay 500 ms; serious/critical stop", "retry ordering: failures then attempts 0...2", "ETA blends previous 72% and new target 28%, rise/drop capped; up to 160 observations", "designed-for-iPad Mac counts as externally powered", "single-file manual thumbnail does not require external power"]
+    data_contracts: ["SuperThumbnailSessionReport/FailureRecord/queue transitions", "JPEG cache key", "NAS .NasFinder-Vault thumbnail/manifest/worker/lease records", "vault filename compatibility is byte-exact across iOS, Android and Mac: identity lines engine=1, NFC-precomposed name, size=(signed decimal or -1 when unknown), modified=(Unix epoch milliseconds or 0), joined with |, SHA-256 lowercase hex, filename v1-<digest>.jpg", "folder Super Thumbnail records live in the parent directory's vault with a name-only identity (engine=1|kind=folder|name=<NFC folder name>, SHA-256 lowercase hex): 3x3 contact-sheet JPEG v1-folder-<digest>.jpg and empty-folder index marker v1-folder-<digest>.empty; old clients ignore the v1-folder- prefix and new clients keep reading v1-<digest>.jpg file records; unreadable/cancelled folders write no record and stay retryable"]
+    producer_consumer_routes: ["UI/Mac folder -> recursive discovery -> queue/lease -> remote photo/video generation -> local cache -> optional NAS vault -> browser/provider consumers"]
+    persistence_relaunch: "Queue report, failures/stages, ETA observations, local cache and vault records persist; resume processes only unfinished work."
+    permissions_privacy_security: ["Vault operations are constrained to NasFinder vault files; removing NAS vault retains local payload", "Mac helper uses user-selected security-scoped folder"]
+    background_lifecycle: "App inactivity/low battery/hot device/network policy pause or stop with an explicit reason; cancel acknowledges promptly and stops active work."
+    gestures_accessibility: ["start/pause/resume/cancel and progress metrics have named controls", "hidden activation is supplementary, not the only visible route"]
+    supported_devices_layouts: ["iPhone/iPad/Mac helper", "Android phone/tablet/TV may run only where resource policy permits but must consume stored results everywhere"]
+    visual_reference: "SuperThumbnailView/Mac helper; screenshot verification pending"
+    platform_adaptations: {ios: ["iOS background/resource APIs and separate macOS helper; SuperThumbnailVault.swift:612-623 and VaultCompatibility.swift:21-36 are the wire-name evidence"], android: ["WorkManager/foreground work and battery/network/thermal APIs with identical queue/vault/cache contract and exact UTF-8/NFC/SHA-256 filename bytes"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift"], tests: ["NasFinderTests/SuperThumbnailVaultTests.swift", "NasFinderTests/BrowserFeaturePolicyTests.swift", "NasFinderTests/RemotePreviewStateTests.swift", "MacSuperThumbnail/Tests/NasFinderSuperThumbnailMacTests/VaultCompatibilityTests.swift"], evidence: ["queue/vault tests; real multi-device NAS run pending"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["SuperThumbnailWorker.kt", "SuperThumbnailVault.kt", "SuperThumbnailSessionStore.kt", "RemoteThumbnailRepository.kt"], tests: ["SuperThumbnailPolicyTest", "SuperThumbnailVaultAndSessionTest", "SuperThumbnailWorkContractTest", "SuperThumbnailThermalPolicyTest"], evidence: ["cross-device NAS Vault positive/negative/relaunch pending"]}
+    dependencies: [thumbnails.remote_video_generation, thumbnails.display_cache_pipeline, remote.backends_protocols]
+    parity_row_ids: [super-thumbnail]
+
+  - id: preview.remote_media
+    purpose: "Preview images, videos and other supported files with loading, progress, navigation, retry, share and teardown."
+    source_refs: ["NasFinder/Features/Preview/RemotePreviewView.swift", "NasFinder/Features/Preview/ZoomableMediaImageView.swift", "NasFinder/Features/Preview/SharedFullscreenMediaPlayer.swift", "NasFinder/Core/Services/DownloadCache.swift", "NasFinder/Features/Browser/PageNetworkTrafficTracker.swift"]
+    entry_points: ["tap media/file", "favorite/inbox/web-hard preview"]
+    preconditions: ["selected item and service/local adapter"]
+    inputs: ["ordered previewable items", "selected index", "playback/slideshow preferences"]
+    normal_result: "Preview prioritizes errors, otherwise immediately displays a visible preparing/buffering state and then prepared image/video/audio/Quick Look content; selecting a playable item requests automatic playback, previous/next wraps, manual navigation autoplays, and retry fully tears down stale work. Playback failure becomes an actionable retry/external-open/close state rather than a silent first-frame stall. Browser remote files, Shared Inbox/PhoneHard local files, and WebHard local files all enter this same viewer contract instead of a reduced platform-specific viewer. Fullscreen image and video surfaces hide the device status bar; video also retains immersive navigation-bar hiding, and dismissal restores the system bars."
+    states: [idle, loading, streaming, downloading, image, video, quicklook, error, retrying, cancelled, dismissed]
+    algorithms_and_thresholds: ["controls auto-hide after 5 seconds", "image preview remains the same zoomable single-image surface across device portrait and landscape; browser poster-to-overflow rules never alter an already opened image", "JPEG/HEIF EXIF orientation including mirrored variants is normalized before image fit and aspect decisions", "download cache max 512 MiB and 7 days", "mixed image/video/audio navigation wraps", "sequence mode is persisted and offers repeat-all, shuffle and repeat-one for video/audio; photo slideshow uses the same sequence modes plus 1/2/3/5/10/15/30-second intervals", "manual next/previous starts the newly selected playable item while automatic advance preserves the user's pause policy", "traffic counts only positive uncached byte deltas"]
+    data_contracts: ["RemotePreviewContentKind/LoadStrategy/PlaybackMode(repeatAll,shuffle,repeatOne)/PhotoAdvanceInterval", "cache v2 SHA key includes connection/path/modifiedAt/size", "unknown remote size is null in the common model and is encoded as sentinel -1 only when forming deterministic cache/vault identity"]
+    producer_consumer_routes: ["remote browser item or PhoneHard/WebHard local adapter -> one common ordered media model -> cache/stream/download/local URL -> image/video/audio/compatibility/QuickLook surface -> share/navigation"]
+    persistence_relaunch: "Download cache and playback/slideshow option preferences persist where stored; active preview does not."
+    permissions_privacy_security: ["Cache stays private", "share prepares a safe local file"]
+    background_lifecycle: "Dismiss/scene inactivity cancels loader/player/tasks, pauses playback and releases screen-awake/audio resources."
+    gestures_accessibility: ["single tap controls/play according to visibility", "swipe navigation/dismiss and explicit controls", "time/progress/close/share have labels"]
+    supported_devices_layouts: ["safe-area adaptive fullscreen portrait/landscape, iPad split/full, pointer/keyboard equivalents"]
+    visual_reference: "RemotePreviewView and SharedFullscreenMediaPlayer; Matchup pending"
+    platform_adaptations: {ios: ["AVPlayer/QuickLook/UIImage scroll view"], android: ["Media3/system preview/zoom view with identical user-visible state priority, navigation and teardown"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Preview/RemotePreviewView.swift"], tests: ["NasFinderTests/RemotePreviewStateTests.swift", "NasFinderTests/DownloadCacheTests.swift", "NasFinderTests/PageNetworkTrafficTrackerTests.swift"], evidence: ["state tests; live playback pending"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["NasFinderApp.kt", "NasFinderViewModel.kt", "DownloadCache.kt", "RemoteRangeMediaSource.kt"], tests: ["DocumentsThumbnailPolicyTest", "InboxParityContractTest", "RemoteRangeMediaSourceTest"], evidence: ["image status-bar and video immersive-system-bar lifecycle are source-covered; automatic playback, buffering and retry/external fallback tests remain; post-change viewer capture pending"]}
+    dependencies: [remote.backends_protocols, preview.streaming_video, preview.compatibility_video]
+    parity_row_ids: [media-preview]
+
+  - id: preview.gestures_controls
+    purpose: "Provide consistent image/video viewer gestures including zoom, navigation, dismissal and vertical volume control without gesture mode switching mid-drag."
+    source_refs: ["NasFinder/Features/Preview/RemotePreviewView.swift", "NasFinder/Features/Preview/ZoomableMediaImageView.swift", "NasFinder/Features/Preview/SharedFullscreenMediaPlayer.swift"]
+    entry_points: ["fullscreen media interaction"]
+    preconditions: ["preview content visible"]
+    inputs: ["tap, double tap, pan, swipe, pinch, vertical edge drag"]
+    normal_result: "Images fit initially, zoom/pan preserve viewport through rotation, double tap resets/toggles zoom; video controls and seek work; a vertical gesture is classified once as volume or dismiss and stays that mode until release."
+    states: [controls_hidden, controls_visible, zoomed, panning, navigating, dismissing, adjusting_volume]
+    algorithms_and_thresholds: ["vertical volume drag cannot change to dismiss mid-gesture and vice versa", "image orientation affects fit dimensions", "center insets keep undersized image centered"]
+    data_contracts: ["gesture classification/session state", "system volume value"]
+    producer_consumer_routes: ["touch/pointer/keyboard -> viewer gesture state -> zoom/player/navigation/dismiss/system volume"]
+    persistence_relaunch: "Gesture state resets on dismissal."
+    permissions_privacy_security: ["System volume uses platform volume control without private APIs"]
+    background_lifecycle: "Cancelled/failed gestures clear mode; teardown restores normal system state."
+    gestures_accessibility: ["Every gesture has visible named controls and keyboard/remote equivalent", "VoiceOver does not require spatial gesture"]
+    supported_devices_layouts: ["touch phone/tablet", "Mac pointer/keyboard", "Android TV remote adds D-pad controls"]
+    visual_reference: "iOS fullscreen viewer; runtime gesture and visual verification pending"
+    platform_adaptations: {ios: ["UIScrollView and MPVolumeView"], android: ["Zoom/pan + AudioManager/volume UI; preserve classification and visible alternative controls"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Preview/ZoomableMediaImageView.swift", "NasFinder/Features/Preview/SharedFullscreenMediaPlayer.swift"], tests: ["NasFinderTests/RemotePreviewStateTests.swift"], evidence: ["gesture policy tests"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["MediaViewerPolicy.kt", "NasFinderApp.kt"], tests: ["DocumentsThumbnailPolicyTest", "InboxParityContractTest"], evidence: ["no current touch/TalkBack/D-pad trace"]}
+    dependencies: [preview.remote_media]
+    parity_row_ids: [viewer-gestures]
+
+  - id: preview.streaming_video
+    purpose: "Range-stream remote video with bounded memory/network work, seeking and cancellation."
+    source_refs: ["NasFinder/Features/Preview/RemoteVideoStreamingLoader.swift", "NasFinder/Core/Services/URLSessionBoundedRangeReader.swift", "NasFinder/Core/Services/URLSessionProgressDownloader.swift"]
+    entry_points: ["preview a video on a range-capable backend"]
+    preconditions: ["backend supports bounded read"]
+    inputs: ["AVAsset resource request", "offset/length", "item size"]
+    normal_result: "Every sized video uses range streaming where supported; playback fetches only requested regions, reuses read-ahead bytes, and seek/cancel reach the active read without waiting for a whole-file download."
+    states: [idle, requesting, cached_range, reading, seeking, completed, stalled, cancelled, error]
+    algorithms_and_thresholds: ["normal playback reads ahead at most 8 MiB per remote range request on both platforms", "bounded thumbnail work uses at most 256 KiB per request on iOS", "folder/byte budgets never overcommit active leases", "cellular budget is shared across folders", "cancel-before-start rejects late reads"]
+    data_contracts: ["byte ranges and content metadata", "range cache entries", "task registry IDs"]
+    producer_consumer_routes: ["AVPlayer resource loader -> task registry/budget -> RemoteFileService.readRange -> AVPlayer"]
+    persistence_relaunch: "Range cache is session memory only unless separately cached by preview download."
+    permissions_privacy_security: ["Bounded reads prevent unexpected whole-file consumption"]
+    background_lifecycle: "Player teardown cancels all requests and releases leases."
+    gestures_accessibility: ["seek and progress controls remain accessible"]
+    supported_devices_layouts: ["layout independent"]
+    visual_reference: "player progress states; pending"
+    platform_adaptations: {ios: ["AVAssetResourceLoader"], android: ["Media3 DataSource/range cache with equivalent byte budgeting and cancellation"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Preview/RemoteVideoStreamingLoader.swift"], tests: ["NasFinderTests/RemoteVideoStreamingTaskRegistryTests.swift", "NasFinderTests/RemotePreviewStateTests.swift"], evidence: ["range/task tests"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["RemoteRangeMediaSource.kt", "NasFinderApp.kt: ExoPlayer MediaPreviewContent", "NasFinderViewModel.kt: RemoteMediaStreamSpec", "app/build.gradle.kts: Media3"], tests: ["RemoteRangeMediaSourceTest"], evidence: ["8 MiB read-ahead and cancellation tests passed", "installed on SM-F968N", "live Synology MP4 auto-played for more than 15 seconds at 23.98 fps without whole-file download or unexpected loader exceptions", "seek/cancel negative trace remains pending"]}
+    dependencies: [remote.backends_protocols]
+    parity_row_ids: [video-streaming]
+
+  - id: preview.compatibility_video
+    purpose: "Play and thumbnail legacy containers unsupported by the primary player, with external subtitle matching and stall recovery."
+    source_refs: ["NasFinder/Features/Preview/CompatibilityVideoPlayer.swift", "NasFinder/Features/Preview/RemotePreviewView.swift:RemoteVideoLoadStrategy"]
+    entry_points: ["preview AVI/ASF/WMV/MKV or other compatibility-routed video"]
+    preconditions: ["format policy selects compatibility path or primary playback fails appropriately"]
+    inputs: ["remote/local byte stream", "optional exact-basename subtitle"]
+    normal_result: "MP4/MOV remain on the primary player; legacy formats use compatibility playback, seek/rotate, progress and thumbnails; exact basename subtitles prefer SRT; stalled playback becomes retryable."
+    states: [preparing, buffering, playing, paused, seeking, stalled, stopped, error]
+    algorithms_and_thresholds: ["external subtitle exact basename only; language-suffixed non-exact names do not match", "SRT preferred", "thumbnail playback silent and serialized", "watchdog reports no progress only while expected to play"]
+    data_contracts: ["CompatibilityVideoFormatPolicy", "remote seekable InputStream", "subtitle URL"]
+    producer_consumer_routes: ["preview routing -> compatibility stream/player -> surface/progress/subtitle -> teardown"]
+    persistence_relaunch: "No active playback persistence."
+    permissions_privacy_security: ["Remote reads obey bounded/cancel policy"]
+    background_lifecycle: "Stop returns even if a remote read is stalled and unblocks/ends the stream."
+    gestures_accessibility: ["same player controls/gestures as primary route"]
+    supported_devices_layouts: ["portrait/landscape/resizable player surface"]
+    visual_reference: "CompatibilityVideoPlayerSurface; official sample visual verification not performed here"
+    platform_adaptations: {ios: ["VLCKit fallback"], android: ["Media3 extensions/VLC or equivalent; format routing and user outcomes invariant"]}
+    intentional_differences: [{platform: android, constraint: "The available VLC Android 3.6 native artifact is not accepted for Android 16 16 KiB page-size release support; AVI/ASF/WMV therefore use the system external-player chooser while Media3-supported containers stay in-app.", closest_equivalent: "safe local preparation and Android system player chooser with explicit retry/error state", user_impact: "legacy containers may leave NasFinder for playback", verification: "source policy and JVM route tests pass; external-player runtime chooser remains pending"}]
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Preview/CompatibilityVideoPlayer.swift"], tests: ["NasFinderTests/RemotePreviewStateTests.swift"], evidence: ["unit and repository fixture test definitions; not executed"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["RemoteRangeMediaSource.kt", "NasFinderApp.kt: Media3 player and ACTION_VIEW fallback"], tests: ["RemoteRangeMediaSourceTest"], evidence: ["Media3-supported route, exact-basename subtitle preference and forced legacy external route tests pass; live subtitle/external chooser pending"]}
+    dependencies: [preview.streaming_video]
+    parity_row_ids: [video-compatibility]
+
+  - id: sharing.system_export
+    purpose: "Share selected local or prepared remote files through the system share surface only after bytes are complete and safe."
+    source_refs: ["NasFinder/Features/Browser/FileBrowserView.swift", "NasFinder/Features/Preview/RemotePreviewView.swift", "NasFinder/Features/WebHard/WebHardServerView.swift", "NasFinder/Features/Inbox/ReceivedFilesView.swift"]
+    entry_points: ["Share action from browser/preview/inbox/PhoneHard"]
+    preconditions: ["safe local URL or completed remote preparation"]
+    inputs: ["one or more files"]
+    normal_result: "The official share sheet receives real file URLs with original names/types after preparation; cancellation/failure does not claim success."
+    states: [preparing, ready, presented, cancelled, failed]
+    algorithms_and_thresholds: ["same-name outputs remain unique with extension preserved"]
+    data_contracts: ["local file URL and MIME/UTType", "temporary share workspace"]
+    producer_consumer_routes: ["feature share action -> optional download/archive preparation -> system sharesheet"]
+    persistence_relaunch: "Temporary share files are task-scoped and eligible for expiry cleanup."
+    permissions_privacy_security: ["Do not share internal path or incomplete file"]
+    background_lifecycle: "Preparation cancels on user cancel/view teardown; files live through share-sheet dismissal."
+    gestures_accessibility: ["Share action names selected content and progress/cancel"]
+    supported_devices_layouts: ["iPhone/iPad popover-safe", "Android system Sharesheet"]
+    visual_reference: "system-owned sheet excluded from pixel matching"
+    platform_adaptations: {ios: ["UIActivityViewController"], android: ["ACTION_SEND/ACTION_SEND_MULTIPLE with content URI, MIME and read grant"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Preview/RemotePreviewView.swift"], tests: [], evidence: ["static source only"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["NasFinderShareIntentFactory.kt", "NasFinderShareFileProvider.kt", "NasFinderViewModel.kt"], tests: ["InboxBatchContractsTest", "ExternalEntryRouteParserTest"], evidence: ["sharesheet/temp lifetime runtime pending"]}
+    dependencies: [remote.backends_protocols]
+    parity_row_ids: [share-export]
+
+  - id: inbox.shared_storage
+    purpose: "Receive files from the Share extension into a coordinated app-group inbox without loss, traversal or duplicate records."
+    source_refs: ["NasFinderShared/SharedInbox.swift", "NasFinderShare/ShareViewController.swift", "NasFinderShare/NasFinderShare.entitlements", "NasFinder/NasFinder.entitlements"]
+    entry_points: ["system Share extension for live photo/movie/image/general file", "nasfinder:// open after import"]
+    preconditions: ["signed app and extension share group.com.armsone.nasfinder entitlement"]
+    inputs: ["NSItemProvider items and suggested names"]
+    normal_result: "Each provider is copied sequentially to SharedInbox, safe unique names and an atomic hidden manifest record are committed, per-item progress/failure remains visible, and the app can open afterward."
+    states: [waiting, importing, saved, failed, cancelling, cancelled, batch_complete, opening_app]
+    algorithms_and_thresholds: ["preferred type order livePhoto, movie, image, then general file", "dot-prefixed proposed names become a safe PhoneHard name", "manifest writes coordinate and avoid duplicate IDs/filenames"]
+    data_contracts: ["group.com.armsone.nasfinder/SharedInbox", ".nasfinder-manifest.json SharedInboxRecord", "legacy manifest migration"]
+    producer_consumer_routes: ["system provider -> ShareViewController -> SharedInbox.copy/append -> SharedInboxStore/ReceivedFilesView"]
+    persistence_relaunch: "Stored files and manifest survive relaunch; orphan scan can reconstruct safe records."
+    permissions_privacy_security: ["App Group entitlement exact match", "resolved-symlink containment", "atomic coordination", "no success before copy/manifest complete"]
+    background_lifecycle: "Extension cancellation gate prevents new copies; current coordinated work finalizes safely."
+    gestures_accessibility: ["progress label, cancel/done/open buttons and per-item status are accessible"]
+    supported_devices_layouts: ["system extension compact/regular"]
+    visual_reference: "ShareViewController app-owned content; pending"
+    platform_adaptations: {ios: ["Share Extension and App Group"], android: ["share intent receiver + private inbox with identical safe copy/manifest/result semantics"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinderShared/SharedInbox.swift", "NasFinderShare/ShareViewController.swift"], tests: [], evidence: ["static entitlement/source inspection; signed runtime not verified"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["SharedInboxStore.kt", "MainActivity.kt", "NasFinderViewModel.kt"], tests: ["SharedInboxStoreTest", "InboxBatchContractsTest", "AppEntryRouteParserTest"], evidence: ["old inbox deep-link trace only"]}
+    dependencies: [app.shell.routes_lifecycle]
+    parity_row_ids: [shared-inbox]
+
+  - id: inbox.phonehard_library
+    purpose: "Browse received PhoneHard files in details/thumbnails/posters and automatic wide overflow, preview, delete, share, and upload them to a connection."
+    source_refs: ["NasFinder/Features/Inbox/SharedInboxStore.swift", "NasFinder/Features/Inbox/ReceivedFilesView.swift", "NasFinder/Features/Inbox/InboxUploadDestinationView.swift", "NasFinder/Core/Services/FavoriteStore.swift"]
+    entry_points: ["PhoneHard/received files route", "post-share deep link"]
+    preconditions: ["app-group inbox available"]
+    inputs: ["manifest/files", "layout", "selection", "destination connection/folder"]
+    normal_result: "Valid inbox records appear with square artwork; details/thumbnails/posters are selectable and posters become overflow only in wide populated normal state; open/share/delete/upload work on real local files."
+    states: [loading, empty, populated, details, thumbnails, posters, overflow, selecting, uploading, error]
+    algorithms_and_thresholds: ["layout selector excludes direct overflow", "stored overflow migrates to poster", "overflow uses shared chrome only in normal populated state", "all layout artwork remains square"]
+    data_contracts: ["SharedInboxRecord", "ReceivedFilesLayoutStyle AppStorage", "LocalInboxFileService adapter"]
+    producer_consumer_routes: ["SharedInbox -> store -> ReceivedFilesView -> local preview/share/delete or InboxUploadDestination -> remote operation"]
+    persistence_relaunch: "Files, manifest and base layout persist; automatic overflow is transient."
+    permissions_privacy_security: ["Deletion removes only validated inbox item/record", "upload uses chosen remote destination"]
+    background_lifecycle: "Thumbnail/upload work cancels with view/task lifecycle and reports errors."
+    gestures_accessibility: ["tap preview", "selection/context actions", "overflow drag", "explicit upload/delete/share"]
+    supported_devices_layouts: ["phone/tablet/Mac-compatible adaptive bounds; Android tablet/foldable follows same centered-square overflow rules"]
+    visual_reference: "ReceivedFilesView; Matchup pending"
+    platform_adaptations: {ios: ["shared CoverFlow chrome"], android: ["same layout-state policy and geometry using Android private inbox"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Inbox/ReceivedFilesView.swift"], tests: ["NasFinderTests/BrowserFeaturePolicyTests.swift"], evidence: ["layout policy tests"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["NasFinderApp.kt", "NasFinderViewModel.kt", "WebHardFileStore.kt"], tests: ["InboxParityContractTest", "InboxThumbnailTest"], evidence: ["PhoneHard local media now routes through common viewer; focused tests passed; current device/visual evidence absent"]}
+    dependencies: [inbox.shared_storage, files.operations, preview.remote_media]
+    parity_row_ids: [phonehard-library]
+
+  - id: phonehard.web_server
+    purpose: "Serve a safe local-network PhoneHard web UI for listing, previewing, uploading, downloading, deleting and zipping device files."
+    source_refs: ["NasFinder/Features/WebHard/WebHardServerView.swift", "NasFinder/Features/WebHard/WebHardHTTPServer.swift", "NasFinder/Features/WebHard/WebHardFileStore.swift", "NasFinder/Features/WebHard/WebHardZipArchive.swift", "NasFinder/Resources/Assets.xcassets/PhoneHardLogo.imageset"]
+    entry_points: ["PhoneHard server screen", "browser visits selected local address"]
+    preconditions: ["local network available", "server root available", "optional password"]
+    inputs: ["selected Wi-Fi/other address", "password", "HTTP requests/uploads", "local layout choice"]
+    normal_result: "User starts/stops a LAN server, sees addresses/QR/status/transfers, and the responsive browser UI supports details/thumbnails/posters, queued file/folder uploads, receive, preview, long-press/context action and folder ZIP download."
+    states: [stopped, starting, running, stopping, background_stopped, upload_progress, file_error]
+    algorithms_and_thresholds: ["optional password may be omitted", "browser long press threshold 650 ms", "upload keeps existing file by unique destination", "symbolic links and hidden PhoneHard manifest do not list", "path traversal cannot escape root"]
+    data_contracts: ["HTTP JSON list/message endpoints", "PUT upload and GET file/preview/archive", "X-WebHard-Password", "WebHardUploadProgress"]
+    producer_consumer_routes: ["server UI -> NWListener/HTTP router -> WebHardFileStore -> embedded HTML/JS browser client"]
+    persistence_relaunch: "File layout style persists; server is explicitly restarted and must not silently remain active after unsafe lifecycle transitions."
+    permissions_privacy_security: ["local-network disclosure", "optional password comparison", "canonical root containment", "no symlink traversal"]
+    background_lifecycle: "Entering background stops server; start-in-progress remains closable."
+    gestures_accessibility: ["native and web controls have visible text", "web contextmenu/650ms touch choice"]
+    supported_devices_layouts: ["native phone/tablet/Mac-compatible", "web responsive phone/tablet/desktop"]
+    visual_reference: "WebHardServerView and embedded page; browser screenshot verification pending"
+    platform_adaptations: {ios: ["Network.framework listener"], android: ["foreground LAN server where OS requires; same routes, auth, storage safety and stop behavior"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/WebHard/WebHardHTTPServer.swift"], tests: ["NasFinderTests/WebHardFileStoreTests.swift"], evidence: ["local HTTP/store tests defined; not run"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["WebHardHttpServer.kt", "WebHardFileStore.kt", "WebHardScreen.kt"], tests: ["WebHardJvmRegressionTest", "WebHardLanAddressTest", "InboxParityContractTest"], evidence: ["old LAN list/UI/background-stop trace; full transfer/zip matrix pending"]}
+    dependencies: [settings.theme_icons_awake, preview.remote_media]
+    parity_row_ids: [phonehard-server]
+
+  - id: photo_transfer.pairing_transport
+    purpose: "Pair two devices by QR/manual code and transfer photo/video/live-photo payloads over the local network with authenticated framing and bounded timeouts."
+    source_refs: ["NasFinder/Features/PhotoTransfer/PhotoTransferView.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferPairing.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferPairingViews.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferQRCodeGenerator.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferQRScannerView.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferLocalIPv4.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferSenderSession.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferReceiverSession.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferWireCodec.swift"]
+    entry_points: ["photo transfer send/receive", "scan QR", "manual code"]
+    preconditions: ["same reachable LAN", "camera permission for scanning or manual entry", "one-time token"]
+    inputs: ["nasfinder-transfer payload version/host/port/token", "selected prepared items"]
+    normal_result: "Receiver advertises a one-time authenticated endpoint; sender scans/enters it, negotiates backward-compatible handshake, streams framed files and completion, and both sides expose progress/result/cancel."
+    states: [idle, waiting, scanning, connecting, handshaking, sending, receiving, completing, completed, cancelled, timed_out, error]
+    algorithms_and_thresholds: ["URL parser rejects wrong scheme/host/path, duplicate/unknown query, malformed version/host/port/token", "v1 and v2-flat handshake compatibility retained", "connection and transfer operations use bounded timeout and stale generation is rejected"]
+    data_contracts: ["pairing URL/manual code", "HELLO token/platform line", "big-endian framed JSON header/payload", "exact DONE object", "SHA-256 integrity metadata", "maximum header prefix enforcement"]
+    producer_consumer_routes: ["receiver QR/manual payload -> sender scanner/parser -> handshake -> wire codec/temp files -> receiver import"]
+    persistence_relaunch: "Pairing tokens and sessions are ephemeral; received durable files follow import destination."
+    permissions_privacy_security: ["one-time URL-safe random token", "local network and camera disclosures", "checksum/length verification", "no unauthenticated payload acceptance"]
+    background_lifecycle: "Dismissal asks only during active work; cancellation closes sessions; receiver QR regenerates only while waiting."
+    gestures_accessibility: ["scan has manual alternative", "media counts/progress/cancel/results announced"]
+    supported_devices_layouts: ["iPhone/iPad/Mac-compatible sender/receiver where hardware permits", "Android phone/tablet; TV may receive only with explicit adapted flow"]
+    visual_reference: "PhotoTransferView/pairing sheets; Matchup pending"
+    platform_adaptations: {ios: ["DataScannerViewController/Network framework/PhotoKit"], android: ["Camera/ML scanner and sockets; wire bytes and state machine must be interoperable"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/PhotoTransfer/PhotoTransferWireCodec.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferPairing.swift"], tests: ["NasFinderTests/PhotoTransferPairingTests.swift", "NasFinderTests/PhotoTransferWireCodecTests.swift", "NasFinderTests/PhotoTransferReceiverSessionTests.swift"], evidence: ["protocol tests defined"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["PhotoTransferPairing.kt", "PhotoTransferWireCodec.kt", "PhotoTransferScreen.kt"], tests: ["PhotoTransferPairingTest", "PhotoTransferWireCodecTest", "PhotoTransferQrRefreshContractTest"], evidence: ["no live iOS-Android transfer"]}
+    dependencies: [app.shell.routes_lifecycle]
+    parity_row_ids: [photo-transfer-pairing]
+
+  - id: photo_transfer.media_preparation_import
+    purpose: "Classify and prepare selected photos, videos and Live Photos, preserving cross-platform media meaning and actual saved results."
+    source_refs: ["NasFinder/Features/PhotoTransfer/PhotoTransferMedia.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferSelectionLoader.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferSelectionPreview.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferLivePhotoConverter.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferReceiverSession.swift"]
+    entry_points: ["send media picker result", "receive completed transfer"]
+    preconditions: ["photo-library access for selected or saved media where needed"]
+    inputs: ["PhotosPicker/PhotoKit providers", "motion-photo/live-photo components", "wire temporary payloads"]
+    normal_result: "Live Photo classification wins over still-image types, selection preview/counts distinguish photo/video/live, same-platform preserves grouped Live Photo and cross-platform chooses the documented motion-container route, and saved-result labels reflect actual Photo Library type."
+    states: [loading_selection, preparing, previewing, converting, importing, partial, completed, cancelled, error]
+    algorithms_and_thresholds: ["known still-image time uses microseconds and clamps to asset duration; unknown uses safe midpoint", "image metadata embeds matching MakerApple asset identifier", "failed/cancelled reader or writer stops conversion loop"]
+    data_contracts: ["PhotoTransferPreparedItem/components", "media kind and pipeline route", "grouped still+motion metadata/checksums", "ReceivedMediaResult provenance"]
+    producer_consumer_routes: ["picker/provider -> selection loader/preview -> optional Live Photo converter -> wire -> receiver -> Photo Library/local result"]
+    persistence_relaunch: "Prepared temp files are session-scoped; imported output is durable."
+    permissions_privacy_security: ["Only user-selected assets are read", "photo add permission required for library save"]
+    background_lifecycle: "Cancellation stops asset reads/conversion/import and removes incomplete temporary data."
+    gestures_accessibility: ["selection accessibility keeps media information separate from delete action"]
+    supported_devices_layouts: ["adaptive selection preview"]
+    visual_reference: "PhotoTransferSelectionPreview; pending"
+    platform_adaptations: {ios: ["Live Photo pair/PhotoKit"], android: ["Motion Photo container/MediaStore; preserve provenance and same/cross-platform routing semantics"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/PhotoTransfer/PhotoTransferSelectionLoader.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferLivePhotoConverter.swift"], tests: ["NasFinderTests/PhotoTransferMediaClassifierTests.swift", "NasFinderTests/PhotoTransferLivePhotoConverterTests.swift"], evidence: ["classification/conversion policy tests"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["PhotoTransferPairing.kt", "MotionPhotoCodec.kt", "PhotoTransferScreen.kt"], tests: ["MotionPhotoCodecTest", "PhotoTransferExifContractTest", "PhotoTransferSavedResultsContractTest"], evidence: ["Photo Picker and cross-platform import not device-verified"]}
+    dependencies: [photo_transfer.pairing_transport]
+    parity_row_ids: [photo-transfer-media]
+
+  - id: google_photos.account_oauth
+    purpose: "Connect/disconnect Google Photos with PKCE, secure credential storage, refresh/re-auth and safe error disclosure."
+    source_refs: ["NasFinder/Core/Services/GooglePhotos/GooglePhotosOAuthConfiguration.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosOAuthAuthorizer.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosTokenClient.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosCredentialStore.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosHTTPClient.swift", "NasFinder/Features/GooglePhotos/GooglePhotosSettingsSection.swift", "NasFinder/Info.plist:Google Photos client ID/callback"]
+    entry_points: ["Google Photos settings connect/disconnect", "import needing credential"]
+    preconditions: ["non-placeholder client ID and callback scheme"]
+    inputs: ["authorization code/verifier", "access/refresh token", "expiry"]
+    normal_result: "PKCE authorizes only picker scope, saves credential to Keychain, refreshes with 60-second leeway, reauthorizes on invalid_grant, and disconnect revokes then removes local credential even when revoke fails where safe."
+    states: [disconnected, authorizing, connected, refreshing, revoking, reauthorization_required, error]
+    algorithms_and_thresholds: ["expiry leeway 60 seconds", "refresh preserves existing refresh token if response omits it", "HTTP failures expose category/status only, not response body"]
+    data_contracts: ["GooglePhotosCredential", "OAuth form requests", "Keychain account/service", "reversed client callback URL"]
+    producer_consumer_routes: ["settings/import -> authorizer/token client -> Keychain store -> picker client"]
+    persistence_relaunch: "Credential persists securely; connection state derives from stored credential."
+    permissions_privacy_security: ["Picker scope only", "PKCE", "tokens in Keychain", "revoke on disconnect", "no sensitive body in errors"]
+    background_lifecycle: "Authentication session cancels cleanly; no silent polling while inactive."
+    gestures_accessibility: ["Connect/disconnect state and errors are labeled"]
+    supported_devices_layouts: ["all app-supported Apple layouts; browser authentication presentation context"]
+    visual_reference: "GooglePhotosSettingsSection; pending"
+    platform_adaptations: {ios: ["ASWebAuthenticationSession/Keychain"], android: ["Custom Tabs/AppAuth/Encrypted storage with same PKCE/scope/refresh/revoke semantics"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Core/Services/GooglePhotos/GooglePhotosTokenClient.swift"], tests: ["NasFinderTests/GooglePhotosTokenClientTests.swift", "NasFinderTests/GooglePhotosConnectionSettingsModelTests.swift"], evidence: ["mock HTTP/store tests"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["googlephotos/GooglePhotosOAuth.kt", "googlephotos/GooglePhotosAccountController.kt", "platform/OAuthCallbackActivity.kt", "ui/NasFinderViewModel.kt", "ui/NasFinderApp.kt"], tests: ["GooglePhotosServiceTest", "GooglePhotosIntegrationContractTest"], evidence: ["focused tests plus full unit/lint/assemble; production account callback remains unverified"]}
+    dependencies: []
+    parity_row_ids: [google-photos-auth]
+
+  - id: google_photos.picker_import
+    purpose: "Disclose Google Photos data use, open official picker, poll while active, download selected photos/videos and import sequentially with honest partial results."
+    source_refs: ["NasFinder/Features/GooglePhotos/GooglePhotosDisclosureView.swift", "NasFinder/Features/GooglePhotos/GooglePhotosImportFlowController.swift", "NasFinder/Features/GooglePhotos/GooglePhotosImportFlowView.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosPickerModels.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosPickerClient.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosContentDownloader.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosImportCoordinator.swift"]
+    entry_points: ["Import from Google Photos"]
+    preconditions: ["user accepts disclosure", "valid or obtainable credential"]
+    inputs: ["picking session", "poll interval/timeout", "paginated selected items"]
+    normal_result: "Decline returns idle with no side effect; accept authorizes, creates picker session, opens picker, polls only while active, paginates items, skips malformed/processing videos, imports valid items sequentially, and reports success/skip/failure counts."
+    states: [idle, disclosure, authorizing, creating_session, opening_picker, waiting_selection, fetching, downloading, importing, completed, cancelled, timed_out, error]
+    algorithms_and_thresholds: ["default max item count is sent as documented string", "server poll interval honored", "repeated page token terminates pagination", "photo download suffix =d and video =dv; HTTPS only", "one item failure does not stop later items", "cancel preserves already imported items"]
+    data_contracts: ["GooglePhotosPickingSession and page models", "RFC3339/duration parsing", "media/video processing enums", "ImportOutcome/Summary"]
+    producer_consumer_routes: ["disclosure -> auth -> picker REST/openURL -> poll/pages -> bearer content download -> import coordinator -> inbox/library result"]
+    persistence_relaunch: "Credential persists; a live picker flow is not claimed resumable after process death."
+    permissions_privacy_security: ["Explicit disclosure before authorization", "bearer token only to Google HTTPS content URL", "safe categorized errors"]
+    background_lifecycle: "Polling pauses while scene inactive; cancel/timeout deletes session; deletion failure does not invalidate imported files."
+    gestures_accessibility: ["Disclosure, progress, cancel and summary are accessible"]
+    supported_devices_layouts: ["adaptive sheet/fullscreen flow"]
+    visual_reference: "GooglePhotosImportFlowView; pending"
+    platform_adaptations: {ios: ["openURL/system browser"], android: ["Custom Tab/intent and lifecycle-aware polling; same API wire and state outcomes"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/GooglePhotos/GooglePhotosImportFlowController.swift"], tests: ["NasFinderTests/GooglePhotosImportFlowControllerTests.swift", "NasFinderTests/GooglePhotosPickerClientTests.swift", "NasFinderTests/GooglePhotosPickerModelsTests.swift", "NasFinderTests/GooglePhotosContentDownloadServiceTests.swift", "NasFinderTests/GooglePhotosImportCoordinatorTests.swift", "NasFinderTests/GooglePhotosHTTPClientMock.swift", "NasFinderTests/GooglePhotosContentDownloaderMock.swift"], evidence: ["mock flow tests"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["googlephotos/GooglePhotosService.kt", "googlephotos/GooglePhotosImport.kt", "ui/NasFinderViewModel.kt", "ui/NasFinderApp.kt"], tests: ["GooglePhotosServiceTest", "GooglePhotosIntegrationContractTest"], evidence: ["focused tests plus full unit/lint/assemble; live picker/account and rendered flow remain unverified"]}
+    dependencies: [google_photos.account_oauth, inbox.shared_storage]
+    parity_row_ids: [google-photos-import]
+
+  - id: browser.web_download_favorites
+    purpose: "Browse safe web URLs, retain sessions briefly, download files, and import/export ordered browser favorites."
+    source_refs: ["NasFinder/Features/Browser/WebBrowserView.swift", "NasFinder/Features/Browser/BrowserFavoritesStore.swift", "NasFinder/Info.plist:hanclipfavorites imported type"]
+    entry_points: ["web browser", "address/search", "favorites editor/import/export"]
+    preconditions: ["valid web address"]
+    inputs: ["address", "navigation/download", "favorites document"]
+    normal_result: "Missing scheme becomes HTTPS, non-web schemes are rejected, browser state is retained for 30 minutes, downloaded filenames strip separators, and favorites import skips canonical duplicates while appending new addresses."
+    states: [idle, loading, loaded, downloading, downloaded, error, editing_favorites, importing, exporting]
+    algorithms_and_thresholds: ["session retention 30 minutes", "URL canonical duplicate detection", "safe download filename"]
+    data_contracts: ["BrowserFavoritesArchive/FileDocument", "com.intosharp.hanclip.browser-favorites UTType and .hanclipfavorites"]
+    producer_consumer_routes: ["address/favorite -> WKWebView -> navigation/download delegate -> downloaded file/inbox/share"]
+    persistence_relaunch: "Favorites persist; browser session only within retention policy."
+    permissions_privacy_security: ["Only HTTP/HTTPS navigation", "web content arbitrary loads allowed only within WKWebView per Info.plist"]
+    background_lifecycle: "Downloads expose cancel/error; stale retained sessions expire."
+    gestures_accessibility: ["back/forward/reload/address/favorite/download controls labeled"]
+    supported_devices_layouts: ["adaptive browser"]
+    visual_reference: "WebBrowserView; pending"
+    platform_adaptations: {ios: ["WKWebView/WKDownload"], android: ["WebView/DownloadManager or private downloader with same URL/safety/session outcomes"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/WebBrowserView.swift"], tests: ["NasFinderTests/BrowserURLPolicyTests.swift", "NasFinderTests/BrowserFeaturePolicyTests.swift"], evidence: ["policy tests"]}
+      android: {status: partial_source_implemented_runtime_partially_verified, source_refs: ["WebBrowserScreen.kt", "FavoriteRepository.kt", "DownloadCache.kt"], tests: ["BrowserUrlPolicyTest"], evidence: ["old WebView load trace; canonical favorites archive import/export is missing"]}
+    dependencies: [inbox.shared_storage]
+    parity_row_ids: [web-browser]
+
+  - id: files.provider_integration
+    purpose: "Expose supported remote connections in the system Files app for enumeration, materialization, thumbnails and safe mutations."
+    source_refs: ["NasFinderFileProvider/Extension.swift", "NasFinderFileProvider/Enumerator.swift", "NasFinderFileProvider/Item.swift", "NasFinderFileProvider/Storage.swift", "NasFinderFileProvider/RemoteBackends.swift", "NasFinderFileProvider/ThumbnailCache.swift", "NasFinderFileProvider/Sendability.swift", "NasFinderFileProvider/NasFinderFileProvider.entitlements", "NasFinderFileProvider/PrivacyInfo.xcprivacy"]
+    entry_points: ["Files app domain/root", "enumerate/fetch/create/modify/delete/thumbnail"]
+    preconditions: ["supported Synology or SFTP provider connection and shared credential"]
+    inputs: ["NSFileProvider identifiers/anchors/requests", "remote path", "requested thumbnail size"]
+    normal_result: "Stable identifiers map to safe remote paths; snapshots/changes enumerate visible children; fetch materializes bytes; Synology and SFTP provide thumbnails/vault fallback and advertised mutations; unsupported backends are not advertised."
+    states: [idle, enumerating, fetching, thumbnailing, mutating, completed, invalidated, cancelled, error]
+    algorithms_and_thresholds: ["dot files hidden", "snapshot anchors remembered", "provider thumbnail validates image bytes and keys connection/path/size", "default protocol methods are read-only"]
+    data_contracts: ["ProviderConnection/RemoteNode/Snapshot/Changes/Create/Modify", "NSFileProviderItem identifiers", "shared connection metadata/Keychain"]
+    producer_consumer_routes: ["ConnectionStore domain -> NSFileProvider extension -> provider storage/backend -> Files app"]
+    persistence_relaunch: "Domains, shared metadata, credential and provider thumbnail cache survive extension relaunch."
+    permissions_privacy_security: ["App Group + shared Keychain entitlements", "provider root/path containment", "privacy manifest"]
+    background_lifecycle: "Enumerator/extension task registry cancels all work on invalidation."
+    gestures_accessibility: ["System Files app owns interaction/accessibility"]
+    supported_devices_layouts: ["iPhone/iPad Files and compatible Mac Files integration"]
+    visual_reference: "system-owned Files UI excluded from pixel parity; thumbnail content still requires result parity"
+    platform_adaptations: {ios: ["NSFileProvider"], android: ["DocumentsProvider roots/documents/openDocument/thumbnail/create/rename/delete with equivalent supported backend set"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinderFileProvider/Storage.swift", "NasFinderFileProvider/RemoteBackends.swift"], tests: ["NasFinderTests/DocumentProviderConfigurationTests.swift", "NasFinderTests/FileProviderThumbnailCacheTests.swift"], evidence: ["static extension configuration/tests; Files runtime pending"]}
+      android: {status: source_implemented_system_ui_runtime_unverified, source_refs: ["NasFinderDocumentsProvider.kt", "DocumentsProviderCachePolicy.kt", "DocumentsThumbnailPolicy.kt", "AndroidManifest.xml"], tests: ["DocumentsProviderConnectionParityTest", "DocumentsProviderCachePolicyTest", "DocumentsThumbnailPolicyTest", "ReleasePlatformContractTest"], evidence: ["actual system picker/provider runtime pending"]}
+    dependencies: [connections.persistence_credentials, thumbnails.display_cache_pipeline, remote.synology_sessions_mutations, remote.sftp_security_mutations]
+    parity_row_ids: [system-file-provider]
+
+  - id: files.document_picker_extension
+    purpose: "Let other apps pick and download a NasFinder remote file through the system document picker extension."
+    source_refs: ["NasFinderDocumentPicker/DocumentPickerViewController.swift", "NasFinderDocumentPicker/NasFinderDocumentPicker.entitlements", "NasFinderDocumentPicker/Info.plist"]
+    entry_points: ["UIDocumentPicker extension"]
+    preconditions: ["shared supported connections and credentials"]
+    inputs: ["connection/folder/file selection"]
+    normal_result: "Connections load, folder stack navigates, thumbnails load with bounded permits, a file downloads to a safe destination and is returned to the host; user can cancel/retry."
+    states: [loading_connections, selecting_connection, loading_directory, populated, downloading, retry_deadline, completed, cancelled, error]
+    algorithms_and_thresholds: ["visible retry deadline prevents indefinite spinner", "download permits bound concurrent work", "safe local destination filename"]
+    data_contracts: ["ProviderConnection/RemoteNode and shared credentials", "host-returned document URL"]
+    producer_consumer_routes: ["host picker -> extension model -> provider backend -> downloaded URL -> dismissGrantingAccess"]
+    persistence_relaunch: "Only shared connection/credential/cache persists; selection/download task does not."
+    permissions_privacy_security: ["App Group and shared Keychain", "only selected file returned"]
+    background_lifecycle: "cancelDownload and extension disappearance cancel active work."
+    gestures_accessibility: ["connection/folder/file buttons, retry/cancel/progress labeled"]
+    supported_devices_layouts: ["picker compact/regular"]
+    visual_reference: "document picker app-owned content; pending"
+    platform_adaptations: {ios: ["legacy document picker extension"], android: ["DocumentsProvider/system picker supplies equivalent remote selection; separate custom extension UI may be unnecessary"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinderDocumentPicker/DocumentPickerViewController.swift"], tests: ["NasFinderTests/DocumentProviderConfigurationTests.swift"], evidence: ["static configuration"]}
+      android: {status: intentional_difference_source_implemented_runtime_unverified, source_refs: ["NasFinderDocumentsProvider.kt", "AndroidManifest.xml"], tests: ["DocumentsProviderConnectionParityTest", "ReleasePlatformContractTest"], evidence: ["Android system picker consumes DocumentsProvider; separate custom extension intentionally unnecessary"]}
+    dependencies: [files.provider_integration]
+    parity_row_ids: [document-picker]
+
+  - id: widget.lock_screen
+    purpose: "Offer a lightweight NasFinder lock-screen widget entry with stable branded rendering and app launch behavior."
+    source_refs: ["NasFinderWidget/NasFinderLockWidget.swift", "NasFinderWidget/Info.plist"]
+    entry_points: ["add lock-screen widget", "tap widget"]
+    preconditions: ["widget family supported"]
+    inputs: ["static timeline entry and widget family"]
+    normal_result: "Widget renders a recognizable NasFinder mark in supported lock-screen families and opens the app."
+    states: [placeholder, snapshot, timeline]
+    algorithms_and_thresholds: ["static timeline; no private user file data"]
+    data_contracts: ["NasFinderLockEntry"]
+    producer_consumer_routes: ["WidgetKit provider -> lock-screen view -> app launch"]
+    persistence_relaunch: "System manages timeline."
+    permissions_privacy_security: ["No file names/credentials exposed"]
+    background_lifecycle: "WidgetKit timeline policy only."
+    gestures_accessibility: ["widget label/launch action"]
+    supported_devices_layouts: ["supported iOS lock-screen widget families"]
+    visual_reference: "NasFinderLockWidget vector shapes; pending"
+    platform_adaptations: {ios: ["WidgetKit lock-screen widget"], android: ["Home/lock widget where platform permits; user outcome is quick branded launch"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinderWidget/NasFinderLockWidget.swift"], tests: [], evidence: ["static source only"]}
+      android: {status: intentional_difference_source_implemented_runtime_unverified, source_refs: ["NasFinderAppWidgetProvider.kt", "res/layout/nasfinder_widget.xml", "res/xml/nasfinder_widget_info.xml", "AndroidManifest.xml"], tests: ["NasFinderAppWidgetProviderTest", "ReleasePlatformContractTest"], evidence: ["home widget exists; lock-screen placement is launcher/platform dependent"]}
+    dependencies: [app.shell.routes_lifecycle]
+    parity_row_ids: [widget]
+
+  - id: product.accessibility_privacy_support_matrix
+    purpose: "Keep all product routes usable with accessibility technology and across supported size/input classes without exposing private data."
+    source_refs: ["NasFinder/PrivacyInfo.xcprivacy", "NasFinder/Info.plist", "NasFinder/NasFinder.entitlements", "NasFinderShare/Info.plist", "NasFinderFileProvider/Info.plist", "NasFinderDocumentPicker/Info.plist", "NasFinderWidget/Info.plist", "NasFinder.xcodeproj/project.pbxproj", "all SwiftUI/UIKit views listed by this contract"]
+    entry_points: ["every app and extension route"]
+    preconditions: ["platform support and granted feature-specific permissions"]
+    inputs: ["Dynamic Type/VoiceOver", "compact/regular/window bounds", "touch/pointer/keyboard/remote", "permission states"]
+    normal_result: "Names, state, next actions, errors and destructive consequences remain understandable; content adapts instead of clipping or merely scaling; secrets and private files remain within declared stores/routes."
+    states: [normal, large_text, voiceover, compact, regular, landscape, permission_denied, feature_unavailable]
+    algorithms_and_thresholds: ["app-owned controls keep meaningful labels/hints and adequate targets", "responsive behavior uses actual content bounds", "permission denial presents a safe recovery action"]
+    data_contracts: ["privacy manifests, usage descriptions and entitlements", "accessibility labels/values/hints"]
+    producer_consumer_routes: ["system settings/size/input/permission -> app layout/semantics/state -> user action/result"]
+    persistence_relaunch: "Preferences persist; permission state is re-read from OS."
+    permissions_privacy_security: ["App Group/Keychain scopes limited to linked targets", "no secret in logs/UI/errors", "local and remote/cloud transfer distinctions remain explicit"]
+    background_lifecycle: "Inactive/background behavior follows each task-owner capability."
+    gestures_accessibility: ["Gesture-only behavior always has an explicit accessible control", "keyboard/pointer/TV focus order follows visual action order"]
+    supported_devices_layouts: ["iPhone portrait/landscape", "iPad portrait/landscape/split/resized", "Mac-compatible resizable window", "Android phone/tablet/foldable/Google TV counterpart"]
+    visual_reference: "All app-owned screens require Matchup capture by route/state/device; none verified during this inventory"
+    platform_adaptations: {ios: ["VoiceOver, Dynamic Type, pointer/keyboard, system permission/settings UI"], android: ["TalkBack, font/display scale, keyboard/pointer/D-pad focus and runtime permissions"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Info.plist", "NasFinder/PrivacyInfo.xcprivacy"], tests: ["NasFinderTests/PhotoTransferMediaClassifierTests.swift"], evidence: ["partial static labels/tests; full accessibility audit pending"]}
+      android: {status: partial_source_implemented_runtime_unverified, source_refs: ["AndroidManifest.xml", "NasFinderApp.kt", "MediaViewerPolicy.kt", "tv_banner.png"], tests: ["ReleasePlatformContractTest", "InboxParityContractTest", "DocumentsThumbnailPolicyTest"], evidence: ["TV launcher/banner and partial semantics/D-pad; no route-by-route TalkBack/tablet/foldable/TV evidence"]}
+    dependencies: [app.shell.routes_lifecycle]
+    parity_row_ids: [accessibility-support]
+
+  - id: preview.external_action_view
+    purpose: "Open supported media and PDF files handed to NasFinder by Android file managers through the common built-in viewer."
+    source_refs: ["Android counterpart required; latest user contract"]
+    entry_points: ["Android ACTION_VIEW from Files or another file manager"]
+    preconditions: ["readable content URI and supported MIME type or safely detected supported extension"]
+    inputs: ["content URI", "display name", "declared MIME type", "temporary read grant"]
+    normal_result: "NasFinder appears as a compatible handler, safely copies or streams the selected item with its original name and MIME meaning preserved, and opens it in the common built-in media/PDF viewer."
+    states: [receiving, resolving_metadata, importing, opening_viewer, cancelled, unsupported, permission_error, read_error]
+    algorithms_and_thresholds: ["accept only explicit supported media/PDF contracts", "never resolve an external-player fallback back to NasFinder itself", "cancel URI work with the owning lifecycle"]
+    data_contracts: ["content URI plus transient grant", "sanitized original display name and MIME", "common viewer item contract"]
+    producer_consumer_routes: ["external file manager -> ACTION_VIEW intent -> safe content resolver import -> common built-in viewer", "unsupported playback fallback -> external package excluding NasFinder"]
+    persistence_relaunch: "Only an intentionally imported local copy may persist; transient grants and partial files do not."
+    permissions_privacy_security: ["consume only the granted URI", "no broad storage permission", "no URI, private path or content in logs/errors"]
+    background_lifecycle: "Cancellation removes task-owned partial files; backgrounding follows common viewer policy."
+    gestures_accessibility: ["same common viewer controls, labels, Back and D-pad behavior as in-app content"]
+    supported_devices_layouts: ["Android phone/tablet/foldable/Google TV when an external provider can dispatch ACTION_VIEW"]
+    visual_reference: "Common viewer catalog; external launch transition requires runtime capture."
+    platform_adaptations: {ios: ["system document/open-in flow routes supported files to the built-in viewer"], android: ["exported ACTION_VIEW intent filters and content:// grant handling"]}
+    intentional_differences: ["Android intent resolution and temporary URI grants are platform-specific."]
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinderApp.swift", "MediaViewer.swift"], tests: [], evidence: ["canonical product behavior; exact external-open runtime pending"]}
+      android: {status: missing, source_refs: [], tests: [], evidence: ["latest source inventory found no ACTION_VIEW filter or handler"]}
+    dependencies: [preview.common_viewer]
+    parity_row_ids: [external-action-view]
+
+known_unknowns:
+  - id: UNKNOWN-RUNTIME-NAS-MATRIX
+    description: "No live Synology/SFTP/SMB/WebDAV/FTP/cloud endpoint matrix was exercised; firmware-specific authentication, thumbnails, mutations and cancellation remain runtime-unverified."
+    blocks: [runtime_verified, synchronized]
+  - id: UNKNOWN-SUPERTHUMBNAIL-CROSS-DEVICE
+    description: "No current multi-device NAS vault run verified lease recovery, visibility in every consumer, or Mac helper interoperability on real storage."
+    blocks: [runtime_verified, synchronized]
+  - id: UNKNOWN-VISUAL-MATCHUP
+    description: "No deterministic iPhone/iPad/Mac and Android phone/tablet/TV screenshot catalog was captured; rendered parity including overflow geometry is open."
+    blocks: [visually_verified, synchronized]
+  - id: UNKNOWN-ACCESSIBILITY-RUNTIME
+    description: "VoiceOver, Dynamic Type, keyboard/pointer and Android TalkBack/D-pad traversal were not run route-by-route."
+    blocks: [runtime_verified, synchronized]
+  - id: UNKNOWN-EXTENSION-SIGNING
+    description: "Entitlements match statically, but signed Share/File Provider/Document Picker execution and actual app-group/keychain access were not verified."
+    blocks: [runtime_verified, synchronized]
+  - id: UNKNOWN-PHOTO-TRANSFER-INTEROP
+    description: "Wire tests exist in source, but a live iOS↔Android Photo/Video/Live Photo/Motion Photo transfer was not performed."
+    blocks: [runtime_verified, synchronized]
+  - id: UNKNOWN-GOOGLE-PHOTOS-LIVE
+    description: "OAuth/picker/import behavior is covered by mocks only; production credentials and Google service responses were not exercised."
+    blocks: [runtime_verified, synchronized]
+  - id: UNKNOWN-ANDROID-CURRENT-RUNTIME
+    description: "Android source is inventoried, but the current dirty candidate has not completed the live backend/device/input matrix or deterministic Matchup capture."
+    blocks: [runtime_verified, visually_verified, synchronized]

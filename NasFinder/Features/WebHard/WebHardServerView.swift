@@ -540,7 +540,6 @@ private struct BKWebHardToggleButtonStyle: ButtonStyle {
 
 struct WebHardServerView: View {
     @EnvironmentObject private var controller: WebHardServerController
-    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @Environment(\.dismiss) private var dismiss
     @AppStorage("webHard.fileLayoutStyle.v1")
     private var storedLayoutStyle = WebHardFileLayoutStyle.smallThumbnails.rawValue
@@ -550,6 +549,7 @@ struct WebHardServerView: View {
         AppThemePreference.system.rawValue
     @State private var shareItem: WebHardShareItem?
     @State private var deleteCandidate: WebHardFileItem?
+    @State private var contentSize = CGSize.zero
 
     private var serviceColor: Color {
         ThemeServicePalette.color(
@@ -571,6 +571,15 @@ struct WebHardServerView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background {
+            GeometryReader { proxy in
+                Color.clear
+                    .onAppear { updateContentSize(proxy.size) }
+                    .onChange(of: proxy.size) { _, size in
+                        updateContentSize(size)
+                    }
+            }
+        }
         .background(SkyBreezeBackground())
         .navigationTitle(isEnamel ? "" : "폰하드")
         .navigationBarTitleDisplayMode(.inline)
@@ -633,7 +642,17 @@ struct WebHardServerView: View {
     }
 
     private var showsCoverFlow: Bool {
-        layoutStyle == .largeThumbnails && verticalSizeClass == .compact
+        layoutStyle == .largeThumbnails
+            && FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
+                contentSize: contentSize,
+                isSelecting: false,
+                hasItems: !controller.files.isEmpty
+            )
+    }
+
+    private func updateContentSize(_ size: CGSize) {
+        guard size.width > 0, size.height > 0 else { return }
+        contentSize = size
     }
 
     private var coverFlowContent: some View {

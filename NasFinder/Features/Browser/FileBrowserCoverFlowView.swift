@@ -51,6 +51,68 @@ enum FileBrowserCoverFlowPolicy {
     }
 }
 
+enum FileBrowserOverflowPresentationPolicy {
+    static func shouldPresentPosterAsOverflow(
+        contentSize: CGSize,
+        isSelecting: Bool,
+        hasItems: Bool
+    ) -> Bool {
+        hasItems
+            && !isSelecting
+            && contentSize.width > contentSize.height
+            && contentSize.width > 0
+            && contentSize.height > 0
+    }
+}
+
+struct FileBrowserCoverFlowGeometry: Equatable {
+    let centerSide: CGFloat
+    let squareCenterY: CGFloat
+    let squareBottom: CGFloat
+    let floorCenterY: CGFloat
+}
+
+enum FileBrowserCoverFlowGeometryPolicy {
+    static let horizontalInset: CGFloat = 16
+    static let chromeClearance: CGFloat = 60
+    static let reflectionReserve: CGFloat = 64
+
+    static func geometry(
+        in size: CGSize,
+        safeAreaTop: CGFloat,
+        safeAreaLeading: CGFloat = 0,
+        safeAreaBottom: CGFloat,
+        safeAreaTrailing: CGFloat = 0
+    ) -> FileBrowserCoverFlowGeometry {
+        let usableWidth = max(
+            size.width
+                - safeAreaLeading
+                - safeAreaTrailing
+                - horizontalInset * 2,
+            1
+        )
+        let top = min(max(safeAreaTop + chromeClearance, 0), size.height)
+        let bottom = max(
+            min(size.height - safeAreaBottom - reflectionReserve, size.height),
+            top + 1
+        )
+        let usableHeight = max(bottom - top, 1)
+        let centerSide = max(min(usableWidth, usableHeight), 1)
+        let squareCenterY = top + usableHeight / 2
+        let squareBottom = squareCenterY + centerSide / 2
+        let floorCenterY = min(
+            size.height - safeAreaBottom,
+            squareBottom + reflectionReserve / 2
+        )
+        return FileBrowserCoverFlowGeometry(
+            centerSide: centerSide,
+            squareCenterY: squareCenterY,
+            squareBottom: squareBottom,
+            floorCenterY: floorCenterY
+        )
+    }
+}
+
 enum FileBrowserCoverFlowBackground: String, CaseIterable, Identifiable {
     case light
     case dark
@@ -287,8 +349,17 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let step = cardStep(for: proxy.size.width)
-            let baseline = proxy.size.height - 22
+            let layout = FileBrowserCoverFlowGeometryPolicy.geometry(
+                in: proxy.size,
+                safeAreaTop: proxy.safeAreaInsets.top,
+                safeAreaLeading: proxy.safeAreaInsets.leading,
+                safeAreaBottom: proxy.safeAreaInsets.bottom,
+                safeAreaTrailing: proxy.safeAreaInsets.trailing
+            )
+            let step = cardStep(
+                for: proxy.size.width,
+                centerSide: layout.centerSide
+            )
             ZStack {
                 Rectangle()
                     .fill(coverFlowBackground)
@@ -301,7 +372,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
                 )
                 .frame(height: usesDarkBackground ? 72 : 82)
                 .blur(radius: usesDarkBackground ? 5 : 8)
-                .position(x: proxy.size.width / 2, y: baseline + 18)
+                .position(x: proxy.size.width / 2, y: layout.floorCenterY)
                 .allowsHitTesting(false)
 
                 ForEach(visibleIndices, id: \.self) { index in
@@ -309,8 +380,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
                         item: items[index],
                         index: index,
                         availableSize: proxy.size,
-                        safeAreaTop: proxy.safeAreaInsets.top,
-                        baseline: baseline
+                        layout: layout
                     )
                 }
             }
@@ -347,22 +417,22 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
         item: Item,
         index: Int,
         availableSize: CGSize,
-        safeAreaTop: CGFloat,
-        baseline: CGFloat
+        layout: FileBrowserCoverFlowGeometry
     ) -> some View {
-        let baseWidth = cardBaseWidth(for: availableSize)
-        let step = cardStep(for: availableSize.width)
+        let baseWidth = cardBaseWidth(
+            for: availableSize,
+            centerSide: layout.centerSide
+        )
+        let step = cardStep(
+            for: availableSize.width,
+            centerSide: layout.centerSide
+        )
         let distance = CGFloat(index) - scrollPosition
         let absoluteDistance = abs(distance)
         let emphasis = max(1 - absoluteDistance, 0)
         let isSelected = index == selectedIndex
         let cornerRadius = 13 + emphasis * 5
-        let centralTarget = centralTargetWidth(
-            for: availableSize,
-            baseWidth: baseWidth,
-            safeAreaTop: safeAreaTop,
-            baseline: baseline
-        )
+        let centralTarget = layout.centerSide
         let renderedSide = renderedSide(
             for: absoluteDistance,
             baseWidth: baseWidth,
@@ -379,10 +449,10 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
         let reflectionRatio: CGFloat = usesDarkBackground ? 0.15 : 0.10
         let reflectionHeight = min(renderedSide * reflectionRatio, maximumReflectionHeight)
         let totalHeight = renderedSide + 2 + reflectionHeight
-        let centerY = baseline - renderedSide + totalHeight / 2
+        let centerY = layout.squareBottom - renderedSide + totalHeight / 2
 
         ZStack(alignment: .top) {
-            thumbnail(item, CGSize(width: 360, height: 260))
+            thumbnail(item, CGSize(width: renderedSide, height: renderedSide))
             .frame(width: renderedSide, height: renderedSide)
             .background(Color.black)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
@@ -396,7 +466,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
                     )
             }
 
-            thumbnail(item, CGSize(width: 360, height: 260))
+            thumbnail(item, CGSize(width: renderedSide, height: renderedSide))
             .frame(width: renderedSide, height: renderedSide)
             .scaleEffect(x: 1, y: -1)
             .frame(width: renderedSide, height: reflectionHeight, alignment: .top)
@@ -498,14 +568,17 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
         }
     }
 
-    private func cardStep(for width: CGFloat) -> CGFloat {
-        min(max(width * 0.05, 42), 66)
+    private func cardStep(for width: CGFloat, centerSide: CGFloat) -> CGFloat {
+        min(
+            max(max(width * 0.055, centerSide * 0.16), 44),
+            min(max(width * 0.12, 66), 120)
+        )
     }
 
-    private func cardBaseWidth(for size: CGSize) -> CGFloat {
+    private func cardBaseWidth(for size: CGSize, centerSide: CGFloat) -> CGFloat {
         min(
-            max(size.width * 0.32, 230),
-            min(size.height * 0.72, 310)
+            max(size.width * 0.24, 180),
+            min(centerSide * 0.62, 420)
         )
     }
 
@@ -544,23 +617,6 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
         return (distance < 0 ? -1 : 1)
             * fullPush
             * travel
-    }
-
-    private func centralTargetWidth(
-        for size: CGSize,
-        baseWidth: CGFloat,
-        safeAreaTop: CGFloat,
-        baseline: CGFloat
-    ) -> CGFloat {
-        let topClearance = safeAreaTop + 56
-        return max(
-            min(
-                max(baseWidth * 1.26, size.width * 0.38),
-                baseline - topClearance,
-                460
-            ),
-            1
-        )
     }
 
     private func smoothstep(_ value: CGFloat) -> CGFloat {

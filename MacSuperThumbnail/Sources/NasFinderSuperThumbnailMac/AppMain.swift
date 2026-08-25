@@ -108,9 +108,13 @@ final class SuperThumbnailMacModel: ObservableObject {
                     try VaultProcessor.discoverMedia(in: root)
                 }.value
                 try Task.checkCancellation()
-                totalCount = files.count
+                let folders = try await Task.detached(priority: .userInitiated) {
+                    try VaultProcessor.discoverFolders(in: root)
+                }.value
+                try Task.checkCancellation()
+                totalCount = files.count + folders.count
                 totalSourceBytes = files.reduce(0) { $0 + $1.size }
-                if files.isEmpty {
+                if files.isEmpty, folders.isEmpty {
                     status = "이 폴더에서 지원되는 사진이나 영상을 찾지 못했습니다."
                     currentName = ""
                     isRunning = false
@@ -120,7 +124,7 @@ final class SuperThumbnailMacModel: ObservableObject {
                 _ = try await Task.detached(priority: .utility) {
                     try VaultProcessor.registerWorker(worker, root: root)
                 }.value
-                status = "\(files.count)개 파일의 수퍼썸네일을 확인합니다."
+                status = "파일 \(files.count)개와 폴더 \(folders.count)개의 수퍼썸네일을 확인합니다."
 
                 let started = Date()
                 for file in files {
@@ -144,7 +148,45 @@ final class SuperThumbnailMacModel: ObservableObject {
                     checkedSourceBytes += file.size
                     averageSecondsPerItem = Date().timeIntervalSince(started) / Double(completedCount)
                 }
+
+                // Folders run after files and deepest-first so each parent
+                // sheet can reuse child file thumbnails and child folder
+                // sheets that already exist in the vault.
+                var folderGeneratedCount = 0
+                var folderEmptyCount = 0
+                var folderFailedCount = 0
+                for folder in folders {
+                    try Task.checkCancellation()
+                    while isPaused {
+                        try await Task.sleep(for: .milliseconds(200))
+                        try Task.checkCancellation()
+                    }
+                    currentName = "폴더 · \(folder.url.lastPathComponent)"
+                    do {
+                        let result = try await Task.detached(priority: .utility) {
+                            try VaultProcessor.processFolder(folder, workerID: worker)
+                        }.value
+                        switch result.state {
+                        case .generated:
+                            generatedCount += 1
+                            folderGeneratedCount += 1
+                            thumbnailBytes += result.thumbnailBytes
+                        case .emptyIndexed:
+                            cachedCount += 1
+                            folderEmptyCount += 1
+                        }
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        failedCount += 1
+                        folderFailedCount += 1
+                    }
+                    completedCount += 1
+                    averageSecondsPerItem = Date().timeIntervalSince(started) / Double(completedCount)
+                }
                 status = "완료: 새로 생성 \(generatedCount)개 · 기존/다른 기기 \(cachedCount)개 · 실패 \(failedCount)개"
+                    + " · 폴더 생성 \(folderGeneratedCount)개 · 빈 폴더 \(folderEmptyCount)개"
+                    + (folderFailedCount > 0 ? " · 폴더 실패 \(folderFailedCount)개" : "")
                 currentName = "처리가 완료되었습니다."
                 hasPendingResume = false
             } catch is CancellationError {
