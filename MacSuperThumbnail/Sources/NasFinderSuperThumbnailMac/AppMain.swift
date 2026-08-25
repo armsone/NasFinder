@@ -38,6 +38,7 @@ final class SuperThumbnailMacModel: ObservableObject {
     @Published var isPaused = false
     @Published var hasPendingResume = false
     @Published var cleanupPhase: VaultCleanupPhase = .idle
+    @Published var discoveryPhase: MediaDiscoveryPhase = .idle
     @Published var totalCount = 0
     @Published var completedCount = 0
     @Published var generatedCount = 0
@@ -101,6 +102,7 @@ final class SuperThumbnailMacModel: ObservableObject {
         currentName = "‘\(url.lastPathComponent)’ 폴더를 처리할 준비가 됐습니다."
         status = ""
         cleanupPhase = .idle
+        discoveryPhase = .idle
         refreshPreviews()
     }
 
@@ -172,14 +174,32 @@ final class SuperThumbnailMacModel: ObservableObject {
                     status = "기존 보관본 \(removedCount)개 정리 완료. 사진과 영상을 찾는 중…"
                 }
 
-                let files = try await Task.detached(priority: .userInitiated) {
+                // Discovery is its own visible phase: media files first, then
+                // folders. Detached tasks do not inherit cancellation, so each
+                // pass is cancelled explicitly to keep “중단” responsive.
+                discoveryPhase = .discoveringFiles
+                currentName = "사진과 영상을 찾는 중입니다."
+                let mediaDiscovery = Task.detached(priority: .userInitiated) {
                     try VaultProcessor.discoverMedia(in: root)
-                }.value
+                }
+                let files = try await withTaskCancellationHandler {
+                    try await mediaDiscovery.value
+                } onCancel: {
+                    mediaDiscovery.cancel()
+                }
                 try Task.checkCancellation()
-                let folders = try await Task.detached(priority: .userInitiated) {
+
+                discoveryPhase = .discoveringFolders
+                let folderDiscovery = Task.detached(priority: .userInitiated) {
                     try VaultProcessor.discoverFolders(in: root)
-                }.value
+                }
+                let folders = try await withTaskCancellationHandler {
+                    try await folderDiscovery.value
+                } onCancel: {
+                    folderDiscovery.cancel()
+                }
                 try Task.checkCancellation()
+                discoveryPhase = .idle
                 totalCount = files.count + folders.count
                 totalSourceBytes = files.reduce(0) { $0 + $1.size }
                 if files.isEmpty, folders.isEmpty {
@@ -299,6 +319,7 @@ final class SuperThumbnailMacModel: ObservableObject {
                 refreshPreviews()
             }
             cleanupPhase = .idle
+            discoveryPhase = .idle
             isRunning = false
             isPaused = false
             task = nil
@@ -329,6 +350,7 @@ final class SuperThumbnailMacModel: ObservableObject {
 
     private func resetProgress() {
         cleanupPhase = .idle
+        discoveryPhase = .idle
         totalCount = 0
         completedCount = 0
         generatedCount = 0
@@ -361,6 +383,8 @@ struct SuperThumbnailMacView: View {
                     folderCard
                     if model.cleanupPhase.isActive {
                         cleanupCard
+                    } else if model.discoveryPhase.isActive {
+                        discoveryCard
                     } else {
                         progressCard
                     }
@@ -453,6 +477,32 @@ struct SuperThumbnailMacView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("기존 보관본 정리 진행")
         .accessibilityValue(model.cleanupPhase.accessibilityValueText)
+    }
+
+    private var discoveryCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 14) {
+                MediaDiscoverySearchingIndicator()
+                Text(MediaDiscoveryPhase.titleText)
+                    .font(.title.bold())
+                    .foregroundStyle(.blue)
+                Spacer()
+            }
+            ProgressView()
+                .progressViewStyle(.linear)
+                .tint(.blue)
+                .scaleEffect(y: 1.6)
+            Text(model.discoveryPhase.activityText)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: model.discoveryPhase)
+        }
+        .padding(20)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(model.discoveryPhase.accessibilityLabelText)
+        .accessibilityValue(model.discoveryPhase.accessibilityValueText)
     }
 
     private var progressCard: some View {
@@ -636,6 +686,41 @@ struct SuperThumbnailMacView: View {
         .padding(.horizontal, 28)
         .padding(.vertical, 18)
         .background(.bar)
+    }
+}
+
+/// Continuously animated “searching” glyph for the discovery card. With
+/// Reduce Motion enabled the custom sweep is dropped and a standard circular
+/// `ProgressView` takes its place so ongoing work stays visible.
+struct MediaDiscoverySearchingIndicator: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isSweeping = false
+
+    var body: some View {
+        Group {
+            if reduceMotion {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .controlSize(.large)
+            } else {
+                ZStack {
+                    Circle()
+                        .stroke(Color.blue.opacity(0.25), lineWidth: 3)
+                    Circle()
+                        .trim(from: 0, to: 0.3)
+                        .stroke(Color.blue, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .rotationEffect(.degrees(isSweeping ? 360 : 0))
+                        .animation(.linear(duration: 1.2).repeatForever(autoreverses: false), value: isSweeping)
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(.blue)
+                }
+                .onAppear { isSweeping = true }
+                .onDisappear { isSweeping = false }
+            }
+        }
+        .frame(width: 40, height: 40)
+        .accessibilityHidden(true)
     }
 }
 
