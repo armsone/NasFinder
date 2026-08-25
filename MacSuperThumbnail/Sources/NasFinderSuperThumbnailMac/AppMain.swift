@@ -373,24 +373,32 @@ struct SuperThumbnailMacView: View {
     @ObservedObject var model: SuperThumbnailMacModel
     @State private var isConfirmingFresh = false
     @AppStorage("macSuperThumbnail.isPreviewExpanded") private var isPreviewExpanded = true
+    /// Persisted strip height chosen with the resize handle (points).
+    @AppStorage("macSuperThumbnail.previewHeight") private var storedPreviewHeight =
+        Double(SuperThumbnailPreviewSizing.defaultHeight)
+    @State private var dragStartHeight: CGFloat?
+    @State private var isHoveringResizeHandle = false
+    @FocusState private var isResizeHandleFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
             header
-            ScrollView {
-                VStack(spacing: 18) {
-                    folderCard
-                    if model.cleanupPhase.isActive {
-                        cleanupCard
-                    } else if model.discoveryPhase.isActive {
-                        discoveryCard
-                    } else {
-                        progressCard
+            GeometryReader { geometry in
+                ScrollView {
+                    VStack(spacing: 18) {
+                        folderCard
+                        if model.cleanupPhase.isActive {
+                            cleanupCard
+                        } else if model.discoveryPhase.isActive {
+                            discoveryCard
+                        } else {
+                            progressCard
+                        }
+                        previewCard(availableHeight: geometry.size.height)
                     }
-                    previewCard
+                    .padding(28)
                 }
-                .padding(28)
             }
             footer
         }
@@ -535,8 +543,12 @@ struct SuperThumbnailMacView: View {
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
     }
 
-    private var previewCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
+    private func previewCard(availableHeight: CGFloat) -> some View {
+        let previewHeight = SuperThumbnailPreviewSizing.clamped(
+            CGFloat(storedPreviewHeight),
+            availableHeight: availableHeight
+        )
+        return VStack(alignment: .leading, spacing: 14) {
             Button {
                 withAnimation(.easeInOut(duration: 0.2)) {
                     isPreviewExpanded.toggle()
@@ -575,8 +587,9 @@ struct SuperThumbnailMacView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 8)
                 } else {
-                    previewStrip
+                    previewStrip(height: previewHeight)
                         .transition(.opacity.combined(with: .move(edge: .top)))
+                    previewResizeHandle(height: previewHeight, availableHeight: availableHeight)
                 }
             }
         }
@@ -584,16 +597,138 @@ struct SuperThumbnailMacView: View {
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
     }
 
+    /// Horizontal divider under the strip. Drag it down to enlarge the
+    /// preview and its thumbnails, up to shrink them. Keyboard users can
+    /// focus it and press ↑/↓; VoiceOver exposes it as an adjustable control.
+    private func previewResizeHandle(height: CGFloat, availableHeight: CGFloat) -> some View {
+        let isActive = dragStartHeight != nil || isHoveringResizeHandle || isResizeHandleFocused
+        return HStack(spacing: 10) {
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(height: 1)
+            Capsule()
+                .fill(isActive ? Color.accentColor : Color.secondary.opacity(0.7))
+                .frame(width: 48, height: 5)
+            Text("드래그해 크기 조절")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            Rectangle()
+                .fill(Color.primary.opacity(0.08))
+                .frame(height: 1)
+        }
+        .frame(maxWidth: .infinity)
+        .frame(height: 22)
+        .contentShape(Rectangle())
+        .background(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(isActive ? Color.accentColor.opacity(0.08) : .clear)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .stroke(Color.accentColor.opacity(isResizeHandleFocused ? 0.8 : 0), lineWidth: 2)
+        )
+        .onHover { hovering in
+            isHoveringResizeHandle = hovering
+            if hovering {
+                NSCursor.resizeUpDown.push()
+            } else if dragStartHeight == nil {
+                NSCursor.pop()
+            }
+        }
+        .onDisappear {
+            if isHoveringResizeHandle {
+                isHoveringResizeHandle = false
+                NSCursor.pop()
+            }
+        }
+        .gesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    let base = dragStartHeight ?? height
+                    if dragStartHeight == nil {
+                        dragStartHeight = base
+                    }
+                    setPreviewHeight(
+                        SuperThumbnailPreviewSizing.resized(
+                            from: base,
+                            dragTranslation: value.translation.height,
+                            availableHeight: availableHeight
+                        )
+                    )
+                }
+                .onEnded { _ in
+                    dragStartHeight = nil
+                    if !isHoveringResizeHandle {
+                        NSCursor.pop()
+                    }
+                }
+        )
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded {
+                setPreviewHeight(SuperThumbnailPreviewSizing.defaultHeight, animated: true)
+            }
+        )
+        .focusable()
+        .focused($isResizeHandleFocused)
+        .onKeyPress(.downArrow) {
+            stepPreviewHeight(.increment, current: height, availableHeight: availableHeight)
+            return .handled
+        }
+        .onKeyPress(.upArrow) {
+            stepPreviewHeight(.decrement, current: height, availableHeight: availableHeight)
+            return .handled
+        }
+        .help("위아래로 드래그해 미리보기 크기를 바꿉니다. 두 번 클릭하면 기본 크기로 돌아갑니다.")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("미리보기 크기 조절")
+        .accessibilityValue(SuperThumbnailPreviewSizing.heightText(height))
+        .accessibilityHint("값을 올리면 미리보기와 썸네일이 커지고, 내리면 작아집니다.")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment:
+                stepPreviewHeight(.increment, current: height, availableHeight: availableHeight)
+            case .decrement:
+                stepPreviewHeight(.decrement, current: height, availableHeight: availableHeight)
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    private func stepPreviewHeight(
+        _ direction: SuperThumbnailPreviewSizing.StepDirection,
+        current: CGFloat,
+        availableHeight: CGFloat
+    ) {
+        setPreviewHeight(
+            SuperThumbnailPreviewSizing.stepped(current, direction, availableHeight: availableHeight),
+            animated: true
+        )
+    }
+
+    private func setPreviewHeight(_ height: CGFloat, animated: Bool = false) {
+        let clamped = SuperThumbnailPreviewSizing.clamped(height)
+        if animated, !reduceMotion {
+            withAnimation(.easeOut(duration: 0.15)) {
+                storedPreviewHeight = Double(clamped)
+            }
+        } else {
+            storedPreviewHeight = Double(clamped)
+        }
+    }
+
     /// Mac adaptation of the iPhone "overflow" cover flow: cards overlap
     /// toward the right, the newest one leads at full size on the far left,
     /// and the strip scrolls so the full history stays reachable.
-    private var previewStrip: some View {
+    private func previewStrip(height: CGFloat) -> some View {
         let items = model.previewItems
+        let cardSide = SuperThumbnailPreviewSizing.cardSide(forStripHeight: height)
         return ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: true) {
                 LazyHStack(alignment: .bottom, spacing: -14) {
                     ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
-                        MacThumbnailCard(item: item, index: index, totalCount: items.count)
+                        MacThumbnailCard(item: item, index: index, totalCount: items.count, baseSide: cardSide)
                             .id(item.id)
                             .transition(
                                 .asymmetric(
@@ -612,7 +747,7 @@ struct SuperThumbnailMacView: View {
                     value: items
                 )
             }
-            .frame(height: 176)
+            .frame(height: height)
             .background(
                 LinearGradient(
                     colors: [
@@ -728,19 +863,24 @@ struct MacThumbnailCard: View {
     let item: SuperThumbnailMacPreviewItem
     var index = 0
     var totalCount = 1
+    /// Side of the newest card; older cards shrink from this value.
+    var baseSide: CGFloat = 112
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var isNewest: Bool { index == 0 }
     /// Tilt and shrink taper off after a few cards so a long strip stays
     /// readable instead of collapsing into a sliver.
     private var depth: CGFloat { CGFloat(min(index, 4)) }
-    private var side: CGFloat { 112 * max(0.72, 1 - depth * 0.07) }
+    private var side: CGFloat { baseSide * max(0.72, 1 - depth * 0.07) }
     private var labelWidth: CGFloat { max(side, 72) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomTrailing) {
-                MacThumbnailImage(fileURL: item.vaultFileURL, maxPixelSize: 240)
+                MacThumbnailImage(
+                    fileURL: item.vaultFileURL,
+                    maxPixelSize: SuperThumbnailPreviewSizing.maxPixelSize(forCardSide: baseSide)
+                )
                     .frame(width: side, height: side)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .overlay(
@@ -771,7 +911,7 @@ struct MacThumbnailCard: View {
                 radius: isNewest ? 8 : 4,
                 y: 2
             )
-            .frame(width: labelWidth, height: 112, alignment: .bottomLeading)
+            .frame(width: labelWidth, height: baseSide, alignment: .bottomLeading)
 
             Text(item.name)
                 .font(isNewest ? .caption.weight(.medium) : .caption2)
@@ -807,9 +947,12 @@ struct MacThumbnailImage: View {
                     )
             }
         }
-        .task(id: fileURL) {
+        // Re-decode when the strip grows into a larger pixel bucket; the
+        // previous image stays on screen until the sharper one arrives.
+        .task(id: "\(fileURL.path)#\(maxPixelSize)") {
             let maxPixelSize = maxPixelSize
-            image = await Task.detached(priority: .utility) {
+            let fileURL = fileURL
+            let decoded: NSImage? = await Task.detached(priority: .utility) {
                 guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else { return nil }
                 let options: [CFString: Any] = [
                     kCGImageSourceCreateThumbnailFromImageAlways: true,
@@ -821,6 +964,9 @@ struct MacThumbnailImage: View {
                 }
                 return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
             }.value
+            if decoded != nil || image == nil {
+                image = decoded
+            }
         }
     }
 }

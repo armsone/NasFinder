@@ -3,7 +3,7 @@ set -euo pipefail
 
 package_root="${0:A:h}"
 app_path="${1:-${package_root}/dist/NasFinder Super Thumbnail.app}"
-version="${APP_VERSION:-2.1.3}"
+version="${APP_VERSION:-2.1.4}"
 dist_dir="${package_root}/dist"
 dmg_path="${dist_dir}/NasFinder-Super-Thumbnail-${version}.dmg"
 staging_dir="$(mktemp -d)"
