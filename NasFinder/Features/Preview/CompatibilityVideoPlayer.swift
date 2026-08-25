@@ -1,3 +1,4 @@
+#if !targetEnvironment(macCatalyst)
 @preconcurrency import Foundation
 import SwiftUI
 import UIKit
@@ -1716,3 +1717,4 @@ private actor CompatibilityVideoThumbnailExecutionLimiter {
         }
     }
 }
+#endif

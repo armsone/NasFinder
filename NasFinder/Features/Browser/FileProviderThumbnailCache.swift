@@ -105,6 +105,7 @@ actor FileProviderThumbnailCache {
     }
 
     private func scheduleFilesRefresh() {
+#if !targetEnvironment(macCatalyst)
         refreshTask?.cancel()
         refreshTask = Task {
             try? await Task.sleep(for: .milliseconds(500))
@@ -115,6 +116,7 @@ actor FileProviderThumbnailCache {
                 try? await manager.signalEnumerator(for: .workingSet)
             }
         }
+#endif
     }
 
     private func fileURL(forKey key: String, directoryURL: URL) -> URL {

@@ -296,6 +296,11 @@ final class ConnectionStore: ObservableObject {
 }
 
 enum FileProviderDomainCoordinator {
+#if targetEnvironment(macCatalyst)
+    static func domainIdentifiers() async throws -> Set<String> { [] }
+    static func add(_ connection: RemoteConnection) async throws {}
+    static func remove(_ connection: RemoteConnection) async throws {}
+#else
     static func domainIdentifiers() async throws -> Set<String> {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Set<String>, Error>) in
             NSFileProviderManager.getDomainsWithCompletionHandler { domains, error in
@@ -338,4 +343,5 @@ enum FileProviderDomainCoordinator {
             }
         }
     }
+#endif
 }

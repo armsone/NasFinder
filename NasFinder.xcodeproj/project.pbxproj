@@ -7,14 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		A10000000000000000000017 /* NasFinderFileProvider.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* NasFinderFileProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		A10000000000000000000017 /* NasFinderFileProvider.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* NasFinderFileProvider.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A1000000000000000000002A /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000002B /* Citadel */; };
 		A1000000000000000000002D /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000002E /* Citadel */; };
-		D40000000000000000000001 /* VLCKit in Frameworks */ = {isa = PBXBuildFile; productRef = D40000000000000000000003 /* VLCKit */; };
+		D40000000000000000000001 /* VLCKit in Frameworks */ = {isa = PBXBuildFile; platformFilter = ios; productRef = D40000000000000000000003 /* VLCKit */; };
 		E50000000000000000000001 /* SMBClient in Frameworks */ = {isa = PBXBuildFile; productRef = E50000000000000000000003 /* SMBClient */; };
-		B20000000000000000000001 /* NasFinderShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* NasFinderShare.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		C30000000000000000000001 /* NasFinderWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = C30000000000000000000003 /* NasFinderWidget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		F60000000000000000000001 /* NasFinderDocumentPicker.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F60000000000000000000004 /* NasFinderDocumentPicker.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		B20000000000000000000001 /* NasFinderShare.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = B20000000000000000000003 /* NasFinderShare.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		C30000000000000000000001 /* NasFinderWidget.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = C30000000000000000000003 /* NasFinderWidget.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F60000000000000000000001 /* NasFinderDocumentPicker.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = F60000000000000000000004 /* NasFinderDocumentPicker.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		F60000000000000000000002 /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = F60000000000000000000023 /* Citadel */; };
 /* End PBXBuildFile section */
 
@@ -765,8 +765,8 @@
 				MARKETING_VERSION = 2.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
@@ -811,8 +811,8 @@
 				MARKETING_VERSION = 2.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
-				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
-				SUPPORTS_MACCATALYST = NO;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SUPPORTS_MACCATALYST = YES;
 				SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 6.0;
