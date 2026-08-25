@@ -37,6 +37,7 @@ final class SuperThumbnailMacModel: ObservableObject {
     @Published var isRunning = false
     @Published var isPaused = false
     @Published var hasPendingResume = false
+    @Published var cleanupPhase: VaultCleanupPhase = .idle
     @Published var totalCount = 0
     @Published var completedCount = 0
     @Published var generatedCount = 0
@@ -99,6 +100,7 @@ final class SuperThumbnailMacModel: ObservableObject {
         hasPendingResume = true
         currentName = "‘\(url.lastPathComponent)’ 폴더를 처리할 준비가 됐습니다."
         status = ""
+        cleanupPhase = .idle
         refreshPreviews()
     }
 
@@ -109,7 +111,7 @@ final class SuperThumbnailMacModel: ObservableObject {
         }
         Task { [weak self] in
             let items = await Task.detached(priority: .utility) {
-                VaultProcessor.discoverExistingPreviews(in: root, limit: 60)
+                VaultProcessor.discoverExistingPreviews(in: root)
             }.value
             guard let self else { return }
             guard self.selectedFolder?.standardizedFileURL == root.standardizedFileURL else { return }
@@ -141,10 +143,32 @@ final class SuperThumbnailMacModel: ObservableObject {
             guard let self else { return }
             do {
                 if fresh {
-                    let removedCount = try await Task.detached(priority: .userInitiated) {
-                        try VaultProcessor.removeVaultDirectories(in: root)
-                    }.value
+                    cleanupPhase = .discovering
+                    currentName = "기존 보관본을 정리하는 중입니다."
+                    let discovery = Task.detached(priority: .userInitiated) {
+                        try VaultProcessor.discoverVaultDirectories(in: root)
+                    }
+                    let vaults = try await withTaskCancellationHandler {
+                        try await discovery.value
+                    } onCancel: {
+                        discovery.cancel()
+                    }
                     try Task.checkCancellation()
+
+                    cleanupPhase = .removing(completed: 0, total: vaults.count)
+                    var removedCount = 0
+                    for vault in vaults {
+                        try Task.checkCancellation()
+                        let removed = try await Task.detached(priority: .userInitiated) {
+                            try VaultProcessor.removeVaultDirectory(at: vault, within: root)
+                        }.value
+                        if removed {
+                            removedCount += 1
+                            cleanupPhase = .removing(completed: removedCount, total: vaults.count)
+                        }
+                    }
+                    try Task.checkCancellation()
+                    cleanupPhase = .idle
                     status = "기존 보관본 \(removedCount)개 정리 완료. 사진과 영상을 찾는 중…"
                 }
 
@@ -191,11 +215,12 @@ final class SuperThumbnailMacModel: ObservableObject {
                             if FileManager.default.fileExists(atPath: thumbnailURL.path) {
                                 addPreviewItem(
                                     SuperThumbnailMacPreviewItem(
-                                        id: thumbnailURL.path,
+                                        id: SuperThumbnailPreviewOrdering.canonicalID(for: thumbnailURL),
                                         name: file.url.lastPathComponent,
                                         isFolder: false,
                                         vaultFileURL: thumbnailURL
-                                    )
+                                    ),
+                                    isNewlyGenerated: result.generated
                                 )
                             }
                         }
@@ -240,11 +265,12 @@ final class SuperThumbnailMacModel: ObservableObject {
                             if FileManager.default.fileExists(atPath: sheetURL.path) {
                                 addPreviewItem(
                                     SuperThumbnailMacPreviewItem(
-                                        id: sheetURL.path,
+                                        id: SuperThumbnailPreviewOrdering.canonicalID(for: sheetURL),
                                         name: folder.url.lastPathComponent,
                                         isFolder: true,
                                         vaultFileURL: sheetURL
-                                    )
+                                    ),
+                                    isNewlyGenerated: true
                                 )
                             }
                         case .emptyIndexed:
@@ -272,19 +298,19 @@ final class SuperThumbnailMacModel: ObservableObject {
                 status = "시작하지 못했습니다: \(error.localizedDescription)"
                 refreshPreviews()
             }
+            cleanupPhase = .idle
             isRunning = false
             isPaused = false
             task = nil
         }
     }
 
-    private func addPreviewItem(_ item: SuperThumbnailMacPreviewItem) {
-        if !previewItems.contains(where: { $0.id == item.id }) {
-            previewItems.insert(item, at: 0)
-            if previewItems.count > 60 {
-                previewItems.removeLast()
-            }
-        }
+    private func addPreviewItem(_ item: SuperThumbnailMacPreviewItem, isNewlyGenerated: Bool) {
+        previewItems = SuperThumbnailPreviewOrdering.prepending(
+            item,
+            to: previewItems,
+            promotesExisting: isNewlyGenerated
+        )
     }
 
     func togglePause() {
@@ -302,6 +328,7 @@ final class SuperThumbnailMacModel: ObservableObject {
     }
 
     private func resetProgress() {
+        cleanupPhase = .idle
         totalCount = 0
         completedCount = 0
         generatedCount = 0
@@ -324,6 +351,7 @@ struct SuperThumbnailMacView: View {
     @ObservedObject var model: SuperThumbnailMacModel
     @State private var isConfirmingFresh = false
     @AppStorage("macSuperThumbnail.isPreviewExpanded") private var isPreviewExpanded = true
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 0) {
@@ -331,7 +359,11 @@ struct SuperThumbnailMacView: View {
             ScrollView {
                 VStack(spacing: 18) {
                     folderCard
-                    progressCard
+                    if model.cleanupPhase.isActive {
+                        cleanupCard
+                    } else {
+                        progressCard
+                    }
                     previewCard
                 }
                 .padding(28)
@@ -386,6 +418,41 @@ struct SuperThumbnailMacView: View {
         }
         .padding(20)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var cleanupCard: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                Label("보관본 정리 중", systemImage: "trash.circle.fill")
+                    .font(.title2.bold())
+                    .foregroundStyle(.orange)
+                Spacer()
+                if model.cleanupPhase.isDeterminate {
+                    Text(model.cleanupPhase.countText)
+                        .font(.title3.monospacedDigit().bold())
+                }
+            }
+            if model.cleanupPhase.isDeterminate {
+                ProgressView(value: model.cleanupPhase.fractionCompleted)
+                    .progressViewStyle(.linear)
+                    .tint(.orange)
+                    .scaleEffect(y: 1.6)
+            } else {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .tint(.orange)
+                    .scaleEffect(y: 1.6)
+            }
+            Text(model.cleanupPhase.activityText)
+                .font(.body.weight(.medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+        }
+        .padding(20)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("기존 보관본 정리 진행")
+        .accessibilityValue(model.cleanupPhase.accessibilityValueText)
     }
 
     private var progressCard: some View {
@@ -458,21 +525,67 @@ struct SuperThumbnailMacView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, 8)
                 } else {
-                    ScrollView(.horizontal, showsIndicators: true) {
-                        LazyHStack(spacing: 12) {
-                            ForEach(model.previewItems) { item in
-                                MacThumbnailCard(item: item)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                        .padding(.horizontal, 2)
-                    }
-                    .frame(height: 120)
+                    previewStrip
+                        .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
         }
         .padding(20)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    /// Mac adaptation of the iPhone "overflow" cover flow: cards overlap
+    /// toward the right, the newest one leads at full size on the far left,
+    /// and the strip scrolls so the full history stays reachable.
+    private var previewStrip: some View {
+        let items = model.previewItems
+        return ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: true) {
+                LazyHStack(alignment: .bottom, spacing: -14) {
+                    ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                        MacThumbnailCard(item: item, index: index, totalCount: items.count)
+                            .id(item.id)
+                            .transition(
+                                .asymmetric(
+                                    insertion: .move(edge: .leading).combined(with: .opacity),
+                                    removal: .opacity
+                                )
+                            )
+                    }
+                }
+                .padding(.leading, 14)
+                .padding(.trailing, 28)
+                .padding(.top, 16)
+                .padding(.bottom, 10)
+                .animation(
+                    reduceMotion ? nil : .spring(response: 0.42, dampingFraction: 0.86),
+                    value: items
+                )
+            }
+            .frame(height: 176)
+            .background(
+                LinearGradient(
+                    colors: [
+                        Color(nsColor: .underPageBackgroundColor),
+                        Color(nsColor: .windowBackgroundColor).opacity(0.6),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                ),
+                in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+            )
+            .onChange(of: items.first?.id) { _, newest in
+                guard let newest else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
+                    proxy.scrollTo(newest, anchor: .leading)
+                }
+            }
+            .accessibilityLabel("생성된 수퍼썸네일 미리보기, 최신 항목이 왼쪽에 표시됩니다")
+        }
     }
 
     private func metric(_ label: String, _ value: Int) -> some View {
@@ -528,16 +641,29 @@ struct SuperThumbnailMacView: View {
 
 struct MacThumbnailCard: View {
     let item: SuperThumbnailMacPreviewItem
+    var index = 0
+    var totalCount = 1
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var isNewest: Bool { index == 0 }
+    /// Tilt and shrink taper off after a few cards so a long strip stays
+    /// readable instead of collapsing into a sliver.
+    private var depth: CGFloat { CGFloat(min(index, 4)) }
+    private var side: CGFloat { 112 * max(0.72, 1 - depth * 0.07) }
+    private var labelWidth: CGFloat { max(side, 72) }
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomTrailing) {
-                MacThumbnailImage(fileURL: item.vaultFileURL)
-                    .frame(width: 80, height: 80)
+                MacThumbnailImage(fileURL: item.vaultFileURL, maxPixelSize: 240)
+                    .frame(width: side, height: side)
                     .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     .overlay(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                            .stroke(
+                                isNewest ? Color.accentColor.opacity(0.7) : Color.white.opacity(0.55),
+                                lineWidth: isNewest ? 1.5 : 1
+                            )
                     )
 
                 if item.isFolder {
@@ -550,20 +676,35 @@ struct MacThumbnailCard: View {
                         .accessibilityLabel("폴더")
                 }
             }
+            .rotation3DEffect(
+                .degrees(reduceMotion || isNewest ? 0 : -Double(depth) * 3.2),
+                axis: (x: 0, y: 1, z: 0),
+                anchor: .leading
+            )
+            .shadow(
+                color: .black.opacity(isNewest ? 0.22 : 0.12),
+                radius: isNewest ? 8 : 4,
+                y: 2
+            )
+            .frame(width: labelWidth, height: 112, alignment: .bottomLeading)
 
             Text(item.name)
-                .font(.caption2)
+                .font(isNewest ? .caption.weight(.medium) : .caption2)
+                .foregroundStyle(isNewest ? .primary : .secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .frame(width: 80)
+                .frame(width: labelWidth, alignment: .leading)
         }
+        .zIndex(Double(totalCount - index))
         .accessibilityElement(children: .combine)
         .accessibilityLabel(item.isFolder ? "폴더 \(item.name)" : item.name)
+        .accessibilityValue(isNewest ? "가장 최근 생성" : "")
     }
 }
 
 struct MacThumbnailImage: View {
     let fileURL: URL
+    var maxPixelSize = 160
     @State private var image: NSImage?
 
     var body: some View {
@@ -582,17 +723,18 @@ struct MacThumbnailImage: View {
             }
         }
         .task(id: fileURL) {
+            let maxPixelSize = maxPixelSize
             image = await Task.detached(priority: .utility) {
                 guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else { return nil }
                 let options: [CFString: Any] = [
                     kCGImageSourceCreateThumbnailFromImageAlways: true,
                     kCGImageSourceCreateThumbnailWithTransform: true,
-                    kCGImageSourceThumbnailMaxPixelSize: 160,
+                    kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
                 ]
                 guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
                     return nil
                 }
-                return NSImage(cgImage: cgImage, size: NSSize(width: 80, height: 80))
+                return NSImage(cgImage: cgImage, size: NSSize(width: cgImage.width, height: cgImage.height))
             }.value
         }
     }

@@ -109,6 +109,7 @@ enum VaultProcessorError: LocalizedError {
     case cannotDecode
     case cannotEncode
     case claimUnavailable
+    case unsafeVaultRemoval
 
     var errorDescription: String? {
         switch self {
@@ -118,6 +119,8 @@ enum VaultProcessorError: LocalizedError {
             return "썸네일 JPEG를 만들지 못했습니다."
         case .claimUnavailable:
             return "다른 기기가 처리 중입니다."
+        case .unsafeVaultRemoval:
+            return "선택한 폴더 안의 .NasFinder-Vault만 삭제할 수 있습니다."
         }
     }
 }
@@ -306,18 +309,19 @@ enum VaultProcessor {
         return output as Data
     }
 
-    /// Removes only `.NasFinder-Vault` directories strictly contained within
-    /// the selected root. Original media files, parent paths, and unrelated
-    /// directories are never removed.
-    @discardableResult
-    static func removeVaultDirectories(in root: URL) throws -> Int {
+    /// Canonical `.NasFinder-Vault` directories strictly contained within the
+    /// selected root, without following symlinks. Two-phase cleanup uses this
+    /// list as the determinate total; each entry is re-validated again at
+    /// deletion time by `removeVaultDirectory(at:within:)`.
+    static func discoverVaultDirectories(in root: URL) throws -> [URL] {
         let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
         let keys: Set<URLResourceKey> = [
             .isDirectoryKey,
             .isHiddenKey,
             .isSymbolicLinkKey,
         ]
-        var removedCount = 0
+        var vaults: [URL] = []
+        var seenPaths = Set<String>()
 
         // 1. Root's direct vault directory if present
         let directVault = canonicalRoot.appendingPathComponent(
@@ -325,11 +329,14 @@ enum VaultProcessor {
             isDirectory: true
         )
         if fileManager.fileExists(atPath: directVault.path) {
+            let values = try? directVault.resourceValues(forKeys: keys)
             let canonicalVault = directVault.resolvingSymlinksInPath().standardizedFileURL
-            if isContained(target: canonicalVault, within: canonicalRoot),
-               canonicalVault.lastPathComponent == NasFinderVaultCompatibility.directoryName {
-                try fileManager.removeItem(at: canonicalVault)
-                removedCount += 1
+            if values?.isDirectory == true,
+               values?.isSymbolicLink != true,
+               isContained(target: canonicalVault, within: canonicalRoot),
+               canonicalVault.lastPathComponent == NasFinderVaultCompatibility.directoryName,
+               seenPaths.insert(canonicalVault.path).inserted {
+                vaults.append(canonicalVault)
             }
         }
 
@@ -339,7 +346,7 @@ enum VaultProcessor {
             includingPropertiesForKeys: Array(keys),
             options: [.skipsPackageDescendants],
             errorHandler: { _, _ in true }
-        ) else { return removedCount }
+        ) else { return vaults }
 
         for case let url as URL in enumerator {
             try Task.checkCancellation()
@@ -354,9 +361,44 @@ enum VaultProcessor {
                 let canonicalVault = url.resolvingSymlinksInPath().standardizedFileURL
                 guard isContained(target: canonicalVault, within: canonicalRoot),
                       canonicalVault.lastPathComponent == NasFinderVaultCompatibility.directoryName,
-                      canonicalVault != canonicalRoot
+                      canonicalVault != canonicalRoot,
+                      seenPaths.insert(canonicalVault.path).inserted
                 else { continue }
-                try fileManager.removeItem(at: canonicalVault)
+                vaults.append(canonicalVault)
+            }
+        }
+        return vaults
+    }
+
+    /// Deletes one previously discovered vault directory. Containment and the
+    /// `.NasFinder-Vault` name are re-checked on the symlink-resolved path so
+    /// a target that moved or was swapped for a link can never delete outside
+    /// the root. Returns `false` if the directory already disappeared.
+    @discardableResult
+    static func removeVaultDirectory(at vault: URL, within root: URL) throws -> Bool {
+        guard fileManager.fileExists(atPath: vault.path) else { return false }
+        let values = try vault.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isDirectory == true, values.isSymbolicLink != true else {
+            throw VaultProcessorError.unsafeVaultRemoval
+        }
+        let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        let canonicalVault = vault.resolvingSymlinksInPath().standardizedFileURL
+        guard canonicalVault.lastPathComponent == NasFinderVaultCompatibility.directoryName,
+              isContained(target: canonicalVault, within: canonicalRoot)
+        else { throw VaultProcessorError.unsafeVaultRemoval }
+        try fileManager.removeItem(at: vault.standardizedFileURL)
+        return true
+    }
+
+    /// Removes only `.NasFinder-Vault` directories strictly contained within
+    /// the selected root. Original media files, parent paths, and unrelated
+    /// directories are never removed.
+    @discardableResult
+    static func removeVaultDirectories(in root: URL) throws -> Int {
+        var removedCount = 0
+        for vault in try discoverVaultDirectories(in: root) {
+            try Task.checkCancellation()
+            if try removeVaultDirectory(at: vault, within: root) {
                 removedCount += 1
             }
         }
@@ -373,7 +415,7 @@ enum VaultProcessor {
     /// without reading or duplicating original media files.
     static func discoverExistingPreviews(
         in root: URL,
-        limit: Int = 60
+        limit: Int = SuperThumbnailPreviewOrdering.defaultLimit
     ) -> [SuperThumbnailMacPreviewItem] {
         let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
         let keys: Set<URLResourceKey> = [
@@ -388,7 +430,7 @@ enum VaultProcessor {
             errorHandler: { _, _ in true }
         ) else { return [] }
 
-        var items: [(item: SuperThumbnailMacPreviewItem, date: Date)] = []
+        var candidates: [SuperThumbnailPreviewOrdering.Candidate] = []
         for case let url as URL in enumerator {
             let values = try? url.resourceValues(forKeys: keys)
             if values?.isDirectory == true {
@@ -415,9 +457,9 @@ enum VaultProcessor {
                     let isFolder = name.hasPrefix("v1-folder-")
                     let modDate = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? Date.distantPast
                     let displayName = isFolder ? parentFolder.lastPathComponent : name
-                    items.append((
+                    candidates.append(SuperThumbnailPreviewOrdering.Candidate(
                         item: SuperThumbnailMacPreviewItem(
-                            id: file.path,
+                            id: SuperThumbnailPreviewOrdering.canonicalID(for: file),
                             name: displayName,
                             isFolder: isFolder,
                             vaultFileURL: file
@@ -427,8 +469,7 @@ enum VaultProcessor {
                 }
             }
         }
-        items.sort { $0.date > $1.date }
-        return Array(items.prefix(limit).map(\.item))
+        return SuperThumbnailPreviewOrdering.newestFirst(candidates, limit: limit)
     }
 }
 
