@@ -72,15 +72,21 @@ actor SuperThumbnailVault {
         service: any RemoteFileService,
         refreshListing: Bool = false
     ) async -> Data? {
-        guard supportsVault(service) else { return nil }
         let directory = parentDirectory(of: item.path)
         let vaultPath = appending(Self.directoryName, to: directory)
         do {
             if refreshListing {
                 directoryEntries[listingKey(vaultPath, service: service)] = nil
+                directoryEntries[listingKey(directory, service: service)] = nil
+                folderListingFetchedAt[listingKey(vaultPath, service: service)] = nil
+                folderListingFetchedAt[listingKey(directory, service: service)] = nil
             }
-            let entries = try await entries(in: vaultPath, service: service)
-            guard let stored = entries.first(where: { $0.name == filename(for: item) }) else {
+            let siblings = try await folderEntries(in: directory, service: service)
+            guard siblings.contains(where: {
+                $0.name == Self.directoryName && $0.isDirectory
+            }) else { return nil }
+            let entries = try await folderEntries(in: vaultPath, service: service)
+            guard let stored = entries.first(where: { $0.name == filename(for: item) && !$0.isDirectory }) else {
                 return nil
             }
             let localURL = try await service.download(stored)

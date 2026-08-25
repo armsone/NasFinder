@@ -1,3 +1,4 @@
+import CryptoKit
 import XCTest
 @testable import NasFinder
 
@@ -294,6 +295,45 @@ final class SuperThumbnailVaultTests: XCTestCase {
         let remaining = await storage.vaultFileCount()
         XCTAssertEqual(remaining, 0)
         XCTAssertEqual(localPayload, Data("keep-on-phone".utf8))
+    }
+
+    func testVaultDataRetrievalPrioritizesExistingNASVaultWithoutRequiringWriteCapabilities() async throws {
+        let storage = VaultTestStorage()
+        let service = VaultTestService(storage: storage)
+        let item = makeItems(connectionID: service.connection.id)[0]
+        let vault = SuperThumbnailVault()
+        let payload = Data("vault-thumbnail-bytes".utf8)
+
+        // Store a valid vault JPEG in storage
+        try await storage.createDirectory("/media/\(SuperThumbnailVault.directoryName)")
+        let modifiedTime = Int64((item.modifiedAt?.timeIntervalSince1970 ?? 0) * 1_000)
+        let identity = "engine=1|name=\(item.name.precomposedStringWithCanonicalMapping)|size=\(item.size ?? -1)|modified=\(modifiedTime)"
+        let digest = CryptoKit.SHA256.hash(data: Data(identity.utf8)).map { String(format: "%02x", $0) }.joined()
+        let fileRecordName = "v1-\(digest).jpg"
+
+        await storage.store(payload, path: "/media/\(SuperThumbnailVault.directoryName)/\(fileRecordName)")
+
+        let retrieved = await vault.data(for: item, service: service)
+        XCTAssertEqual(retrieved, payload)
+    }
+
+    func testVaultDataRetrievalReturnsNilWhenNoVaultOrMissingFile() async throws {
+        let storage = VaultTestStorage()
+        let service = VaultTestService(storage: storage)
+        let item = makeItems(connectionID: service.connection.id)[0]
+        let vault = SuperThumbnailVault()
+
+        // No vault directory at all
+        let none = await vault.data(for: item, service: service)
+        XCTAssertNil(none)
+
+        // Vault directory exists but does not contain this item
+        try await storage.createDirectory("/media/\(SuperThumbnailVault.directoryName)")
+        await storage.store(Data("unrelated".utf8), path: "/media/\(SuperThumbnailVault.directoryName)/v1-other.jpg")
+        await vault.invalidateListings()
+
+        let missing = await vault.data(for: item, service: service)
+        XCTAssertNil(missing)
     }
 
     private func makeItems(connectionID: UUID) -> [RemoteFileItem] {

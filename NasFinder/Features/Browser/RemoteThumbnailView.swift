@@ -238,6 +238,7 @@ final class RemoteThumbnailLoader: ObservableObject {
     func invalidateForStoredThumbnail() {
         if let loadedCacheKey {
             Self.negativeCacheExpirations.removeValue(forKey: loadedCacheKey)
+            Self.imageCache.removeObject(forKey: loadedCacheKey)
         }
         loadedCacheKey = nil
     }
@@ -259,13 +260,6 @@ final class RemoteThumbnailLoader: ObservableObject {
             )
             return
         }
-        guard shouldGenerateThumbnail(for: item) else {
-            image = nil
-            isSkinToneDominant = false
-            isLoading = false
-            return
-        }
-
         let requestedRemoteSize = requestedRemoteSize(for: size)
         let cacheKey = RemoteThumbnailCacheKey.renderedImage(
             for: item,
@@ -290,23 +284,73 @@ final class RemoteThumbnailLoader: ObservableObject {
         guard loadedCacheKey != cacheKey else { return }
         loadedCacheKey = cacheKey
 
+        // 1. Prioritize Super Thumbnail cache first
+        var cachedSuperData = await SuperThumbnailCache.shared.data(forKey: diskCacheKey)
+        if cachedSuperData == nil, requestedRemoteSize != .small {
+            let smallKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
+            cachedSuperData = await SuperThumbnailCache.shared.data(forKey: smallKey)
+        }
+        if let diskData = cachedSuperData,
+           let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
+               data: diskData,
+               maximumPixelSize: maximumPixelSize(for: size)
+           ) {
+            try? Task.checkCancellation()
+            let diskImage = UIImage(
+                cgImage: decodedImage.image,
+                scale: UIScreen.main.scale,
+                orientation: .up
+            )
+            setImage(diskImage, detectSkinToneDominance: detectSkinToneDominance)
+            cache(diskImage, forKey: cacheKey)
+            return
+        }
+
+        // 2. Prioritize valid NAS Super Thumbnail from .NasFinder-Vault before phone-generated thumbnails
+        if let vaultData = await SuperThumbnailVault.shared.data(for: item, service: service),
+           let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
+               data: vaultData,
+               maximumPixelSize: maximumPixelSize(for: size)
+           ) {
+            try? Task.checkCancellation()
+            let vaultImage = UIImage(
+                cgImage: decodedImage.image,
+                scale: UIScreen.main.scale,
+                orientation: .up
+            )
+            setImage(vaultImage, detectSkinToneDominance: detectSkinToneDominance)
+            cache(vaultImage, forKey: cacheKey)
+            await SuperThumbnailCache.shared.store(
+                vaultData,
+                forKey: diskCacheKey
+            )
+            return
+        }
+
+        // A rendered phone thumbnail may already be in memory. Check the NAS
+        // vault first so a newly available Super Thumbnail still replaces it.
         if let cachedImage = Self.imageCache.object(forKey: cacheKey) {
             setImage(cachedImage, detectSkinToneDominance: detectSkinToneDominance)
             isLoading = false
             return
         }
-        var cachedDiskData = await RemoteThumbnailDiskCache.shared.data(forKey: diskCacheKey)
-        if cachedDiskData == nil {
-            cachedDiskData = await SuperThumbnailCache.shared.data(forKey: diskCacheKey)
+
+        // A Mac-generated Vault thumbnail remains displayable even when this
+        // device cannot generate a standard thumbnail for the original type.
+        guard shouldGenerateThumbnail(for: item) else {
+            image = nil
+            isSkinToneDominant = false
+            isLoading = false
+            return
         }
-        if cachedDiskData == nil, requestedRemoteSize != .small {
+
+        // 3. Fall back to phone-generated standard thumbnail disk cache
+        var cachedStandardData = await RemoteThumbnailDiskCache.shared.data(forKey: diskCacheKey)
+        if cachedStandardData == nil, requestedRemoteSize != .small {
             let smallKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
-            cachedDiskData = await RemoteThumbnailDiskCache.shared.data(forKey: smallKey)
-            if cachedDiskData == nil {
-                cachedDiskData = await SuperThumbnailCache.shared.data(forKey: smallKey)
-            }
+            cachedStandardData = await RemoteThumbnailDiskCache.shared.data(forKey: smallKey)
         }
-        if let diskData = cachedDiskData,
+        if let diskData = cachedStandardData,
            let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
                data: diskData,
                maximumPixelSize: maximumPixelSize(for: size)

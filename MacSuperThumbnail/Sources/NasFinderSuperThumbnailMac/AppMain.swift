@@ -1,4 +1,5 @@
 import AppKit
+import ImageIO
 import SwiftUI
 
 @main
@@ -15,10 +16,16 @@ struct NasFinderSuperThumbnailMacApp: App {
         .defaultSize(width: 900, height: 680)
         .commands {
             CommandGroup(after: .appInfo) {
+                Toggle("업데이트 자동 다운로드", isOn: Binding(
+                    get: { updateController.automaticDownloadEnabled },
+                    set: updateController.setAutomaticDownloadEnabled
+                ))
                 Button("업데이트 확인…") {
                     updateController.checkForUpdates()
                 }
                 .disabled(!updateController.canCheckForUpdates)
+                Button(UpdatePreferenceLogic.statusText(automaticDownloadEnabled: updateController.automaticDownloadEnabled)) {}
+                    .disabled(true)
             }
         }
     }
@@ -41,6 +48,7 @@ final class SuperThumbnailMacModel: ObservableObject {
     @Published var checkedSourceBytes: Int64 = 0
     @Published var thumbnailBytes: Int64 = 0
     @Published var averageSecondsPerItem = 0.0
+    @Published var previewItems: [SuperThumbnailMacPreviewItem] = []
 
     private var task: Task<Void, Never>?
     private let workerID = "mac-\(UUID().uuidString)"
@@ -74,6 +82,7 @@ final class SuperThumbnailMacModel: ObservableObject {
         selectedFolder = url
         hasPendingResume = true
         currentName = "‘\(url.lastPathComponent)’ 폴더를 다시 선택했습니다."
+        refreshPreviews()
     }
 
     func chooseFolder() {
@@ -90,20 +99,55 @@ final class SuperThumbnailMacModel: ObservableObject {
         hasPendingResume = true
         currentName = "‘\(url.lastPathComponent)’ 폴더를 처리할 준비가 됐습니다."
         status = ""
+        refreshPreviews()
+    }
+
+    func refreshPreviews() {
+        guard let root = selectedFolder else {
+            previewItems = []
+            return
+        }
+        Task { [weak self] in
+            let items = await Task.detached(priority: .utility) {
+                VaultProcessor.discoverExistingPreviews(in: root, limit: 60)
+            }.value
+            guard let self else { return }
+            guard self.selectedFolder?.standardizedFileURL == root.standardizedFileURL else { return }
+            self.previewItems = items
+        }
     }
 
     func start() {
+        run(fresh: false)
+    }
+
+    func startFresh() {
+        run(fresh: true)
+    }
+
+    private func run(fresh: Bool) {
         guard let root = selectedFolder, !isRunning else { return }
         resetProgress()
+        if fresh {
+            previewItems.removeAll()
+        }
         isRunning = true
         isPaused = false
         hasPendingResume = true
-        status = "사진과 영상을 찾는 중…"
+        status = fresh ? "기존 .NasFinder-Vault 보관본을 정리하는 중…" : "사진과 영상을 찾는 중…"
         let worker = workerID
 
         task = Task { [weak self] in
             guard let self else { return }
             do {
+                if fresh {
+                    let removedCount = try await Task.detached(priority: .userInitiated) {
+                        try VaultProcessor.removeVaultDirectories(in: root)
+                    }.value
+                    try Task.checkCancellation()
+                    status = "기존 보관본 \(removedCount)개 정리 완료. 사진과 영상을 찾는 중…"
+                }
+
                 let files = try await Task.detached(priority: .userInitiated) {
                     try VaultProcessor.discoverMedia(in: root)
                 }.value
@@ -139,6 +183,22 @@ final class SuperThumbnailMacModel: ObservableObject {
                         generatedCount += result.generated ? 1 : 0
                         cachedCount += result.alreadyCached ? 1 : 0
                         thumbnailBytes += result.thumbnailBytes
+
+                        let vault = file.url.deletingLastPathComponent()
+                            .appendingPathComponent(NasFinderVaultCompatibility.directoryName, isDirectory: true)
+                        if let filename = try? NasFinderVaultCompatibility.thumbnailFilename(for: file.url) {
+                            let thumbnailURL = vault.appendingPathComponent(filename)
+                            if FileManager.default.fileExists(atPath: thumbnailURL.path) {
+                                addPreviewItem(
+                                    SuperThumbnailMacPreviewItem(
+                                        id: thumbnailURL.path,
+                                        name: file.url.lastPathComponent,
+                                        isFolder: false,
+                                        vaultFileURL: thumbnailURL
+                                    )
+                                )
+                            }
+                        }
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
@@ -171,6 +231,22 @@ final class SuperThumbnailMacModel: ObservableObject {
                             generatedCount += 1
                             folderGeneratedCount += 1
                             thumbnailBytes += result.thumbnailBytes
+
+                            let parentVault = folder.url.deletingLastPathComponent()
+                                .appendingPathComponent(NasFinderVaultCompatibility.directoryName, isDirectory: true)
+                            let sheetURL = parentVault.appendingPathComponent(
+                                NasFinderVaultCompatibility.folderThumbnailFilename(folderName: folder.url.lastPathComponent)
+                            )
+                            if FileManager.default.fileExists(atPath: sheetURL.path) {
+                                addPreviewItem(
+                                    SuperThumbnailMacPreviewItem(
+                                        id: sheetURL.path,
+                                        name: folder.url.lastPathComponent,
+                                        isFolder: true,
+                                        vaultFileURL: sheetURL
+                                    )
+                                )
+                            }
                         case .emptyIndexed:
                             cachedCount += 1
                             folderEmptyCount += 1
@@ -191,12 +267,23 @@ final class SuperThumbnailMacModel: ObservableObject {
                 hasPendingResume = false
             } catch is CancellationError {
                 status = "작업을 중단했습니다. 다음 실행에서 이어서 확인할 수 있습니다."
+                refreshPreviews()
             } catch {
                 status = "시작하지 못했습니다: \(error.localizedDescription)"
+                refreshPreviews()
             }
             isRunning = false
             isPaused = false
             task = nil
+        }
+    }
+
+    private func addPreviewItem(_ item: SuperThumbnailMacPreviewItem) {
+        if !previewItems.contains(where: { $0.id == item.id }) {
+            previewItems.insert(item, at: 0)
+            if previewItems.count > 60 {
+                previewItems.removeLast()
+            }
         }
     }
 
@@ -235,6 +322,8 @@ final class SuperThumbnailMacModel: ObservableObject {
 
 struct SuperThumbnailMacView: View {
     @ObservedObject var model: SuperThumbnailMacModel
+    @State private var isConfirmingFresh = false
+    @AppStorage("macSuperThumbnail.isPreviewExpanded") private var isPreviewExpanded = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -243,12 +332,21 @@ struct SuperThumbnailMacView: View {
                 VStack(spacing: 18) {
                     folderCard
                     progressCard
+                    previewCard
                 }
                 .padding(28)
             }
             footer
         }
         .background(Color(nsColor: .windowBackgroundColor))
+        .alert("수퍼썸네일을 처음부터 다시 만들까요?", isPresented: $isConfirmingFresh) {
+            Button("새로하기", role: .destructive) {
+                model.startFresh()
+            }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("선택한 폴더와 모든 하위 폴더의 .NasFinder-Vault 보관본만 삭제하고 처음부터 다시 만듭니다. 원본 사진과 영상은 삭제되지 않습니다.")
+        }
     }
 
     private var header: some View {
@@ -256,6 +354,7 @@ struct SuperThumbnailMacView: View {
             Image(systemName: "sparkles.rectangle.stack")
                 .font(.system(size: 28, weight: .semibold))
                 .foregroundStyle(.blue)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text("NasFinder").font(.title2.bold())
                 Text("Super Thumbnail for Mac").foregroundStyle(.secondary)
@@ -282,6 +381,7 @@ struct SuperThumbnailMacView: View {
                 Spacer()
                 Button("폴더 선택", action: model.chooseFolder)
                     .disabled(model.isRunning)
+                    .accessibilityLabel("작업 폴더 선택")
             }
         }
         .padding(20)
@@ -318,6 +418,63 @@ struct SuperThumbnailMacView: View {
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
     }
 
+    private var previewCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    isPreviewExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Label("미리보기", systemImage: "rectangle.stack.fill")
+                        .font(.headline)
+                        .foregroundStyle(.primary)
+                    if !model.previewItems.isEmpty {
+                        Text("(\(model.previewItems.count))")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Image(systemName: isPreviewExpanded ? "chevron.up" : "chevron.down")
+                        .font(.subheadline.bold())
+                        .foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("미리보기 영역")
+            .accessibilityHint(isPreviewExpanded ? "미리보기를 접습니다." : "미리보기를 펼칩니다.")
+
+            if isPreviewExpanded {
+                if model.previewItems.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "photo.on.rectangle.angled")
+                            .foregroundStyle(.tertiary)
+                        Text(model.isRunning ? "썸네일을 생성하면 여기에 표시됩니다." : "생성된 수퍼썸네일이 여기에 표시됩니다.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, 8)
+                } else {
+                    ScrollView(.horizontal, showsIndicators: true) {
+                        LazyHStack(spacing: 12) {
+                            ForEach(model.previewItems) { item in
+                                MacThumbnailCard(item: item)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                        .padding(.horizontal, 2)
+                    }
+                    .frame(height: 120)
+                }
+            }
+        }
+        .padding(20)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 16))
+    }
+
     private func metric(_ label: String, _ value: Int) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(value.formatted()).font(.title2.monospacedDigit().bold())
@@ -338,20 +495,105 @@ struct SuperThumbnailMacView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            HStack {
+            HStack(spacing: 12) {
                 if model.isRunning {
                     Button(model.isPaused ? "계속" : "일시정지", action: model.togglePause)
+                        .accessibilityLabel(model.isPaused ? "계속하기" : "일시정지")
                     Button("중단", role: .destructive, action: model.cancel)
+                        .accessibilityLabel("작업 중단")
                 }
                 Spacer()
+                if !model.isRunning {
+                    Button("새로하기") {
+                        isConfirmingFresh = true
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.large)
+                    .disabled(model.selectedFolder == nil)
+                    .accessibilityLabel("새로하기")
+                    .accessibilityHint("선택한 폴더의 기존 .NasFinder-Vault를 삭제하고 처음부터 다시 만듭니다.")
+                }
                 Button(model.hasPendingResume ? "이어하기" : "수퍼썸네일 만들기", action: model.start)
                     .buttonStyle(.borderedProminent)
                     .controlSize(.large)
                     .disabled(model.selectedFolder == nil || model.isRunning)
+                    .accessibilityLabel(model.hasPendingResume ? "이어하기" : "수퍼썸네일 만들기")
             }
         }
         .padding(.horizontal, 28)
         .padding(.vertical, 18)
         .background(.bar)
+    }
+}
+
+struct MacThumbnailCard: View {
+    let item: SuperThumbnailMacPreviewItem
+
+    var body: some View {
+        VStack(spacing: 6) {
+            ZStack(alignment: .bottomTrailing) {
+                MacThumbnailImage(fileURL: item.vaultFileURL)
+                    .frame(width: 80, height: 80)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+                    )
+
+                if item.isFolder {
+                    Image(systemName: "folder.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.white)
+                        .padding(3)
+                        .background(Color.blue.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
+                        .padding(4)
+                        .accessibilityLabel("폴더")
+                }
+            }
+
+            Text(item.name)
+                .font(.caption2)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(width: 80)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(item.isFolder ? "폴더 \(item.name)" : item.name)
+    }
+}
+
+struct MacThumbnailImage: View {
+    let fileURL: URL
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else {
+                Color.secondary.opacity(0.08)
+                    .overlay(
+                        Image(systemName: "photo")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    )
+            }
+        }
+        .task(id: fileURL) {
+            image = await Task.detached(priority: .utility) {
+                guard let source = CGImageSourceCreateWithURL(fileURL as CFURL, nil) else { return nil }
+                let options: [CFString: Any] = [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceThumbnailMaxPixelSize: 160,
+                ]
+                guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+                    return nil
+                }
+                return NSImage(cgImage: cgImage, size: NSSize(width: 80, height: 80))
+            }.value
+        }
     }
 }

@@ -43,6 +43,31 @@ counterpart_inventory:
     - "No current phone/tablet/foldable/Google TV screenshot catalog was captured."
 
 capabilities:
+  - id: release.direct_update_download
+    purpose: "직접 배포 대상에서 새 버전을 확인하고, 사용자가 선택한 자동 또는 수동 방식으로 검증된 설치 파일만 준비한다."
+    source_refs: ["MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/UpdateController.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/AppMain.swift", "NasFinder-Android/app/src/main/java/com/armsone/nasfinder/update/GitHubAppUpdateService.kt"]
+    entry_points: ["MacSuperThumbnail 업데이트 메뉴", "Android 설정 > 업데이트"]
+    preconditions: ["직접 배포 빌드", "인터넷 연결"]
+    inputs: ["업데이트 자동 다운로드 토글", "업데이트 확인", "다운로드", "취소", "다시 시도"]
+    normal_result: "Mac은 Sparkle로, Android는 DownloadManager로 새 버전을 받고 검증이 끝난 뒤에만 설치 단계로 이동한다."
+    states: [idle, checking, latest, available, downloading, cancelled, ready, failed]
+    algorithms_and_thresholds: ["Android 자동 다운로드는 무과금 네트워크만 허용", "공식 GitHub 최신 정식 릴리스와 정확한 repo/tag/host/path/size/sha256/package/signing certificate/신버전을 검증"]
+    data_contracts: ["version 2.1.1", "Apple internal build 202608251305", "Android versionCode 340625", "BuildStamp 202608251305", "GitHub asset digest sha256:<64 hex>"]
+    producer_consumer_routes: ["공식 릴리스 메타데이터 -> 정책 검증 -> 다운로드 -> 무결성/서명 검증 -> 시스템 설치자 또는 Sparkle"]
+    persistence_relaunch: "업데이트 자동 다운로드 선택은 기본 켬으로 저장된다."
+    permissions_privacy_security: ["iPhone/iPad TestFlight 경로에는 직접 다운로드를 추가하지 않는다.", "허용되지 않은 릴리스와 APK는 설치 단계로 넘기지 않는다."]
+    background_lifecycle: "다운로드 진행·취소·재시도를 명확한 상태로 표시한다."
+    gestures_accessibility: ["토글과 수동 확인 행동에 읽을 수 있는 이름과 상태를 제공한다."]
+    supported_devices_layouts: ["Mac direct distribution", "Android phone", "Android tablet", "Google TV"]
+    visual_reference: "capture pending"
+    platform_adaptations: {ios: ["TestFlight only; direct download intentionally excluded"], mac: ["Sparkle automatic download preference"], android: ["DownloadManager and system package installer"]}
+    intentional_differences: ["Apple mobile uses TestFlight and does not expose direct download."]
+    implementations:
+      mac: {status: implemented_source_only, source_refs: ["MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/UpdateController.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/AppMain.swift"], tests: ["MacSuperThumbnail/Tests/NasFinderSuperThumbnailMacTests/UpdatePreferenceLogicTests.swift"], evidence: ["source only; build/runtime pending"]}
+      android: {status: implemented_source_only, source_refs: ["app/src/main/java/com/armsone/nasfinder/update/GitHubAppUpdateService.kt", "app/src/main/java/com/armsone/nasfinder/ui/NasFinderApp.kt"], tests: ["app/src/test/java/com/armsone/nasfinder/update/GitHubUpdatePolicyTest.kt"], evidence: ["source only; build/runtime pending"]}
+    dependencies: ["Sparkle", "GitHub Releases API", "Android DownloadManager"]
+    parity_row_ids: [release.direct_update_download]
+
   - id: app.shell.routes_lifecycle
     purpose: "Launch into the connection-centered shell, route deep links and shared inbox work, and preserve app-wide lifecycle behavior."
     source_refs: ["NasFinder/App/NasFinderApp.swift:NasFinderApp", "NasFinder/Features/Connections/ConnectionListView.swift:ConnectionListView", "NasFinder/Info.plist:URL/document/orientation declarations"]
@@ -370,13 +395,13 @@ capabilities:
 
   - id: thumbnails.display_cache_pipeline
     purpose: "Show useful thumbnails consistently in every list/grid/poster/overflow/favorite/inbox/provider consumer with bounded decode and durable invalidation."
-    source_refs: ["NasFinder/Features/Browser/RemoteThumbnailView.swift", "NasFinder/Features/Browser/FileProviderThumbnailCache.swift", "NasFinder/Features/Browser/SuperThumbnailCache.swift", "NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Connections/ThumbnailCacheSettingsView.swift", "NasFinderFileProvider/ThumbnailCache.swift"]
+    source_refs: ["NasFinder/Features/Browser/RemoteThumbnailView.swift", "NasFinder/Features/Browser/FileProviderThumbnailCache.swift", "NasFinder/Features/Browser/SuperThumbnailCache.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift", "NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Connections/ThumbnailCacheSettingsView.swift", "NasFinderFileProvider/ThumbnailCache.swift"]
     entry_points: ["any thumbnail-bearing cell", "preheat", "Files thumbnail request"]
     preconditions: ["supported media/document type or available server/vault thumbnail"]
     inputs: ["connection/item identity", "modifiedAt", "requested display size", "cache limit"]
-    normal_result: "Consumers discover the same thumbnail bytes through memory/disk/provider/super caches, downsample to needed pixels, invalidate on modification/folder refresh, and fall back to a type icon/retryable state rather than an incorrect image."
+    normal_result: "Consumers discover valid NAS Super Thumbnails from local Super Cache or NAS .NasFinder-Vault before phone-generated standard thumbnails; otherwise fall back to standard disk cache and remote generation, downsample to needed pixels, invalidate on modification/folder refresh, and fall back to a type icon/retryable state rather than an incorrect image."
     states: [idle, memory_hit, disk_hit, provider_hit, loading, decoded, placeholder, failed, cancelled]
-    algorithms_and_thresholds: ["remote data key is shared across rendered sizes and includes modification date", "decoder bounds pixel dimensions", "late stores after folder invalidation are rejected", "remote work limiter maximum concurrent work is 3"]
+    algorithms_and_thresholds: ["remote data key is shared across rendered sizes and includes modification date", "NAS Super Thumbnails take precedence over phone standard thumbnails", "decoder bounds pixel dimensions", "late stores after folder invalidation are rejected", "remote work limiter maximum concurrent work is 3"]
     data_contracts: ["JPEG/image bytes", "SHA/cache key", "automatic persisted disk-limit choice", "main-thread cache-change notifications"]
     producer_consumer_routes: ["backend/vault/local generator -> memory/disk caches -> RemoteThumbnailView/FileProvider/favorites/browser/inbox/overflow"]
     persistence_relaunch: "Disk caches and supported limits persist; memory and active tasks do not."
@@ -388,7 +413,7 @@ capabilities:
     platform_adaptations: {ios: ["ImageIO/QuickLook/File Provider caches"], android: ["Bitmap decoder/Coil-style cache and DocumentsProvider thumbnail path with identical producer/fallback/invalidation chain"]}
     intentional_differences: []
     implementations:
-      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/RemoteThumbnailView.swift", "NasFinderFileProvider/ThumbnailCache.swift"], tests: ["NasFinderTests/RemoteThumbnailCacheKeyTests.swift", "NasFinderTests/RemoteThumbnailDiskCacheTests.swift", "NasFinderTests/RemoteThumbnailImageDecoderTests.swift", "NasFinderTests/FileProviderThumbnailCacheTests.swift"], evidence: ["cache/decoder tests"]}
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/RemoteThumbnailView.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift", "NasFinderFileProvider/ThumbnailCache.swift"], tests: ["NasFinderTests/RemoteThumbnailCacheKeyTests.swift", "NasFinderTests/RemoteThumbnailDiskCacheTests.swift", "NasFinderTests/RemoteThumbnailImageDecoderTests.swift", "NasFinderTests/FileProviderThumbnailCacheTests.swift", "NasFinderTests/SuperThumbnailVaultTests.swift"], evidence: ["cache/decoder/vault-priority tests"]}
       android: {status: source_implemented_runtime_partially_verified, source_refs: ["RemoteThumbnailRepository.kt", "DocumentsThumbnailPolicy.kt", "NasFinderDocumentsProvider.kt"], tests: ["RemoteThumbnailCacheTest", "DocumentsThumbnailPolicyTest"], evidence: ["old Synology MOV trace; current Vault consumers/cold cache pending"]}
     dependencies: [remote.backends_protocols, thumbnails.super_pipeline]
     parity_row_ids: [thumbnail-pipeline]
@@ -420,25 +445,26 @@ capabilities:
 
   - id: thumbnails.super_pipeline
     purpose: "Create Super Thumbnails for every eligible photo and video, resume failures, share work across devices and optionally store/restores results on the NAS."
-    source_refs: ["NasFinder/Features/Connections/SuperThumbnailView.swift", "NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Browser/SuperThumbnailQueueStore.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift", "NasFinder/Features/Browser/SuperThumbnailCache.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/AppMain.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/VaultCompatibility.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/UpdateController.swift", "MacSuperThumbnail/Package.swift", "MacSuperThumbnail/Package.resolved"]
-    entry_points: ["Super Thumbnail settings/link", "hidden five-tap start", "Mac helper folder selection"]
+    source_refs: ["NasFinder/Features/Connections/SuperThumbnailView.swift", "NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Browser/SuperThumbnailQueueStore.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift", "NasFinder/Features/Browser/SuperThumbnailCache.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/AppMain.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/VaultCompatibility.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/FolderSuperThumbnail.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/UpdateController.swift", "MacSuperThumbnail/Package.swift", "MacSuperThumbnail/Package.resolved"]
+    entry_points: ["Super Thumbnail settings/link", "hidden five-tap start", "Mac helper folder selection (이어하기 / 새로하기)"]
     preconditions: ["eligible connection/folder", "network/power/thermal policy", "photos or videos present"]
-    inputs: ["media scope always photos+videos for full run", "generation mode", "vault enabled/timing now/later", "resume report"]
-    normal_result: "The recursive queue discovers eligible media, prioritizes prior failures then unfinished stages, uses/reuses local automatic cache, publishes successes, and reports generated/cached/failed/remaining/bytes/ETA."
+    inputs: ["media scope always photos+videos for full run", "generation mode", "vault enabled/timing now/later", "resume report", "Mac helper resume vs fresh vault-only rebuild"]
+    normal_result: "The recursive queue discovers eligible media, prioritizes prior failures then unfinished stages, uses/reuses local automatic cache, publishes successes, and reports generated/cached/failed/remaining/bytes/ETA. Mac helper supports 이어하기 (skip/resume) and 새로하기 (destructive confirmation, vault-only deletion under selected root, and scratch rebuild) with an accessible collapsible live-vault preview area."
     states: [checking_requirements, discovering, running, paused, waiting_network, waiting_power, waiting_thermal, cancelling, cancelled, completed, partial, failed]
-    algorithms_and_thresholds: ["hidden start counts down after five taps", "fair thermal pacing delay 500 ms; serious/critical stop", "retry ordering: failures then attempts 0...2", "ETA blends previous 72% and new target 28%, rise/drop capped; up to 160 observations", "designed-for-iPad Mac counts as externally powered", "single-file manual thumbnail does not require external power"]
+    algorithms_and_thresholds: ["hidden start counts down after five taps", "fair thermal pacing delay 500 ms; serious/critical stop", "retry ordering: failures then attempts 0...2", "ETA blends previous 72% and new target 28%, rise/drop capped; up to 160 observations", "designed-for-iPad Mac counts as externally powered", "single-file manual thumbnail does not require external power", "Mac 새로하기 removes only .NasFinder-Vault under chosen root with root containment verification"]
     data_contracts: ["SuperThumbnailSessionReport/FailureRecord/queue transitions", "JPEG cache key", "NAS .NasFinder-Vault thumbnail/manifest/worker/lease records", "vault filename compatibility is byte-exact across iOS, Android and Mac: identity lines engine=1, NFC-precomposed name, size=(signed decimal or -1 when unknown), modified=(Unix epoch milliseconds or 0), joined with |, SHA-256 lowercase hex, filename v1-<digest>.jpg", "folder Super Thumbnail records live in the parent directory's vault with a name-only identity (engine=1|kind=folder|name=<NFC folder name>, SHA-256 lowercase hex): 3x3 contact-sheet JPEG v1-folder-<digest>.jpg and empty-folder index marker v1-folder-<digest>.empty; old clients ignore the v1-folder- prefix and new clients keep reading v1-<digest>.jpg file records; unreadable/cancelled folders write no record and stay retryable"]
     producer_consumer_routes: ["UI/Mac folder -> recursive discovery -> queue/lease -> remote photo/video generation -> local cache -> optional NAS vault -> browser/provider consumers"]
     persistence_relaunch: "Queue report, failures/stages, ETA observations, local cache and vault records persist; resume processes only unfinished work."
-    permissions_privacy_security: ["Vault operations are constrained to NasFinder vault files; removing NAS vault retains local payload", "Mac helper uses user-selected security-scoped folder"]
+    permissions_privacy_security: ["Vault operations are constrained to NasFinder vault files; removing NAS vault retains local payload", "Mac helper uses user-selected security-scoped folder and removes only .NasFinder-Vault directories"]
     background_lifecycle: "App inactivity/low battery/hot device/network policy pause or stop with an explicit reason; cancel acknowledges promptly and stops active work."
-    gestures_accessibility: ["start/pause/resume/cancel and progress metrics have named controls", "hidden activation is supplementary, not the only visible route"]
+    gestures_accessibility: ["start/pause/resume/fresh/cancel and progress metrics have named controls", "Mac preview has accessible expand/collapse disclosure and card labels", "hidden activation is supplementary, not the only visible route"]
     supported_devices_layouts: ["iPhone/iPad/Mac helper", "Android phone/tablet/TV may run only where resource policy permits but must consume stored results everywhere"]
     visual_reference: "SuperThumbnailView/Mac helper; screenshot verification pending"
-    platform_adaptations: {ios: ["iOS background/resource APIs and separate macOS helper; SuperThumbnailVault.swift:612-623 and VaultCompatibility.swift:21-36 are the wire-name evidence"], android: ["WorkManager/foreground work and battery/network/thermal APIs with identical queue/vault/cache contract and exact UTF-8/NFC/SHA-256 filename bytes"]}
+    platform_adaptations: {ios: ["iOS background/resource APIs and separate macOS helper; SuperThumbnailVault.swift:612-623 and VaultCompatibility.swift:21-36 are the wire-name evidence"], mac: ["Native SwiftUI helper with 이어하기/새로하기, live vault preview disclosure and Sparkle update support"], android: ["WorkManager/foreground work and battery/network/thermal APIs with identical queue/vault/cache contract and exact UTF-8/NFC/SHA-256 filename bytes"]}
     intentional_differences: []
     implementations:
-      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift"], tests: ["NasFinderTests/SuperThumbnailVaultTests.swift", "NasFinderTests/BrowserFeaturePolicyTests.swift", "NasFinderTests/RemotePreviewStateTests.swift", "MacSuperThumbnail/Tests/NasFinderSuperThumbnailMacTests/VaultCompatibilityTests.swift"], evidence: ["queue/vault tests; real multi-device NAS run pending"]}
+      mac: {status: source_implemented_runtime_unverified, source_refs: ["MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/AppMain.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/VaultCompatibility.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/FolderSuperThumbnail.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/UpdateController.swift"], tests: ["MacSuperThumbnail/Tests/NasFinderSuperThumbnailMacTests/VaultCompatibilityTests.swift", "MacSuperThumbnail/Tests/NasFinderSuperThumbnailMacTests/FolderSuperThumbnailTests.swift", "MacSuperThumbnail/Tests/NasFinderSuperThumbnailMacTests/UpdatePreferenceLogicTests.swift"], evidence: ["source only; build/runtime pending"]}
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift", "NasFinder/Features/Browser/RemoteThumbnailView.swift"], tests: ["NasFinderTests/SuperThumbnailVaultTests.swift", "NasFinderTests/FolderSuperThumbnailTests.swift", "NasFinderTests/BrowserFeaturePolicyTests.swift", "NasFinderTests/RemotePreviewStateTests.swift"], evidence: ["queue/vault/priority tests; real multi-device NAS run pending"]}
       android: {status: source_implemented_runtime_unverified, source_refs: ["SuperThumbnailWorker.kt", "SuperThumbnailVault.kt", "SuperThumbnailSessionStore.kt", "RemoteThumbnailRepository.kt"], tests: ["SuperThumbnailPolicyTest", "SuperThumbnailVaultAndSessionTest", "SuperThumbnailWorkContractTest", "SuperThumbnailThermalPolicyTest"], evidence: ["cross-device NAS Vault positive/negative/relaunch pending"]}
     dependencies: [thumbnails.remote_video_generation, thumbnails.display_cache_pipeline, remote.backends_protocols]
     parity_row_ids: [super-thumbnail]
