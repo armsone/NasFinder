@@ -16,6 +16,62 @@ enum CompatibilityVideoFormatPolicy {
             (item.name as NSString).pathExtension.lowercased()
         )
     }
+
+    static func requiresLocalCompatibilityInspection(for item: RemoteFileItem) -> Bool {
+        (item.name as NSString).pathExtension.caseInsensitiveCompare("avi") == .orderedSame
+    }
+}
+
+enum CompatibilityVideoRiskPolicy {
+    static func hasHighFrameRateH264LevelMismatch(at url: URL) async -> Bool {
+        await Task.detached(priority: .utility) {
+            guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+            defer { try? handle.close() }
+            guard let data = try? handle.read(upToCount: 128 * 1_024),
+                  data.count >= 64,
+                  data.prefix(4) == Data("RIFF".utf8),
+                  data.subdata(in: 8..<12) == Data("AVI ".utf8),
+                  let avih = data.range(of: Data("avih".utf8))?.lowerBound,
+                  avih + 48 <= data.count else { return false }
+
+            func littleEndianUInt32(at offset: Int) -> UInt32 {
+                UInt32(data[offset])
+                    | UInt32(data[offset + 1]) << 8
+                    | UInt32(data[offset + 2]) << 16
+                    | UInt32(data[offset + 3]) << 24
+            }
+
+            let microsecondsPerFrame = littleEndianUInt32(at: avih + 8)
+            let width = littleEndianUInt32(at: avih + 40)
+            let height = littleEndianUInt32(at: avih + 44)
+            guard microsecondsPerFrame > 0,
+                  1_000_000.0 / Double(microsecondsPerFrame) >= 90,
+                  width >= 1_920,
+                  height >= 1_080,
+                  data.range(of: Data("vidsavc1".utf8)) != nil else { return false }
+
+            let bytes = [UInt8](data)
+            for index in 0..<(bytes.count - 3)
+            where bytes[index] == 0x67 && bytes[index + 1] == 0x64
+                && bytes[index + 2] == 0x00 && bytes[index + 3] <= 0x29 {
+                return true
+            }
+            return false
+        }.value
+    }
+}
+
+enum CompatibilityVideoDecodingPolicy {
+    static let softwareDecodingMediaOption = ":avcodec-hw=none"
+
+    static func applyDecodingPreference(
+        to media: VLCMedia,
+        prefersSoftwareDecoding: Bool
+    ) {
+        if prefersSoftwareDecoding {
+            media.addOption(softwareDecodingMediaOption)
+        }
+    }
 }
 
 enum CompatibilityVideoThumbnailAttemptPolicy {
@@ -363,6 +419,13 @@ private final class BlockingRemoteRangeRead: @unchecked Sendable {
 }
 
 @MainActor
+struct CompatibilityVideoFrameStats: Equatable {
+    let displayed: UInt64
+    let late: UInt64
+    let lost: UInt64
+}
+
+@MainActor
 final class CompatibilityPlaybackWatchdog {
     private var task: Task<Void, Never>?
 
@@ -371,6 +434,10 @@ final class CompatibilityPlaybackWatchdog {
         pollInterval: Duration,
         isPlaybackExpected: @escaping @MainActor () -> Bool,
         currentSeconds: @escaping @MainActor () -> Double,
+        videoFrameStats: @escaping @MainActor () -> CompatibilityVideoFrameStats = {
+            CompatibilityVideoFrameStats(displayed: 1, late: 0, lost: 0)
+        },
+        onVideoOutputStall: @escaping @MainActor () -> Void = {},
         onStall: @escaping @MainActor () -> Void
     ) {
         stop()
@@ -378,6 +445,11 @@ final class CompatibilityPlaybackWatchdog {
             let clock = ContinuousClock()
             var lastObservedSeconds = currentSeconds()
             var lastProgressAt = clock.now
+            var baselineFrameStats = videoFrameStats()
+            var lastDisplayedFrameCount = baselineFrameStats.displayed
+            var lastFrameProgressAt = clock.now
+            var playbackExpectedSince = clock.now
+            var didReportVideoOutputStall = false
 
             while !Task.isCancelled {
                 try? await Task.sleep(for: pollInterval)
@@ -386,13 +458,39 @@ final class CompatibilityPlaybackWatchdog {
                 guard isPlaybackExpected() else {
                     lastObservedSeconds = currentSeconds()
                     lastProgressAt = clock.now
+                    baselineFrameStats = videoFrameStats()
+                    lastDisplayedFrameCount = baselineFrameStats.displayed
+                    lastFrameProgressAt = clock.now
+                    playbackExpectedSince = clock.now
                     continue
+                }
+
+                let observedStats = videoFrameStats()
+                let observedFrameCount = observedStats.displayed
+                if observedFrameCount > lastDisplayedFrameCount {
+                    lastDisplayedFrameCount = observedFrameCount
+                    lastFrameProgressAt = clock.now
                 }
 
                 let observedSeconds = currentSeconds()
                 if abs(observedSeconds - lastObservedSeconds) >= 0.05 {
                     lastObservedSeconds = observedSeconds
                     lastProgressAt = clock.now
+                    let lateAndLost = observedStats.late &- baselineFrameStats.late
+                        + (observedStats.lost &- baselineFrameStats.lost)
+                    let displayed = observedStats.displayed &- baselineFrameStats.displayed
+                    if playbackExpectedSince.duration(to: clock.now) >= .seconds(3),
+                       lateAndLost >= 24,
+                       lateAndLost > displayed,
+                       !didReportVideoOutputStall {
+                        didReportVideoOutputStall = true
+                        onVideoOutputStall()
+                    }
+                    if lastFrameProgressAt.duration(to: clock.now) >= .seconds(5),
+                       !didReportVideoOutputStall {
+                        didReportVideoOutputStall = true
+                        onVideoOutputStall()
+                    }
                     continue
                 }
 
@@ -484,19 +582,24 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
     var onReady: (() -> Void)?
     var onFailure: ((String) -> Void)?
 
-    init(localURL: URL) throws {
+    init(localURL: URL, prefersSoftwareDecoding: Bool = false) throws {
         mediaPlayer = VLCMediaPlayer()
         inputStream = nil
         super.init()
         guard let media = VLCMedia(url: localURL) else {
             throw CompatibilityVideoPlayerError.cannotCreateMedia
         }
+        CompatibilityVideoDecodingPolicy.applyDecodingPreference(
+            to: media,
+            prefersSoftwareDecoding: prefersSoftwareDecoding
+        )
         configure(media: media)
     }
 
     init(
         item: RemoteFileItem,
         service: any RemoteFileService,
+        prefersSoftwareDecoding: Bool = false,
         onTransfer: (@Sendable (Int) -> Void)? = nil
     ) throws {
         let inputStream = try CompatibilityRemoteInputStream(
@@ -510,6 +613,10 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
         guard let media = VLCMedia(stream: inputStream) else {
             throw CompatibilityVideoPlayerError.cannotCreateMedia
         }
+        CompatibilityVideoDecodingPolicy.applyDecodingPreference(
+            to: media,
+            prefersSoftwareDecoding: prefersSoftwareDecoding
+        )
         configure(media: media)
     }
 
@@ -570,6 +677,17 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
 
     var usesRemoteStream: Bool { inputStream != nil }
 
+    var videoFrameStats: CompatibilityVideoFrameStats {
+        guard let statistics = mediaPlayer.media?.statistics else {
+            return CompatibilityVideoFrameStats(displayed: 0, late: 0, lost: 0)
+        }
+        return CompatibilityVideoFrameStats(
+            displayed: statistics.displayedPictures,
+            late: statistics.latePictures,
+            lost: statistics.lostPictures
+        )
+    }
+
     nonisolated func mediaPlayerStateChanged(_ newState: VLCMediaPlayerState) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -586,7 +704,13 @@ final class CompatibilityVideoPlayer: NSObject, ObservableObject, VLCMediaPlayer
                 self.isPreparing = false
                 if self.didStartPlayback && !self.isStopping {
                     self.didStartPlayback = false
-                    self.onPlaybackEnded?()
+                    let endThreshold = max(self.durationSeconds - 1.5, 0)
+                    if self.durationSeconds > 0,
+                       self.currentSeconds >= endThreshold {
+                        self.onPlaybackEnded?()
+                    } else {
+                        self.onFailure?("영상 재생이 끝나기 전에 멈췄습니다.")
+                    }
                 }
             case 6:
                 self.isPreparing = false

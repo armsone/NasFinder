@@ -196,6 +196,7 @@ struct FileBrowserView: View {
     @State private var newFolderName = ""
     @State private var isImportingFiles = false
     @State private var searchText = ""
+    @State private var isSearchPresented = false
     @State private var thumbnailReloadVersion = 0
     @State private var isRequestingCoverFlowOrientation = false
     @State private var coverFlowEnteredFromPoster = false
@@ -272,8 +273,9 @@ struct FileBrowserView: View {
             )
             .modifier(
                 FileBrowserSearchModifier(
-                    isEnabled: layoutStyle != .coverFlow,
-                    text: $searchText
+                    isEnabled: true,
+                    text: $searchText,
+                    isPresented: $isSearchPresented
                 )
             )
             .toolbar { browserToolbar }
@@ -502,13 +504,15 @@ struct FileBrowserView: View {
 
         ToolbarItem(placement: .principal) {
             if layoutStyle != .coverFlow {
-                Button(action: dashboardAction) {
+                Button {
+                    isSearchPresented = true
+                } label: {
                     FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
                 }
                 .buttonStyle(.plain)
                 .contentShape(Rectangle())
-                .accessibilityLabel("\(title), 첫 화면으로 이동")
-                .accessibilityHint("NasFinder 첫 화면으로 돌아갑니다.")
+                .accessibilityLabel("\(title), 검색")
+                .accessibilityHint("현재 폴더에서 파일을 검색합니다.")
             }
         }
 
@@ -596,7 +600,9 @@ struct FileBrowserView: View {
                 HStack(spacing: FileBrowserCoverFlowChromePolicy.itemSpacing) {
                     coverFlowBackButton
 
-                    Button(action: dashboardAction) {
+                    Button {
+                        isSearchPresented = true
+                    } label: {
                         Text(title)
                             .font(.subheadline.weight(.medium))
                             .foregroundStyle(
@@ -616,8 +622,8 @@ struct FileBrowserView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityLabel("\(title), 첫 화면으로 이동")
-                    .accessibilityHint("NasFinder 첫 화면으로 돌아갑니다.")
+                    .accessibilityLabel("\(title), 검색")
+                    .accessibilityHint("현재 폴더에서 파일을 검색합니다.")
 
                     Spacer(minLength: 8)
                     coverFlowMoreButton

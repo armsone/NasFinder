@@ -81,6 +81,59 @@ final class RemotePreviewStateTests: XCTestCase {
         }
     }
 
+    func testCompatibilityVideoDecodingPolicyDefinesSoftwareDecodingMediaOption() {
+        XCTAssertEqual(
+            CompatibilityVideoDecodingPolicy.softwareDecodingMediaOption,
+            ":avcodec-hw=none"
+        )
+    }
+
+    func testCompatibilityRiskPolicyOnlyFlagsHighFrameRateH264LevelMismatch() async throws {
+        func makeAVI(microsecondsPerFrame: UInt32) throws -> URL {
+            var data = Data(repeating: 0, count: 256)
+            func write(_ bytes: [UInt8], at offset: Int) {
+                data.replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+            }
+            func writeLittleEndian(_ value: UInt32, at offset: Int) {
+                write([
+                    UInt8(truncatingIfNeeded: value),
+                    UInt8(truncatingIfNeeded: value >> 8),
+                    UInt8(truncatingIfNeeded: value >> 16),
+                    UInt8(truncatingIfNeeded: value >> 24),
+                ], at: offset)
+            }
+
+            write(Array("RIFF".utf8), at: 0)
+            write(Array("AVI ".utf8), at: 8)
+            write(Array("avih".utf8), at: 20)
+            writeLittleEndian(microsecondsPerFrame, at: 28)
+            writeLittleEndian(1_920, at: 60)
+            writeLittleEndian(1_080, at: 64)
+            write(Array("vidsavc1".utf8), at: 80)
+            write([0x67, 0x64, 0x00, 0x29], at: 100)
+
+            let url = FileManager.default.temporaryDirectory
+                .appending(path: UUID().uuidString)
+                .appendingPathExtension("avi")
+            try data.write(to: url)
+            return url
+        }
+
+        let riskyURL = try makeAVI(microsecondsPerFrame: 8_341)
+        let normalURL = try makeAVI(microsecondsPerFrame: 33_333)
+        defer {
+            try? FileManager.default.removeItem(at: riskyURL)
+            try? FileManager.default.removeItem(at: normalURL)
+        }
+
+        let riskyResult = await CompatibilityVideoRiskPolicy
+            .hasHighFrameRateH264LevelMismatch(at: riskyURL)
+        let normalResult = await CompatibilityVideoRiskPolicy
+            .hasHighFrameRateH264LevelMismatch(at: normalURL)
+        XCTAssertTrue(riskyResult)
+        XCTAssertFalse(normalResult)
+    }
+
     func testCompatibilitySubtitleMatchesExactBaseNameAndPrefersSRT() throws {
         let connectionID = UUID()
         let video = remoteItem(

@@ -259,7 +259,51 @@ final class BrowserFeaturePolicyTests: XCTestCase {
             )
             XCTAssertTrue(reflectionHeight.isFinite)
             XCTAssertGreaterThanOrEqual(reflectionHeight, 0)
+            let fileNameY = FileBrowserCoverFlowGeometryPolicy.fileNameCenterY(
+                layout: layout,
+                reflectionHeight: reflectionHeight,
+                containerHeight: size.height,
+                safeAreaBottom: 34
+            )
+            XCTAssertTrue(fileNameY.isFinite)
+            XCTAssertGreaterThan(fileNameY, 0)
         }
+    }
+
+    func testCoverFlowFileNameCenterYRespectsLayoutAndSafeAreas() {
+        let size = CGSize(width: 844, height: 390)
+        let layout = FileBrowserCoverFlowGeometryPolicy.geometry(
+            in: size,
+            safeAreaTop: 0,
+            safeAreaLeading: 44,
+            safeAreaBottom: 21,
+            safeAreaTrailing: 44
+        )
+        let reflectionHeight = FileBrowserCoverFlowPolicy.visibleReflectionHeight(
+            requestedHeight: 44,
+            containerHeight: size.height,
+            mainImageBottom: layout.squareBottom
+        )
+        let fileNameY = FileBrowserCoverFlowGeometryPolicy.fileNameCenterY(
+            layout: layout,
+            reflectionHeight: reflectionHeight,
+            containerHeight: size.height,
+            safeAreaBottom: 21
+        )
+        XCTAssertTrue(fileNameY.isFinite)
+        XCTAssertGreaterThan(fileNameY, layout.squareBottom)
+        XCTAssertLessThanOrEqual(fileNameY, size.height)
+    }
+
+    func testCoverFlowTitleMaximumWidthIsCapped() {
+        XCTAssertEqual(
+            FileBrowserCoverFlowChromePolicy.titleMaximumWidth(containerWidth: 1_000),
+            340
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowChromePolicy.titleMaximumWidth(containerWidth: 500),
+            220
+        )
     }
 
     func testAutomaticOverflowUsesActualBoundsAndNeverSelectionOrEmptyState() {

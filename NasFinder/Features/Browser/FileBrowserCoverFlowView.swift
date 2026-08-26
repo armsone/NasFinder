@@ -178,6 +178,26 @@ enum FileBrowserCoverFlowGeometryPolicy {
             floorCenterY: floorCenterY
         )
     }
+
+    static func fileNameCenterY(
+        layout: FileBrowserCoverFlowGeometry,
+        reflectionHeight: CGFloat,
+        containerHeight: CGFloat,
+        safeAreaBottom: CGFloat
+    ) -> CGFloat {
+        let safeBottom = max(safeAreaBottom.isFinite ? safeAreaBottom : 0, 0)
+        let containerH = max(containerHeight.isFinite ? containerHeight : 0, 1)
+        let reflectionBottom = layout.squareBottom
+            + FileBrowserCoverFlowPolicy.reflectionSpacing
+            + max(reflectionHeight.isFinite ? reflectionHeight : 0, 0)
+        let availableBottom = containerH - safeBottom
+        let preferredY = reflectionBottom + 12
+        let maxY = max(availableBottom - 10, layout.squareBottom + 14)
+        if preferredY <= maxY {
+            return preferredY
+        }
+        return min(max(reflectionBottom, layout.squareBottom + 14), maxY)
+    }
 }
 
 enum FileBrowserCoverFlowBackground: String, CaseIterable, Identifiable {
@@ -242,12 +262,14 @@ struct FileBrowserDeviceRotationModifier: ViewModifier {
 struct FileBrowserSearchModifier: ViewModifier {
     let isEnabled: Bool
     @Binding var text: String
+    @Binding var isPresented: Bool
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if isEnabled {
             content.searchable(
                 text: $text,
+                isPresented: $isPresented,
                 placement: .navigationBarDrawer(displayMode: .automatic),
                 prompt: "현재 폴더 검색"
             )
@@ -455,6 +477,43 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
                         layout: layout
                     )
                 }
+
+                if let centeredItem {
+                    Text(itemName(centeredItem))
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(
+                            usesDarkBackground
+                                ? Color.white.opacity(0.74)
+                                : Color.black.opacity(0.68)
+                        )
+                        .shadow(
+                            color: usesDarkBackground
+                                ? Color.black.opacity(0.60)
+                                : Color.white.opacity(0.80),
+                            radius: 2,
+                            y: 1
+                        )
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .padding(.horizontal, 16)
+                        .frame(
+                            maxWidth: min(
+                                proxy.size.width - proxy.safeAreaInsets.leading - proxy.safeAreaInsets.trailing - 32,
+                                max(layout.centerSide + 60, 240)
+                            )
+                        )
+                        .position(
+                            x: proxy.size.width / 2,
+                            y: FileBrowserCoverFlowGeometryPolicy.fileNameCenterY(
+                                layout: layout,
+                                reflectionHeight: usesDarkBackground ? 44 : 20,
+                                containerHeight: proxy.size.height,
+                                safeAreaBottom: proxy.safeAreaInsets.bottom
+                            )
+                        )
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
             .contentShape(Rectangle())
@@ -473,6 +532,16 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
     private var selectedItem: Item? {
         guard items.indices.contains(selectedIndex) else { return nil }
         return items[selectedIndex]
+    }
+
+    private var centeredItem: Item? {
+        guard !items.isEmpty else { return nil }
+        let index = min(
+            max(Int(scrollPosition.rounded()), 0),
+            items.count - 1
+        )
+        guard items.indices.contains(index) else { return nil }
+        return items[index]
     }
 
     private var visibleIndices: [Int] {
