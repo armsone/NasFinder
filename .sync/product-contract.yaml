@@ -108,10 +108,10 @@ capabilities:
     permissions_privacy_security: ["영구 데이터 삭제 없음"]
     background_lifecycle: "백그라운드에서 임시 작업 정리만 수행하고 데이터/스토어는 보존."
     gestures_accessibility: ["dashboard 복귀가 명확한 시작 상태를 제공"]
-    supported_devices_layouts: ["iPhone", "iPad", "Android phone"]
+    supported_devices_layouts: ["iPhone", "iPad", "Mac-compatible window", "Android phone/tablet/TV"]
     visual_reference: "복귀 직후 dashboard"
     platform_adaptations: {ios: ["ScenePhase 기반 리셋 마커"], android: ["onStop/onStart 기반 리턴 마커"]}
-    intentional_differences: ["iOS는 장면 위주, Android는 Activity 생명주기 위주"]
+    intentional_differences: []
     implementations:
       ios: {status: source_implemented_runtime_partially_verified, source_refs: ["NasFinder/App/ForegroundReturnResetCoordinator.swift", "NasFinder/App/NasFinderApp.swift", "NasFinderTests/ForegroundReturnResetTests.swift"], tests: ["NasFinderTests/ForegroundReturnResetTests.swift"], evidence: ["make install-verified에서 app 런치 확인"]}
       android: {status: source_implemented_runtime_partially_verified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/NasFinderApp.kt", "app/src/main/java/com/armsone/nasfinder/ui/NasFinderViewModel.kt"], tests: ["app/src/test/java/com/armsone/nasfinder/ui/ForegroundReturnContractTest.kt"], evidence: ["단위 테스트·assembleDebug 성공; 이번 차수 설치는 SM-F968N 미연결로 미실행"]}
@@ -420,13 +420,13 @@ capabilities:
 
   - id: thumbnails.display_cache_pipeline
     purpose: "Show useful thumbnails consistently in every list/grid/poster/overflow/favorite/inbox/provider consumer with bounded decode and durable invalidation."
-    source_refs: ["NasFinder/Features/Browser/RemoteThumbnailView.swift", "NasFinder/Features/Browser/FileProviderThumbnailCache.swift", "NasFinder/Features/Browser/SuperThumbnailCache.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift", "NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Connections/ThumbnailCacheSettingsView.swift", "NasFinderFileProvider/ThumbnailCache.swift"]
+    source_refs: ["NasFinder/Features/Browser/RemoteThumbnailView.swift", "NasFinder/Features/Browser/RemoteVideoThumbnailGenerator.swift", "NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Browser/FileBrowserCoverFlowView.swift", "NasFinder/Features/Browser/FileProviderThumbnailCache.swift", "NasFinder/Features/Browser/SuperThumbnailCache.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift", "NasFinder/Features/Connections/ThumbnailCacheSettingsView.swift", "NasFinderFileProvider/ThumbnailCache.swift"]
     entry_points: ["any thumbnail-bearing cell", "preheat", "Files thumbnail request"]
     preconditions: ["supported media/document type or available server/vault thumbnail"]
     inputs: ["connection/item identity", "modifiedAt", "requested display size", "cache limit"]
-    normal_result: "Consumers discover valid NAS Super Thumbnails from local Super Cache or NAS .NasFinder-Vault before phone-generated standard thumbnails; otherwise fall back to standard disk cache and remote generation, downsample to needed pixels, invalidate on modification/folder refresh, and fall back to a type icon/retryable state rather than an incorrect image."
-    states: [idle, memory_hit, disk_hit, provider_hit, loading, decoded, placeholder, failed, cancelled]
-    algorithms_and_thresholds: ["remote data key is shared across rendered sizes and includes modification date", "NAS Super Thumbnails take precedence over phone standard thumbnails", "decoder bounds pixel dimensions", "late stores after folder invalidation are rejected", "remote work limiter maximum concurrent work is 3"]
+    normal_result: "Consumers discover valid NAS Super Thumbnails from local Super Cache or NAS .NasFinder-Vault before phone-generated standard thumbnails; otherwise fall back to standard disk cache and remote generation, downsample to needed pixels, invalidate on modification/folder refresh, and fall back to a type icon/retryable state rather than an incorrect image. Wide Overflow initially loads the same card artwork on cellular, keeps it after drag settling, and renders reflections from the card's memory image without a second network request."
+    states: [idle, memory_hit, disk_hit, provider_hit, loading, decoded, placeholder, failed, cancelled, traffic_limited]
+    algorithms_and_thresholds: ["remote data key is shared across rendered sizes and includes modification date", "NAS Super Thumbnails take precedence over phone standard thumbnails", "decoder bounds pixel dimensions", "late stores after folder invalidation are rejected", "remote work limiter maximum concurrent work is 3", "cellular thumbnail leases charge known response bytes, 16 KiB for empty replies, 256 KiB for unknown interrupted replies, and the full per-item cap only for response-too-large", "a negative result is valid only for the network-path generation where it occurred", "Overflow reflections mirror the card's rendered memory-cache entry and never acquire a remote lease"]
     data_contracts: ["JPEG/image bytes", "SHA/cache key", "automatic persisted disk-limit choice", "main-thread cache-change notifications"]
     producer_consumer_routes: ["backend/vault/local generator -> memory/disk caches -> RemoteThumbnailView/FileProvider/favorites/browser/inbox/overflow"]
     persistence_relaunch: "Disk caches and supported limits persist; memory and active tasks do not."
@@ -438,7 +438,7 @@ capabilities:
     platform_adaptations: {ios: ["ImageIO/QuickLook/File Provider caches"], android: ["Bitmap decoder/Coil-style cache and DocumentsProvider thumbnail path with identical producer/fallback/invalidation chain"]}
     intentional_differences: []
     implementations:
-      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Browser/RemoteThumbnailView.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift", "NasFinderFileProvider/ThumbnailCache.swift"], tests: ["NasFinderTests/RemoteThumbnailCacheKeyTests.swift", "NasFinderTests/RemoteThumbnailDiskCacheTests.swift", "NasFinderTests/RemoteThumbnailImageDecoderTests.swift", "NasFinderTests/FileProviderThumbnailCacheTests.swift", "NasFinderTests/SuperThumbnailVaultTests.swift"], evidence: ["cache/decoder/vault-priority tests"]}
+      ios: {status: source_implemented_runtime_partially_verified, source_refs: ["NasFinder/Features/Browser/RemoteThumbnailView.swift", "NasFinder/Features/Browser/RemoteVideoThumbnailGenerator.swift", "NasFinder/Features/Browser/ThumbnailPreheater.swift", "NasFinder/Features/Browser/FileBrowserCoverFlowView.swift", "NasFinder/Features/Browser/SuperThumbnailVault.swift", "NasFinderFileProvider/ThumbnailCache.swift"], tests: ["NasFinderTests/RemoteThumbnailCellularAccountingTests.swift", "NasFinderTests/RemoteThumbnailCacheKeyTests.swift", "NasFinderTests/RemoteThumbnailDiskCacheTests.swift", "NasFinderTests/RemoteThumbnailImageDecoderTests.swift", "NasFinderTests/FileProviderThumbnailCacheTests.swift", "NasFinderTests/SuperThumbnailVaultTests.swift"], evidence: ["focused cellular accounting/reflection/retry tests passed on BK_iPhone17pro before the final report-only commits; real cellular NAS Overflow capture remains pending"]}
       android: {status: source_implemented_runtime_partially_verified, source_refs: ["RemoteThumbnailRepository.kt", "DocumentsThumbnailPolicy.kt", "NasFinderDocumentsProvider.kt"], tests: ["RemoteThumbnailCacheTest", "DocumentsThumbnailPolicyTest"], evidence: ["old Synology MOV trace; current Vault consumers/cold cache pending"]}
     dependencies: [remote.backends_protocols, thumbnails.super_pipeline]
     parity_row_ids: [thumbnail-pipeline]
@@ -522,7 +522,7 @@ capabilities:
   - id: preview.animated_gif.all_routes
     purpose: "GIF와 같은 멀티 프레임 이미지를 모든 공유 미리보기 경로에서 애니메이션으로 재생하고, 비GIF/단일프레임은 정적 대체 경로를 유지한다."
     source_refs: ["NasFinder/Features/Preview/AnimatedImageDecoder.swift", "NasFinder/Features/Preview/ZoomableMediaImageView.swift", "NasFinder/Features/Preview/RemotePreviewView.swift", "app/src/main/java/com/armsone/nasfinder/ui/NasFinderApp.kt"]
-    entry_points: ["browser image preview", "favorite/inbox/webhard image preview", "공유 링크/문서 기반 미리보기"]
+    entry_points: ["browser image preview", "favorite/inbox image preview", "공유 링크/문서 기반 미리보기"]
     preconditions: ["이미지 항목 진입", "GIF 탐지 성공"]
     inputs: ["GIF frame delay", "시각 경로(아이템 타입)", "디코드 오류 타입"]
     normal_result: "멀티 프레임 GIF는 공통 뷰어에서 애니메이션으로 재생되고, 단일 프레임/비 GIF/디코드 실패는 정적 이미지로 폴백한다."
@@ -561,8 +561,8 @@ capabilities:
     gestures_accessibility: ["볼륨 제어 상태 제공"]
     supported_devices_layouts: ["touch phone", "Android TV remote"]
     visual_reference: "fullscreen video gesture HUD"
-    platform_adaptations: {ios: ["UISlider/MPVolumeView 스타일과 함께 동작 보정"], android: ["AudioManager/볼륨 정책 정규화"]}
-    intentional_differences: ["iOS와 Android는 볼륨 UI 구현체가 다를 수 있음"]
+    platform_adaptations: {ios: ["기존 MPVolumeView 연속값 제어를 유지"], android: ["AudioManager의 기기별 max index를 기준으로 한 native 1-index 단위 정밀 조절"]}
+    intentional_differences: []
     implementations:
       ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Preview/RemotePreviewView.swift"], tests: ["NasFinderTests/RemoteThumbnailCellularAccountingTests.swift"], evidence: ["iOS 설치/런치 확인"]}
       android: {status: source_implemented_runtime_partially_verified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/MediaViewerPolicy.kt"], tests: ["app/src/test/java/com/armsone/nasfinder/ui/MediaViewerVolumeGranularityTest.kt"], evidence: ["단위 테스트+assembleDebug 성공"]}
