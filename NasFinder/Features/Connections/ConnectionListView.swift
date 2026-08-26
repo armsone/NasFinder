@@ -424,16 +424,15 @@ struct ConnectionListView: View {
     }
 
     /// Every sheet, pushed route and media surface returns to the dashboard
-    /// after the app comes back from the background. A shared-inbox route
-    /// that arrived with this activation keeps its pending preview.
+    /// after the app comes back from the background. Pending inbox routing is
+    /// transient too; the imported file stays stored, but is not auto-opened.
     private func resetToDashboardAfterForegroundReturn() {
         isAddingConnection = false
         editingConnection = nil
         connectionPendingDeletion = nil
         isImportingFromFiles = false
-        if inboxStore.pendingPreviewRecordID == nil {
-            inboxStore.shouldPresentInbox = false
-        }
+        inboxStore.shouldPresentInbox = false
+        _ = inboxStore.consumePendingPreviewRecordID()
         returnToDashboard()
     }
 
