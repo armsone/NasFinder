@@ -228,6 +228,164 @@ final class RemoteThumbnailCellularAccountingTests: XCTestCase {
         XCTAssertNil(reflectionLoader.image)
     }
 
+    @MainActor
+    func testCoverFlowColdEntryStartsOneRetainedRequestAndResolvesBothSurfaces() async throws {
+        RemoteThumbnailLoader.clearInMemoryCaches()
+        let service = ScriptedThumbnailService(
+            outcomes: [.data(byteCount: 0, image: try Self.solidImageData())]
+        )
+        let item = imageItem(connectionID: service.connection.id, name: "cold-card.png")
+        let state = FileBrowserCoverFlowThumbnailState()
+        let identity = "\(item.id)|280x280|reload=0|priority=userInitiated"
+
+        state.loader.startRetainedLoad(
+            identity: identity,
+            priority: .userInitiated,
+            item: item,
+            service: service,
+            size: CGSize(width: 280, height: 280),
+            reloadVersion: 0
+        )
+        state.loader.startRetainedLoad(
+            identity: identity,
+            priority: .userInitiated,
+            item: item,
+            service: service,
+            size: CGSize(width: 280, height: 280),
+            reloadVersion: 0
+        )
+
+        try await waitUntil { state.loader.image != nil }
+        let coldRequestCount = await service.requestCount()
+        XCTAssertEqual(coldRequestCount, 1)
+        let cardImage = try XCTUnwrap(state.loader.image)
+        let reflectionImage = try XCTUnwrap(state.loader.image)
+        XCTAssertTrue(cardImage === reflectionImage)
+        state.loader.cancelRetainedLoad()
+    }
+
+    @MainActor
+    func testCoverFlowCachedEntryRestoresSynchronouslyWithoutAnotherRequest() async throws {
+        RemoteThumbnailLoader.clearInMemoryCaches()
+        let service = ScriptedThumbnailService(
+            outcomes: [.data(byteCount: 0, image: try Self.solidImageData())]
+        )
+        let item = imageItem(connectionID: service.connection.id, name: "cached-card.png")
+        let size = CGSize(width: 280, height: 280)
+        let primingLoader = RemoteThumbnailLoader()
+        await primingLoader.load(
+            item: item,
+            service: service,
+            size: size,
+            reloadVersion: 0
+        )
+        XCTAssertNotNil(primingLoader.image)
+        let primingRequestCount = await service.requestCount()
+        XCTAssertEqual(primingRequestCount, 1)
+
+        let cachedState = FileBrowserCoverFlowThumbnailState()
+        cachedState.loader.startRetainedLoad(
+            identity: "\(item.id)|280x280|reload=0|priority=userInitiated",
+            priority: .userInitiated,
+            item: item,
+            service: service,
+            size: size,
+            reloadVersion: 0
+        )
+
+        // startRetainedLoad restores the rendered cache before scheduling any
+        // asynchronous Vault/backend work, so the first frame is not an icon.
+        XCTAssertNotNil(cachedState.loader.image)
+        try await Task.sleep(for: .milliseconds(50))
+        let cachedRequestCount = await service.requestCount()
+        XCTAssertEqual(cachedRequestCount, 1)
+        cachedState.loader.cancelRetainedLoad()
+    }
+
+    @MainActor
+    func testCoverFlowRetainedFailureRetriesOnNewReloadIdentity() async throws {
+        RemoteThumbnailLoader.clearInMemoryCaches()
+        let service = ScriptedThumbnailService(
+            outcomes: [
+                .failed,
+                .data(byteCount: 0, image: try Self.solidImageData())
+            ]
+        )
+        let item = imageItem(connectionID: service.connection.id, name: "retry-card.png")
+        let size = CGSize(width: 280, height: 280)
+        let state = FileBrowserCoverFlowThumbnailState()
+
+        state.loader.startRetainedLoad(
+            identity: "\(item.id)|reload=0|priority=userInitiated",
+            priority: .userInitiated,
+            item: item,
+            service: service,
+            size: size,
+            reloadVersion: 0
+        )
+        try await waitUntil { await service.requestCount() == 1 && !state.loader.isLoading }
+        XCTAssertNil(state.loader.image)
+
+        state.loader.startRetainedLoad(
+            identity: "\(item.id)|reload=1|priority=userInitiated",
+            priority: .userInitiated,
+            item: item,
+            service: service,
+            size: size,
+            reloadVersion: 1
+        )
+        try await waitUntil { state.loader.image != nil }
+        let retryRequestCount = await service.requestCount()
+        XCTAssertEqual(retryRequestCount, 2)
+        state.loader.cancelRetainedLoad()
+    }
+
+    @MainActor
+    func testCoverFlowCancellationDoesNotClearResolvedImage() async throws {
+        RemoteThumbnailLoader.clearInMemoryCaches()
+        let service = ScriptedThumbnailService(
+            outcomes: [.data(byteCount: 0, image: try Self.solidImageData())]
+        )
+        let item = imageItem(connectionID: service.connection.id, name: "cancel-card.png")
+        let size = CGSize(width: 280, height: 280)
+        let state = FileBrowserCoverFlowThumbnailState()
+        await state.loader.load(
+            item: item,
+            service: service,
+            size: size,
+            reloadVersion: 0
+        )
+        let resolvedImage = try XCTUnwrap(state.loader.image)
+
+        state.loader.invalidateForStoredThumbnail()
+        state.loader.startRetainedLoad(
+            identity: "\(item.id)|cache-refresh=1|priority=userInitiated",
+            priority: .userInitiated,
+            item: item,
+            service: service,
+            size: size,
+            reloadVersion: 0
+        )
+        state.loader.cancelRetainedLoad()
+
+        XCTAssertTrue(state.loader.image === resolvedImage)
+    }
+
+    @MainActor
+    private func waitUntil(
+        _ condition: @escaping @MainActor () async -> Bool
+    ) async throws {
+        let clock = ContinuousClock()
+        let timeout = clock.now + .seconds(3)
+        while !(await condition()) {
+            guard clock.now < timeout else {
+                XCTFail("Timed out waiting for thumbnail state")
+                return
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
     private static func solidImageData() throws -> Data {
         let renderer = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8))
         let image = renderer.image { context in
