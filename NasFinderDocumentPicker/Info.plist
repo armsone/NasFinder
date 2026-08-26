@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>CFBundleDisplayName</key>
+	<string>NasFinder</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>XPC!</string>
+	<key>CFBundleShortVersionString</key>
+	<string>2.2.1</string>
+	<key>CFBundleVersion</key>
+	<string>202608262315</string>
+	<key>NasFinderKeychainAccessGroup</key>
+	<string>$(AppIdentifierPrefix)com.armsone.nasfinder.shared</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>NasFinder가 파일을 가져오기 위해 같은 네트워크의 NAS 또는 SFTP 서버에 연결합니다.</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>UIDocumentPickerModes</key>
+			<array>
+				<string>UIDocumentPickerModeImport</string>
+				<string>UIDocumentPickerModeOpen</string>
+			</array>
+			<key>UIDocumentPickerSupportedFileTypes</key>
+			<array>
+				<string>public.content</string>
+				<string>public.data</string>
+			</array>
+		</dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.fileprovider-ui</string>
+		<key>NSExtensionPrincipalClass</key>
+		<string>$(PRODUCT_MODULE_NAME).NasFinderDocumentPickerViewController</string>
+	</dict>
+</dict>
+</plist>

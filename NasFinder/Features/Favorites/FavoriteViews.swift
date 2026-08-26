@@ -40,6 +40,43 @@ enum FavoriteShelfInteractionPolicy {
     }
 }
 
+enum FavoriteFolderMosaicPolicy {
+    static let maximumItemCount = 9
+
+    static func candidates(from items: [RemoteFileItem]) -> [RemoteFileItem] {
+        Array(
+            items
+                .filter { !$0.isDirectory && ($0.isImage || $0.isVideo) }
+                .prefix(maximumItemCount)
+        )
+    }
+}
+
+private actor FavoriteFolderMosaicCache {
+    static let shared = FavoriteFolderMosaicCache()
+
+    private struct Entry {
+        let items: [RemoteFileItem]
+        let storedAt: Date
+    }
+
+    private let lifetime: TimeInterval = 60
+    private var entriesByFolderID: [String: Entry] = [:]
+
+    func items(for folder: RemoteFileItem) -> [RemoteFileItem]? {
+        guard let entry = entriesByFolderID[folder.id],
+              Date().timeIntervalSince(entry.storedAt) < lifetime else {
+            entriesByFolderID.removeValue(forKey: folder.id)
+            return nil
+        }
+        return entry.items
+    }
+
+    func store(_ items: [RemoteFileItem], for folder: RemoteFileItem) {
+        entriesByFolderID[folder.id] = Entry(items: items, storedAt: Date())
+    }
+}
+
 struct FavoriteShelfView: View {
     private static let edgeScrollInset: CGFloat = 34
 
@@ -55,7 +92,7 @@ struct FavoriteShelfView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if favoriteStore.items.isEmpty {
-                Text("파일이나 폴더를 길게 눌러 즐겨찾기에 추가하세요.")
+                Text("길게 눌러 즐겨찾기에 추가하세요.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -539,12 +576,24 @@ private struct FavoriteRemovalPopover: View {
 
 struct FavoriteListView: View {
     @EnvironmentObject private var favoriteStore: FavoriteStore
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var favoritePendingRemoval: FavoriteItem?
 
-    private let columns = Array(
-        repeating: GridItem(.flexible(), spacing: 12, alignment: .top),
-        count: 4
-    )
+    private var columns: [GridItem] {
+        let count: Int
+        if dynamicTypeSize.isAccessibilitySize {
+            count = 2
+        } else if horizontalSizeClass == .regular {
+            count = 6
+        } else {
+            count = 3
+        }
+        return Array(
+            repeating: GridItem(.flexible(), spacing: 12, alignment: .top),
+            count: count
+        )
+    }
 
     var body: some View {
         Group {
@@ -575,6 +624,7 @@ struct FavoriteListView: View {
                 }
             }
         }
+        .background(SkyBreezeBackground())
         .navigationTitle("즐겨찾기")
         .navigationBarTitleDisplayMode(.inline)
         .confirmationDialog(
@@ -613,11 +663,19 @@ private struct FavoriteCell: View {
         VStack(spacing: 6) {
             Group {
                 if let service {
-                    RemoteThumbnailView(
-                        item: favorite.remoteItem,
-                        service: service,
-                        size: CGSize(width: side, height: side)
-                    )
+                    if favorite.remoteItem.isDirectory {
+                        FavoriteFolderMosaicView(
+                            folder: favorite.remoteItem,
+                            service: service,
+                            side: side
+                        )
+                    } else {
+                        RemoteThumbnailView(
+                            item: favorite.remoteItem,
+                            service: service,
+                            size: CGSize(width: side, height: side)
+                        )
+                    }
                 } else {
                     Image(systemName: favorite.remoteItem.systemImage)
                         .font(.system(size: side * 0.38))
@@ -671,6 +729,78 @@ private struct FavoriteCell: View {
     }
 }
 
+private struct FavoriteFolderMosaicView: View {
+    let folder: RemoteFileItem
+    let service: any RemoteFileService
+    let side: CGFloat
+
+    @State private var items: [RemoteFileItem] = []
+    @State private var isLoading = true
+
+    private let spacing: CGFloat = 1
+
+    var body: some View {
+        Group {
+            if items.isEmpty {
+                Image(systemName: "folder.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(side * 0.06)
+                    .foregroundStyle(SkyBreezeTheme.folderBlue)
+                    .overlay {
+                        if isLoading {
+                            ProgressView()
+                                .controlSize(.mini)
+                        }
+                    }
+            } else {
+                let cellSide = (side - spacing * 2) / 3
+                LazyVGrid(
+                    columns: Array(
+                        repeating: GridItem(.fixed(cellSide), spacing: spacing),
+                        count: 3
+                    ),
+                    spacing: spacing
+                ) {
+                    ForEach(0..<FavoriteFolderMosaicPolicy.maximumItemCount, id: \.self) {
+                        index in
+                        if items.indices.contains(index) {
+                            RemoteThumbnailView(
+                                item: items[index],
+                                service: service,
+                                size: CGSize(width: cellSide, height: cellSide),
+                                blursSkinToneDominantImage: true
+                            )
+                            .frame(width: cellSide, height: cellSide)
+                        } else {
+                            SkyBreezeTheme.folderBlue.opacity(0.08)
+                                .frame(width: cellSide, height: cellSide)
+                        }
+                    }
+                }
+            }
+        }
+        .frame(width: side, height: side)
+        .task(id: folder.id) {
+            if let cached = await FavoriteFolderMosaicCache.shared.items(for: folder) {
+                items = cached
+                isLoading = false
+                return
+            }
+            do {
+                let children = try await service.list(directory: folder.path)
+                let candidates = FavoriteFolderMosaicPolicy.candidates(from: children)
+                await FavoriteFolderMosaicCache.shared.store(candidates, for: folder)
+                items = candidates
+            } catch {
+                items = []
+            }
+            isLoading = false
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 private struct FavoriteConnectionBadge: View {
     let kind: ConnectionKind
     let side: CGFloat
@@ -678,32 +808,46 @@ private struct FavoriteConnectionBadge: View {
     var body: some View {
         Text(kind.favoriteBadgeLetter)
             .font(.system(size: max(8, side * 0.15), weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
+            .foregroundStyle(kind.favoriteBadgeForegroundColor)
             .frame(width: max(15, side * 0.25), height: max(15, side * 0.25))
-            .background(kind.favoriteBadgeColor.opacity(0.88), in: Circle())
+            .background(kind.favoriteBadgeColor, in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(SkyBreezeTheme.thumbnailSurface.opacity(0.9), lineWidth: 1)
+            }
             .accessibilityHidden(true)
     }
 }
 
 private extension ConnectionKind {
     var favoriteBadgeLetter: String {
-        switch self {
-        case .synology: "N"
-        case .sftp: "S"
-        }
+        ThemeServicePalette.badgeLetter(forServiceIdentifier: rawValue)
     }
 
     var favoriteBadgeColor: Color {
-        switch self {
-        case .synology: SkyBreezeTheme.nasBlue
-        case .sftp: SkyBreezeTheme.sftpGreen
-        }
+        ThemeServicePalette.color(
+            forServiceIdentifier: rawValue,
+            theme: .current
+        )
+    }
+
+    var favoriteBadgeForegroundColor: Color {
+        ThemeServicePalette.foregroundColor(
+            forServiceIdentifier: rawValue,
+            theme: .current
+        )
     }
 
     var dashboardSourceName: String {
         switch self {
         case .synology: "NAS"
         case .sftp: "SFTP"
+        case .smb: "SMB"
+        case .webDAV: "WebDAV"
+        case .ftp: "FTP"
+        case .dropbox: "Dropbox"
+        case .oneDrive: "OneDrive"
+        case .googleDrive: "Google Drive"
         }
     }
 }

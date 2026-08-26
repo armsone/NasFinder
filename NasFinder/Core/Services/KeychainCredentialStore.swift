@@ -1,8 +1,39 @@
 import Foundation
 import Security
 
+enum OAuthProvider: String, Codable, Sendable, CaseIterable {
+    case dropbox
+    case microsoft
+    case google
+    case box
+    case pCloud
+    case yandex
+}
+
+struct OAuthCredential: Codable, Equatable, Sendable {
+    let provider: OAuthProvider
+    let accessToken: String
+    let refreshToken: String?
+    let expirationDate: Date?
+    let accountIdentifier: String?
+    let grantedScopes: [String]
+}
+
+struct S3Credential: Codable, Equatable, Sendable {
+    let accessKeyID: String
+    let secretAccessKey: String
+    let sessionToken: String?
+    let expirationDate: Date?
+}
+
+enum CloudCredential: Codable, Equatable, Sendable {
+    case oauth(OAuthCredential)
+    case s3(S3Credential)
+}
+
 struct KeychainCredentialStore: @unchecked Sendable {
-    private let service = "com.armsone.nasfinder.credentials"
+    private let passwordService = "com.armsone.nasfinder.credentials"
+    private let cloudService = "com.armsone.nasfinder.cloud-credentials.v1"
 
     private var accessGroup: String? {
         guard let value = Bundle.main.object(forInfoDictionaryKey: "NasFinderKeychainAccessGroup") as? String,
@@ -14,18 +45,36 @@ struct KeychainCredentialStore: @unchecked Sendable {
     }
 
     func save(_ credential: RemoteCredential, for connectionID: UUID) throws {
-        let account = connectionID.uuidString
-        let passwordData = Data(credential.password.utf8)
+        try save(
+            Data(credential.password.utf8),
+            service: passwordService,
+            connectionID: connectionID
+        )
+    }
+
+    func save(_ credential: CloudCredential, for connectionID: UUID) throws {
+        try save(
+            try JSONEncoder().encode(credential),
+            service: cloudService,
+            connectionID: connectionID
+        )
+    }
+
+    private func save(
+        _ data: Data,
+        service: String,
+        connectionID: UUID
+    ) throws {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: account
+            kSecAttrAccount as String: connectionID.uuidString
         ]
         if let accessGroup {
             query[kSecAttrAccessGroup as String] = accessGroup
         }
         let attributes: [String: Any] = [
-            kSecValueData as String: passwordData,
+            kSecValueData as String: data,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         ]
 
@@ -44,6 +93,31 @@ struct KeychainCredentialStore: @unchecked Sendable {
     }
 
     func credential(for connectionID: UUID) throws -> RemoteCredential? {
+        guard let data = try data(
+            service: passwordService,
+            connectionID: connectionID
+        ), let password = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return RemoteCredential(password: password)
+    }
+
+    func cloudCredential(for connectionID: UUID) throws -> CloudCredential? {
+        guard let data = try data(
+            service: cloudService,
+            connectionID: connectionID
+        ) else { return nil }
+        return try JSONDecoder().decode(CloudCredential.self, from: data)
+    }
+
+    func oauthCredential(for connectionID: UUID) throws -> OAuthCredential? {
+        guard case let .oauth(credential)? = try cloudCredential(for: connectionID) else {
+            return nil
+        }
+        return credential
+    }
+
+    private func data(service: String, connectionID: UUID) throws -> Data? {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -57,15 +131,18 @@ struct KeychainCredentialStore: @unchecked Sendable {
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         if status == errSecItemNotFound { return nil }
-        guard status == errSecSuccess,
-              let data = result as? Data,
-              let password = String(data: data, encoding: .utf8) else {
+        guard status == errSecSuccess, let data = result as? Data else {
             throw keychainError(status)
         }
-        return RemoteCredential(password: password)
+        return data
     }
 
     func remove(for connectionID: UUID) throws {
+        try remove(service: passwordService, connectionID: connectionID)
+        try remove(service: cloudService, connectionID: connectionID)
+    }
+
+    private func remove(service: String, connectionID: UUID) throws {
         var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

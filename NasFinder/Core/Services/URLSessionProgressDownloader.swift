@@ -12,6 +12,7 @@ final class URLSessionProgressDownloader: NSObject,
     URLSessionDownloadDelegate,
     @unchecked Sendable {
     private let configuration: URLSessionConfiguration
+    private let authenticationCredential: URLCredential?
     private let progressRelay: URLSessionDownloadProgressRelay
     private let stagingDestinationProvider: @Sendable () -> URL
     private let lock = NSLock()
@@ -27,6 +28,7 @@ final class URLSessionProgressDownloader: NSObject,
 
     init(
         configuration: URLSessionConfiguration,
+        authenticationCredential: URLCredential? = nil,
         progressHandler: @escaping RemoteDownloadProgressHandler,
         stagingDestinationProvider: @escaping @Sendable () -> URL = {
             FileManager.default.temporaryDirectory
@@ -34,6 +36,7 @@ final class URLSessionProgressDownloader: NSObject,
         }
     ) {
         self.configuration = configuration
+        self.authenticationCredential = authenticationCredential
         progressRelay = URLSessionDownloadProgressRelay(handler: progressHandler)
         self.stagingDestinationProvider = stagingDestinationProvider
     }
@@ -73,6 +76,23 @@ final class URLSessionProgressDownloader: NSObject,
         lock.unlock()
 
         activeTask?.cancel()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        let method = challenge.protectionSpace.authenticationMethod
+        if let authenticationCredential,
+           method == NSURLAuthenticationMethodHTTPBasic
+                || method == NSURLAuthenticationMethodHTTPDigest
+                || method == NSURLAuthenticationMethodDefault {
+            completionHandler(.useCredential, authenticationCredential)
+        } else {
+            completionHandler(.performDefaultHandling, nil)
+        }
     }
 
     func urlSession(

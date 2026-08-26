@@ -10,6 +10,7 @@ final class RemoteThumbnailActivityTracker: ObservableObject {
 
     @Published private(set) var isActive = false
     @Published private(set) var fractionCompleted: Double = 0
+    @Published private(set) var limitMessage: String?
 
     private var activeOperationIDs: Set<UUID> = []
     private var completedCount = 0
@@ -18,6 +19,18 @@ final class RemoteThumbnailActivityTracker: ObservableObject {
     private let screenAwakeActivityID = UUID()
 
     private init() {}
+
+    func beginNewSession() {
+        limitMessage = nil
+    }
+
+    func reachedTrafficLimit(maximumBytes: Int) {
+        let formatted = ByteCountFormatter.string(
+            fromByteCount: Int64(maximumBytes),
+            countStyle: .file
+        )
+        limitMessage = "썸네일 네트워크 한도 \(formatted)에서 일시 중지됨"
+    }
 
     func begin(_ operationID: UUID) {
         guard activeOperationIDs.insert(operationID).inserted else { return }
@@ -85,6 +98,20 @@ enum RemoteThumbnailCacheKey {
         let pixelHeight = Int((displaySize.height * scale).rounded(.up))
         return "\(remoteData(for: item, size: size))|\(pixelWidth)x\(pixelHeight)" as NSString
     }
+
+    static func allRemoteDataKeys(for item: RemoteFileItem) -> Set<String> {
+        Set(RemoteThumbnailSize.allCases.map {
+            remoteData(for: item, size: $0)
+        })
+    }
+}
+
+enum RemoteThumbnailDisplayMode: Equatable, Sendable {
+    /// Loads the thumbnail from caches, the backend, or local generation.
+    case standard
+    /// Renders the same loader state as its Overflow card without starting a
+    /// second task or subscribing to cache/network notifications.
+    case sharedReflection
 }
 
 struct RemoteThumbnailView: View {
@@ -92,21 +119,173 @@ struct RemoteThumbnailView: View {
     let service: any RemoteFileService
     let size: CGSize
     let reloadVersion: Int
+    let blursSkinToneDominantImage: Bool
+    let displayMode: RemoteThumbnailDisplayMode
 
-    @StateObject private var loader = RemoteThumbnailLoader()
-    @State private var cacheRefreshVersion = 0
+    private let sharedLoader: RemoteThumbnailLoader?
 
     init(
         item: RemoteFileItem,
         service: any RemoteFileService,
         size: CGSize,
-        reloadVersion: Int = 0
+        reloadVersion: Int = 0,
+        blursSkinToneDominantImage: Bool = false,
+        displayMode: RemoteThumbnailDisplayMode = .standard,
+        sharedLoader: RemoteThumbnailLoader? = nil
     ) {
         self.item = item
         self.service = service
         self.size = size
         self.reloadVersion = reloadVersion
+        self.blursSkinToneDominantImage = blursSkinToneDominantImage
+        self.displayMode = displayMode
+        self.sharedLoader = sharedLoader
     }
+
+    @ViewBuilder
+    var body: some View {
+        if let sharedLoader {
+            RemoteThumbnailLoaderHost(
+                loader: sharedLoader,
+                item: item,
+                service: service,
+                size: size,
+                reloadVersion: reloadVersion,
+                blursSkinToneDominantImage: blursSkinToneDominantImage,
+                drivesLoading: displayMode == .standard,
+                retainsLoadTask: true
+            )
+        } else {
+            RemoteThumbnailOwnedLoaderHost(
+                item: item,
+                service: service,
+                size: size,
+                reloadVersion: reloadVersion,
+                blursSkinToneDominantImage: blursSkinToneDominantImage,
+                drivesLoading: displayMode == .standard
+            )
+        }
+    }
+}
+
+private struct RemoteThumbnailOwnedLoaderHost: View {
+    @StateObject private var loader = RemoteThumbnailLoader()
+
+    let item: RemoteFileItem
+    let service: any RemoteFileService
+    let size: CGSize
+    let reloadVersion: Int
+    let blursSkinToneDominantImage: Bool
+    let drivesLoading: Bool
+
+    var body: some View {
+        RemoteThumbnailLoaderHost(
+            loader: loader,
+            item: item,
+            service: service,
+            size: size,
+            reloadVersion: reloadVersion,
+            blursSkinToneDominantImage: blursSkinToneDominantImage,
+            drivesLoading: drivesLoading,
+            retainsLoadTask: false
+        )
+    }
+}
+
+private struct RemoteThumbnailLoaderHost: View {
+    @ObservedObject var loader: RemoteThumbnailLoader
+
+    let item: RemoteFileItem
+    let service: any RemoteFileService
+    let size: CGSize
+    let reloadVersion: Int
+    let blursSkinToneDominantImage: Bool
+    let drivesLoading: Bool
+    let retainsLoadTask: Bool
+
+    @State private var cacheRefreshVersion = 0
+    @State private var networkPathVersion = 0
+
+    @ViewBuilder
+    var body: some View {
+        if drivesLoading {
+            loadingContent
+                .onReceive(
+                    NotificationCenter.default.publisher(
+                        for: .remoteThumbnailDiskCacheDidStore
+                    )
+                ) { notification in
+                    guard let storedKey = notification.object as? String,
+                          thumbnailCacheKeys.contains(storedKey) else { return }
+                    loader.invalidateForStoredThumbnail()
+                    cacheRefreshVersion &+= 1
+                }
+                .onReceive(
+                    NotificationCenter.default.publisher(
+                        for: .thumbnailNetworkPathDidChange
+                    )
+                ) { _ in
+                    networkPathVersion &+= 1
+                }
+        } else {
+            content
+        }
+    }
+
+    @ViewBuilder
+    private var loadingContent: some View {
+        if retainsLoadTask {
+            content
+                .task(id: taskIdentity) {
+                    loader.startRetainedLoad(
+                        identity: taskIdentity,
+                        priority: .userInitiated,
+                        item: item,
+                        service: service,
+                        size: size,
+                        reloadVersion: reloadVersion,
+                        detectSkinToneDominance: blursSkinToneDominantImage
+                    )
+                }
+                .onDisappear {
+                    loader.cancelRetainedLoad()
+                }
+        } else {
+            content
+                .task(id: taskIdentity) {
+                    await loader.load(
+                        item: item,
+                        service: service,
+                        size: size,
+                        reloadVersion: reloadVersion,
+                        detectSkinToneDominance: blursSkinToneDominantImage
+                    )
+                }
+        }
+    }
+
+    private var content: some View {
+        RemoteThumbnailRenderedContent(
+            loader: loader,
+            item: item,
+            blursSkinToneDominantImage: blursSkinToneDominantImage
+        )
+    }
+
+    private var taskIdentity: String {
+        let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
+        return "\(item.id)|\(version)|\(item.size ?? -1)|\(size.width)x\(size.height)|\(UIScreen.main.scale)|\(reloadVersion)|\(blursSkinToneDominantImage)|\(cacheRefreshVersion)|\(networkPathVersion)"
+    }
+
+    private var thumbnailCacheKeys: Set<String> {
+        RemoteThumbnailCacheKey.allRemoteDataKeys(for: item)
+    }
+}
+
+private struct RemoteThumbnailRenderedContent: View {
+    @ObservedObject var loader: RemoteThumbnailLoader
+    let item: RemoteFileItem
+    let blursSkinToneDominantImage: Bool
 
     var body: some View {
         GeometryReader { geometry in
@@ -120,6 +299,11 @@ struct RemoteThumbnailView: View {
                             height: geometry.size.height
                         )
                         .clipped()
+                        .blur(
+                            radius: blursSkinToneDominantImage && loader.isSkinToneDominant
+                                ? 2
+                                : 0
+                        )
                 } else {
                     Image(systemName: item.systemImage)
                         .font(.system(size: min(geometry.size.width, geometry.size.height) * 0.38))
@@ -140,42 +324,14 @@ struct RemoteThumbnailView: View {
             .frame(width: geometry.size.width, height: geometry.size.height)
             .clipped()
         }
-        .task(id: taskIdentity) {
-            await loader.load(
-                item: item,
-                service: service,
-                size: size,
-                reloadVersion: reloadVersion
-            )
-        }
-        .onReceive(
-            NotificationCenter.default.publisher(
-                for: .remoteThumbnailDiskCacheDidStore
-            )
-        ) { notification in
-            guard let storedKey = notification.object as? String,
-                  thumbnailCacheKeys.contains(storedKey) else { return }
-            loader.invalidateForStoredThumbnail()
-            cacheRefreshVersion &+= 1
-        }
-    }
-
-    private var taskIdentity: String {
-        let version = item.modifiedAt?.timeIntervalSince1970 ?? 0
-        return "\(item.id)|\(version)|\(item.size ?? -1)|\(size.width)x\(size.height)|\(UIScreen.main.scale)|\(reloadVersion)|\(cacheRefreshVersion)"
-    }
-
-    private var thumbnailCacheKeys: Set<String> {
-        Set(RemoteThumbnailSize.allCases.map {
-            RemoteThumbnailCacheKey.remoteData(for: item, size: $0)
-        })
     }
 }
 
 @MainActor
-private final class RemoteThumbnailLoader: ObservableObject {
+final class RemoteThumbnailLoader: ObservableObject {
     @Published var image: UIImage?
     @Published var isLoading = false
+    @Published var isSkinToneDominant = false
 
     private static let imageCache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
@@ -183,48 +339,125 @@ private final class RemoteThumbnailLoader: ObservableObject {
         cache.totalCostLimit = 64 * 1_024 * 1_024
         return cache
     }()
-    private static var negativeCacheExpirations: [NSString: Date] = [:]
-
+    private static var negativeCacheExpirations: [NSString: RemoteThumbnailNegativeCacheEntry] = [:]
     private var loadedCacheKey: NSString?
+    private var displayedImageCacheKey: NSString?
     private var operationID: UUID?
     private var loadedReloadVersion = 0
+    private var retainedLoadIdentity: String?
+    private var retainedLoadTask: Task<Void, Never>?
+    private var retainedLoadID: UUID?
 
     static func clearInMemoryCaches() {
         imageCache.removeAllObjects()
         negativeCacheExpirations.removeAll()
     }
 
+    static func clearTransientFailures() {
+        negativeCacheExpirations.removeAll()
+    }
+
     func invalidateForStoredThumbnail() {
         if let loadedCacheKey {
             Self.negativeCacheExpirations.removeValue(forKey: loadedCacheKey)
+            Self.imageCache.removeObject(forKey: loadedCacheKey)
         }
         loadedCacheKey = nil
+    }
+
+    /// Cover Flow owns one loader per card. Keep its single request attached
+    /// to that loader instead of the rendered SwiftUI subtree so a redraw of
+    /// the card/reflection pair cannot cancel the cold-entry request.
+    func startRetainedLoad(
+        identity: String,
+        priority: TaskPriority,
+        item: RemoteFileItem,
+        service: any RemoteFileService,
+        size: CGSize,
+        reloadVersion: Int,
+        detectSkinToneDominance: Bool = false
+    ) {
+        restoreRenderedImageIfCached(
+            item: item,
+            size: size,
+            detectSkinToneDominance: detectSkinToneDominance
+        )
+        guard retainedLoadIdentity != identity else { return }
+
+        retainedLoadTask?.cancel()
+        // The replacement task must not lose a race with the cancelled task's
+        // loaded-key guard. The displayed image has its own key and remains
+        // visible while this request is restarted.
+        loadedCacheKey = nil
+        let loadID = UUID()
+        retainedLoadIdentity = identity
+        retainedLoadID = loadID
+        retainedLoadTask = Task(priority: priority) { @MainActor [weak self] in
+            guard let self else { return }
+            await self.load(
+                item: item,
+                service: service,
+                size: size,
+                reloadVersion: reloadVersion,
+                detectSkinToneDominance: detectSkinToneDominance
+            )
+            guard self.retainedLoadID == loadID else { return }
+            self.retainedLoadTask = nil
+            self.retainedLoadID = nil
+        }
+    }
+
+    func cancelRetainedLoad() {
+        retainedLoadTask?.cancel()
+        retainedLoadTask = nil
+        retainedLoadIdentity = nil
+        retainedLoadID = nil
+    }
+
+    private func restoreRenderedImageIfCached(
+        item: RemoteFileItem,
+        size: CGSize,
+        detectSkinToneDominance: Bool
+    ) {
+        let cacheKey = renderedImageCacheKey(for: item, size: size)
+        guard let cachedImage = Self.imageCache.object(forKey: cacheKey) else { return }
+        setImage(
+            cachedImage,
+            forKey: cacheKey,
+            detectSkinToneDominance: detectSkinToneDominance
+        )
+        isLoading = false
     }
 
     func load(
         item: RemoteFileItem,
         service: any RemoteFileService,
         size: CGSize,
-        reloadVersion: Int
+        reloadVersion: Int,
+        detectSkinToneDominance: Bool = false
     ) async {
-        guard shouldGenerateThumbnail(for: item) else {
-            image = nil
-            isLoading = false
+        if FolderSuperThumbnailDisplayPolicy.shouldLookup(item: item) {
+            await loadFolderSuperThumbnail(
+                item: item,
+                service: service,
+                size: size,
+                reloadVersion: reloadVersion,
+                detectSkinToneDominance: FolderSuperThumbnailDisplayPolicy
+                    .detectsSkinToneDominance(requestedByConsumer: detectSkinToneDominance)
+            )
             return
         }
-
         let requestedRemoteSize = requestedRemoteSize(for: size)
-        let cacheKey = RemoteThumbnailCacheKey.renderedImage(
-            for: item,
-            size: requestedRemoteSize,
-            displaySize: size,
-            scale: UIScreen.main.scale
-        )
+        let cacheKey = renderedImageCacheKey(for: item, size: size)
         let diskCacheKey = RemoteThumbnailCacheKey.remoteData(
             for: item,
             size: requestedRemoteSize
         )
         if reloadVersion != loadedReloadVersion {
+            Self.imageCache.removeObject(forKey: cacheKey)
+            Self.negativeCacheExpirations.removeValue(forKey: cacheKey)
+            image = nil
+            displayedImageCacheKey = nil
             if let loadedCacheKey {
                 Self.negativeCacheExpirations.removeValue(forKey: loadedCacheKey)
             }
@@ -234,18 +467,33 @@ private final class RemoteThumbnailLoader: ObservableObject {
         guard loadedCacheKey != cacheKey else { return }
         loadedCacheKey = cacheKey
 
-        if let cachedImage = Self.imageCache.object(forKey: cacheKey) {
-            image = cachedImage
-            isLoading = false
-            return
+        if displayedImageCacheKey != cacheKey {
+            image = nil
+            isSkinToneDominant = false
+            displayedImageCacheKey = nil
         }
-        var cachedDiskData = await RemoteThumbnailDiskCache.shared.data(forKey: diskCacheKey)
-        if cachedDiskData == nil, requestedRemoteSize != .small {
-            cachedDiskData = await RemoteThumbnailDiskCache.shared.data(
-                forKey: RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
+
+        // Restore the card synchronously from its rendered-memory cache before
+        // any NAS Vault listing. Continue through the higher-priority Super
+        // Thumbnail sources so a newly generated Vault image can still replace
+        // this one, but never blank an already resolved card while doing so.
+        let cachedMemoryImage = Self.imageCache.object(forKey: cacheKey)
+        if let cachedMemoryImage {
+            setImage(
+                cachedMemoryImage,
+                forKey: cacheKey,
+                detectSkinToneDominance: detectSkinToneDominance
             )
+            isLoading = false
         }
-        if let diskData = cachedDiskData,
+
+        // 1. Prioritize Super Thumbnail cache first
+        var cachedSuperData = await SuperThumbnailCache.shared.data(forKey: diskCacheKey)
+        if cachedSuperData == nil, requestedRemoteSize != .small {
+            let smallKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
+            cachedSuperData = await SuperThumbnailCache.shared.data(forKey: smallKey)
+        }
+        if let diskData = cachedSuperData,
            let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
                data: diskData,
                maximumPixelSize: maximumPixelSize(for: size)
@@ -256,20 +504,93 @@ private final class RemoteThumbnailLoader: ObservableObject {
                 scale: UIScreen.main.scale,
                 orientation: .up
             )
-            image = diskImage
+            setImage(
+                diskImage,
+                forKey: cacheKey,
+                detectSkinToneDominance: detectSkinToneDominance
+            )
+            cache(diskImage, forKey: cacheKey)
+            return
+        }
+
+        // 2. Prioritize valid NAS Super Thumbnail from .NasFinder-Vault before phone-generated thumbnails
+        if let vaultData = await SuperThumbnailVault.shared.data(for: item, service: service),
+           let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
+               data: vaultData,
+               maximumPixelSize: maximumPixelSize(for: size)
+           ) {
+            try? Task.checkCancellation()
+            let vaultImage = UIImage(
+                cgImage: decodedImage.image,
+                scale: UIScreen.main.scale,
+                orientation: .up
+            )
+            setImage(
+                vaultImage,
+                forKey: cacheKey,
+                detectSkinToneDominance: detectSkinToneDominance
+            )
+            cache(vaultImage, forKey: cacheKey)
+            await SuperThumbnailCache.shared.store(
+                vaultData,
+                forKey: diskCacheKey
+            )
+            return
+        }
+
+        // A rendered phone thumbnail may already be in memory. Check the NAS
+        // vault first so a newly available Super Thumbnail still replaces it.
+        if cachedMemoryImage != nil {
+            return
+        }
+
+        // A Mac-generated Vault thumbnail remains displayable even when this
+        // device cannot generate a standard thumbnail for the original type.
+        guard shouldGenerateThumbnail(for: item) else {
+            image = nil
+            isSkinToneDominant = false
+            isLoading = false
+            return
+        }
+
+        // 3. Fall back to phone-generated standard thumbnail disk cache
+        var cachedStandardData = await RemoteThumbnailDiskCache.shared.data(forKey: diskCacheKey)
+        if cachedStandardData == nil, requestedRemoteSize != .small {
+            let smallKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
+            cachedStandardData = await RemoteThumbnailDiskCache.shared.data(forKey: smallKey)
+        }
+        if let diskData = cachedStandardData,
+           let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
+               data: diskData,
+               maximumPixelSize: maximumPixelSize(for: size)
+           ) {
+            try? Task.checkCancellation()
+            let diskImage = UIImage(
+                cgImage: decodedImage.image,
+                scale: UIScreen.main.scale,
+                orientation: .up
+            )
+            setImage(
+                diskImage,
+                forKey: cacheKey,
+                detectSkinToneDominance: detectSkinToneDominance
+            )
             cache(diskImage, forKey: cacheKey)
             return
         }
         if isNegativelyCached(cacheKey) {
             image = nil
             isLoading = false
+            // Keep the key unclaimed so the next legitimate run re-checks the
+            // caches and the (possibly expired) failure instead of returning
+            // at the identity guard above.
+            loadedCacheKey = nil
             return
         }
         let diskCacheGeneration = await RemoteThumbnailDiskCache.shared.currentGeneration()
 
         let currentOperationID = UUID()
         operationID = currentOperationID
-        image = nil
         isLoading = true
         RemoteThumbnailActivityTracker.shared.begin(currentOperationID)
         defer {
@@ -282,16 +603,32 @@ private final class RemoteThumbnailLoader: ObservableObject {
 
         let remoteThumbnailData: Data?
         do {
-            remoteThumbnailData = try await fetchRemoteThumbnailData(
-                item: item,
-                service: service,
-                size: requestedRemoteSize
-            )
+            let cellularBudget = ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
+                ? nil
+                : RemoteVideoThumbnailTrafficBudget.cellularShared
+            remoteThumbnailData = RemoteVideoThumbnailRoutingPolicy
+                .bypassesBackendThumbnail(for: item, service: service)
+                ? nil
+                : try await fetchRemoteThumbnailData(
+                    item: item,
+                    service: service,
+                    size: requestedRemoteSize,
+                    cellularBudget: cellularBudget
+                )
         } catch RemoteThumbnailError.optimizedPreviewUnavailable {
             // SFTP video previews deliberately avoid downloading the complete
             // original when a bounded head/tail range is not sufficient.
             // Keep the video icon visible and allow a later reload to retry.
             cacheNegative(cacheKey, for: 5 * 60)
+            return
+        } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
+            // The shared cellular pool is spent. Pause briefly instead of
+            // recording a long failure; the pool resets on Wi-Fi and a
+            // network change retries the card.
+            RemoteThumbnailActivityTracker.shared.reachedTrafficLimit(
+                maximumBytes: Int(ThumbnailPreheater.maximumCellularDataBytes)
+            )
+            cacheNegative(cacheKey, for: 30)
             return
         } catch is CancellationError {
             if operationID == currentOperationID {
@@ -329,7 +666,11 @@ private final class RemoteThumbnailLoader: ObservableObject {
                     scale: UIScreen.main.scale,
                     orientation: .up
                 )
-                image = remoteImage
+                setImage(
+                    remoteImage,
+                    forKey: cacheKey,
+                    detectSkinToneDominance: detectSkinToneDominance
+                )
                 cache(remoteImage, forKey: cacheKey)
                 await RemoteThumbnailDiskCache.shared.store(
                     remoteThumbnailData,
@@ -373,11 +714,18 @@ private final class RemoteThumbnailLoader: ObservableObject {
 
         if canGenerateBoundedVideoThumbnail(for: item, service: service) {
             do {
+                let usesCellularBudget = !ThumbnailNetworkMonitor.shared
+                    .isUnmeteredWiFi
                 let generated = try await RemoteThumbnailWorkLimiter.shared.withPermit {
                     try await RemoteVideoThumbnailGenerator.generate(
                         for: item,
                         service: service,
-                        size: requestedRemoteSize
+                        size: requestedRemoteSize,
+                        trafficBudget: usesCellularBudget
+                            ? RemoteVideoThumbnailTrafficBudget.cellularShared
+                            : RemoteVideoThumbnailRoutingPolicy.trafficBudget(
+                                for: service
+                            )
                     )
                 }
                 let maximumPixelSize = maximumPixelSize(for: size)
@@ -399,7 +747,11 @@ private final class RemoteThumbnailLoader: ObservableObject {
                     scale: UIScreen.main.scale,
                     orientation: .up
                 )
-                image = generatedUIImage
+                setImage(
+                    generatedUIImage,
+                    forKey: cacheKey,
+                    detectSkinToneDominance: detectSkinToneDominance
+                )
                 cache(generatedUIImage, forKey: cacheKey)
                 await RemoteThumbnailDiskCache.shared.store(
                     generated.data,
@@ -413,6 +765,14 @@ private final class RemoteThumbnailLoader: ObservableObject {
                     loadedCacheKey = nil
                 }
                 return
+            } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
+                RemoteThumbnailActivityTracker.shared.reachedTrafficLimit(
+                    maximumBytes: ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
+                        ? RemoteVideoThumbnailTrafficBudget.defaultMaximumFolderBytes
+                        : Int(ThumbnailPreheater.maximumCellularDataBytes)
+                )
+                cacheNegative(cacheKey, for: 30)
+                return
             } catch {
                 if RemoteRequestCancellation.isCancellation(error) {
                     if operationID == currentOperationID {
@@ -423,6 +783,11 @@ private final class RemoteThumbnailLoader: ObservableObject {
                 cacheNegative(cacheKey, for: 5 * 60)
                 return
             }
+        }
+
+        guard ThumbnailNetworkMonitor.shared.isUnmeteredWiFi else {
+            cacheNegative(cacheKey, for: 30)
+            return
         }
 
         do {
@@ -446,7 +811,11 @@ private final class RemoteThumbnailLoader: ObservableObject {
                 loadedCacheKey = nil
                 return
             }
-            image = generatedImage.image
+            setImage(
+                generatedImage.image,
+                forKey: cacheKey,
+                detectSkinToneDominance: detectSkinToneDominance
+            )
             cache(generatedImage.image, forKey: cacheKey)
             if let generatedThumbnailData = generatedImage.image.jpegData(
                 compressionQuality: 0.82
@@ -477,14 +846,170 @@ private final class RemoteThumbnailLoader: ObservableObject {
         }
     }
 
+    /// Displays a folder Super Thumbnail generated by the Mac helper. This is
+    /// pure discovery: at most one vault listing plus one small JPEG download
+    /// per folder, negatively cached so a missing sheet stays retryable and an
+    /// indexed empty folder keeps its regular folder placeholder.
+    private func loadFolderSuperThumbnail(
+        item: RemoteFileItem,
+        service: any RemoteFileService,
+        size: CGSize,
+        reloadVersion: Int,
+        detectSkinToneDominance: Bool
+    ) async {
+        let requestedRemoteSize = requestedRemoteSize(for: size)
+        let cacheKey = renderedImageCacheKey(for: item, size: size)
+        if reloadVersion != loadedReloadVersion {
+            Self.imageCache.removeObject(forKey: cacheKey)
+            Self.negativeCacheExpirations.removeValue(forKey: cacheKey)
+            image = nil
+            displayedImageCacheKey = nil
+            if let loadedCacheKey {
+                Self.negativeCacheExpirations.removeValue(forKey: loadedCacheKey)
+            }
+            loadedCacheKey = nil
+            loadedReloadVersion = reloadVersion
+        }
+        guard loadedCacheKey != cacheKey else { return }
+        loadedCacheKey = cacheKey
+
+        if displayedImageCacheKey != cacheKey {
+            image = nil
+            isSkinToneDominant = false
+            displayedImageCacheKey = nil
+        }
+
+        if let cachedImage = Self.imageCache.object(forKey: cacheKey) {
+            setImage(
+                cachedImage,
+                forKey: cacheKey,
+                detectSkinToneDominance: detectSkinToneDominance
+            )
+            isLoading = false
+            return
+        }
+        var cachedDiskData: Data?
+        for candidateKey in RemoteThumbnailCacheKey.allRemoteDataKeys(for: item) {
+            cachedDiskData = await SuperThumbnailCache.shared.data(forKey: candidateKey)
+            if cachedDiskData != nil { break }
+        }
+        if let diskData = cachedDiskData,
+           let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
+               data: diskData,
+               maximumPixelSize: maximumPixelSize(for: size)
+           ) {
+            try? Task.checkCancellation()
+            let diskImage = UIImage(
+                cgImage: decodedImage.image,
+                scale: UIScreen.main.scale,
+                orientation: .up
+            )
+            setImage(
+                diskImage,
+                forKey: cacheKey,
+                detectSkinToneDominance: detectSkinToneDominance
+            )
+            cache(diskImage, forKey: cacheKey)
+            return
+        }
+        if isNegativelyCached(cacheKey) {
+            image = nil
+            isLoading = false
+            // Keep the key unclaimed so the next legitimate run re-checks the
+            // caches and the (possibly expired) failure instead of returning
+            // at the identity guard above.
+            loadedCacheKey = nil
+            return
+        }
+
+        let diskCacheGeneration = await SuperThumbnailCache.shared.currentGeneration()
+        let currentOperationID = UUID()
+        operationID = currentOperationID
+        isLoading = true
+        defer {
+            if operationID == currentOperationID {
+                isLoading = false
+                operationID = nil
+            }
+        }
+
+        let lookup = await SuperThumbnailVault.shared.folderSheet(
+            for: item,
+            service: service
+        )
+        if Task.isCancelled {
+            // A scroll-away cancellation must not look like a missing sheet.
+            if operationID == currentOperationID {
+                loadedCacheKey = nil
+            }
+            return
+        }
+        guard operationID == currentOperationID else { return }
+        if case .data(let sheetData) = lookup {
+            do {
+                let decodedImage = try await RemoteThumbnailImageDecoder.downsample(
+                    data: sheetData,
+                    maximumPixelSize: maximumPixelSize(for: size)
+                )
+                try Task.checkCancellation()
+                guard operationID == currentOperationID else { return }
+                let sheetImage = UIImage(
+                    cgImage: decodedImage.image,
+                    scale: UIScreen.main.scale,
+                    orientation: .up
+                )
+                setImage(
+                    sheetImage,
+                    forKey: cacheKey,
+                    detectSkinToneDominance: detectSkinToneDominance
+                )
+                cache(sheetImage, forKey: cacheKey)
+                await SuperThumbnailCache.shared.store(
+                    sheetData,
+                    forKey: RemoteThumbnailCacheKey.remoteData(for: item, size: .small),
+                    expectedGeneration: diskCacheGeneration
+                )
+                return
+            } catch is CancellationError {
+                if operationID == currentOperationID {
+                    loadedCacheKey = nil
+                }
+                return
+            } catch {
+                // A malformed sheet keeps the folder icon and stays retryable.
+            }
+        }
+        if displayedImageCacheKey != cacheKey {
+            image = nil
+        }
+        let duration = FolderSuperThumbnailDisplayPolicy.negativeCacheDuration(
+            for: lookup
+        ) ?? 60
+        cacheNegative(cacheKey, for: duration)
+    }
+
     private func fetchRemoteThumbnailData(
         item: RemoteFileItem,
         service: any RemoteFileService,
-        size: RemoteThumbnailSize
+        size: RemoteThumbnailSize,
+        cellularBudget: RemoteVideoThumbnailTrafficBudget?
     ) async throws -> Data? {
         do {
             let data = try await RemoteThumbnailWorkLimiter.shared.withPermit {
-                try await service.thumbnailData(for: item, size: size)
+                () async throws -> Data? in
+                guard let cellularBudget else {
+                    return try await service.thumbnailData(for: item, size: size)
+                }
+                // The lease is reserved only once this request holds a work
+                // permit. Every visible card used to reserve a full item lease
+                // up front, so a wide Overflow preload window exhausted the
+                // cellular total with reservations alone, and a card cancelled
+                // while still queued was charged for bytes it never transferred.
+                return try await cellularBudget.meteredThumbnailData(
+                    for: item,
+                    service: service,
+                    size: size
+                )
             }
             return data.flatMap { $0.isEmpty ? nil : $0 }
         } catch {
@@ -503,9 +1028,22 @@ private final class RemoteThumbnailLoader: ObservableObject {
         for item: RemoteFileItem,
         service: any RemoteFileService
     ) -> Bool {
-        item.isVideo
-            && service.connection.kind == .synology
-            && service.supportsRangeStreaming
+        RemoteVideoThumbnailRoutingPolicy.canGenerateBoundedThumbnail(
+            for: item,
+            service: service
+        )
+    }
+
+    private func renderedImageCacheKey(
+        for item: RemoteFileItem,
+        size: CGSize
+    ) -> NSString {
+        RemoteThumbnailCacheKey.renderedImage(
+            for: item,
+            size: requestedRemoteSize(for: size),
+            displaySize: size,
+            scale: UIScreen.main.scale
+        )
     }
 
     private func requestedRemoteSize(for size: CGSize) -> RemoteThumbnailSize {
@@ -529,21 +1067,113 @@ private final class RemoteThumbnailLoader: ObservableObject {
         Self.negativeCacheExpirations.removeValue(forKey: key)
     }
 
+    private func setImage(
+        _ image: UIImage,
+        forKey cacheKey: NSString,
+        detectSkinToneDominance: Bool
+    ) {
+        self.image = image
+        displayedImageCacheKey = cacheKey
+        isSkinToneDominant = detectSkinToneDominance
+            && SkinToneBlurPolicy.isSkinToneDominant(image)
+    }
+
     private func isNegativelyCached(_ key: NSString) -> Bool {
-        guard let expiration = Self.negativeCacheExpirations[key] else { return false }
-        if expiration > Date() { return true }
+        guard let entry = Self.negativeCacheExpirations[key] else { return false }
+        if entry.isActive(
+            at: Date(),
+            networkPathGeneration: ThumbnailNetworkMonitor.shared.networkPathGeneration
+        ) {
+            return true
+        }
         Self.negativeCacheExpirations.removeValue(forKey: key)
         return false
     }
 
+    /// Records a failure and releases this loader's claim on the key. The
+    /// negative entry alone throttles retries, so a legitimate reload, cache
+    /// store, or network change can run the load again instead of returning
+    /// early forever.
     private func cacheNegative(_ key: NSString, for duration: TimeInterval) {
-        Self.negativeCacheExpirations[key] = Date().addingTimeInterval(duration)
+        Self.negativeCacheExpirations[key] = RemoteThumbnailNegativeCacheEntry(
+            expiration: Date().addingTimeInterval(duration),
+            networkPathGeneration: ThumbnailNetworkMonitor.shared.networkPathGeneration
+        )
+        if loadedCacheKey == key {
+            loadedCacheKey = nil
+        }
         if Self.negativeCacheExpirations.count > 240 {
             let now = Date()
             Self.negativeCacheExpirations = Self.negativeCacheExpirations.filter {
-                $0.value > now
+                $0.value.expiration > now
             }
         }
+    }
+}
+
+/// A thumbnail failure is only trusted on the network it happened on. Cellular
+/// budget exhaustion or a dropped connection must not keep placeholders after
+/// the path changes; the generation check retries each card exactly once.
+struct RemoteThumbnailNegativeCacheEntry: Equatable, Sendable {
+    let expiration: Date
+    let networkPathGeneration: Int
+
+    func isActive(at now: Date, networkPathGeneration currentGeneration: Int) -> Bool {
+        networkPathGeneration == currentGeneration && expiration > now
+    }
+}
+
+enum SkinToneBlurPolicy {
+    static let requiredFraction = 0.42
+
+    static func shouldBlur(skinToneCount: Int, sampleCount: Int) -> Bool {
+        guard sampleCount > 0 else { return false }
+        return Double(skinToneCount) / Double(sampleCount) >= requiredFraction
+    }
+
+    static func isSkinTone(red: UInt8, green: UInt8, blue: UInt8) -> Bool {
+        let r = Int(red)
+        let g = Int(green)
+        let b = Int(blue)
+        let maximum = max(r, g, b)
+        let minimum = min(r, g, b)
+        return r > 70
+            && g > 35
+            && b > 20
+            && r > g
+            && r > b
+            && maximum - minimum > 24
+            && abs(r - g) > 8
+    }
+
+    static func isSkinToneDominant(_ image: UIImage) -> Bool {
+        guard let cgImage = image.cgImage else { return false }
+        let width = 12
+        let height = 12
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &pixels,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return false }
+        context.interpolationQuality = .low
+        context.draw(cgImage, in: CGRect(x: 0, y: 0, width: width, height: height))
+
+        var skinToneCount = 0
+        for offset in stride(from: 0, to: pixels.count, by: 4) {
+            if isSkinTone(
+                red: pixels[offset],
+                green: pixels[offset + 1],
+                blue: pixels[offset + 2]
+            ) {
+                skinToneCount += 1
+            }
+        }
+        return shouldBlur(skinToneCount: skinToneCount, sampleCount: width * height)
     }
 }
 
@@ -616,6 +1246,7 @@ actor RemoteThumbnailDiskCache {
                 withIntermediateDirectories: true
             )
             try data.write(to: fileURL(forKey: key), options: .atomic)
+            await FileProviderThumbnailCache.shared.store(data, forKey: key)
             pruneIfNeeded()
             if notifyObservers {
                 await MainActor.run {
@@ -657,6 +1288,20 @@ actor RemoteThumbnailDiskCache {
         await RemoteVideoThumbnailTrafficBudget.shared.reset()
         await RemoteVideoThumbnailTrafficBudget.sftpShared.reset()
         await RemoteThumbnailLoader.clearInMemoryCaches()
+    }
+
+    func removeData(for items: [RemoteFileItem]) async {
+        generation &+= 1
+        for item in items {
+            for key in RemoteThumbnailCacheKey.allRemoteDataKeys(for: item) {
+                try? fileManager.removeItem(at: fileURL(forKey: key))
+            }
+        }
+        await RemoteThumbnailLoader.clearInMemoryCaches()
+    }
+
+    func clearTransientFailures() async {
+        await RemoteThumbnailLoader.clearTransientFailures()
     }
 
     private func fileURL(forKey key: String) -> URL {

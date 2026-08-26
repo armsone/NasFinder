@@ -61,6 +61,8 @@ struct RemoteFileInfoView: View {
                     .accessibilityElement(children: .combine)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(SkyBreezeBackground())
             .navigationTitle("정보")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

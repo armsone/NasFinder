@@ -37,6 +37,7 @@ struct FileBrowserContainerView: View {
                 )
             }
         }
+        .navigationBarBackButtonHidden(true)
     }
 
     private var service: (any RemoteFileService)? {

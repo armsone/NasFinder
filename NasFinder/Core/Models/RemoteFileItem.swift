@@ -24,13 +24,48 @@ struct RemoteFileItem: Identifiable, Hashable, Sendable {
 
     let connectionID: UUID
     let path: String
+    /// Stable opaque identifier supplied by cloud APIs. Network filesystems
+    /// that identify items by path leave this nil to preserve legacy IDs.
+    let remoteIdentifier: String?
+    let parentRemoteIdentifier: String?
+    /// Provider revision, eTag, or content tag used for change detection.
+    let revisionIdentifier: String?
     let name: String
     let kind: ItemKind
     let size: Int64?
     let modifiedAt: Date?
     let contentTypeIdentifier: String?
 
-    var id: String { "\(connectionID.uuidString):\(path)" }
+    init(
+        connectionID: UUID,
+        path: String,
+        remoteIdentifier: String? = nil,
+        parentRemoteIdentifier: String? = nil,
+        revisionIdentifier: String? = nil,
+        name: String,
+        kind: ItemKind,
+        size: Int64?,
+        modifiedAt: Date?,
+        contentTypeIdentifier: String?
+    ) {
+        self.connectionID = connectionID
+        self.path = path
+        self.remoteIdentifier = remoteIdentifier
+        self.parentRemoteIdentifier = parentRemoteIdentifier
+        self.revisionIdentifier = revisionIdentifier
+        self.name = name
+        self.kind = kind
+        self.size = size
+        self.modifiedAt = modifiedAt
+        self.contentTypeIdentifier = contentTypeIdentifier
+    }
+
+    var id: String {
+        guard let remoteIdentifier else {
+            return "\(connectionID.uuidString):\(path)"
+        }
+        return "\(connectionID.uuidString):remote:\(remoteIdentifier)"
+    }
     var isDirectory: Bool { kind == .folder }
 
     var contentType: UTType {

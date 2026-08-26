@@ -2,17 +2,63 @@ import FileProvider
 import Foundation
 import UniformTypeIdentifiers
 
-final class NasFinderFileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
+final class NasFinderFileProviderExtension: NSFileProviderExtension, NSFileProviderThumbnailing {
     private let storage: NasFinderFileProviderStorage
     private let manager: NSFileProviderManager
 
-    required init(domain: NSFileProviderDomain) {
-        guard let manager = NSFileProviderManager(for: domain) else {
-            fatalError("Unable to create an NSFileProviderManager for \(domain.identifier.rawValue)")
+    override var providerIdentifier: String {
+        "com.armsone.nasfinder.fileprovider"
+    }
+
+    override var documentStorageURL: URL {
+        guard let containerURL = FileManager.default.containerURL(
+            forSecurityApplicationGroupIdentifier: NasFinderFileProviderIdentifiers.appGroup
+        ) else {
+            return super.documentStorageURL
         }
-        self.manager = manager
-        self.storage = NasFinderFileProviderStorage(domainIdentifier: domain.identifier)
+        let storageURL = containerURL.appendingPathComponent(
+            "File Provider Storage",
+            isDirectory: true
+        )
+        try? FileManager.default.createDirectory(
+            at: storageURL,
+            withIntermediateDirectories: true
+        )
+        return storageURL
+    }
+
+    override init() {
+        manager = .default
+        storage = NasFinderFileProviderStorage(
+            domainIdentifier: NSFileProviderDomainIdentifier("legacy-document-picker")
+        )
         super.init()
+    }
+
+    override func providePlaceholder(
+        at url: URL,
+        completionHandler: @escaping (Error?) -> Void
+    ) {
+        completionHandler(CocoaError(.fileNoSuchFile))
+    }
+
+    override func startProvidingItem(
+        at url: URL,
+        completionHandler: @escaping (Error?) -> Void
+    ) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            completionHandler(CocoaError(.fileNoSuchFile))
+            return
+        }
+        completionHandler(nil)
+    }
+
+    override func stopProvidingItem(at url: URL) {
+        // The document-picker host owns the lifetime of this local working copy.
+    }
+
+    override func itemChanged(at url: URL) {
+        // Picker imports never write host edits back without an explicit upload.
     }
 
     func invalidate() {}
@@ -68,6 +114,50 @@ final class NasFinderFileProviderExtension: NSObject, NSFileProviderReplicatedEx
                 completionHandler.value(nil, nil, error)
             }
             progress.completedUnitCount = 1
+        }
+        progress.cancellationHandler = { task.cancel() }
+        return progress
+    }
+
+    override func fetchThumbnails(
+        for itemIdentifiers: [NSFileProviderItemIdentifier],
+        requestedSize size: CGSize,
+        perThumbnailCompletionHandler: @escaping (
+            NSFileProviderItemIdentifier,
+            Data?,
+            Error?
+        ) -> Void,
+        completionHandler: @escaping (Error?) -> Void
+    ) -> Progress {
+        let progress = Progress(totalUnitCount: Int64(itemIdentifiers.count))
+        let perThumbnailCompletionHandler = ProviderSendableBox(
+            perThumbnailCompletionHandler
+        )
+        let completionHandler = ProviderSendableBox(completionHandler)
+        let task = Task { [storage] in
+            do {
+                for identifier in itemIdentifiers {
+                    try Task.checkCancellation()
+                    do {
+                        let data = try await storage.thumbnail(
+                            for: identifier,
+                            requestedSize: size
+                        )
+                        try Task.checkCancellation()
+                        perThumbnailCompletionHandler.value(identifier, data, nil)
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        perThumbnailCompletionHandler.value(identifier, nil, error)
+                    }
+                    progress.completedUnitCount += 1
+                }
+                completionHandler.value(nil)
+            } catch {
+                completionHandler.value(
+                    CocoaError(.userCancelled)
+                )
+            }
         }
         progress.cancellationHandler = { task.cancel() }
         return progress

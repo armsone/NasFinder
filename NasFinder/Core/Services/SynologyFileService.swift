@@ -10,7 +10,9 @@ actor SynologyFileService: RemoteFileService {
     private let session: URLSession
     private let cache: DownloadCache
     private let pollInterval: Duration
+    private let sessionStore: any SynologySessionStoring
     private var sessionID: String?
+    private var sessionLoginTask: Task<String, Error>?
 
     /// File Station thumbnails are small responses. If DSM cannot provide one
     /// promptly, keeping a grid cell (and the global progress indicator) alive
@@ -23,19 +25,22 @@ actor SynologyFileService: RemoteFileService {
         credential: RemoteCredential,
         session: URLSession = .shared,
         cache: DownloadCache = .shared,
-        pollInterval: Duration = .milliseconds(250)
+        pollInterval: Duration = .milliseconds(250),
+        sessionStore: any SynologySessionStoring = KeychainSynologySessionStore()
     ) {
         self.connection = connection
         self.credential = credential
         self.session = session
         self.cache = cache
         self.pollInterval = pollInterval
+        self.sessionStore = sessionStore
     }
 
     /// Tests each DSM layer separately so the UI can distinguish a closed web
     /// port from TLS, authentication, File Station, and root-path failures.
     func testConnection() async throws {
         sessionID = nil
+        try? sessionStore.removeSession(for: connection)
 
         try await connectionTestStage(.webAPI) {
             try await self.probeWebAPI()
@@ -46,6 +51,11 @@ actor SynologyFileService: RemoteFileService {
         try await connectionTestStage(.rootPath) {
             _ = try await self.list(directory: self.connection.normalizedRootPath)
         }
+    }
+
+    func cancelPendingThumbnailWork() {
+        sessionLoginTask?.cancel()
+        sessionLoginTask = nil
     }
 
     func list(directory path: String?) async throws -> [RemoteFileItem] {
@@ -202,6 +212,30 @@ actor SynologyFileService: RemoteFileService {
         for item: RemoteFileItem,
         size: RemoteThumbnailSize
     ) async throws -> Data? {
+        try await thumbnailData(
+            for: item,
+            size: size,
+            maximumByteCount: nil
+        )
+    }
+
+    func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        maximumByteCount: Int
+    ) async throws -> Data? {
+        try await thumbnailData(
+            for: item,
+            size: size,
+            maximumByteCount: Optional(maximumByteCount)
+        )
+    }
+
+    private func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        maximumByteCount: Int?
+    ) async throws -> Data? {
         guard !item.isDirectory, item.isImage || item.isVideo else { return nil }
 
         return try await authenticatedRequest { sid in
@@ -217,7 +251,18 @@ actor SynologyFileService: RemoteFileService {
             ]) { _, new in new }
             var request = try self.request(script: "entry.cgi", parameters: parameters)
             request.timeoutInterval = Self.thumbnailRequestTimeout
-            let (data, response) = try await self.session.data(for: request)
+            let data: Data
+            let response: URLResponse
+            if let maximumByteCount {
+                let result = try await self.boundedData(
+                    for: request,
+                    maximumByteCount: maximumByteCount
+                )
+                data = result.0
+                response = result.1
+            } else {
+                (data, response) = try await self.session.data(for: request)
+            }
             try self.validateHTTP(response)
 
             let contentType = response.mimeType?.lowercased()
@@ -232,6 +277,22 @@ actor SynologyFileService: RemoteFileService {
 
             return data.isEmpty ? nil : data
         }
+    }
+
+    private func boundedData(
+        for request: URLRequest,
+        maximumByteCount: Int
+    ) async throws -> (Data, URLResponse) {
+        let (bytes, response) = try await session.bytes(for: request)
+        var data = Data()
+        data.reserveCapacity(min(max(maximumByteCount, 0), 256 * 1_024))
+        for try await byte in bytes {
+            guard data.count < maximumByteCount else {
+                throw RemoteThumbnailError.responseTooLarge
+            }
+            data.append(byte)
+        }
+        return (data, response)
     }
 
     func createFolder(
@@ -821,7 +882,8 @@ actor SynologyFileService: RemoteFileService {
 
                 var request = try self.multipartRequest(
                     boundary: multipart.boundary,
-                    contentLength: multipart.contentLength
+                    contentLength: multipart.contentLength,
+                    sessionID: sid
                 )
                 request.timeoutInterval = 3_600
                 await context.report(
@@ -1290,11 +1352,24 @@ actor SynologyFileService: RemoteFileService {
     private func authenticatedRequest<T>(
         _ operation: (String) async throws -> T
     ) async throws -> T {
+        let sid: String
         do {
-            let sid = try await validSessionID()
+            sid = try await validSessionID()
+        } catch {
+            throw RemoteRequestCancellation.normalized(error)
+        }
+
+        do {
             return try await operation(sid)
         } catch let error as SynologyAPIError where error.isAuthenticationError {
-            sessionID = nil
+            // Another request may already have refreshed the shared session
+            // while this operation was waiting for its expired response. Do
+            // not discard that newer SID, and make every waiter share the
+            // same login task instead of starting a login storm.
+            if sessionID == sid {
+                sessionID = nil
+                try? sessionStore.removeSession(for: connection)
+            }
             do {
                 return try await operation(validSessionID())
             } catch {
@@ -1307,6 +1382,13 @@ actor SynologyFileService: RemoteFileService {
 
     private func validSessionID() async throws -> String {
         if let sessionID { return sessionID }
+        if let sessionLoginTask {
+            return try await sessionLoginTask.value
+        }
+        if let storedSessionID = try? sessionStore.sessionID(for: connection) {
+            sessionID = storedSessionID
+            return storedSessionID
+        }
 
         let parameters = [
             "api": "SYNO.API.Auth",
@@ -1318,18 +1400,35 @@ actor SynologyFileService: RemoteFileService {
             "format": "sid"
         ]
         let request = try request(script: "auth.cgi", parameters: parameters)
-        let (data, response) = try await session.data(for: request)
-        try validateHTTP(response)
-        let envelope = try JSONDecoder().decode(SynologyEnvelope<SynologyAuthData>.self, from: data)
-        guard envelope.success else {
-            if let code = envelope.error?.code {
-                throw SynologyAuthenticationError(code: code)
+        let loginTask = Task<String, Error> {
+            let (data, response) = try await self.session.data(for: request)
+            try self.validateHTTP(response)
+            let envelope = try JSONDecoder().decode(
+                SynologyEnvelope<SynologyAuthData>.self,
+                from: data
+            )
+            guard envelope.success else {
+                if let code = envelope.error?.code {
+                    throw SynologyAuthenticationError(code: code)
+                }
+                throw NasFinderError.authenticationFailed
             }
-            throw NasFinderError.authenticationFailed
+            guard let sid = envelope.data?.sid else {
+                throw NasFinderError.authenticationFailed
+            }
+            return sid
         }
-        guard let sid = envelope.data?.sid else { throw NasFinderError.authenticationFailed }
-        sessionID = sid
-        return sid
+        sessionLoginTask = loginTask
+        do {
+            let sid = try await loginTask.value
+            sessionID = sid
+            sessionLoginTask = nil
+            try? sessionStore.saveSessionID(sid, for: connection)
+            return sid
+        } catch {
+            sessionLoginTask = nil
+            throw error
+        }
     }
 
     private func probeWebAPI() async throws {
@@ -1398,9 +1497,21 @@ actor SynologyFileService: RemoteFileService {
 
     private func multipartRequest(
         boundary: String,
-        contentLength: Int64
+        contentLength: Int64,
+        sessionID: String
     ) throws -> URLRequest {
-        var request = URLRequest(url: try endpointURL(script: "entry.cgi"))
+        let endpoint = try endpointURL(script: "entry.cgi")
+        guard var components = URLComponents(
+            url: endpoint,
+            resolvingAgainstBaseURL: false
+        ) else {
+            throw URLError(.badURL)
+        }
+        components.queryItems = [URLQueryItem(name: "_sid", value: sessionID)]
+        guard let authenticatedEndpoint = components.url else {
+            throw URLError(.badURL)
+        }
+        var request = URLRequest(url: authenticatedEndpoint)
         request.httpMethod = "POST"
         request.setValue(
             "multipart/form-data; boundary=\(boundary)",

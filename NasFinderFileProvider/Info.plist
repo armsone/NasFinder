@@ -17,19 +17,24 @@
 	<key>CFBundlePackageType</key>
 	<string>XPC!</string>
 	<key>CFBundleShortVersionString</key>
-	<string>$(MARKETING_VERSION)</string>
+	<string>2.2.1</string>
 	<key>CFBundleVersion</key>
-	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<string>202608262315</string>
 	<key>NasFinderKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)com.armsone.nasfinder.shared</string>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>NasFinder가 파일 앱에서 같은 네트워크의 NAS 또는 SFTP 서버에 연결하려면 로컬 네트워크 접근이 필요합니다.</string>
 	<key>NSExtension</key>
 	<dict>
 		<key>NSExtensionFileProviderDocumentGroup</key>
 		<string>group.com.armsone.nasfinder</string>
 		<key>NSExtensionFileProviderDownloadPipelineDepth</key>
 		<integer>4</integer>
-		<key>NSExtensionFileProviderSupportsEnumeration</key>
-		<true/>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.fileprovider-nonui</string>
 		<key>NSExtensionPrincipalClass</key>

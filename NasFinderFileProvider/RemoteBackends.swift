@@ -3,11 +3,13 @@ import CryptoKit
 import Foundation
 import NIO
 import NIOSSH
+import Security
 
 actor SynologyProviderBackend: ProviderRemoteBackend {
     private let connection: ProviderConnection
     private let password: String
     private let session: URLSession
+    private let sessionStore = ProviderSynologySessionStore()
     private var sessionID: String?
 
     init(
@@ -36,7 +38,8 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
             parameters["sort_by"] = "name"
             parameters["sort_direction"] = "asc"
 
-            let request = try self.request(script: "entry.cgi", parameters: parameters)
+            var request = try self.request(script: "entry.cgi", parameters: parameters)
+            request.timeoutInterval = 5
             let (data, response) = try await self.session.data(for: request)
             try self.validateHTTP(response)
             let envelope = try JSONDecoder().decode(
@@ -90,6 +93,70 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
         }
     }
 
+    func thumbnail(path: String, size: ProviderThumbnailSize) async throws -> Data? {
+        try await authenticatedRequest { sid in
+            let parameters = self.commonParameters(
+                api: "SYNO.FileStation.Thumb",
+                version: "2",
+                method: "get",
+                sid: sid
+            ).merging([
+                "path": path,
+                "size": size.rawValue,
+                "rotate": "0"
+            ]) { _, new in new }
+            var request = try self.request(script: "entry.cgi", parameters: parameters)
+            request.timeoutInterval = 12
+            let (data, response) = try await self.session.data(for: request)
+            try self.validateHTTP(response)
+            guard data.count <= 4 * 1_024 * 1_024 else { return nil }
+            if self.isJSONResponse(response) { return nil }
+            return data.isEmpty ? nil : data
+        }
+    }
+
+    func vaultThumbnail(for node: ProviderRemoteNode) async throws -> Data? {
+        let parent = (node.path as NSString).deletingLastPathComponent
+        let vaultDirectory = parent.isEmpty ? "/.NasFinder-Vault" : "\(parent)/.NasFinder-Vault"
+        let vaultPath = "\(vaultDirectory)/\(Self.vaultThumbnailFilename(for: node))"
+        return try await authenticatedRequest { sid in
+            let parameters = self.commonParameters(
+                api: "SYNO.FileStation.Download",
+                version: "2",
+                method: "download",
+                sid: sid
+            ).merging([
+                "path": vaultPath,
+                "mode": "download"
+            ]) { _, new in new }
+            var request = try self.request(script: "entry.cgi", parameters: parameters)
+            request.timeoutInterval = 12
+            let (data, response) = try await self.session.data(for: request)
+            try self.validateHTTP(response)
+            guard data.count <= 4 * 1_024 * 1_024 else { return nil }
+            if self.isJSONResponse(response) {
+                let envelope = try JSONDecoder().decode(
+                    SynologyProviderEnvelope<SynologyProviderDownloadErrorData>.self,
+                    from: data
+                )
+                try self.validate(envelope)
+                return nil
+            }
+            return data.isEmpty ? nil : data
+        }
+    }
+
+    private static func vaultThumbnailFilename(for node: ProviderRemoteNode) -> String {
+        let identity = [
+            "engine=1",
+            "name=\(node.name.precomposedStringWithCanonicalMapping)",
+            "size=\(node.size ?? -1)",
+            "modified=\(Int64((node.modifiedAt?.timeIntervalSince1970 ?? 0) * 1_000))",
+        ].joined(separator: "|")
+        let digest = SHA256.hash(data: Data(identity.utf8))
+        return "v1-" + digest.map { String(format: "%02x", $0) }.joined() + ".jpg"
+    }
+
     private func authenticatedRequest<T: Sendable>(
         _ operation: (String) async throws -> T
     ) async throws -> T {
@@ -98,6 +165,7 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
             return try await operation(sid)
         } catch let error as SynologyProviderAPIError where error.isAuthenticationError {
             sessionID = nil
+            try? sessionStore.removeSession(for: connection)
             let refreshedSID = try await validSessionID()
             return try await operation(refreshedSID)
         }
@@ -105,8 +173,12 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
 
     private func validSessionID() async throws -> String {
         if let sessionID { return sessionID }
+        if let storedSessionID = try? sessionStore.sessionID(for: connection) {
+            sessionID = storedSessionID
+            return storedSessionID
+        }
 
-        let request = try request(
+        var request = try request(
             script: "auth.cgi",
             parameters: [
                 "api": "SYNO.API.Auth",
@@ -118,6 +190,7 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
                 "format": "sid"
             ]
         )
+        request.timeoutInterval = 5
         let (data, response) = try await session.data(for: request)
         try validateHTTP(response)
         let envelope = try JSONDecoder().decode(
@@ -129,6 +202,7 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
             throw SynologyProviderAPIError(code: -1)
         }
         sessionID = sid
+        try? sessionStore.saveSessionID(sid, for: connection)
         return sid
     }
 
@@ -196,6 +270,129 @@ actor SynologyProviderBackend: ProviderRemoteBackend {
         guard envelope.success else {
             throw SynologyProviderAPIError(code: envelope.error?.code ?? -1)
         }
+    }
+}
+
+private struct ProviderSynologySessionStore {
+    private enum LookupResult {
+        case success(String)
+        case failure(OSStatus)
+    }
+
+    private struct StoredSession: Codable {
+        let connectionIdentity: String
+        let sessionID: String
+    }
+
+    private let service = "com.armsone.nasfinder.synology-session"
+
+    func sessionID(for connection: ProviderConnection) throws -> String? {
+        let configuredGroup = keychainAccessGroup
+        if let configuredGroup {
+            switch copySession(for: connection, accessGroup: configuredGroup) {
+            case .success(let sessionID): return sessionID
+            case .failure(let status)
+                where status != errSecItemNotFound && status != errSecMissingEntitlement:
+                throw keychainError(status)
+            case .failure: break
+            }
+        }
+
+        switch copySession(for: connection, accessGroup: nil) {
+        case .success(let sessionID): return sessionID
+        case .failure(let status) where status == errSecItemNotFound: return nil
+        case .failure(let status): throw keychainError(status)
+        }
+    }
+
+    func saveSessionID(_ sessionID: String, for connection: ProviderConnection) throws {
+        let stored = StoredSession(
+            connectionIdentity: identity(for: connection),
+            sessionID: sessionID
+        )
+        let data = try JSONEncoder().encode(stored)
+        try write(data, account: connection.id.uuidString, accessGroup: keychainAccessGroup)
+    }
+
+    func removeSession(for connection: ProviderConnection) throws {
+        let status = SecItemDelete(
+            baseQuery(account: connection.id.uuidString, accessGroup: keychainAccessGroup) as CFDictionary
+        )
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw keychainError(status)
+        }
+    }
+
+    private var keychainAccessGroup: String? {
+        guard let value = Bundle.main.object(
+            forInfoDictionaryKey: NasFinderFileProviderIdentifiers.keychainAccessGroupInfoKey
+        ) as? String,
+              value.hasSuffix("com.armsone.nasfinder.shared") else {
+            return nil
+        }
+        return value
+    }
+
+    private func copySession(
+        for connection: ProviderConnection,
+        accessGroup: String?
+    ) -> LookupResult {
+        var query = baseQuery(account: connection.id.uuidString, accessGroup: accessGroup)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        guard status == errSecSuccess else { return .failure(status) }
+        guard let data = result as? Data,
+              let stored = try? JSONDecoder().decode(StoredSession.self, from: data),
+              stored.connectionIdentity == identity(for: connection) else {
+            return .failure(errSecDecode)
+        }
+        return .success(stored.sessionID)
+    }
+
+    private func write(_ data: Data, account: String, accessGroup: String?) throws {
+        let query = baseQuery(account: account, accessGroup: accessGroup)
+        let attributes: [String: Any] = [
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        let updateStatus = SecItemUpdate(query as CFDictionary, attributes as CFDictionary)
+        if updateStatus == errSecSuccess { return }
+        guard updateStatus == errSecItemNotFound else { throw keychainError(updateStatus) }
+
+        var addQuery = query
+        attributes.forEach { addQuery[$0.key] = $0.value }
+        let addStatus = SecItemAdd(addQuery as CFDictionary, nil)
+        guard addStatus == errSecSuccess else { throw keychainError(addStatus) }
+    }
+
+    private func baseQuery(account: String, accessGroup: String?) -> [String: Any] {
+        var query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        if let accessGroup {
+            query[kSecAttrAccessGroup as String] = accessGroup
+        }
+        return query
+    }
+
+    private func identity(for connection: ProviderConnection) -> String {
+        let scheme = connection.usesTLS ? "https" : "http"
+        return "\(scheme)|\(connection.host.lowercased())|\(connection.port)|\(connection.username)"
+    }
+
+    private func keychainError(_ status: OSStatus) -> NSError {
+        let message = SecCopyErrorMessageString(status, nil) as String?
+            ?? "Keychain error (\(status))"
+        return NSError(
+            domain: NSOSStatusErrorDomain,
+            code: Int(status),
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
     }
 }
 

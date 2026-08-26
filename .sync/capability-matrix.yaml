@@ -1,0 +1,374 @@
+matrix_version: 1
+product_id: nasfinder
+generated_at: "2026-08-25"
+reference_contract: ".sync/product-contract.yaml"
+android_revision: "cad9ee0281bbc927531f84d13a131178523b23c7+dirty"
+source_ref_resolution:
+  kotlin_basenames: "/Users/armsone/git/NasFinder-Android/app/src/main/java/com/armsone/nasfinder/**"
+  test_class_names: "/Users/armsone/git/NasFinder-Android/app/src/test/java/com/armsone/nasfinder/**"
+  manifest: "/Users/armsone/git/NasFinder-Android/app/src/main/AndroidManifest.xml"
+  resources: "/Users/armsone/git/NasFinder-Android/app/src/main/res/**"
+status_vocabulary:
+  specified: "canonical contract contains the capability"
+  implemented: "true, partial or false from current Android source plus tests"
+  runtime_verified: "true, partial or false; historical partial evidence is never promoted to current-candidate true"
+  visually_verified: "requires deterministic current Matchup captures"
+  parity: [source_only, missing, intentional_difference]
+summary:
+  capability_count: 33
+  source_only: 27
+  missing: 4
+  intentional_difference: 2
+  current_runtime_fully_verified: 0
+  current_visually_verified: 0
+
+capabilities:
+  - id: app.shell.routes_lifecycle
+    specified: true
+    implemented: true
+    runtime_verified: partial
+    visually_verified: false
+    parity: source_only
+    source_refs: [MainActivity.kt, NasFinderApp.kt, AndroidManifest.xml]
+    tests: [ExternalEntryRouteParserTest, AppEntryRouteParserTest, ReleasePlatformContractTest]
+    gaps: ["historical launch/deep-link trace predates current dirty candidate", "current back stack and process restoration matrix pending"]
+
+  - id: settings.theme_icons_awake
+    specified: true
+    implemented: true
+    runtime_verified: partial
+    visually_verified: false
+    parity: source_only
+    source_refs: [AppSettingsRepository.kt, AppIconController.kt, NasFinderTheme.kt]
+    tests: [AppThemeParityTest, AppIconSwitchPolicyTest, LauncherIconAssetContractTest]
+    gaps: ["all aliases/themes/awake lifecycle not run on current candidate"]
+
+  - id: connections.model_address_validation
+    specified: true
+    implemented: true
+    runtime_verified: partial
+    visually_verified: false
+    parity: source_only
+    source_refs: [Models.kt, RemoteFileService.kt, NasFinderViewModel.kt]
+    tests: [ModelsTest, TransferContractsTest]
+    gaps: ["historical evidence shows forms, not the complete accepted/rejected address matrix"]
+
+  - id: connections.persistence_credentials
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [ConnectionRepository.kt, CredentialVault.kt, OAuthStores.kt]
+    tests: [ModelsTest, OAuthSecurityPolicyTest, DocumentsProviderConnectionParityTest]
+    gaps: ["secure-store migration/relaunch and provider-root reconciliation not device-verified"]
+
+  - id: connections.add_test_diagnostics
+    specified: true
+    implemented: partial
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [NasFinderApp.kt, NasFinderViewModel.kt, RemoteFileService.kt]
+    tests: [ModelsTest, SynologyAndFtpPolicyTest, SftpAndSmbPolicyTest]
+    gaps: ["canonical address/transport/TLS/auth/subsystem/root staged diagnostic model is incomplete"]
+
+  - id: remote.backends_protocols
+    specified: true
+    implemented: true
+    runtime_verified: partial
+    visually_verified: false
+    parity: source_only
+    source_refs: [RemoteFileService.kt, SftpFileService.kt, SmbFileService.kt, CloudDriveFileService.kt]
+    tests: [RemoteRangeContractTest, SynologyAndFtpPolicyTest, SftpAndSmbPolicyTest, WebDavFileServiceTest, CloudDriveFileServiceTest]
+    gaps: ["only historical Synology list/range is live-verified", "SFTP/SMB/WebDAV/FTP/cloud accounts pending"]
+
+  - id: remote.synology_sessions_mutations
+    specified: true
+    implemented: true
+    runtime_verified: partial
+    visually_verified: false
+    parity: source_only
+    source_refs: [RemoteFileService.kt, ConnectionRepository.kt]
+    tests: [SynologyAndFtpPolicyTest, RemoteRangeContractTest]
+    gaps: ["session expiry/relogin and mutation polling/conflicts not live-verified"]
+
+  - id: remote.sftp_security_mutations
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [SftpFileService.kt, CredentialVault.kt, SafSftpMutationPolicy.kt]
+    tests: [SftpAndSmbPolicyTest, SafSftpMutationPolicyTest, TransferContractsTest]
+    gaps: ["no live SSH host-key/private-key/root/mutation matrix"]
+
+  - id: files.browser_navigation_search_sort
+    specified: true
+    implemented: true
+    runtime_verified: partial
+    visually_verified: false
+    parity: source_only
+    source_refs: [NasFinderApp.kt, NasFinderViewModel.kt, BrowserPreferencesStorage.kt]
+    tests: [BrowserOrderingTest, BrowserPreferencesStorageTest, ModelsTest]
+    gaps: ["current nested system-Back/search/sort/relaunch state matrix pending"]
+
+  - id: files.browser_layouts_responsive
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [NasFinderApp.kt, MediaViewerPolicy.kt]
+    tests: [DocumentsThumbnailPolicyTest, InboxParityContractTest, RemoteRangeMediaSourceTest]
+    gaps: ["responsive square and lower-edge reflection fade are source/build verified and installed on SM-F968N", "post-change phone/foldable/tablet/TV captures require Matchup"]
+
+  - id: files.selection_context_actions
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [NasFinderApp.kt, NasFinderViewModel.kt]
+    tests: [InboxParityContractTest, InboxBatchContractsTest]
+    gaps: ["selection/context action enablement across all backends and layouts pending"]
+
+  - id: files.operations
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [RemoteFileService.kt, SftpFileService.kt, SmbFileService.kt, CloudDriveFileService.kt, NasFinderViewModel.kt]
+    tests: [SynologyAndFtpPolicyTest, SftpAndSmbPolicyTest, WebDavFileServiceTest, CloudDriveFileServiceTest, TransferContractsTest]
+    gaps: ["no live create/rename/delete/copy/move/upload conflict/cancel matrix"]
+
+  - id: favorites.remote_shelf_list
+    specified: true
+    implemented: partial
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [FavoriteRepository.kt, Favorites.kt, NasFinderApp.kt]
+    tests: []
+    gaps: ["no targeted favorite test", "toggle, deletion cleanup, relaunch and visual shelf states pending"]
+
+  - id: thumbnails.display_cache_pipeline
+    specified: true
+    implemented: true
+    runtime_verified: partial
+    visually_verified: false
+    parity: source_only
+    source_refs: [RemoteThumbnailRepository.kt, DocumentsThumbnailPolicy.kt, NasFinderDocumentsProvider.kt]
+    tests: [RemoteThumbnailCacheTest, DocumentsThumbnailPolicyTest]
+    gaps: ["current Super Thumbnail Vault browser/provider consumers and cold-cache relaunch pending"]
+
+  - id: thumbnails.remote_video_generation
+    specified: true
+    implemented: true
+    runtime_verified: partial
+    visually_verified: false
+    parity: source_only
+    source_refs: [RemoteThumbnailRepository.kt]
+    tests: [RemoteThumbnailCacheTest, RemoteRangeContractTest]
+    gaps: ["historical Synology MOV only; SFTP/other codecs/quality fallback matrix pending"]
+
+  - id: thumbnails.super_pipeline
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [SuperThumbnailWorker.kt, SuperThumbnailVault.kt, SuperThumbnailSessionStore.kt, RemoteThumbnailRepository.kt]
+    tests: [SuperThumbnailPolicyTest, SuperThumbnailVaultAndSessionTest, SuperThumbnailWorkContractTest, SuperThumbnailThermalPolicyTest]
+    gaps: ["real NAS positive/corrupt/miss/cancel/relaunch", "iOS/Android/Mac vault interoperability"]
+
+  - id: preview.remote_media
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [NasFinderApp.kt, NasFinderViewModel.kt, DownloadCache.kt]
+    tests: [DocumentsThumbnailPolicyTest, InboxParityContractTest, RemoteRangeMediaSourceTest]
+    gaps: ["automatic play, visible buffering and retry/external fallback are source/build verified and installed on SM-F968N", "post-change real remote playback/error/cancel trace pending"]
+
+  - id: preview.gestures_controls
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [MediaViewerPolicy.kt, NasFinderApp.kt]
+    tests: [DocumentsThumbnailPolicyTest, InboxParityContractTest]
+    gaps: ["touch density matrix, TalkBack alternatives and TV D-pad runtime pending"]
+
+  - id: preview.streaming_video
+    specified: true
+    implemented: true
+    runtime_verified: true
+    visually_verified: false
+    parity: partial
+    source_refs: [RemoteRangeMediaSource.kt, "NasFinderApp.kt: ExoPlayer MediaPreviewContent", "NasFinderViewModel.kt: RemoteMediaStreamSpec", app/build.gradle.kts]
+    tests: [RemoteRangeMediaSourceTest]
+    gaps: ["8 MiB read-ahead and cancellation tests pass; debug APK installed on SM-F968N", "live Synology MP4 auto-played for more than 15 seconds at 23.98 fps with no unexpected loader exception", "seek/cancel negative trace and other backends pending"]
+
+  - id: preview.compatibility_video
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [RemoteRangeMediaSource.kt, "NasFinderApp.kt: Media3 and ACTION_VIEW fallback", app/build.gradle.kts]
+    tests: [RemoteRangeMediaSourceTest]
+    gaps: ["Media3 format route, exact-basename subtitle preference and forced legacy external route tests pass", "live subtitle rendering and external-player chooser pending"]
+
+  - id: sharing.system_export
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [NasFinderShareIntentFactory.kt, NasFinderShareFileProvider.kt, NasFinderViewModel.kt]
+    tests: [InboxBatchContractsTest, ExternalEntryRouteParserTest]
+    gaps: ["sharesheet cancel/exit and temporary-file lifetime runtime pending"]
+
+  - id: inbox.shared_storage
+    specified: true
+    implemented: true
+    runtime_verified: partial
+    visually_verified: false
+    parity: source_only
+    source_refs: [SharedInboxStore.kt, MainActivity.kt, NasFinderViewModel.kt]
+    tests: [SharedInboxStoreTest, InboxBatchContractsTest, AppEntryRouteParserTest]
+    gaps: ["historical deep link only; SEND/SEND_MULTIPLE/import/partial-failure runtime matrix pending"]
+
+  - id: inbox.phonehard_library
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [NasFinderApp.kt, NasFinderViewModel.kt, WebHardFileStore.kt]
+    tests: [InboxParityContractTest, InboxThumbnailTest]
+    gaps: ["common viewer source and focused tests complete", "current library/overflow/viewer device and Matchup evidence pending"]
+
+  - id: phonehard.web_server
+    specified: true
+    implemented: true
+    runtime_verified: partial
+    visually_verified: false
+    parity: source_only
+    source_refs: [WebHardHttpServer.kt, WebHardFileStore.kt, WebHardScreen.kt]
+    tests: [WebHardJvmRegressionTest, WebHardLanAddressTest, InboxParityContractTest]
+    gaps: ["historical LAN/list/background-stop evidence", "full upload/download/delete/zip/auth runtime matrix pending"]
+
+  - id: photo_transfer.pairing_transport
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [PhotoTransferPairing.kt, PhotoTransferWireCodec.kt, PhotoTransferScreen.kt]
+    tests: [PhotoTransferPairingTest, PhotoTransferWireCodecTest, PhotoTransferQrRefreshContractTest]
+    gaps: ["no live iOS-Android pairing, reconnect, cancel or partial transfer"]
+
+  - id: photo_transfer.media_preparation_import
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [PhotoTransferPairing.kt, MotionPhotoCodec.kt, PhotoTransferScreen.kt]
+    tests: [MotionPhotoCodecTest, PhotoTransferExifContractTest, PhotoTransferSavedResultsContractTest]
+    gaps: ["Android Photo Picker path and live photo/motion photo cross-platform results not device-verified"]
+
+  - id: google_photos.account_oauth
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [googlephotos/GooglePhotosOAuth.kt, googlephotos/GooglePhotosService.kt, googlephotos/GooglePhotosAccountController.kt, platform/OAuthCallbackActivity.kt, ui/NasFinderViewModel.kt, ui/NasFinderApp.kt]
+    tests: [GooglePhotosServiceTest, GooglePhotosIntegrationContractTest]
+    gaps: ["no production credential/account callback runtime verification", "Android fixed callback URI is an intentional platform adaptation from iOS reversed-client scheme"]
+
+  - id: google_photos.picker_import
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [googlephotos/GooglePhotosService.kt, googlephotos/GooglePhotosImport.kt, ui/NasFinderViewModel.kt, ui/NasFinderApp.kt]
+    tests: [GooglePhotosServiceTest, GooglePhotosIntegrationContractTest]
+    gaps: ["no live Google Picker/download/import device verification", "no deterministic rendered phone/tablet/TV capture"]
+
+  - id: preview.external_action_view
+    specified: true
+    implemented: false
+    runtime_verified: false
+    visually_verified: false
+    parity: missing
+    source_refs: []
+    tests: []
+    gaps: ["manifest has no ACTION_VIEW handler for supported media/PDF", "content URI import, MIME/name preservation, common-viewer routing and self-fallback loop prevention are not implemented"]
+
+  - id: browser.web_download_favorites
+    specified: true
+    implemented: partial
+    runtime_verified: partial
+    visually_verified: false
+    parity: source_only
+    source_refs: [WebBrowserScreen.kt, FavoriteRepository.kt, DownloadCache.kt]
+    tests: [BrowserUrlPolicyTest]
+    gaps: ["favorites archive import/export is missing", "historical WebView load only; session expiry/download cancel/runtime pending"]
+
+  - id: files.provider_integration
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [NasFinderDocumentsProvider.kt, DocumentsProviderCachePolicy.kt, DocumentsThumbnailPolicy.kt, AndroidManifest.xml]
+    tests: [DocumentsProviderConnectionParityTest, DocumentsProviderCachePolicyTest, DocumentsThumbnailPolicyTest, ReleasePlatformContractTest]
+    gaps: ["actual system Files/picker enumeration/open/thumbnail/mutation pending", "Android exposes more backend roots but only SFTP mutations; product intent must be recorded"]
+
+  - id: files.document_picker_extension
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: intentional_difference
+    source_refs: [NasFinderDocumentsProvider.kt, AndroidManifest.xml]
+    tests: [DocumentsProviderConnectionParityTest, ReleasePlatformContractTest]
+    intentional_difference: "Android's system document picker consumes DocumentsProvider; no separate app-owned picker extension UI is required."
+    gaps: ["host-app pick/download/cancel/error runtime pending"]
+
+  - id: widget.lock_screen
+    specified: true
+    implemented: true
+    runtime_verified: false
+    visually_verified: false
+    parity: intentional_difference
+    source_refs: [NasFinderAppWidgetProvider.kt, res/layout/nasfinder_widget.xml, res/xml/nasfinder_widget_info.xml, AndroidManifest.xml]
+    tests: [NasFinderAppWidgetProviderTest, ReleasePlatformContractTest]
+    intentional_difference: "Android supplies a branded home-screen quick-launch/count widget; lock-screen placement depends on launcher/platform support."
+    gaps: ["real launcher add/update/tap/resize and accessibility pending"]
+
+  - id: product.accessibility_privacy_support_matrix
+    specified: true
+    implemented: partial
+    runtime_verified: false
+    visually_verified: false
+    parity: source_only
+    source_refs: [AndroidManifest.xml, NasFinderApp.kt, MediaViewerPolicy.kt, tv_banner.png]
+    tests: [ReleasePlatformContractTest, InboxParityContractTest, DocumentsThumbnailPolicyTest]
+    gaps: ["no route-by-route TalkBack/font-display scale audit", "no tablet/foldable resize matrix", "TV launcher/banner exists but complete 10-foot focus/navigation is unverified"]
+
+release_blockers:
+  - preview.streaming_video
+  - preview.compatibility_video
+  - "Google Photos settings/disclosure/UI integration and live verification"
+  - preview.external_action_view
+  - "current Android phone/tablet/foldable/Google TV runtime and Matchup evidence"
+  - "live backend, Super Thumbnail and Photo Transfer interoperability matrices"

@@ -167,7 +167,7 @@ struct WebBrowserView: View {
             isPresented: $isSaveDialogPresented,
             titleVisibility: .visible
         ) {
-            Button("받은 파일에 저장") { savePendingDownloadToInbox() }
+            Button("폰하드에 저장") { savePendingDownloadToInbox() }
             Button("네트워크 위치 선택") { chooseNetworkDestination() }
             Button("취소", role: .cancel) { cancelPendingDownload() }
         } message: {
@@ -475,7 +475,7 @@ struct WebBrowserView: View {
                     originalFilename: file.filename,
                     contentTypeIdentifier: file.contentTypeIdentifier
                 )
-                statusMessage = "받은 파일에 저장했습니다."
+                statusMessage = "폰하드에 저장했습니다."
             } catch {
                 errorMessage = error.localizedDescription
             }

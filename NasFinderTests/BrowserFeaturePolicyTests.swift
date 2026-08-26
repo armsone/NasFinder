@@ -3,6 +3,497 @@ import XCTest
 
 @MainActor
 final class BrowserFeaturePolicyTests: XCTestCase {
+    func testReceivedFilesLayoutSelectorExcludesOverflow() {
+        XCTAssertEqual(
+            ReceivedFilesLayoutStyle.selectableCases.map(\.title),
+            ["자세히", "썸네일", "포스터"]
+        )
+    }
+
+    func testReceivedFilesStoredOverflowMigratesToPoster() {
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.normalizedSelection("overflow"),
+            .posters
+        )
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.normalizedSelection("unknown"),
+            .details
+        )
+    }
+
+    func testReceivedFilesPosterUsesOverflowOnlyInLandscape() {
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.presentedStyle(
+                selectedStyle: .posters,
+                contentSize: CGSize(width: 900, height: 600),
+                isSelecting: false,
+                hasRecords: true
+            ),
+            .overflow
+        )
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.presentedStyle(
+                selectedStyle: .posters,
+                contentSize: CGSize(width: 600, height: 900),
+                isSelecting: false,
+                hasRecords: true
+            ),
+            .posters
+        )
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.presentedStyle(
+                selectedStyle: .thumbnails,
+                contentSize: CGSize(width: 900, height: 600),
+                isSelecting: false,
+                hasRecords: true
+            ),
+            .thumbnails
+        )
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.presentedStyle(
+                selectedStyle: .posters,
+                contentSize: CGSize(width: 900, height: 600),
+                isSelecting: true,
+                hasRecords: true
+            ),
+            .posters
+        )
+        XCTAssertEqual(
+            ReceivedFilesLayoutPresentationPolicy.presentedStyle(
+                selectedStyle: .posters,
+                contentSize: CGSize(width: 900, height: 600),
+                isSelecting: false,
+                hasRecords: false
+            ),
+            .posters
+        )
+    }
+
+    func testReceivedFilesOverflowUsesSharedChromeOnlyInNormalPopulatedState() {
+        XCTAssertTrue(
+            ReceivedFilesLayoutPresentationPolicy.usesCoverFlowChrome(
+                presentedStyle: .overflow,
+                isSelecting: false,
+                hasRecords: true
+            )
+        )
+        XCTAssertFalse(
+            ReceivedFilesLayoutPresentationPolicy.usesCoverFlowChrome(
+                presentedStyle: .overflow,
+                isSelecting: true,
+                hasRecords: true
+            )
+        )
+        XCTAssertFalse(
+            ReceivedFilesLayoutPresentationPolicy.usesCoverFlowChrome(
+                presentedStyle: .overflow,
+                isSelecting: false,
+                hasRecords: false
+            )
+        )
+        XCTAssertFalse(
+            ReceivedFilesLayoutPresentationPolicy.usesCoverFlowChrome(
+                presentedStyle: .posters,
+                isSelecting: false,
+                hasRecords: true
+            )
+        )
+        XCTAssertEqual(FileBrowserCoverFlowChromePolicy.buttonSize, 44)
+        XCTAssertEqual(FileBrowserCoverFlowChromePolicy.horizontalPadding, 12)
+        XCTAssertEqual(FileBrowserCoverFlowChromePolicy.safeAreaTopPadding, 4)
+    }
+
+    func testReceivedFilesThumbnailGeometryKeepsEveryLayoutSquare() {
+        let proposedSizes = [
+            "자세히": CGSize(width: 56, height: 56),
+            "썸네일": CGSize(width: 220, height: 220),
+            "포스터": CGSize(width: 360, height: 360),
+            "오버플로우": CGSize(width: 360, height: 260),
+        ]
+
+        for (layout, proposedSize) in proposedSizes {
+            let requestSize = ReceivedFilesThumbnailPolicy.squareSize(proposedSize)
+            XCTAssertEqual(requestSize.width, requestSize.height, layout)
+            XCTAssertEqual(
+                requestSize.width,
+                max(proposedSize.width, proposedSize.height),
+                layout
+            )
+        }
+    }
+
+    func testReceivedFilesGridArtworkUsesColumnWidthForBothDimensions() {
+        for columnWidth: CGFloat in [104, 164, 240, 360] {
+            let containerSize = ReceivedFilesThumbnailPolicy.squareContainerSize(
+                forWidth: columnWidth
+            )
+            XCTAssertEqual(containerSize.width, columnWidth)
+            XCTAssertEqual(containerSize.height, columnWidth)
+        }
+    }
+
+    func testSuperThumbnailThermalPolicyBalancesSpeedAndHeat() {
+        XCTAssertFalse(ThumbnailThermalPolicy.shouldPause(for: .nominal))
+        XCTAssertNil(ThumbnailThermalPolicy.pacingDelayMilliseconds(for: .nominal))
+        XCTAssertFalse(ThumbnailThermalPolicy.shouldPause(for: .fair))
+        XCTAssertEqual(
+            ThumbnailThermalPolicy.pacingDelayMilliseconds(for: .fair),
+            500
+        )
+        XCTAssertTrue(ThumbnailThermalPolicy.shouldPause(for: .serious))
+        XCTAssertTrue(ThumbnailThermalPolicy.shouldPause(for: .critical))
+    }
+
+    func testHiddenSuperThumbnailStartCountsDownAfterFiveTaps() {
+        XCTAssertNil(
+            SuperThumbnailHiddenStartPolicy.remainingTapCount(after: 4)
+        )
+        XCTAssertEqual(
+            SuperThumbnailHiddenStartPolicy.remainingTapCount(after: 5),
+            5
+        )
+        XCTAssertEqual(
+            SuperThumbnailHiddenStartPolicy.remainingTapCount(after: 9),
+            1
+        )
+        XCTAssertNil(
+            SuperThumbnailHiddenStartPolicy.remainingTapCount(after: 10)
+        )
+    }
+
+    func testCoverFlowBackgroundChoicesMapToStoredBoolean() {
+        XCTAssertFalse(
+            FileBrowserCoverFlowBackground.light.usesDarkBackground
+        )
+        XCTAssertTrue(
+            FileBrowserCoverFlowBackground.dark.usesDarkBackground
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowBackground(usesDarkBackground: false),
+            .light
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowBackground(usesDarkBackground: true),
+            .dark
+        )
+    }
+
+    func testCoverFlowGeometryUsesLargestSafeSquareWithoutLargeScreenCap() {
+        let layout = FileBrowserCoverFlowGeometryPolicy.geometry(
+            in: CGSize(width: 1_360, height: 960),
+            safeAreaTop: 24,
+            safeAreaLeading: 0,
+            safeAreaBottom: 20,
+            safeAreaTrailing: 0
+        )
+
+        let expectedWidth = 1_360
+            - FileBrowserCoverFlowGeometryPolicy.horizontalInset * 2
+        let expectedHeight = 960
+            - (24 + FileBrowserCoverFlowGeometryPolicy.chromeClearance)
+            - FileBrowserCoverFlowGeometryPolicy.mainImageBottomGap(
+                safeAreaBottom: 20
+            )
+        XCTAssertEqual(layout.centerSide, min(expectedWidth, expectedHeight))
+        XCTAssertGreaterThan(layout.centerSide, 460)
+        XCTAssertEqual(
+            layout.squareCenterY,
+            24
+                + FileBrowserCoverFlowGeometryPolicy.chromeClearance
+                + expectedHeight / 2
+        )
+        XCTAssertLessThanOrEqual(
+            layout.squareBottom
+                + FileBrowserCoverFlowGeometryPolicy.mainImageBottomGap(
+                    safeAreaBottom: 20
+                ),
+            960
+        )
+    }
+
+    func testCoverFlowGeometryAdaptsToPhoneAndSafeAreaInsets() {
+        let layout = FileBrowserCoverFlowGeometryPolicy.geometry(
+            in: CGSize(width: 844, height: 390),
+            safeAreaTop: 0,
+            safeAreaLeading: 47,
+            safeAreaBottom: 21,
+            safeAreaTrailing: 47
+        )
+        let expectedHeight = 390
+            - FileBrowserCoverFlowGeometryPolicy.chromeClearance
+            - FileBrowserCoverFlowGeometryPolicy.mainImageBottomGap(
+                safeAreaBottom: 21
+            )
+        XCTAssertEqual(layout.centerSide, expectedHeight)
+        XCTAssertGreaterThan(layout.centerSide, 0)
+        let previousEffectiveGap: CGFloat = 21
+            + FileBrowserCoverFlowGeometryPolicy.reflectionReserve
+        XCTAssertEqual(390 - layout.squareBottom, previousEffectiveGap / 3, accuracy: 0.001)
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.visibleReflectionHeight(
+                requestedHeight: 44,
+                containerHeight: 390,
+                mainImageBottom: layout.squareBottom
+            ),
+            previousEffectiveGap / 3 - FileBrowserCoverFlowPolicy.reflectionSpacing,
+            accuracy: 0.001
+        )
+    }
+
+    func testCoverFlowGeometryKeepsCompactWindowsFiniteAndNonnegative() {
+        for size in [CGSize(width: 120, height: 80), CGSize(width: 1, height: 1)] {
+            let layout = FileBrowserCoverFlowGeometryPolicy.geometry(
+                in: size,
+                safeAreaTop: 44,
+                safeAreaLeading: 80,
+                safeAreaBottom: 34,
+                safeAreaTrailing: 80
+            )
+            XCTAssertTrue(layout.centerSide.isFinite)
+            XCTAssertGreaterThanOrEqual(layout.centerSide, 1)
+            XCTAssertTrue(layout.squareBottom.isFinite)
+            let reflectionHeight = FileBrowserCoverFlowPolicy.visibleReflectionHeight(
+                requestedHeight: 44,
+                containerHeight: size.height,
+                mainImageBottom: layout.squareBottom
+            )
+            XCTAssertTrue(reflectionHeight.isFinite)
+            XCTAssertGreaterThanOrEqual(reflectionHeight, 0)
+            let fileNameY = FileBrowserCoverFlowGeometryPolicy.fileNameCenterY(
+                layout: layout,
+                reflectionHeight: reflectionHeight,
+                containerHeight: size.height,
+                safeAreaBottom: 34
+            )
+            XCTAssertTrue(fileNameY.isFinite)
+            XCTAssertGreaterThan(fileNameY, 0)
+        }
+    }
+
+    func testCoverFlowFileNameCenterYRespectsLayoutAndSafeAreas() {
+        let size = CGSize(width: 844, height: 390)
+        let layout = FileBrowserCoverFlowGeometryPolicy.geometry(
+            in: size,
+            safeAreaTop: 0,
+            safeAreaLeading: 44,
+            safeAreaBottom: 21,
+            safeAreaTrailing: 44
+        )
+        let reflectionHeight = FileBrowserCoverFlowPolicy.visibleReflectionHeight(
+            requestedHeight: 44,
+            containerHeight: size.height,
+            mainImageBottom: layout.squareBottom
+        )
+        let fileNameY = FileBrowserCoverFlowGeometryPolicy.fileNameCenterY(
+            layout: layout,
+            reflectionHeight: reflectionHeight,
+            containerHeight: size.height,
+            safeAreaBottom: 21
+        )
+        XCTAssertTrue(fileNameY.isFinite)
+        XCTAssertGreaterThan(fileNameY, layout.squareBottom)
+        XCTAssertLessThanOrEqual(fileNameY, size.height)
+    }
+
+    func testCoverFlowTitleMaximumWidthIsCapped() {
+        XCTAssertEqual(
+            FileBrowserCoverFlowChromePolicy.titleMaximumWidth(containerWidth: 1_000),
+            340
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowChromePolicy.titleMaximumWidth(containerWidth: 500),
+            220
+        )
+    }
+
+    func testAutomaticOverflowUsesActualBoundsAndNeverSelectionOrEmptyState() {
+        XCTAssertTrue(
+            FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
+                contentSize: CGSize(width: 1_200, height: 700),
+                isSelecting: false,
+                hasItems: true
+            )
+        )
+        XCTAssertFalse(
+            FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
+                contentSize: CGSize(width: 1_200, height: 700),
+                isSelecting: true,
+                hasItems: true
+            )
+        )
+        XCTAssertFalse(
+            FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
+                contentSize: CGSize(width: 1_200, height: 700),
+                isSelecting: false,
+                hasItems: false
+            )
+        )
+        XCTAssertFalse(
+            FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
+                contentSize: CGSize(width: 700, height: 1_200),
+                isSelecting: false,
+                hasItems: true
+            )
+        )
+    }
+
+    func testCoverFlowThumbnailRequestIgnoresLiveCardSideAndUsesStableBucket() {
+        // iPhone landscape: the card side keeps changing while dragging, but
+        // the request must depend on the layout square only.
+        let phone = FileBrowserCoverFlowGeometryPolicy.geometry(
+            in: CGSize(width: 844, height: 390),
+            safeAreaTop: 0,
+            safeAreaLeading: 47,
+            safeAreaBottom: 21,
+            safeAreaTrailing: 47
+        )
+        let phoneRequest = FileBrowserCoverFlowPolicy.thumbnailRequestSize(
+            centerSide: phone.centerSide
+        )
+        XCTAssertEqual(phoneRequest.width, phoneRequest.height)
+        XCTAssertGreaterThanOrEqual(phoneRequest.width, phone.centerSide)
+        XCTAssertEqual(phoneRequest, CGSize(width: 320, height: 320))
+
+        // Fractional side changes inside one request bucket never change the
+        // request, so a drag frame cannot restart the remote load.
+        let bucketLowerBound = phoneRequest.width
+            - FileBrowserCoverFlowPolicy.thumbnailRequestStep
+            + 0.5
+        for side in stride(from: bucketLowerBound, through: phoneRequest.width, by: 0.5) {
+            XCTAssertEqual(
+                FileBrowserCoverFlowPolicy.thumbnailRequestSize(centerSide: side),
+                phoneRequest,
+                "side \(side)"
+            )
+        }
+
+        // iPad keeps a larger request instead of being capped to the phone size.
+        let pad = FileBrowserCoverFlowGeometryPolicy.geometry(
+            in: CGSize(width: 1_360, height: 960),
+            safeAreaTop: 24,
+            safeAreaBottom: 20
+        )
+        let padRequest = FileBrowserCoverFlowPolicy.thumbnailRequestSize(
+            centerSide: pad.centerSide
+        )
+        XCTAssertGreaterThanOrEqual(padRequest.width, pad.centerSide)
+        XCTAssertLessThan(
+            padRequest.width - pad.centerSide,
+            FileBrowserCoverFlowPolicy.thumbnailRequestStep
+        )
+
+        // Degenerate geometry still yields a usable square request.
+        for side: CGFloat in [0, -10, .nan, .infinity] {
+            let request = FileBrowserCoverFlowPolicy.thumbnailRequestSize(centerSide: side)
+            XCTAssertGreaterThan(request.width, 0, "side \(side)")
+            XCTAssertTrue(request.width.isFinite, "side \(side)")
+            XCTAssertEqual(request.width, request.height, "side \(side)")
+        }
+    }
+
+    func testCoverFlowPreloadsAroundLiveDragPosition() {
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.preloadIndices(
+                itemCount: 30,
+                scrollPosition: 5.2
+            ),
+            Array(0...13)
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.preloadIndices(
+                itemCount: 30,
+                scrollPosition: 10.6
+            ),
+            Array(3...19)
+        )
+    }
+
+    func testCoverFlowSlowDragStopsAtTheCardUnderTheFinger() {
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 12.2
+            ),
+            12
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 12.7
+            ),
+            13
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 42
+            ),
+            29
+        )
+        XCTAssertNil(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 0,
+                scrollPosition: 0
+            )
+        )
+    }
+
+    func testCoverFlowMomentumContinuesInTheSwipeDirection() {
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 10.2,
+                translation: -80,
+                predictedEndTranslation: -170,
+                cardStep: 60
+            ),
+            12
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 10.8,
+                translation: 80,
+                predictedEndTranslation: 170,
+                cardStep: 60
+            ),
+            9
+        )
+    }
+
+    func testCoverFlowMomentumIsCappedAndNeverReverses() {
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 10,
+                translation: -40,
+                predictedEndTranslation: -900,
+                cardStep: 60
+            ),
+            13
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 10.2,
+                translation: -80,
+                predictedEndTranslation: -20,
+                cardStep: 60
+            ),
+            10
+        )
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.restingIndex(
+                itemCount: 30,
+                scrollPosition: 28.8,
+                translation: -80,
+                predictedEndTranslation: -800,
+                cardStep: 60
+            ),
+            29
+        )
+    }
+
     func testPathComponentsStayWithinConfiguredRoot() {
         XCTAssertEqual(
             FileBrowserPathNavigation.components(
@@ -18,6 +509,35 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         XCTAssertEqual(
             FileBrowserPathNavigation.components(currentPath: "/outside", rootPath: "/home"),
             [FileBrowserPathComponent(path: "/outside", title: "/outside")]
+        )
+    }
+
+    func testParentFolderStaysWithinConfiguredRoot() {
+        XCTAssertEqual(
+            FileBrowserPathNavigation.parent(
+                currentPath: "/home/media/movies",
+                rootPath: "/home"
+            ),
+            FileBrowserPathComponent(path: "/home/media", title: "media")
+        )
+        XCTAssertEqual(
+            FileBrowserPathNavigation.parent(
+                currentPath: "./media/movies",
+                rootPath: "."
+            ),
+            FileBrowserPathComponent(path: "./media", title: "media")
+        )
+        XCTAssertNil(
+            FileBrowserPathNavigation.parent(
+                currentPath: "/home",
+                rootPath: "/home"
+            )
+        )
+        XCTAssertNil(
+            FileBrowserPathNavigation.parent(
+                currentPath: "/outside",
+                rootPath: "/home"
+            )
         )
     }
 
@@ -69,6 +589,49 @@ final class BrowserFeaturePolicyTests: XCTestCase {
                 item: document,
                 connectionKind: .synology,
                 supportsRangeStreaming: true
+            )
+        )
+    }
+
+    func testSuperThumbnailAlwaysIncludesVideosAndPhotos() {
+        let video = item(name: "movie.mkv", size: 2_048)
+        let photo = item(name: "photo.heic", size: 4_096)
+        let document = item(name: "notes.txt", size: 20)
+
+        XCTAssertTrue(ThumbnailPreheatPolicy.canGenerateSuperThumbnail(item: video))
+        XCTAssertTrue(ThumbnailPreheatPolicy.canGenerateSuperThumbnail(item: photo))
+        XCTAssertFalse(ThumbnailPreheatPolicy.canGenerateSuperThumbnail(item: document))
+    }
+
+    func testSuperThumbnailTreatsDesignedForIPadMacAsExternallyPowered() {
+        XCTAssertTrue(
+            ThumbnailRuntimePolicy.hasExternalPower(
+                batteryState: .unknown,
+                isIOSAppOnMac: true
+            )
+        )
+        XCTAssertFalse(
+            ThumbnailRuntimePolicy.hasExternalPower(
+                batteryState: .unknown,
+                isIOSAppOnMac: false
+            )
+        )
+        XCTAssertTrue(
+            ThumbnailRuntimePolicy.hasExternalPower(
+                batteryState: .charging,
+                isIOSAppOnMac: false
+            )
+        )
+        XCTAssertFalse(
+            ThumbnailRuntimePolicy.hasLowBattery(
+                batteryLevel: 0,
+                isIOSAppOnMac: true
+            )
+        )
+        XCTAssertTrue(
+            ThumbnailRuntimePolicy.hasLowBattery(
+                batteryLevel: 0.2,
+                isIOSAppOnMac: false
             )
         )
     }

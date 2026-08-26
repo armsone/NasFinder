@@ -3,6 +3,35 @@ import XCTest
 
 @MainActor
 final class FileBrowserInteractionCoordinatorTests: XCTestCase {
+    func testDownloadPolicyExcludesFoldersAndKeepsFilesInSelectionOrder() {
+        let connectionID = UUID()
+        let folder = RemoteFileItem(
+            connectionID: connectionID,
+            path: "/folder",
+            name: "folder",
+            kind: .folder,
+            size: nil,
+            modifiedAt: nil,
+            contentTypeIdentifier: nil
+        )
+        let files = ["first.mp4", "second.jpg"].map { name in
+            RemoteFileItem(
+                connectionID: connectionID,
+                path: "/\(name)",
+                name: name,
+                kind: .file,
+                size: 1,
+                modifiedAt: nil,
+                contentTypeIdentifier: nil
+            )
+        }
+
+        XCTAssertEqual(
+            FileBrowserDownloadPolicy.downloadableItems(from: [folder] + files),
+            files
+        )
+    }
+
     func testPanelActionRunsOnlyAfterPanelDisappearsAndOnlyOnce() {
         let coordinator = FileBrowserInteractionCoordinator()
         var executionCount = 0

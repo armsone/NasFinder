@@ -4,6 +4,10 @@ import UIKit
 enum AppIconChoice: String, CaseIterable, Identifiable {
     case blueNAS
     case purpleNAS
+    case vibeCoder
+    case cyberVault
+    case networkNAS
+    case enamelNAS
 
     var id: String { rawValue }
 
@@ -11,6 +15,10 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         switch self {
         case .blueNAS: "블루 NAS"
         case .purpleNAS: "퍼플 NAS"
+        case .vibeCoder: "Vibe Coder"
+        case .cyberVault: "사이버 볼트"
+        case .networkNAS: "네트워크 NAS"
+        case .enamelNAS: "BK Style"
         }
     }
 
@@ -18,6 +26,10 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         switch self {
         case .blueNAS: "AppIconDefaultPreview"
         case .purpleNAS: "AppIconAlternatePreview"
+        case .vibeCoder: "AppIconVibeCoderPreview"
+        case .cyberVault: "AppIconCyberVaultPreview"
+        case .networkNAS: "AppIconNetworkNASPreview"
+        case .enamelNAS: "AppIconEnamelPreview"
         }
     }
 
@@ -25,11 +37,49 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         switch self {
         case .blueNAS: nil
         case .purpleNAS: "AppIconAlternate"
+        case .vibeCoder: "AppIconVibeCoder"
+        case .cyberVault: "AppIconCyberVault"
+        case .networkNAS: "AppIconNetworkNAS"
+        case .enamelNAS: "AppIconEnamel"
         }
     }
 
     static func current(alternateIconName: String?) -> AppIconChoice {
         allCases.first { $0.alternateIconName == alternateIconName } ?? .blueNAS
+    }
+
+    @MainActor
+    static func apply(
+        _ icon: AppIconChoice,
+        completion: @escaping @MainActor @Sendable (String?) -> Void = { _ in }
+    ) {
+        // Designed-for-iPad on Mac: the alternate-icon API is unsupported and
+        // the Mac keeps one fixed icon, so finish silently without touching
+        // UIApplication and without reporting an error.
+        guard !AppIconAvailabilityPolicy.isIOSAppOnMac else {
+            completion(nil)
+            return
+        }
+        guard UIApplication.shared.supportsAlternateIcons else {
+            completion(AppIconChangeError.unsupported.localizedDescription)
+            return
+        }
+        guard current(alternateIconName: UIApplication.shared.alternateIconName) != icon else {
+            completion(nil)
+            return
+        }
+        UIApplication.shared.setAlternateIconName(icon.alternateIconName) { error in
+            let message = error?.localizedDescription
+            Task { @MainActor in completion(message) }
+        }
+    }
+}
+
+private enum AppIconChangeError: LocalizedError {
+    case unsupported
+
+    var errorDescription: String? {
+        "이 기기에서는 대체 앱 아이콘을 지원하지 않습니다."
     }
 }
 
@@ -49,64 +99,125 @@ struct AppIconSettingsView: View {
 struct AppIconPickerSection: View {
     var compact = false
 
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
     @State private var selectedIcon = AppIconChoice.blueNAS
     @State private var isChangingIcon = false
     @State private var pendingIcon: AppIconChoice?
     @State private var errorMessage: String?
 
+    private var isEnamelTheme: Bool {
+        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+    }
+
+    private var showsIconPicker: Bool {
+        AppIconAvailabilityPolicy.showsIconPicker(
+            isIOSAppOnMac: AppIconAvailabilityPolicy.isIOSAppOnMac
+        )
+    }
+
     var body: some View {
+        if showsIconPicker {
+            pickerSection
+        }
+    }
+
+    private var pickerSection: some View {
         Group {
             Section {
                 VStack(spacing: 10) {
-                    HStack(alignment: .top, spacing: 16) {
+                    LazyVGrid(
+                        columns: [
+                            GridItem(.flexible(), spacing: 8, alignment: .top),
+                            GridItem(.flexible(), spacing: 8, alignment: .top),
+                            GridItem(.flexible(), spacing: 8, alignment: .top),
+                        ],
+                        alignment: .center,
+                        spacing: 8
+                    ) {
                         ForEach(AppIconChoice.allCases) { icon in
-                            VStack(spacing: 10) {
-                                Image(icon.previewAssetName)
-                                    .resizable()
-                                    .scaledToFit()
-                                    .frame(width: iconSide, height: iconSide)
-                                    .clipShape(RoundedRectangle(cornerRadius: iconCornerRadius, style: .continuous))
-                                    .overlay {
-                                        RoundedRectangle(cornerRadius: iconCornerRadius, style: .continuous)
+                            Button {
+                                select(icon)
+                            } label: {
+                                VStack(spacing: 8) {
+                                    Image(icon.previewAssetName)
+                                        .resizable()
+                                        .interpolation(.high)
+                                        .scaledToFit()
+                                        .frame(width: iconSide, height: iconSide)
+                                        .clipShape(
+                                            RoundedRectangle(
+                                                cornerRadius: iconCornerRadius,
+                                                style: .continuous
+                                            )
+                                        )
+                                        .overlay {
+                                            RoundedRectangle(
+                                                cornerRadius: iconCornerRadius,
+                                                style: .continuous
+                                            )
                                             .stroke(.primary.opacity(0.08), lineWidth: 1)
-                                    }
-                                    .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
+                                        }
+                                        .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
 
-                                Button {
-                                    select(icon)
-                                } label: {
-                                    Group {
+                                    HStack(spacing: 4) {
+                                        Text(icon.title)
+                                            .lineLimit(1)
+                                            .minimumScaleFactor(0.8)
                                         if pendingIcon == icon {
-                                            ProgressView()
-                                        } else {
-                                            Text(selectedIcon == icon ? "선택됨" : "선택")
+                                            ProgressView().controlSize(.mini)
+                                        } else if selectedIcon == icon {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundStyle(.tint)
                                         }
                                     }
                                     .font(.caption.weight(.medium))
                                     .frame(maxWidth: .infinity)
                                 }
-                                .buttonStyle(.bordered)
-                                .disabled(isChangingIcon || selectedIcon == icon)
+                                .padding(8)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 104)
+                                .background {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .fill(Color(uiColor: .secondarySystemGroupedBackground))
+                                }
+                                .overlay {
+                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                        .stroke(
+                                            selectedIcon == icon
+                                                ? Color.accentColor.opacity(0.75)
+                                                : Color.primary.opacity(0.08),
+                                            lineWidth: selectedIcon == icon ? 1.5 : 1
+                                        )
+                                }
                             }
+                            .buttonStyle(.plain)
+                            .disabled(isChangingIcon || selectedIcon == icon || isEnamelTheme)
                             .frame(maxWidth: .infinity)
-                            .accessibilityElement(children: .contain)
+                            .contentShape(Rectangle())
                             .accessibilityLabel("\(icon.title) 아이콘")
                             .accessibilityValue(selectedIcon == icon ? "선택됨" : "선택되지 않음")
                         }
                     }
 
                     Divider()
-                    SettingsPanelDescription("선택한 아이콘은 홈 화면과 앱 보관함에 적용됩니다.")
+                    SettingsPanelDescription(
+                        isEnamelTheme
+                            ? "BK Style에서는 같은 이름의 앱 아이콘을 사용합니다."
+                            : "선택한 아이콘은 홈 화면과 앱 보관함에 적용됩니다."
+                    )
                 }
                 .padding(.vertical, 6)
+                .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
             } header: {
                 SettingsSectionHeader(title: "앱 아이콘", systemImage: "app.badge")
             }
         }
         .task {
-            selectedIcon = AppIconChoice.current(
-                alternateIconName: UIApplication.shared.alternateIconName
-            )
+            selectedIcon = isEnamelTheme
+                ? .enamelNAS
+                : AppIconChoice.current(alternateIconName: UIApplication.shared.alternateIconName)
         }
         .alert("아이콘을 변경할 수 없습니다", isPresented: errorBinding) {
             Button("확인", role: .cancel) {
@@ -117,8 +228,8 @@ struct AppIconPickerSection: View {
         }
     }
 
-    private var iconSide: CGFloat { compact ? 72 : 96 }
-    private var iconCornerRadius: CGFloat { compact ? 16 : 21 }
+    private var iconSide: CGFloat { compact ? 54 : 60 }
+    private var iconCornerRadius: CGFloat { compact ? 12 : 13 }
 
     private var errorBinding: Binding<Bool> {
         Binding(
@@ -130,22 +241,27 @@ struct AppIconPickerSection: View {
     }
 
     private func select(_ icon: AppIconChoice) {
-        guard UIApplication.shared.supportsAlternateIcons else {
-            errorMessage = "이 기기에서는 대체 앱 아이콘을 지원하지 않습니다."
+        guard AppIconAvailabilityPolicy.canChangeIcon(
+            isIOSAppOnMac: AppIconAvailabilityPolicy.isIOSAppOnMac,
+            supportsAlternateIcons: UIApplication.shared.supportsAlternateIcons
+        ) else {
+            // The picker is not shown on the Mac; on iPhone/iPad this only
+            // fires when the system itself reports no alternate-icon support.
+            if !AppIconAvailabilityPolicy.isIOSAppOnMac {
+                errorMessage = "이 기기에서는 대체 앱 아이콘을 지원하지 않습니다."
+            }
             return
         }
 
         isChangingIcon = true
         pendingIcon = icon
-        UIApplication.shared.setAlternateIconName(icon.alternateIconName) { error in
-            Task { @MainActor in
-                isChangingIcon = false
-                pendingIcon = nil
-                if let error {
-                    errorMessage = error.localizedDescription
-                } else {
-                    selectedIcon = icon
-                }
+        AppIconChoice.apply(icon) { message in
+            isChangingIcon = false
+            pendingIcon = nil
+            if let message {
+                errorMessage = message
+            } else {
+                selectedIcon = icon
             }
         }
     }
@@ -154,16 +270,22 @@ struct AppIconPickerSection: View {
 struct SettingsSectionHeader: View {
     let title: String
     let systemImage: String
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.system.rawValue
+
+    private var selectedTheme: AppThemePreference {
+        .resolved(selectedThemeRawValue)
+    }
 
     var body: some View {
-        HStack(spacing: 3) {
-            Spacer(minLength: 0)
-            Image(systemName: systemImage)
+        HStack(spacing: selectedTheme == .skeuomorphism ? 7 : 3) {
+            ThemedSymbol(systemName: systemImage)
             Text(title)
+            Spacer(minLength: 0)
         }
         .font(.footnote.weight(.medium))
         .foregroundStyle(.secondary)
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -177,7 +299,7 @@ struct SettingsPanelDescription: View {
     var body: some View {
         Text(text)
             .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

@@ -96,4 +96,59 @@ final class RemoteThumbnailDiskCacheTests: XCTestCase {
         let invalidStatistics = await cache.statistics()
         XCTAssertEqual(invalidStatistics.automaticLimitBytes, selectedLimit)
     }
+
+    func testFolderRefreshRemovesOnlySpecifiedItemsAndRejectsLateStores() async throws {
+        let cacheURL = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        let defaultsName = "RemoteThumbnailDiskCacheTests.\(UUID().uuidString)"
+        defer {
+            try? FileManager.default.removeItem(at: cacheURL)
+            UserDefaults(suiteName: defaultsName)?
+                .removePersistentDomain(forName: defaultsName)
+        }
+        let cache = RemoteThumbnailDiskCache(
+            directoryURL: cacheURL,
+            userDefaultsSuiteName: defaultsName
+        )
+        let refreshedItem = makeItem(path: "/folder/refreshed.avi")
+        let preservedItem = makeItem(path: "/other/preserved.avi")
+        let refreshedKey = RemoteThumbnailCacheKey.remoteData(
+            for: refreshedItem,
+            size: .small
+        )
+        let preservedKey = RemoteThumbnailCacheKey.remoteData(
+            for: preservedItem,
+            size: .small
+        )
+
+        await cache.store(Data([0xA1]), forKey: refreshedKey)
+        await cache.store(Data([0xB2]), forKey: preservedKey)
+        let generationBeforeRefresh = await cache.currentGeneration()
+
+        await cache.removeData(for: [refreshedItem])
+        await cache.store(
+            Data([0xC3]),
+            forKey: refreshedKey,
+            expectedGeneration: generationBeforeRefresh
+        )
+
+        let refreshedData = await cache.data(forKey: refreshedKey)
+        let preservedData = await cache.data(forKey: preservedKey)
+        XCTAssertNil(refreshedData)
+        XCTAssertEqual(preservedData, Data([0xB2]))
+    }
+
+    private func makeItem(path: String) -> RemoteFileItem {
+        RemoteFileItem(
+            connectionID: UUID(
+                uuidString: "11111111-1111-1111-1111-111111111111"
+            )!,
+            path: path,
+            name: (path as NSString).lastPathComponent,
+            kind: .file,
+            size: 123_456,
+            modifiedAt: Date(timeIntervalSince1970: 100),
+            contentTypeIdentifier: "public.avi"
+        )
+    }
 }

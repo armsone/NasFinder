@@ -16,6 +16,7 @@ final class ConnectionStore: ObservableObject {
 
     private let defaults: UserDefaults
     private let credentialStore: KeychainCredentialStore
+    private let synologySessionStore: any SynologySessionStoring
     private let storageKey = "connections.v1"
     private let preferredConnectionKey = "preferredConnection.v1"
     private let rememberedBrowserLocationKey = "browser.lastLocation.v1"
@@ -24,10 +25,12 @@ final class ConnectionStore: ObservableObject {
     init(
         defaults: UserDefaults? = UserDefaults(suiteName: "group.com.armsone.nasfinder"),
         credentialStore: KeychainCredentialStore = .init(),
+        synologySessionStore: any SynologySessionStoring = KeychainSynologySessionStore(),
         performsFileProviderMaintenance: Bool = true
     ) {
         self.defaults = defaults ?? .standard
         self.credentialStore = credentialStore
+        self.synologySessionStore = synologySessionStore
         load()
         if performsFileProviderMaintenance {
             Task { [weak self] in
@@ -38,10 +41,13 @@ final class ConnectionStore: ObservableObject {
     }
 
     func credential(for connection: RemoteConnection) throws -> RemoteCredential {
-        guard let credential = try credentialStore.credential(for: connection.id) else {
-            throw NasFinderError.credentialsMissing
+        if let credential = try credentialStore.credential(for: connection.id) {
+            return credential
         }
-        return credential
+        if let cloudCredential = try credentialStore.cloudCredential(for: connection.id) {
+            return RemoteCredential(password: "", cloudCredential: cloudCredential)
+        }
+        throw NasFinderError.credentialsMissing
     }
 
     func add(_ connection: RemoteConnection, password: String) async throws {
@@ -54,6 +60,21 @@ final class ConnectionStore: ObservableObject {
         } catch {
             lastErrorMessage = "Files 앱 위치를 추가하지 못했습니다: \(error.localizedDescription)"
         }
+    }
+
+    func add(_ connection: RemoteConnection, oauthCredential: OAuthCredential) async throws {
+        try credentialStore.save(.oauth(oauthCredential), for: connection.id)
+        connections.append(connection)
+        persist()
+    }
+
+    func update(_ connection: RemoteConnection, oauthCredential: OAuthCredential) async throws {
+        guard let index = connections.firstIndex(where: { $0.id == connection.id }) else {
+            throw NasFinderError.invalidResponse
+        }
+        try credentialStore.save(.oauth(oauthCredential), for: connection.id)
+        connections[index] = connection
+        persist()
     }
 
     var preferredConnection: RemoteConnection? {
@@ -171,6 +192,13 @@ final class ConnectionStore: ObservableObject {
             } catch {
                 failures.append("\(connection.name) 로그인 정보 제거 실패")
             }
+            if connection.kind == .synology {
+                do {
+                    try synologySessionStore.removeSession(for: connection)
+                } catch {
+                    failures.append("\(connection.name) 로그인 세션 제거 실패")
+                }
+            }
         }
         if !failures.isEmpty {
             lastErrorMessage = failures.joined(separator: "\n")
@@ -197,8 +225,15 @@ final class ConnectionStore: ObservableObject {
     private func restoreMissingFileProviderDomains() async {
         do {
             let existing = try await FileProviderDomainCoordinator.domainIdentifiers()
-            for connection in connections where !existing.contains(connection.id.uuidString) {
+            for connection in connections
+            where connection.kind.supportsFileProvider
+                && !existing.contains(connection.id.uuidString) {
                 try await FileProviderDomainCoordinator.add(connection)
+            }
+            for connection in connections
+            where !connection.kind.supportsFileProvider
+                && existing.contains(connection.id.uuidString) {
+                try await FileProviderDomainCoordinator.remove(connection)
             }
         } catch {
             lastErrorMessage = "Files 앱 위치를 복구하지 못했습니다: \(error.localizedDescription)"
@@ -261,6 +296,11 @@ final class ConnectionStore: ObservableObject {
 }
 
 enum FileProviderDomainCoordinator {
+#if targetEnvironment(macCatalyst)
+    static func domainIdentifiers() async throws -> Set<String> { [] }
+    static func add(_ connection: RemoteConnection) async throws {}
+    static func remove(_ connection: RemoteConnection) async throws {}
+#else
     static func domainIdentifiers() async throws -> Set<String> {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Set<String>, Error>) in
             NSFileProviderManager.getDomainsWithCompletionHandler { domains, error in
@@ -276,6 +316,7 @@ enum FileProviderDomainCoordinator {
     }
 
     static func add(_ connection: RemoteConnection) async throws {
+        guard connection.kind.supportsFileProvider else { return }
         let identifier = NSFileProviderDomainIdentifier(rawValue: connection.id.uuidString)
         let domain = NSFileProviderDomain(identifier: identifier, displayName: connection.name)
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -302,4 +343,5 @@ enum FileProviderDomainCoordinator {
             }
         }
     }
+#endif
 }

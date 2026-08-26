@@ -5,13 +5,15 @@ struct ZoomableMediaImageView: UIViewRepresentable {
     let image: UIImage
     let onDismiss: () -> Void
     let onNavigate: (Int) -> Void
+    let onSingleTap: () -> Void
 
     func makeUIView(context: Context) -> ZoomContainerView {
         let view = ZoomContainerView()
         view.update(
             image: image,
             onDismiss: onDismiss,
-            onNavigate: onNavigate
+            onNavigate: onNavigate,
+            onSingleTap: onSingleTap
         )
         return view
     }
@@ -20,7 +22,8 @@ struct ZoomableMediaImageView: UIViewRepresentable {
         view.update(
             image: image,
             onDismiss: onDismiss,
-            onNavigate: onNavigate
+            onNavigate: onNavigate,
+            onSingleTap: onSingleTap
         )
     }
 
@@ -31,6 +34,7 @@ struct ZoomableMediaImageView: UIViewRepresentable {
 
         private var onDismiss: () -> Void = {}
         private var onNavigate: (Int) -> Void = { _ in }
+        private var onSingleTap: () -> Void = {}
 
         private var fittedImageSize = CGSize.zero
         private var lastLayoutSize = CGSize.zero
@@ -51,13 +55,20 @@ struct ZoomableMediaImageView: UIViewRepresentable {
         func update(
             image: UIImage,
             onDismiss: @escaping () -> Void,
-            onNavigate: @escaping (Int) -> Void
+            onNavigate: @escaping (Int) -> Void,
+            onSingleTap: @escaping () -> Void
         ) {
             self.onDismiss = onDismiss
             self.onNavigate = onNavigate
+            self.onSingleTap = onSingleTap
 
             guard imageView.image !== image else { return }
+            imageView.stopAnimating()
             imageView.image = image
+            if image.images != nil {
+                // Animated GIF frames play inside the same zoomable view.
+                imageView.startAnimating()
+            }
             needsImageLayout = true
             setNeedsLayout()
         }
@@ -117,6 +128,10 @@ struct ZoomableMediaImageView: UIViewRepresentable {
             let doubleTap = UITapGestureRecognizer(target: self, action: #selector(handleDoubleTap(_:)))
             doubleTap.numberOfTapsRequired = 2
             scrollView.addGestureRecognizer(doubleTap)
+
+            let singleTap = UITapGestureRecognizer(target: self, action: #selector(handleSingleTap(_:)))
+            singleTap.require(toFail: doubleTap)
+            scrollView.addGestureRecognizer(singleTap)
         }
 
         private func relayoutImage(in viewportSize: CGSize, preserveViewport: Bool) {
@@ -228,6 +243,12 @@ struct ZoomableMediaImageView: UIViewRepresentable {
             guard gesture.state == .ended else { return }
             scrollView.setZoomScale(scrollView.minimumZoomScale, animated: false)
             updateContentInsets()
+        }
+
+        @objc
+        private func handleSingleTap(_ gesture: UITapGestureRecognizer) {
+            guard gesture.state == .ended else { return }
+            onSingleTap()
         }
 
         @objc
