@@ -255,6 +255,62 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         )
     }
 
+    func testCoverFlowThumbnailRequestIgnoresLiveCardSideAndMatchesPosterBucket() {
+        // iPhone landscape: the card side keeps changing while dragging, but
+        // the request must depend on the layout square only.
+        let phone = FileBrowserCoverFlowGeometryPolicy.geometry(
+            in: CGSize(width: 844, height: 390),
+            safeAreaTop: 0,
+            safeAreaLeading: 47,
+            safeAreaBottom: 21,
+            safeAreaTrailing: 47
+        )
+        let phoneRequest = FileBrowserCoverFlowPolicy.thumbnailRequestSize(
+            centerSide: phone.centerSide
+        )
+        XCTAssertEqual(phoneRequest.width, phoneRequest.height)
+        XCTAssertGreaterThanOrEqual(phoneRequest.width, phone.centerSide)
+        // Same 280pt request as the Poster grid cell, so Overflow reuses the
+        // thumbnails Posters already downloaded instead of fetching again.
+        XCTAssertEqual(phoneRequest, CGSize(width: 280, height: 280))
+
+        // Fractional side changes inside one request bucket never change the
+        // request, so a drag frame cannot restart the remote load.
+        let bucketLowerBound = phoneRequest.width
+            - FileBrowserCoverFlowPolicy.thumbnailRequestStep
+            + 0.5
+        for side in stride(from: bucketLowerBound, through: phoneRequest.width, by: 0.5) {
+            XCTAssertEqual(
+                FileBrowserCoverFlowPolicy.thumbnailRequestSize(centerSide: side),
+                phoneRequest,
+                "side \(side)"
+            )
+        }
+
+        // iPad keeps a larger request instead of being capped to the phone size.
+        let pad = FileBrowserCoverFlowGeometryPolicy.geometry(
+            in: CGSize(width: 1_360, height: 960),
+            safeAreaTop: 24,
+            safeAreaBottom: 20
+        )
+        let padRequest = FileBrowserCoverFlowPolicy.thumbnailRequestSize(
+            centerSide: pad.centerSide
+        )
+        XCTAssertGreaterThanOrEqual(padRequest.width, pad.centerSide)
+        XCTAssertLessThan(
+            padRequest.width - pad.centerSide,
+            FileBrowserCoverFlowPolicy.thumbnailRequestStep
+        )
+
+        // Degenerate geometry still yields a usable square request.
+        for side: CGFloat in [0, -10, .nan, .infinity] {
+            let request = FileBrowserCoverFlowPolicy.thumbnailRequestSize(centerSide: side)
+            XCTAssertGreaterThan(request.width, 0, "side \(side)")
+            XCTAssertTrue(request.width.isFinite, "side \(side)")
+            XCTAssertEqual(request.width, request.height, "side \(side)")
+        }
+    }
+
     func testCoverFlowPreloadsAroundLiveDragPosition() {
         XCTAssertEqual(
             FileBrowserCoverFlowPolicy.preloadIndices(

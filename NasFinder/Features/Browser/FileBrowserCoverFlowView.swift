@@ -5,6 +5,22 @@ enum FileBrowserCoverFlowPolicy {
     static let visibleCardCountPerSide = 7
     static let preloadCardCountPerSide = visibleCardCountPerSide + 1
     static let maximumMomentumCards: CGFloat = 3
+    static let thumbnailRequestStep: CGFloat = 40
+
+    /// Every card requests the same square thumbnail regardless of its live
+    /// rendered side. The rendered side changes on every drag frame and while
+    /// a card slides toward the center, and `RemoteThumbnailView` restarts its
+    /// load whenever the requested size changes. A stable request keeps one
+    /// in-flight remote fetch per card, shares one cache entry between the card
+    /// and its reflection, and only changes when the layout itself changes.
+    static func thumbnailRequestSize(centerSide: CGFloat) -> CGSize {
+        let safeSide = max(centerSide.isFinite ? centerSide : 0, 1)
+        let side = max(
+            (safeSide / thumbnailRequestStep).rounded(.up) * thumbnailRequestStep,
+            thumbnailRequestStep
+        )
+        return CGSize(width: side, height: side)
+    }
 
     static func preloadIndices(
         itemCount: Int,
@@ -450,9 +466,12 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
         let reflectionHeight = min(renderedSide * reflectionRatio, maximumReflectionHeight)
         let totalHeight = renderedSide + 2 + reflectionHeight
         let centerY = layout.squareBottom - renderedSide + totalHeight / 2
+        let thumbnailRequestSize = FileBrowserCoverFlowPolicy.thumbnailRequestSize(
+            centerSide: layout.centerSide
+        )
 
         ZStack(alignment: .top) {
-            thumbnail(item, CGSize(width: renderedSide, height: renderedSide))
+            thumbnail(item, thumbnailRequestSize)
             .frame(width: renderedSide, height: renderedSide)
             .background(Color.black)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
@@ -466,7 +485,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
                     )
             }
 
-            thumbnail(item, CGSize(width: renderedSide, height: renderedSide))
+            thumbnail(item, thumbnailRequestSize)
             .frame(width: renderedSide, height: renderedSide)
             .scaleEffect(x: 1, y: -1)
             .frame(width: renderedSide, height: reflectionHeight, alignment: .top)

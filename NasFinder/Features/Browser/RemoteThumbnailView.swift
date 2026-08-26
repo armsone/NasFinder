@@ -739,43 +739,43 @@ final class RemoteThumbnailLoader: ObservableObject {
         size: RemoteThumbnailSize,
         cellularBudget: RemoteVideoThumbnailTrafficBudget?
     ) async throws -> Data? {
-        let lease: RemoteVideoThumbnailTrafficBudget.Lease?
-        if let cellularBudget {
-            guard let grantedLease = await cellularBudget.lease(for: item) else {
-                throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
-            }
-            lease = grantedLease
-        } else {
-            lease = nil
-        }
         do {
             let data = try await RemoteThumbnailWorkLimiter.shared.withPermit {
-                if let lease {
-                    try await service.thumbnailData(
+                () async throws -> Data? in
+                guard let cellularBudget else {
+                    return try await service.thumbnailData(for: item, size: size)
+                }
+                // The lease is reserved only once this request holds a work
+                // permit. Every visible card used to reserve a full item lease
+                // up front, so a wide Overflow preload window exhausted the
+                // cellular total with reservations alone, and a card cancelled
+                // while still queued was charged for bytes it never transferred.
+                guard let lease = await cellularBudget.lease(for: item) else {
+                    throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
+                }
+                do {
+                    let data = try await service.thumbnailData(
                         for: item,
                         size: size,
                         maximumByteCount: lease.maximumBytes
                     )
-                } else {
-                    try await service.thumbnailData(for: item, size: size)
+                    await cellularBudget.finish(
+                        lease,
+                        transferredBytes: data == nil
+                            ? lease.maximumBytes
+                            : min(data?.count ?? 0, lease.maximumBytes)
+                    )
+                    return data
+                } catch {
+                    await cellularBudget.finish(
+                        lease,
+                        transferredBytes: lease.maximumBytes
+                    )
+                    throw error
                 }
-            }
-            if let cellularBudget, let lease {
-                await cellularBudget.finish(
-                    lease,
-                    transferredBytes: data == nil
-                        ? lease.maximumBytes
-                        : min(data?.count ?? 0, lease.maximumBytes)
-                )
             }
             return data.flatMap { $0.isEmpty ? nil : $0 }
         } catch {
-            if let cellularBudget, let lease {
-                await cellularBudget.finish(
-                    lease,
-                    transferredBytes: lease.maximumBytes
-                )
-            }
             // A cancelled URLSession request is already terminal. Retrying it
             // immediately kept all three work permits occupied and made the
             // grid appear to load forever. A later view reload can try again.
