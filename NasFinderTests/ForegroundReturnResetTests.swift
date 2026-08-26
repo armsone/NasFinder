@@ -66,4 +66,22 @@ final class ForegroundReturnResetTests: XCTestCase {
             ForegroundReturnResetPolicy.Transition(wasInBackground: true, shouldReset: false)
         )
     }
+
+    func testForegroundResetDiscardsPendingInboxRouteButKeepsStoredRecords() async {
+        let store = SharedInboxStore()
+        let recordsBeforeReset = store.records
+        let pendingID = UUID()
+
+        await store.handleOpenURL(
+            URL(string: "nasfinder://inbox?id=\(pendingID.uuidString)")!
+        )
+        XCTAssertTrue(store.shouldPresentInbox)
+        XCTAssertEqual(store.pendingPreviewRecordID, pendingID)
+
+        store.resetTransientPresentation()
+
+        XCTAssertFalse(store.shouldPresentInbox)
+        XCTAssertNil(store.pendingPreviewRecordID)
+        XCTAssertEqual(store.records, recordsBeforeReset)
+    }
 }

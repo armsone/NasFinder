@@ -431,8 +431,7 @@ struct ConnectionListView: View {
         editingConnection = nil
         connectionPendingDeletion = nil
         isImportingFromFiles = false
-        inboxStore.shouldPresentInbox = false
-        _ = inboxStore.consumePendingPreviewRecordID()
+        inboxStore.resetTransientPresentation()
         returnToDashboard()
     }
 

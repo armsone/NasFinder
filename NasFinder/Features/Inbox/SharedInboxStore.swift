@@ -200,6 +200,13 @@ final class SharedInboxStore: ObservableObject {
         return pendingPreviewRecordID
     }
 
+    /// Clears only navigation requested for the current presentation. Stored
+    /// PhoneHard files and errors remain untouched.
+    func resetTransientPresentation() {
+        shouldPresentInbox = false
+        pendingPreviewRecordID = nil
+    }
+
     private static func isInboxURL(_ url: URL) -> Bool {
         guard url.scheme?.caseInsensitiveCompare("nasfinder") == .orderedSame else {
             return false
