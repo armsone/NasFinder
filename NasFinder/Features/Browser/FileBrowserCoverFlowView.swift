@@ -38,8 +38,22 @@ enum FileBrowserCoverFlowPolicy {
         case .card:
             .standard
         case .reflection:
-            .mirrorsCachedImage
+            .sharedReflection
         }
+    }
+
+    static let reflectionSpacing: CGFloat = 6
+
+    static func visibleReflectionHeight(
+        requestedHeight: CGFloat,
+        containerHeight: CGFloat,
+        mainImageBottom: CGFloat
+    ) -> CGFloat {
+        let requested = max(requestedHeight.isFinite ? requestedHeight : 0, 0)
+        let height = max(containerHeight.isFinite ? containerHeight : 0, 0)
+        let bottom = max(mainImageBottom.isFinite ? mainImageBottom : 0, 0)
+        let available = max(height - bottom - reflectionSpacing, 0)
+        return min(requested, available)
     }
 
     static func preloadIndices(
@@ -113,6 +127,12 @@ enum FileBrowserCoverFlowGeometryPolicy {
     static let chromeClearance: CGFloat = 60
     static let reflectionReserve: CGFloat = 64
 
+    static func mainImageBottomGap(safeAreaBottom: CGFloat) -> CGFloat {
+        let safeBottom = max(safeAreaBottom.isFinite ? safeAreaBottom : 0, 0)
+        let currentEffectiveGap = safeBottom + reflectionReserve
+        return max(safeBottom, currentEffectiveGap / 3)
+    }
+
     static func geometry(
         in size: CGSize,
         safeAreaTop: CGFloat,
@@ -120,25 +140,36 @@ enum FileBrowserCoverFlowGeometryPolicy {
         safeAreaBottom: CGFloat,
         safeAreaTrailing: CGFloat = 0
     ) -> FileBrowserCoverFlowGeometry {
+        let safeLeading = max(safeAreaLeading.isFinite ? safeAreaLeading : 0, 0)
+        let safeTrailing = max(safeAreaTrailing.isFinite ? safeAreaTrailing : 0, 0)
+        let safeTop = max(safeAreaTop.isFinite ? safeAreaTop : 0, 0)
+        let safeBottom = max(safeAreaBottom.isFinite ? safeAreaBottom : 0, 0)
+        let canvasWidth = max(size.width.isFinite ? size.width : 0, 1)
+        let canvasHeight = max(size.height.isFinite ? size.height : 0, 1)
         let usableWidth = max(
-            size.width
-                - safeAreaLeading
-                - safeAreaTrailing
+            canvasWidth
+                - safeLeading
+                - safeTrailing
                 - horizontalInset * 2,
             1
         )
-        let top = min(max(safeAreaTop + chromeClearance, 0), size.height)
-        let bottom = max(
-            min(size.height - safeAreaBottom - reflectionReserve, size.height),
-            top + 1
+        let targetBottomGap = mainImageBottomGap(safeAreaBottom: safeBottom)
+        let requestedBottom = max(canvasHeight - targetBottomGap, 0)
+        // Compact split views may not have room for both the normal chrome
+        // clearance and a square. Preserve the requested bottom gap and reduce
+        // only the top clearance, never producing a negative card size.
+        let top = min(
+            safeTop + chromeClearance,
+            max(requestedBottom - 1, 0)
         )
+        let bottom = min(max(requestedBottom, top + 1), canvasHeight)
         let usableHeight = max(bottom - top, 1)
         let centerSide = max(min(usableWidth, usableHeight), 1)
         let squareCenterY = top + usableHeight / 2
         let squareBottom = squareCenterY + centerSide / 2
         let floorCenterY = min(
-            size.height - safeAreaBottom,
-            squareBottom + reflectionReserve / 2
+            canvasHeight,
+            squareBottom + targetBottomGap / 2
         )
         return FileBrowserCoverFlowGeometry(
             centerSide: centerSide,
@@ -374,7 +405,12 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
     let items: [Item]
     @Binding var usesDarkBackground: Bool
     let itemName: (Item) -> String
-    let thumbnail: (Item, CGSize, FileBrowserCoverFlowThumbnailRole) -> Thumbnail
+    let thumbnail: (
+        Item,
+        CGSize,
+        FileBrowserCoverFlowThumbnailRole,
+        RemoteThumbnailLoader
+    ) -> Thumbnail
     let onActivate: (Item) -> Void
     let onShowActions: ((Item) -> Void)?
 
@@ -483,47 +519,61 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
             ? (emphasis > 0 ? 44 : 32)
             : 20
         let reflectionRatio: CGFloat = usesDarkBackground ? 0.15 : 0.10
-        let reflectionHeight = min(renderedSide * reflectionRatio, maximumReflectionHeight)
-        let totalHeight = renderedSide + 2 + reflectionHeight
+        let requestedReflectionHeight = min(
+            renderedSide * reflectionRatio,
+            maximumReflectionHeight
+        )
+        let reflectionHeight = FileBrowserCoverFlowPolicy.visibleReflectionHeight(
+            requestedHeight: requestedReflectionHeight,
+            containerHeight: availableSize.height,
+            mainImageBottom: layout.squareBottom
+        )
+        let totalHeight = renderedSide
+            + FileBrowserCoverFlowPolicy.reflectionSpacing
+            + reflectionHeight
         let centerY = layout.squareBottom - renderedSide + totalHeight / 2
         let thumbnailRequestSize = FileBrowserCoverFlowPolicy.thumbnailRequestSize(
             centerSide: layout.centerSide
         )
 
-        ZStack(alignment: .top) {
-            thumbnail(item, thumbnailRequestSize, .card)
-            .frame(width: renderedSide, height: renderedSide)
-            .background(Color.black)
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius)
-                    .stroke(
-                        cardBorderColor(emphasis: emphasis),
-                        lineWidth: usesDarkBackground
-                            ? 0.75 + emphasis * 0.25
-                            : 0.6 + emphasis * 0.4
-                    )
-            }
+        FileBrowserCoverFlowSharedLoaderScope { sharedLoader in
+            ZStack(alignment: .top) {
+                thumbnail(item, thumbnailRequestSize, .card, sharedLoader)
+                .frame(width: renderedSide, height: renderedSide)
+                .background(Color.black)
+                .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
+                .overlay {
+                    RoundedRectangle(cornerRadius: cornerRadius)
+                        .stroke(
+                            cardBorderColor(emphasis: emphasis),
+                            lineWidth: usesDarkBackground
+                                ? 0.75 + emphasis * 0.25
+                                : 0.6 + emphasis * 0.4
+                        )
+                }
 
-            thumbnail(item, thumbnailRequestSize, .reflection)
-            .frame(width: renderedSide, height: renderedSide)
-            .scaleEffect(x: 1, y: -1)
-            .frame(width: renderedSide, height: reflectionHeight, alignment: .top)
-            .clipped()
-            .opacity(reflectionOpacity(emphasis: emphasis))
-            .blur(radius: usesDarkBackground ? 0.65 : 0.8)
-            .mask {
-                LinearGradient(
-                    colors: [
-                        .white.opacity(usesDarkBackground ? 0.72 : 0.58),
-                        .clear
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
+                thumbnail(item, thumbnailRequestSize, .reflection, sharedLoader)
+                .frame(width: renderedSide, height: renderedSide)
+                .scaleEffect(x: 1, y: -1)
+                .frame(width: renderedSide, height: reflectionHeight, alignment: .top)
+                .clipped()
+                .opacity(reflectionOpacity(emphasis: emphasis))
+                .blur(radius: usesDarkBackground ? 0.65 : 0.8)
+                .mask {
+                    LinearGradient(
+                        colors: [
+                            .white.opacity(usesDarkBackground ? 0.72 : 0.58),
+                            .clear
+                        ],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                }
+                .offset(
+                    y: renderedSide + FileBrowserCoverFlowPolicy.reflectionSpacing
                 )
+                .allowsHitTesting(false)
             }
-            .offset(y: renderedSide + (usesDarkBackground ? 1 : 2))
-            .allowsHitTesting(false)
         }
         .frame(width: renderedSide, height: totalHeight, alignment: .top)
         .rotation3DEffect(
@@ -703,5 +753,19 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
     private func rotation(for distance: CGFloat) -> Double {
         let clamped = min(max(distance, -1), 1)
         return -Double(clamped) * 42
+    }
+}
+
+@MainActor
+final class FileBrowserCoverFlowThumbnailState: ObservableObject {
+    let loader = RemoteThumbnailLoader()
+}
+
+private struct FileBrowserCoverFlowSharedLoaderScope<Content: View>: View {
+    @StateObject private var state = FileBrowserCoverFlowThumbnailState()
+    let content: (RemoteThumbnailLoader) -> Content
+
+    var body: some View {
+        content(state.loader)
     }
 }

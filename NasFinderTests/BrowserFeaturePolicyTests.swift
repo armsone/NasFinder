@@ -191,8 +191,9 @@ final class BrowserFeaturePolicyTests: XCTestCase {
             - FileBrowserCoverFlowGeometryPolicy.horizontalInset * 2
         let expectedHeight = 960
             - (24 + FileBrowserCoverFlowGeometryPolicy.chromeClearance)
-            - 20
-            - FileBrowserCoverFlowGeometryPolicy.reflectionReserve
+            - FileBrowserCoverFlowGeometryPolicy.mainImageBottomGap(
+                safeAreaBottom: 20
+            )
         XCTAssertEqual(layout.centerSide, min(expectedWidth, expectedHeight))
         XCTAssertGreaterThan(layout.centerSide, 460)
         XCTAssertEqual(
@@ -203,8 +204,10 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         )
         XCTAssertLessThanOrEqual(
             layout.squareBottom
-                + FileBrowserCoverFlowGeometryPolicy.reflectionReserve,
-            960 - 20
+                + FileBrowserCoverFlowGeometryPolicy.mainImageBottomGap(
+                    safeAreaBottom: 20
+                ),
+            960
         )
     }
 
@@ -218,10 +221,45 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         )
         let expectedHeight = 390
             - FileBrowserCoverFlowGeometryPolicy.chromeClearance
-            - 21
-            - FileBrowserCoverFlowGeometryPolicy.reflectionReserve
+            - FileBrowserCoverFlowGeometryPolicy.mainImageBottomGap(
+                safeAreaBottom: 21
+            )
         XCTAssertEqual(layout.centerSide, expectedHeight)
         XCTAssertGreaterThan(layout.centerSide, 0)
+        let previousEffectiveGap: CGFloat = 21
+            + FileBrowserCoverFlowGeometryPolicy.reflectionReserve
+        XCTAssertEqual(390 - layout.squareBottom, previousEffectiveGap / 3, accuracy: 0.001)
+        XCTAssertEqual(
+            FileBrowserCoverFlowPolicy.visibleReflectionHeight(
+                requestedHeight: 44,
+                containerHeight: 390,
+                mainImageBottom: layout.squareBottom
+            ),
+            previousEffectiveGap / 3 - FileBrowserCoverFlowPolicy.reflectionSpacing,
+            accuracy: 0.001
+        )
+    }
+
+    func testCoverFlowGeometryKeepsCompactWindowsFiniteAndNonnegative() {
+        for size in [CGSize(width: 120, height: 80), CGSize(width: 1, height: 1)] {
+            let layout = FileBrowserCoverFlowGeometryPolicy.geometry(
+                in: size,
+                safeAreaTop: 44,
+                safeAreaLeading: 80,
+                safeAreaBottom: 34,
+                safeAreaTrailing: 80
+            )
+            XCTAssertTrue(layout.centerSide.isFinite)
+            XCTAssertGreaterThanOrEqual(layout.centerSide, 1)
+            XCTAssertTrue(layout.squareBottom.isFinite)
+            let reflectionHeight = FileBrowserCoverFlowPolicy.visibleReflectionHeight(
+                requestedHeight: 44,
+                containerHeight: size.height,
+                mainImageBottom: layout.squareBottom
+            )
+            XCTAssertTrue(reflectionHeight.isFinite)
+            XCTAssertGreaterThanOrEqual(reflectionHeight, 0)
+        }
     }
 
     func testAutomaticOverflowUsesActualBoundsAndNeverSelectionOrEmptyState() {
@@ -255,7 +293,7 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         )
     }
 
-    func testCoverFlowThumbnailRequestIgnoresLiveCardSideAndMatchesPosterBucket() {
+    func testCoverFlowThumbnailRequestIgnoresLiveCardSideAndUsesStableBucket() {
         // iPhone landscape: the card side keeps changing while dragging, but
         // the request must depend on the layout square only.
         let phone = FileBrowserCoverFlowGeometryPolicy.geometry(
@@ -270,9 +308,7 @@ final class BrowserFeaturePolicyTests: XCTestCase {
         )
         XCTAssertEqual(phoneRequest.width, phoneRequest.height)
         XCTAssertGreaterThanOrEqual(phoneRequest.width, phone.centerSide)
-        // Same 280pt request as the Poster grid cell, so Overflow reuses the
-        // thumbnails Posters already downloaded instead of fetching again.
-        XCTAssertEqual(phoneRequest, CGSize(width: 280, height: 280))
+        XCTAssertEqual(phoneRequest, CGSize(width: 320, height: 320))
 
         // Fractional side changes inside one request bucket never change the
         // request, so a drag frame cannot restart the remote load.

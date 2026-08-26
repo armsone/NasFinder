@@ -156,7 +156,7 @@ final class RemoteThumbnailCellularAccountingTests: XCTestCase {
         )
         XCTAssertEqual(
             FileBrowserCoverFlowPolicy.thumbnailDisplayMode(for: .reflection),
-            .mirrorsCachedImage
+            .sharedReflection
         )
     }
 
@@ -196,37 +196,36 @@ final class RemoteThumbnailCellularAccountingTests: XCTestCase {
     }
 
     @MainActor
-    func testMirroredLoaderNeverRequestsAndFollowsCardImage() async throws {
+    func testCoverFlowCardAndReflectionShareOneLoaderAndCannotDiverge() async throws {
         RemoteThumbnailLoader.clearTransientFailures()
         let service = ScriptedThumbnailService(
             outcomes: [.data(byteCount: 0, image: try Self.solidImageData())]
         )
         let item = imageItem(connectionID: service.connection.id, name: "card.png")
         let size = CGSize(width: 280, height: 280)
-        let mirror = RemoteThumbnailLoader()
+        let state = FileBrowserCoverFlowThumbnailState()
+        let cardLoader = state.loader
+        let reflectionLoader = state.loader
 
-        mirror.showCachedImage(item: item, size: size)
-        XCTAssertNil(mirror.image)
+        XCTAssertTrue(cardLoader === reflectionLoader)
+        await cardLoader.load(item: item, service: service, size: size, reloadVersion: 0)
+        XCTAssertNotNil(cardLoader.image)
+        XCTAssertTrue(reflectionLoader.image === cardLoader.image)
         var requestCount = await service.requestCount()
-        XCTAssertEqual(requestCount, 0)
+        XCTAssertEqual(requestCount, 1)
 
-        let card = RemoteThumbnailLoader()
-        await card.load(item: item, service: service, size: size, reloadVersion: 0)
-        XCTAssertNotNil(card.image)
+        // Re-rendering both surfaces for the same card cannot start a second
+        // load, because both observe this single state object.
+        await reflectionLoader.load(item: item, service: service, size: size, reloadVersion: 0)
         requestCount = await service.requestCount()
         XCTAssertEqual(requestCount, 1)
 
-        mirror.showCachedImage(item: item, size: size)
-        XCTAssertNotNil(mirror.image)
-        XCTAssertTrue(mirror.image === card.image)
-
-        // A store for another key leaves the mirror untouched; the matching
-        // key is what the reflection listens for.
-        let otherItem = imageItem(connectionID: service.connection.id, name: "other.png")
-        mirror.showCachedImage(item: otherItem, size: size, onlyIfKeyMatches: "unrelated")
-        XCTAssertNotNil(mirror.image)
-        requestCount = await service.requestCount()
-        XCTAssertEqual(requestCount, 1)
+        // A clear/invalidation is also one shared state transition. It is
+        // impossible for the reflection to retain an image after the card is
+        // a placeholder, which was the reported inverse-state regression.
+        cardLoader.image = nil
+        XCTAssertNil(cardLoader.image)
+        XCTAssertNil(reflectionLoader.image)
     }
 
     private static func solidImageData() throws -> Data {
