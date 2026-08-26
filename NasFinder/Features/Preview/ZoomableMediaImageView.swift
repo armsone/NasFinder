@@ -63,7 +63,12 @@ struct ZoomableMediaImageView: UIViewRepresentable {
             self.onSingleTap = onSingleTap
 
             guard imageView.image !== image else { return }
+            imageView.stopAnimating()
             imageView.image = image
+            if image.images != nil {
+                // Animated GIF frames play inside the same zoomable view.
+                imageView.startAnimating()
+            }
             needsImageLayout = true
             setNeedsLayout()
         }

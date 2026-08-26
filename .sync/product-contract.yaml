@@ -93,6 +93,31 @@ capabilities:
     dependencies: [connections.persistence_credentials, settings.theme_icons, inbox.shared_storage]
     parity_row_ids: [app-shell]
 
+  - id: app.shell.foreground_return.dashboard_reset
+    purpose: "백그라운드 복귀 시 임시 화면 상태를 정리하고 대시보드로 복귀한다. 영구 데이터는 보존한다."
+    source_refs: ["NasFinder/App/ForegroundReturnResetCoordinator.swift", "NasFinder/App/NasFinderApp.swift", "app/src/main/java/com/armsone/nasfinder/ui/NasFinderApp.kt", "app/src/main/java/com/armsone/nasfinder/ui/NasFinderViewModel.kt"]
+    entry_points: ["scene phase background/active", "앱 launch/activation"]
+    preconditions: ["앱이 활성/비활성 전환을 거쳤을 때"]
+    inputs: ["scene phase 이벤트", "현재 라우트 상태", "미리보기/브라우저/시트 임시 상태"]
+    normal_result: "백그라운드 체류 후 active 전환 시 화면은 dashboard를 시작점으로 하고 전이성 네비게이션/미디어/브라우저/시트 상태를 정리한다."
+    states: [foreground, background, returning_to_dashboard, preserved_data]
+    algorithms_and_thresholds: ["rotation/configuration-change는 리셋 대상에서 제외", "cold launch는 reset 없음", "한 번의 background stay는 복귀 시 한번만 reset"]
+    data_contracts: ["앱 shell state", "전이성 상태 clear 정책"]
+    producer_consumer_routes: ["NasFinderApp.swift -> ForegroundReturnResetCoordinator -> scenePhaseDidChange -> NasFinderViewModel"]
+    persistence_relaunch: "연결/환경 설정/탐색 위치는 유지, 전이성 상태만 정리."
+    permissions_privacy_security: ["영구 데이터 삭제 없음"]
+    background_lifecycle: "백그라운드에서 임시 작업 정리만 수행하고 데이터/스토어는 보존."
+    gestures_accessibility: ["dashboard 복귀가 명확한 시작 상태를 제공"]
+    supported_devices_layouts: ["iPhone", "iPad", "Android phone"]
+    visual_reference: "복귀 직후 dashboard"
+    platform_adaptations: {ios: ["ScenePhase 기반 리셋 마커"], android: ["onStop/onStart 기반 리턴 마커"]}
+    intentional_differences: ["iOS는 장면 위주, Android는 Activity 생명주기 위주"]
+    implementations:
+      ios: {status: source_implemented_runtime_partially_verified, source_refs: ["NasFinder/App/ForegroundReturnResetCoordinator.swift", "NasFinder/App/NasFinderApp.swift", "NasFinderTests/ForegroundReturnResetTests.swift"], tests: ["NasFinderTests/ForegroundReturnResetTests.swift"], evidence: ["make install-verified에서 app 런치 확인"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/NasFinderApp.kt", "app/src/main/java/com/armsone/nasfinder/ui/NasFinderViewModel.kt"], tests: ["app/src/test/java/com/armsone/nasfinder/ui/ForegroundReturnContractTest.kt"], evidence: ["단위 테스트·assembleDebug 성공; 이번 차수 설치는 SM-F968N 미연결로 미실행"]}
+    dependencies: [app.shell.routes_lifecycle]
+    parity_row_ids: [app-foreground-return]
+
   - id: settings.theme_icons_awake
     purpose: "Let users choose appearance, alternate icon and screen-awake policy with durable preferences."
     source_refs: ["NasFinder/App/SkyBreezeTheme.swift", "NasFinder/App/ScreenAwakeController.swift", "NasFinder/Features/Settings/AppSettingsView.swift", "NasFinder/Features/Settings/AppIconSettingsView.swift", "NasFinder/Resources/Assets.xcassets"]
@@ -493,6 +518,56 @@ capabilities:
       android: {status: source_implemented_runtime_unverified, source_refs: ["NasFinderApp.kt", "NasFinderViewModel.kt", "DownloadCache.kt", "RemoteRangeMediaSource.kt"], tests: ["DocumentsThumbnailPolicyTest", "InboxParityContractTest", "RemoteRangeMediaSourceTest"], evidence: ["image status-bar and video immersive-system-bar lifecycle are source-covered; automatic playback, buffering and retry/external fallback tests remain; post-change viewer capture pending"]}
     dependencies: [remote.backends_protocols, preview.streaming_video, preview.compatibility_video]
     parity_row_ids: [media-preview]
+
+  - id: preview.animated_gif.all_routes
+    purpose: "GIF와 같은 멀티 프레임 이미지를 모든 공유 미리보기 경로에서 애니메이션으로 재생하고, 비GIF/단일프레임은 정적 대체 경로를 유지한다."
+    source_refs: ["NasFinder/Features/Preview/AnimatedImageDecoder.swift", "NasFinder/Features/Preview/ZoomableMediaImageView.swift", "NasFinder/Features/Preview/RemotePreviewView.swift", "app/src/main/java/com/armsone/nasfinder/ui/NasFinderApp.kt"]
+    entry_points: ["browser image preview", "favorite/inbox/webhard image preview", "공유 링크/문서 기반 미리보기"]
+    preconditions: ["이미지 항목 진입", "GIF 탐지 성공"]
+    inputs: ["GIF frame delay", "시각 경로(아이템 타입)", "디코드 오류 타입"]
+    normal_result: "멀티 프레임 GIF는 공통 뷰어에서 애니메이션으로 재생되고, 단일 프레임/비 GIF/디코드 실패는 정적 이미지로 폴백한다."
+    states: [animated, fallback, failed, fallback_static]
+    algorithms_and_thresholds: ["frame delay 정규화", "메모리/크기 바인딩 적용", "fallback은 정적 경로 보존"]
+    data_contracts: ["AnimatedImagePolicy", "AnimatedImageDecoder output", "preview image fallback policy"]
+    producer_consumer_routes: ["file URL or remote stream -> decoder -> AnimatedImageFrames -> ZoomableMediaImageView"]
+    persistence_relaunch: "미리보기 캐시 계약은 기존 정책 유지, 영구 상태 변경 없음"
+    permissions_privacy_security: ["이미지 디코드 입력만 소비"]
+    background_lifecycle: "미리보기 종료 또는 취소 시 디코드/애니메이션 정리"
+    gestures_accessibility: ["이미지 상태와 재생 가능 여부를 읽기"]
+    supported_devices_layouts: ["iPhone/iPad", "Android phone/tablet/TV"]
+    visual_reference: "ZoomableMediaImageView 캡처 및 런타임 추적"
+    platform_adaptations: {ios: ["ImageIO/UIImage 기반 애니메이션 처리"], android: ["ImageDecoder + policy 기반 멀티 프레임 디코드"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_partially_verified, source_refs: ["NasFinder/Features/Preview/AnimatedImageDecoder.swift", "NasFinder/Features/Preview/ZoomableMediaImageView.swift", "NasFinder/Features/Preview/RemotePreviewView.swift"], tests: ["NasFinderTests/AnimatedImagePlaybackTests.swift", "NasFinderTests/RemoteThumbnailCellularAccountingTests.swift"], evidence: ["make install-verified에서 app 런치 확인"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/NasFinderApp.kt", "app/src/main/java/com/armsone/nasfinder/ui/MediaViewerPolicy.kt"], tests: ["app/src/test/java/com/armsone/nasfinder/ui/AnimatedImagePolicyTest.kt"], evidence: ["단위 테스트/assembleDebug 통과"]}
+    dependencies: [preview.remote_media]
+    parity_row_ids: [media-animated-gif]
+
+  - id: preview.volume_gesture.granular_native_step
+    purpose: "수직 드래그 기반 볼륨 제어의 점프를 줄이고 네이티브 인덱스 기준의 더 촘촘한 step으로 반응하도록 한다."
+    source_refs: ["NasFinder/Features/Preview/RemotePreviewView.swift", "app/src/main/java/com/armsone/nasfinder/ui/MediaViewerPolicy.kt"]
+    entry_points: ["fullscreen video", "volume HUD"]
+    preconditions: ["동영상이 재생 가능한 상태"]
+    inputs: ["vertical drag delta", "시스템 max volume", "현재 볼륨"]
+    normal_result: "연속 드래그가 큰 step 점프로 튀지 않고 native index 변화량 단위로 정밀하게 적용되며 HUD/제스처 상태가 일관된다."
+    states: [adjust_volume, adjust_dismiss]
+    algorithms_and_thresholds: ["drag 정규화", "index 기반 변경량 계산", "gesture 모드 변경 금지"]
+    data_contracts: ["volume gesture policy", "system audio index"]
+    producer_consumer_routes: ["touch drag -> policy -> system volume interface"]
+    persistence_relaunch: "임시 HUD 상태만 유지, 영구 저장 없음"
+    permissions_privacy_security: ["시스템 볼륨 접근은 공개 API 사용"]
+    background_lifecycle: "inactive/앱 종료 시 gesture state clear"
+    gestures_accessibility: ["볼륨 제어 상태 제공"]
+    supported_devices_layouts: ["touch phone", "Android TV remote"]
+    visual_reference: "fullscreen video gesture HUD"
+    platform_adaptations: {ios: ["UISlider/MPVolumeView 스타일과 함께 동작 보정"], android: ["AudioManager/볼륨 정책 정규화"]}
+    intentional_differences: ["iOS와 Android는 볼륨 UI 구현체가 다를 수 있음"]
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Preview/RemotePreviewView.swift"], tests: ["NasFinderTests/RemoteThumbnailCellularAccountingTests.swift"], evidence: ["iOS 설치/런치 확인"]}
+      android: {status: source_implemented_runtime_partially_verified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/MediaViewerPolicy.kt"], tests: ["app/src/test/java/com/armsone/nasfinder/ui/MediaViewerVolumeGranularityTest.kt"], evidence: ["단위 테스트+assembleDebug 성공"]}
+    dependencies: [preview.streaming_video, preview.gestures_controls]
+    parity_row_ids: [media-volume-gesture]
 
   - id: preview.gestures_controls
     purpose: "Provide consistent image/video viewer gestures including zoom, navigation, dismissal and vertical volume control without gesture mode switching mid-drag."

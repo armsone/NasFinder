@@ -742,12 +742,14 @@ struct FileBrowserView: View {
                     items: displayedItems,
                     usesDarkBackground: $coverFlowUsesDarkBackground,
                     itemName: { $0.name },
-                    thumbnail: { item, size in
+                    thumbnail: { item, size, role in
                         RemoteThumbnailView(
                             item: item,
                             service: viewModel.service,
                             size: size,
-                            reloadVersion: thumbnailReloadVersion
+                            reloadVersion: thumbnailReloadVersion,
+                            displayMode: FileBrowserCoverFlowPolicy
+                                .thumbnailDisplayMode(for: role)
                         )
                     },
                     onActivate: activate,

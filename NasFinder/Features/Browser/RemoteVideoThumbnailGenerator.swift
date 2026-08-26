@@ -606,3 +606,76 @@ actor RemoteVideoThumbnailTrafficBudget {
         return "\(item.connectionID.uuidString)|\(parentPath)"
     }
 }
+
+/// Charges a cellular thumbnail lease for the bytes a backend request is known
+/// to have moved. Six cancelled or failed Overflow requests used to charge a
+/// full item lease each, which exhausted the shared 24 MB cellular pool before
+/// a single thumbnail was shown. Outcomes whose exact size is unknown are
+/// charged a small conservative bound instead of the whole reservation.
+enum RemoteThumbnailCellularAccountingPolicy {
+    /// A backend without a thumbnail answers with a short JSON envelope.
+    static let emptyResponseChargeBytes = 16 * 1_024
+    /// A request that failed or was cancelled mid-stream may have received
+    /// part of a thumbnail. Server thumbnails stay well below this bound.
+    static let interruptedResponseChargeBytes = 256 * 1_024
+
+    enum Outcome {
+        case data(byteCount: Int)
+        case empty
+        case failed(Error)
+    }
+
+    static func chargedBytes(for outcome: Outcome, leaseMaximumBytes: Int) -> Int {
+        let charge: Int
+        switch outcome {
+        case .data(let byteCount):
+            charge = byteCount
+        case .empty:
+            charge = emptyResponseChargeBytes
+        case .failed(let error):
+            if case RemoteThumbnailError.responseTooLarge = error {
+                // The bounded reader stops exactly at the lease cap.
+                charge = leaseMaximumBytes
+            } else {
+                charge = interruptedResponseChargeBytes
+            }
+        }
+        return min(max(charge, 0), max(leaseMaximumBytes, 0))
+    }
+}
+
+extension RemoteVideoThumbnailTrafficBudget {
+    /// Fetches a backend thumbnail under one lease of this budget and charges
+    /// only the bytes the request is known to have moved.
+    func meteredThumbnailData(
+        for item: RemoteFileItem,
+        service: any RemoteFileService,
+        size: RemoteThumbnailSize
+    ) async throws -> Data? {
+        guard let lease = lease(for: item) else {
+            throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
+        }
+        let outcome: RemoteThumbnailCellularAccountingPolicy.Outcome
+        let result: Result<Data?, Error>
+        do {
+            let data = try await service.thumbnailData(
+                for: item,
+                size: size,
+                maximumByteCount: lease.maximumBytes
+            )
+            outcome = data.map { $0.isEmpty ? .empty : .data(byteCount: $0.count) } ?? .empty
+            result = .success(data)
+        } catch {
+            outcome = .failed(error)
+            result = .failure(error)
+        }
+        finish(
+            lease,
+            transferredBytes: RemoteThumbnailCellularAccountingPolicy.chargedBytes(
+                for: outcome,
+                leaseMaximumBytes: lease.maximumBytes
+            )
+        )
+        return try result.get()
+    }
+}

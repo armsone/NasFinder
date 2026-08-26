@@ -131,6 +131,7 @@ final class ThumbnailNetworkMonitor: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.armsone.nasfinder.thumbnail-network")
     private let lock = NSLock()
     private var currentPath: NWPath?
+    private var pathGeneration = 0
 
     private init() {
         monitor.pathUpdateHandler = { [weak self] path in
@@ -138,6 +139,7 @@ final class ThumbnailNetworkMonitor: @unchecked Sendable {
             self.lock.lock()
             let wasUnmeteredWiFi = self.currentPath.map(Self.isUnmeteredWiFi)
             self.currentPath = path
+            self.pathGeneration &+= 1
             let isUnmeteredWiFi = Self.isUnmeteredWiFi(path)
             self.lock.unlock()
             if isUnmeteredWiFi, wasUnmeteredWiFi == false {
@@ -158,6 +160,14 @@ final class ThumbnailNetworkMonitor: @unchecked Sendable {
         defer { lock.unlock() }
         guard let currentPath else { return false }
         return Self.isUnmeteredWiFi(currentPath)
+    }
+
+    /// Increments on every path update, before observers are notified, so a
+    /// thumbnail failure recorded on the previous network is retried once.
+    var networkPathGeneration: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return pathGeneration
     }
 
     private static func isUnmeteredWiFi(_ path: NWPath) -> Bool {
@@ -1155,32 +1165,8 @@ final class ThumbnailPreheater: ObservableObject {
         guard usesCellularBudget else {
             return try await service.thumbnailData(for: item, size: size)
         }
-        let budget = RemoteVideoThumbnailTrafficBudget.cellularShared
-        guard let lease = await budget.lease(for: item) else {
-            throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
-        }
-        do {
-            let data = try await service.thumbnailData(
-                for: item,
-                size: size,
-                maximumByteCount: lease.maximumBytes
-            )
-            await budget.finish(
-                lease,
-                transferredBytes: data == nil
-                    ? lease.maximumBytes
-                    : min(data?.count ?? 0, lease.maximumBytes)
-            )
-            return data
-        } catch {
-            // A streamed response may consume bytes before it fails. Charging
-            // the reservation prevents repeated failures bypassing the cap.
-            await budget.finish(
-                lease,
-                transferredBytes: lease.maximumBytes
-            )
-            throw error
-        }
+        return try await RemoteVideoThumbnailTrafficBudget.cellularShared
+            .meteredThumbnailData(for: item, service: service, size: size)
     }
 
     private func cachedThumbnailData(for item: RemoteFileItem) async -> Data? {

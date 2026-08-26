@@ -1,6 +1,11 @@
 import SwiftUI
 import UIKit
 
+enum FileBrowserCoverFlowThumbnailRole: Equatable, Sendable {
+    case card
+    case reflection
+}
+
 enum FileBrowserCoverFlowPolicy {
     static let visibleCardCountPerSide = 7
     static let preloadCardCountPerSide = visibleCardCountPerSide + 1
@@ -20,6 +25,21 @@ enum FileBrowserCoverFlowPolicy {
             thumbnailRequestStep
         )
         return CGSize(width: side, height: side)
+    }
+
+    /// The reflection under a card shows the image the card already rendered.
+    /// Each card and reflection used to own an independent remote loader, so
+    /// one Overflow window started every backend fetch twice and spent the
+    /// cellular budget twice as fast.
+    static func thumbnailDisplayMode(
+        for role: FileBrowserCoverFlowThumbnailRole
+    ) -> RemoteThumbnailDisplayMode {
+        switch role {
+        case .card:
+            .standard
+        case .reflection:
+            .mirrorsCachedImage
+        }
     }
 
     static func preloadIndices(
@@ -354,7 +374,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
     let items: [Item]
     @Binding var usesDarkBackground: Bool
     let itemName: (Item) -> String
-    let thumbnail: (Item, CGSize) -> Thumbnail
+    let thumbnail: (Item, CGSize, FileBrowserCoverFlowThumbnailRole) -> Thumbnail
     let onActivate: (Item) -> Void
     let onShowActions: ((Item) -> Void)?
 
@@ -471,7 +491,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
         )
 
         ZStack(alignment: .top) {
-            thumbnail(item, thumbnailRequestSize)
+            thumbnail(item, thumbnailRequestSize, .card)
             .frame(width: renderedSide, height: renderedSide)
             .background(Color.black)
             .clipShape(RoundedRectangle(cornerRadius: cornerRadius))
@@ -485,7 +505,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
                     )
             }
 
-            thumbnail(item, thumbnailRequestSize)
+            thumbnail(item, thumbnailRequestSize, .reflection)
             .frame(width: renderedSide, height: renderedSide)
             .scaleEffect(x: 1, y: -1)
             .frame(width: renderedSide, height: reflectionHeight, alignment: .top)

@@ -660,7 +660,7 @@ struct WebHardServerView: View {
             items: controller.files,
             usesDarkBackground: $coverFlowUsesDarkBackground,
             itemName: { $0.name },
-            thumbnail: { item, _ in
+            thumbnail: { item, _, _ in
                 WebHardThumbnailView(
                     item: item,
                     fileURL: controller.fileURL(for: item),

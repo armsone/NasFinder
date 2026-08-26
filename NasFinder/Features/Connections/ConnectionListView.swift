@@ -62,6 +62,7 @@ struct ConnectionListView: View {
     @State private var didAttemptAutomaticOpen = false
     @State private var deviceStorage = DeviceStorageSnapshot.current()
     @State private var navigationIdentity = UUID()
+    @ObservedObject private var foregroundReturnReset = ForegroundReturnResetCoordinator.shared
 
     private var isRunningOnMac: Bool {
         #if targetEnvironment(macCatalyst)
@@ -200,6 +201,9 @@ struct ConnectionListView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SkyBreezeBackground())
         .id(navigationIdentity)
+        .onChange(of: foregroundReturnReset.resetGeneration) { _, _ in
+            resetToDashboardAfterForegroundReturn()
+        }
     }
 
     @ViewBuilder
@@ -417,6 +421,20 @@ struct ConnectionListView: View {
             await Task.yield()
             navigationIdentity = UUID()
         }
+    }
+
+    /// Every sheet, pushed route and media surface returns to the dashboard
+    /// after the app comes back from the background. A shared-inbox route
+    /// that arrived with this activation keeps its pending preview.
+    private func resetToDashboardAfterForegroundReturn() {
+        isAddingConnection = false
+        editingConnection = nil
+        connectionPendingDeletion = nil
+        isImportingFromFiles = false
+        if inboxStore.pendingPreviewRecordID == nil {
+            inboxStore.shouldPresentInbox = false
+        }
+        returnToDashboard()
     }
 
     private var quickLocationsSection: some View {

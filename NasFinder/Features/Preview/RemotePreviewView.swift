@@ -1269,12 +1269,22 @@ final class RemotePreviewViewModel: ObservableObject {
             localURL = url
 
             if requestedItem.isImage {
-                let decodedImage = try await RemoteImageDecoder.downsample(
+                // Animated GIFs play in the same zoomable surface; every
+                // other image keeps the single downsampled still frame.
+                if let animatedFrames = try await AnimatedImageDecoder.decodeGIF(
                     fileURL: url,
                     maximumPixelSize: 4_096
-                )
-                guard isCurrentLoad(generation, itemID: requestedItem.id) else { return }
-                image = UIImage(cgImage: decodedImage.image)
+                ), let animatedImage = animatedFrames.makeUIImage() {
+                    guard isCurrentLoad(generation, itemID: requestedItem.id) else { return }
+                    image = animatedImage
+                } else {
+                    let decodedImage = try await RemoteImageDecoder.downsample(
+                        fileURL: url,
+                        maximumPixelSize: 4_096
+                    )
+                    guard isCurrentLoad(generation, itemID: requestedItem.id) else { return }
+                    image = UIImage(cgImage: decodedImage.image)
+                }
                 downloadProgress = nil
                 schedulePhotoAdvance()
             } else if requestedItem.isVideo {

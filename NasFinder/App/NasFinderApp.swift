@@ -10,6 +10,7 @@ struct NasFinderApp: App {
     @StateObject private var browserFavoritesStore = BrowserFavoritesStore()
     @StateObject private var screenAwakeController = ScreenAwakeController.shared
     @StateObject private var webHardServerController = WebHardServerController()
+    @StateObject private var foregroundReturnReset = ForegroundReturnResetCoordinator.shared
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.system.rawValue
     @AppStorage("appIconBeforeEnamel.v1") private var appIconBeforeEnamelRawValue =
@@ -92,6 +93,10 @@ struct NasFinderApp: App {
                     }
                 }
                 .onChange(of: scenePhase) { _, phase in
+                    // Returning from the background resets to the dashboard
+                    // before activation work so routed inbox/deep-link state
+                    // set during activation is not discarded by the reset.
+                    foregroundReturnReset.scenePhaseDidChange(phase)
                     guard phase == .active else { return }
                     browserFavoritesStore.importPendingSharedArchives()
                     inboxStore.sceneDidBecomeActive()

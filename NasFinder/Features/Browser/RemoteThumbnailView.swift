@@ -1,3 +1,4 @@
+import Combine
 import CryptoKit
 import ImageIO
 import QuickLookThumbnailing
@@ -106,12 +107,22 @@ enum RemoteThumbnailCacheKey {
     }
 }
 
+enum RemoteThumbnailDisplayMode: Equatable, Sendable {
+    /// Loads the thumbnail from caches, the backend, or local generation.
+    case standard
+    /// Shows only the image another loader has already rendered for the same
+    /// item and size, such as an Overflow reflection under its card. A mirror
+    /// never starts a remote request or consumes cellular budget.
+    case mirrorsCachedImage
+}
+
 struct RemoteThumbnailView: View {
     let item: RemoteFileItem
     let service: any RemoteFileService
     let size: CGSize
     let reloadVersion: Int
     let blursSkinToneDominantImage: Bool
+    let displayMode: RemoteThumbnailDisplayMode
 
     @StateObject private var loader = RemoteThumbnailLoader()
     @State private var cacheRefreshVersion = 0
@@ -122,13 +133,15 @@ struct RemoteThumbnailView: View {
         service: any RemoteFileService,
         size: CGSize,
         reloadVersion: Int = 0,
-        blursSkinToneDominantImage: Bool = false
+        blursSkinToneDominantImage: Bool = false,
+        displayMode: RemoteThumbnailDisplayMode = .standard
     ) {
         self.item = item
         self.service = service
         self.size = size
         self.reloadVersion = reloadVersion
         self.blursSkinToneDominantImage = blursSkinToneDominantImage
+        self.displayMode = displayMode
     }
 
     var body: some View {
@@ -169,12 +182,29 @@ struct RemoteThumbnailView: View {
             .clipped()
         }
         .task(id: taskIdentity) {
+            guard displayMode == .standard else {
+                loader.showCachedImage(
+                    item: item,
+                    size: size,
+                    detectSkinToneDominance: blursSkinToneDominantImage
+                )
+                return
+            }
             await loader.load(
                 item: item,
                 service: service,
                 size: size,
                 reloadVersion: reloadVersion,
                 detectSkinToneDominance: blursSkinToneDominantImage
+            )
+        }
+        .onReceive(RemoteThumbnailLoader.imageCacheDidStore) { storedKey in
+            guard displayMode == .mirrorsCachedImage else { return }
+            loader.showCachedImage(
+                item: item,
+                size: size,
+                detectSkinToneDominance: blursSkinToneDominantImage,
+                onlyIfKeyMatches: storedKey
             )
         }
         .onReceive(
@@ -184,7 +214,9 @@ struct RemoteThumbnailView: View {
         ) { notification in
             guard let storedKey = notification.object as? String,
                   thumbnailCacheKeys.contains(storedKey) else { return }
-            loader.invalidateForStoredThumbnail()
+            if displayMode == .standard {
+                loader.invalidateForStoredThumbnail()
+            }
             cacheRefreshVersion &+= 1
         }
         .onReceive(
@@ -220,7 +252,10 @@ final class RemoteThumbnailLoader: ObservableObject {
         cache.totalCostLimit = 64 * 1_024 * 1_024
         return cache
     }()
-    private static var negativeCacheExpirations: [NSString: Date] = [:]
+    private static var negativeCacheExpirations: [NSString: RemoteThumbnailNegativeCacheEntry] = [:]
+    /// Emits the rendered-image cache key after an image is cached so a
+    /// mirror of the same item and size can display it without loading.
+    static let imageCacheDidStore = PassthroughSubject<NSString, Never>()
 
     private var loadedCacheKey: NSString?
     private var operationID: UUID?
@@ -243,6 +278,26 @@ final class RemoteThumbnailLoader: ObservableObject {
         loadedCacheKey = nil
     }
 
+    /// Displays the in-memory image another loader rendered for the same item
+    /// and size. This never reads disk caches or the network, so an Overflow
+    /// reflection cannot double the backend requests of its card.
+    func showCachedImage(
+        item: RemoteFileItem,
+        size: CGSize,
+        detectSkinToneDominance: Bool = false,
+        onlyIfKeyMatches storedKey: NSString? = nil
+    ) {
+        let cacheKey = renderedImageCacheKey(for: item, size: size)
+        if let storedKey, storedKey != cacheKey { return }
+        if let cachedImage = Self.imageCache.object(forKey: cacheKey) {
+            setImage(cachedImage, detectSkinToneDominance: detectSkinToneDominance)
+        } else if loadedCacheKey != cacheKey {
+            image = nil
+            isSkinToneDominant = false
+        }
+        loadedCacheKey = cacheKey
+    }
+
     func load(
         item: RemoteFileItem,
         service: any RemoteFileService,
@@ -262,12 +317,7 @@ final class RemoteThumbnailLoader: ObservableObject {
             return
         }
         let requestedRemoteSize = requestedRemoteSize(for: size)
-        let cacheKey = RemoteThumbnailCacheKey.renderedImage(
-            for: item,
-            size: requestedRemoteSize,
-            displaySize: size,
-            scale: UIScreen.main.scale
-        )
+        let cacheKey = renderedImageCacheKey(for: item, size: size)
         let diskCacheKey = RemoteThumbnailCacheKey.remoteData(
             for: item,
             size: requestedRemoteSize
@@ -369,6 +419,10 @@ final class RemoteThumbnailLoader: ObservableObject {
         if isNegativelyCached(cacheKey) {
             image = nil
             isLoading = false
+            // Keep the key unclaimed so the next legitimate run re-checks the
+            // caches and the (possibly expired) failure instead of returning
+            // at the identity guard above.
+            loadedCacheKey = nil
             return
         }
         let diskCacheGeneration = await RemoteThumbnailDiskCache.shared.currentGeneration()
@@ -405,6 +459,15 @@ final class RemoteThumbnailLoader: ObservableObject {
             // original when a bounded head/tail range is not sufficient.
             // Keep the video icon visible and allow a later reload to retry.
             cacheNegative(cacheKey, for: 5 * 60)
+            return
+        } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
+            // The shared cellular pool is spent. Pause briefly instead of
+            // recording a long failure; the pool resets on Wi-Fi and a
+            // network change retries the card.
+            RemoteThumbnailActivityTracker.shared.reachedTrafficLimit(
+                maximumBytes: Int(ThumbnailPreheater.maximumCellularDataBytes)
+            )
+            cacheNegative(cacheKey, for: 30)
             return
         } catch is CancellationError {
             if operationID == currentOperationID {
@@ -622,12 +685,7 @@ final class RemoteThumbnailLoader: ObservableObject {
         detectSkinToneDominance: Bool
     ) async {
         let requestedRemoteSize = requestedRemoteSize(for: size)
-        let cacheKey = RemoteThumbnailCacheKey.renderedImage(
-            for: item,
-            size: requestedRemoteSize,
-            displaySize: size,
-            scale: UIScreen.main.scale
-        )
+        let cacheKey = renderedImageCacheKey(for: item, size: size)
         if reloadVersion != loadedReloadVersion {
             Self.imageCache.removeObject(forKey: cacheKey)
             Self.negativeCacheExpirations.removeValue(forKey: cacheKey)
@@ -669,6 +727,10 @@ final class RemoteThumbnailLoader: ObservableObject {
         if isNegativelyCached(cacheKey) {
             image = nil
             isLoading = false
+            // Keep the key unclaimed so the next legitimate run re-checks the
+            // caches and the (possibly expired) failure instead of returning
+            // at the identity guard above.
+            loadedCacheKey = nil
             return
         }
 
@@ -750,29 +812,11 @@ final class RemoteThumbnailLoader: ObservableObject {
                 // up front, so a wide Overflow preload window exhausted the
                 // cellular total with reservations alone, and a card cancelled
                 // while still queued was charged for bytes it never transferred.
-                guard let lease = await cellularBudget.lease(for: item) else {
-                    throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
-                }
-                do {
-                    let data = try await service.thumbnailData(
-                        for: item,
-                        size: size,
-                        maximumByteCount: lease.maximumBytes
-                    )
-                    await cellularBudget.finish(
-                        lease,
-                        transferredBytes: data == nil
-                            ? lease.maximumBytes
-                            : min(data?.count ?? 0, lease.maximumBytes)
-                    )
-                    return data
-                } catch {
-                    await cellularBudget.finish(
-                        lease,
-                        transferredBytes: lease.maximumBytes
-                    )
-                    throw error
-                }
+                return try await cellularBudget.meteredThumbnailData(
+                    for: item,
+                    service: service,
+                    size: size
+                )
             }
             return data.flatMap { $0.isEmpty ? nil : $0 }
         } catch {
@@ -797,6 +841,18 @@ final class RemoteThumbnailLoader: ObservableObject {
         )
     }
 
+    private func renderedImageCacheKey(
+        for item: RemoteFileItem,
+        size: CGSize
+    ) -> NSString {
+        RemoteThumbnailCacheKey.renderedImage(
+            for: item,
+            size: requestedRemoteSize(for: size),
+            displaySize: size,
+            scale: UIScreen.main.scale
+        )
+    }
+
     private func requestedRemoteSize(for size: CGSize) -> RemoteThumbnailSize {
         let maximumPixels = max(size.width, size.height) * UIScreen.main.scale
         if maximumPixels <= 360 { return .small }
@@ -816,6 +872,7 @@ final class RemoteThumbnailLoader: ObservableObject {
         let estimatedCost = max(pixelWidth * pixelHeight * 4, 1)
         Self.imageCache.setObject(image, forKey: key, cost: estimatedCost)
         Self.negativeCacheExpirations.removeValue(forKey: key)
+        Self.imageCacheDidStore.send(key)
     }
 
     private func setImage(_ image: UIImage, detectSkinToneDominance: Bool) {
@@ -825,20 +882,47 @@ final class RemoteThumbnailLoader: ObservableObject {
     }
 
     private func isNegativelyCached(_ key: NSString) -> Bool {
-        guard let expiration = Self.negativeCacheExpirations[key] else { return false }
-        if expiration > Date() { return true }
+        guard let entry = Self.negativeCacheExpirations[key] else { return false }
+        if entry.isActive(
+            at: Date(),
+            networkPathGeneration: ThumbnailNetworkMonitor.shared.networkPathGeneration
+        ) {
+            return true
+        }
         Self.negativeCacheExpirations.removeValue(forKey: key)
         return false
     }
 
+    /// Records a failure and releases this loader's claim on the key. The
+    /// negative entry alone throttles retries, so a legitimate reload, cache
+    /// store, or network change can run the load again instead of returning
+    /// early forever.
     private func cacheNegative(_ key: NSString, for duration: TimeInterval) {
-        Self.negativeCacheExpirations[key] = Date().addingTimeInterval(duration)
+        Self.negativeCacheExpirations[key] = RemoteThumbnailNegativeCacheEntry(
+            expiration: Date().addingTimeInterval(duration),
+            networkPathGeneration: ThumbnailNetworkMonitor.shared.networkPathGeneration
+        )
+        if loadedCacheKey == key {
+            loadedCacheKey = nil
+        }
         if Self.negativeCacheExpirations.count > 240 {
             let now = Date()
             Self.negativeCacheExpirations = Self.negativeCacheExpirations.filter {
-                $0.value > now
+                $0.value.expiration > now
             }
         }
+    }
+}
+
+/// A thumbnail failure is only trusted on the network it happened on. Cellular
+/// budget exhaustion or a dropped connection must not keep placeholders after
+/// the path changes; the generation check retries each card exactly once.
+struct RemoteThumbnailNegativeCacheEntry: Equatable, Sendable {
+    let expiration: Date
+    let networkPathGeneration: Int
+
+    func isActive(at now: Date, networkPathGeneration currentGeneration: Int) -> Bool {
+        networkPathGeneration == currentGeneration && expiration > now
     }
 }
 

@@ -376,7 +376,7 @@ struct ReceivedFilesView: View {
                 items: inboxStore.records,
                 usesDarkBackground: $overflowUsesDarkBackground,
                 itemName: { $0.originalFilename },
-                thumbnail: { record, size in
+                thumbnail: { record, size, _ in
                     let item = LocalInboxFileService.remoteItem(for: record)
                     let squareSize = ReceivedFilesThumbnailPolicy.squareSize(size)
                     return receivedFileArtwork(
