@@ -52,6 +52,23 @@ enum FavoriteFolderMosaicPolicy {
     }
 }
 
+/// Favorite folder cells try the same Mac helper-generated folder Super
+/// Thumbnail sheet the browser uses before falling back to the direct-child
+/// mosaic, and only show the plain folder icon once both are unavailable.
+enum FavoriteFolderThumbnailDisplayPolicy {
+    enum Content: Equatable {
+        case sheetImage
+        case mosaicFallback
+        case loadingPlaceholder
+    }
+
+    static func content(hasSheetImage: Bool, sheetLookupFinished: Bool) -> Content {
+        if hasSheetImage { return .sheetImage }
+        if sheetLookupFinished { return .mosaicFallback }
+        return .loadingPlaceholder
+    }
+}
+
 private actor FavoriteFolderMosaicCache {
     static let shared = FavoriteFolderMosaicCache()
 
@@ -664,7 +681,7 @@ private struct FavoriteCell: View {
             Group {
                 if let service {
                     if favorite.remoteItem.isDirectory {
-                        FavoriteFolderMosaicView(
+                        FavoriteFolderThumbnailView(
                             folder: favorite.remoteItem,
                             service: service,
                             side: side
@@ -726,6 +743,66 @@ private struct FavoriteCell: View {
             return nil
         }
         return RemoteFileServiceFactory.make(connection: connection, credential: credential)
+    }
+}
+
+/// Prefers the folder Super Thumbnail sheet discovered via the shared
+/// `RemoteThumbnailLoader`/`SuperThumbnailVault` lookup used by the browser.
+/// Falls back to the existing direct-child mosaic only once that lookup
+/// finishes without a usable sheet (missing, indexed empty, or an error), and
+/// falls back to the plain folder icon only once the mosaic is also empty.
+private struct FavoriteFolderThumbnailView: View {
+    let folder: RemoteFileItem
+    let service: any RemoteFileService
+    let side: CGFloat
+
+    @StateObject private var loader = RemoteThumbnailLoader()
+    @State private var sheetLookupFinished = false
+
+    var body: some View {
+        Group {
+            switch FavoriteFolderThumbnailDisplayPolicy.content(
+                hasSheetImage: loader.image != nil,
+                sheetLookupFinished: sheetLookupFinished
+            ) {
+            case .sheetImage:
+                if let image = loader.image {
+                    Image(uiImage: image)
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: side, height: side)
+                        .clipped()
+                }
+            case .mosaicFallback:
+                FavoriteFolderMosaicView(
+                    folder: folder,
+                    service: service,
+                    side: side
+                )
+            case .loadingPlaceholder:
+                Image(systemName: "folder.fill")
+                    .resizable()
+                    .scaledToFit()
+                    .padding(side * 0.06)
+                    .foregroundStyle(SkyBreezeTheme.folderBlue)
+                    .overlay {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
+            }
+        }
+        .frame(width: side, height: side)
+        .task(id: folder.id) {
+            sheetLookupFinished = false
+            await loader.load(
+                item: folder,
+                service: service,
+                size: CGSize(width: side, height: side),
+                reloadVersion: 0
+            )
+            sheetLookupFinished = true
+        }
+        .accessibilityHidden(true)
     }
 }
 

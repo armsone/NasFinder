@@ -399,9 +399,9 @@ capabilities:
     entry_points: ["favorite toggle", "favorites shelf/list"]
     preconditions: ["remote item/connection exists"]
     inputs: ["item identity", "remove/reorder", "thumbnail children for folder mosaic"]
-    normal_result: "Favorites persist stable cloud identity, support folders, exact-ID removal/reorder, and show up to the first nine media children in folder mosaics."
+    normal_result: "Favorites persist stable cloud identity, support folders, exact-ID removal/reorder, and show a folder's Super Thumbnail sheet when one exists, falling back to a mosaic of up to the first nine media children, and finally the folder icon."
     states: [empty, populated, loading_preview, reordering, error]
-    algorithms_and_thresholds: ["mosaic first nine media files", "reorder begins only after long horizontal movement", "skin-tone blur requires dominant sample fraction policy"]
+    algorithms_and_thresholds: ["folder sheet lookup before mosaic fallback before folder icon", "mosaic first nine media files", "reorder begins only after long horizontal movement", "skin-tone blur requires dominant sample fraction policy"]
     data_contracts: ["FavoriteItem Codable with legacy path identity migration"]
     producer_consumer_routes: ["browser toggle -> FavoriteStore -> shelf/list -> favorite destination browser/preview"]
     persistence_relaunch: "Items and order persist in defaults/archive."
@@ -415,7 +415,7 @@ capabilities:
     implementations:
       ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Favorites/FavoriteViews.swift"], tests: ["NasFinderTests/FavoriteStoreTests.swift"], evidence: ["unit tests"]}
       android: {status: partial_source_implemented_runtime_unverified, source_refs: ["FavoriteRepository.kt", "Favorites.kt", "NasFinderApp.kt"], tests: [], evidence: ["shelf/toggle source exists; no targeted favorite test or runtime evidence"]}
-    dependencies: [thumbnails.display_cache_pipeline, files.browser_navigation_search_sort]
+    dependencies: [thumbnails.display_cache_pipeline, thumbnails.folder_sheet_display_blur, files.browser_navigation_search_sort]
     parity_row_ids: [favorites]
 
   - id: thumbnails.display_cache_pipeline

@@ -43,6 +43,37 @@ final class FavoriteStoreTests: XCTestCase {
         XCTAssertEqual(result.map(\.name), (0..<9).map { "\($0).jpg" })
     }
 
+    func testFavoriteFolderThumbnailPrefersSheetThenMosaicThenFolderIcon() {
+        XCTAssertEqual(
+            FavoriteFolderThumbnailDisplayPolicy.content(
+                hasSheetImage: true,
+                sheetLookupFinished: true
+            ),
+            .sheetImage
+        )
+        XCTAssertEqual(
+            FavoriteFolderThumbnailDisplayPolicy.content(
+                hasSheetImage: true,
+                sheetLookupFinished: false
+            ),
+            .sheetImage
+        )
+        XCTAssertEqual(
+            FavoriteFolderThumbnailDisplayPolicy.content(
+                hasSheetImage: false,
+                sheetLookupFinished: true
+            ),
+            .mosaicFallback
+        )
+        XCTAssertEqual(
+            FavoriteFolderThumbnailDisplayPolicy.content(
+                hasSheetImage: false,
+                sheetLookupFinished: false
+            ),
+            .loadingPlaceholder
+        )
+    }
+
     func testSkinToneBlurRequiresDominantSampleFraction() {
         XCTAssertFalse(
             SkinToneBlurPolicy.shouldBlur(skinToneCount: 41, sampleCount: 100)
