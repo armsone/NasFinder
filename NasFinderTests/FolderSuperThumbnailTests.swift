@@ -53,9 +53,8 @@ final class FolderSuperThumbnailTests: XCTestCase {
         )
     }
 
-    /// The Mac helper already blurs a skin-tone dominant folder sheet once
-    /// (1.5 pt on the final sheet). Display consumers that blur file
-    /// thumbnails must not add a second blur to folder sheets.
+    /// Folder sheets already carry the producer's single graded blur. Display
+    /// consumers that blur file thumbnails must not add a second blur.
     func testFolderSheetsNeverReceiveDisplayTimeSkinToneBlur() {
         XCTAssertFalse(FolderSuperThumbnailDisplayPolicy.appliesDisplayTimeSkinToneBlur)
         XCTAssertFalse(

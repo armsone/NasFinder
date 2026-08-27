@@ -36,9 +36,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.2.1</string>
+	<string>2.2.2</string>
 	<key>CFBundleVersion</key>
-	<string>202608262315</string>
+	<string>202608271106</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
