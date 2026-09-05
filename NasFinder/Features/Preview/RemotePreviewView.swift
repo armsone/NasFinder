@@ -1529,12 +1529,12 @@ final class RemotePreviewViewModel: ObservableObject {
         let nextIndex = items.indices
             .dropFirst(currentIndex + 1)
             .first {
-                items[$0].isVideo
+                (items[$0].isImage || items[$0].isVideo)
                     && !sequentiallyFailedItemIDs.contains(items[$0].id)
             }
         guard let nextIndex else {
             tearDown()
-            errorMessage = "다음에 재생할 영상이 없습니다."
+            errorMessage = "다음에 표시할 사진이나 영상이 없습니다."
             return
         }
         move(to: nextIndex, sequentialAdvance: true)
