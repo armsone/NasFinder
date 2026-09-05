@@ -51,6 +51,9 @@ enum ThumbnailRuntimePolicy {
         batteryState: UIDevice.BatteryState,
         isIOSAppOnMac: Bool = ProcessInfo.processInfo.isiOSAppOnMac
     ) -> Bool {
+#if targetEnvironment(macCatalyst)
+        return true
+#else
         if isIOSAppOnMac { return true }
         switch batteryState {
         case .charging, .full:
@@ -60,13 +63,18 @@ enum ThumbnailRuntimePolicy {
         @unknown default:
             return false
         }
+#endif
     }
 
     static func hasLowBattery(
         batteryLevel: Float,
         isIOSAppOnMac: Bool = ProcessInfo.processInfo.isiOSAppOnMac
     ) -> Bool {
+#if targetEnvironment(macCatalyst)
+        return false
+#else
         !isIOSAppOnMac && batteryLevel >= 0 && batteryLevel <= 0.2
+#endif
     }
 }
 
