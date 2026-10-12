@@ -194,12 +194,12 @@ struct ConnectionListView: View {
                 deviceStorage = DeviceStorageSnapshot.current()
                 openPreferredConnectionIfNeeded()
             }
-            .environment(\.returnToDashboard) {
-                returnToDashboard()
-            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(SkyBreezeBackground())
+        .environment(\.returnToDashboard) {
+            returnToDashboard()
+        }
         .id(navigationIdentity)
         .onChange(of: foregroundReturnReset.resetGeneration) { _, _ in
             resetToDashboardAfterForegroundReturn()

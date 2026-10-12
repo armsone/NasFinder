@@ -13,6 +13,7 @@ actor DownloadCache {
     private let fileManager = FileManager.default
     private let maximumByteCount: Int64 = 512 * 1_024 * 1_024
     private let maximumAge: TimeInterval = 7 * 24 * 60 * 60
+    private var protectedFilenames: [String: Int] = [:]
 
     init(root: URL? = nil) {
         if let root {
@@ -33,13 +34,29 @@ actor DownloadCache {
             .fileSizeKey,
         ])
         if let modifiedAt = values?.contentModificationDate,
-           Date().timeIntervalSince(modifiedAt) > maximumAge {
+           Date().timeIntervalSince(modifiedAt) > maximumAge,
+           protectedFilenames[url.lastPathComponent] == nil {
             try? fileManager.removeItem(at: url)
             return nil
         }
 
         try? fileManager.setAttributes([.modificationDate: Date()], ofItemAtPath: url.path)
         return url
+    }
+
+    func protect(_ item: RemoteFileItem) {
+        let filename = destinationURL(for: item).lastPathComponent
+        protectedFilenames[filename, default: 0] += 1
+    }
+
+    func release(_ item: RemoteFileItem) {
+        let filename = destinationURL(for: item).lastPathComponent
+        guard let count = protectedFilenames[filename] else { return }
+        if count > 1 {
+            protectedFilenames[filename] = count - 1
+        } else {
+            protectedFilenames[filename] = nil
+        }
     }
 
     func store(downloadedURL: URL, for item: RemoteFileItem) throws -> URL {
@@ -67,13 +84,16 @@ actor DownloadCache {
         var entries: [(url: URL, size: Int64, date: Date)] = []
         var totalBytes: Int64 = 0
         let expirationDate = Date().addingTimeInterval(-maximumAge)
+        // Directory enumeration may return a different URL representation of the same file.
+        let protectedFilename = protectedURL.lastPathComponent
 
         for url in urls {
             let values = try url.resourceValues(forKeys: resourceKeys)
             guard values.isRegularFile == true else { continue }
             let size = Int64(values.fileSize ?? 0)
             let date = values.contentModificationDate ?? .distantPast
-            if date < expirationDate, url != protectedURL {
+            if date < expirationDate, url.lastPathComponent != protectedFilename,
+               protectedFilenames[url.lastPathComponent] == nil {
                 try? fileManager.removeItem(at: url)
                 continue
             }
@@ -82,7 +102,8 @@ actor DownloadCache {
         }
 
         for entry in entries.sorted(by: { $0.date < $1.date })
-        where totalBytes > maximumByteCount && entry.url != protectedURL {
+        where totalBytes > maximumByteCount && entry.url.lastPathComponent != protectedFilename
+            && protectedFilenames[entry.url.lastPathComponent] == nil {
             try? fileManager.removeItem(at: entry.url)
             totalBytes -= entry.size
         }

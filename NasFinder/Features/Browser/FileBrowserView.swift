@@ -10,6 +10,60 @@ enum FileBrowserDownloadPolicy {
     }
 }
 
+private struct FileBrowserBackTouchTarget: UIViewRepresentable {
+    let goBack: () -> Void
+    let goHome: ReturnToDashboardAction
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(goBack: goBack, goHome: goHome)
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        let longPress = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleLongPress(_:))
+        )
+        longPress.minimumPressDuration = 0.5
+        longPress.allowableMovement = 30
+        let tap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleTap(_:))
+        )
+        // A recognized long press must never also navigate back on release.
+        tap.require(toFail: longPress)
+        view.addGestureRecognizer(longPress)
+        view.addGestureRecognizer(tap)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.goBack = goBack
+        context.coordinator.goHome = goHome
+    }
+
+    @MainActor
+    final class Coordinator: NSObject {
+        var goBack: () -> Void
+        var goHome: ReturnToDashboardAction
+
+        init(goBack: @escaping () -> Void, goHome: @escaping ReturnToDashboardAction) {
+            self.goBack = goBack
+            self.goHome = goHome
+        }
+
+        @objc func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+            guard recognizer.state == .began else { return }
+            goHome()
+        }
+
+        @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended else { return }
+            goBack()
+        }
+    }
+}
+
 private struct ReturnToDashboardKey: EnvironmentKey {
     static let defaultValue: ReturnToDashboardAction = {}
 }
@@ -202,8 +256,6 @@ struct FileBrowserView: View {
     @State private var coverFlowEnteredFromPoster = false
     @State private var suppressAutomaticCoverFlowUntil = Date.distantPast
     @State private var browserContentSize = CGSize.zero
-    @State private var ownsAutomaticThumbnailPreheat = false
-    @State private var automaticThumbnailRestartTask: Task<Void, Never>?
     @State private var downloadTask: Task<Void, Never>?
     @State private var downloadItemName: String?
     @State private var downloadCompletedCount = 0
@@ -358,17 +410,6 @@ struct FileBrowserView: View {
         .task {
             await RemoteThumbnailDiskCache.shared.clearTransientFailures()
             await viewModel.load()
-            guard !Task.isCancelled, !viewModel.items.isEmpty else { return }
-            ownsAutomaticThumbnailPreheat = true
-            thumbnailPreheater.start(
-                rootItems: viewModel.items,
-                rootPath: viewModel.path,
-                recursively: false,
-                requiresExternalPower: false,
-                allowsConstrainedRun: true,
-                generationMode: .bounded,
-                service: viewModel.service
-            )
         }
         .overlay(alignment: .bottom) {
             browserStatusOverlay
@@ -458,9 +499,6 @@ struct FileBrowserView: View {
             }
         }
         .onDisappear {
-            ownsAutomaticThumbnailPreheat = false
-            automaticThumbnailRestartTask?.cancel()
-            automaticThumbnailRestartTask = nil
             shareCoordinator.cancelPreparation()
             cancelDownload()
             thumbnailPreheater.cancel()
@@ -472,11 +510,6 @@ struct FileBrowserView: View {
         .onChange(of: scenePhase, initial: true) { _, phase in
             thumbnailPreheater.updateAppIsActive(phase == .active)
         }
-        .modifier(
-            ThumbnailNetworkChangeModifier(
-                onChange: restartAutomaticThumbnailPreheatingForNetworkChange
-            )
-        )
         .onChange(of: viewModel.items.map(\.id)) { _, visibleIDs in
             selectedItemIDs.formIntersection(visibleIDs)
             if isSelecting, viewModel.items.isEmpty {
@@ -536,19 +569,14 @@ struct FileBrowserView: View {
             .foregroundStyle(SkyBreezeTheme.accent)
             .frame(width: 32, height: 32)
             .background(SkyBreezeTheme.accent.opacity(0.12), in: Circle())
-            .contentShape(Circle())
-            .highPriorityGesture(
-                LongPressGesture(minimumDuration: 0.5)
-                    .exclusively(before: TapGesture())
-                    .onEnded { result in
-                        switch result {
-                        case .first:
-                            dashboardAction()
-                        case .second:
-                            dismiss()
-                        }
-                    }
-            )
+            .frame(width: 44, height: 44)
+            .overlay {
+                FileBrowserBackTouchTarget(
+                    goBack: { dismiss() },
+                    goHome: dashboardAction
+                )
+                .accessibilityHidden(true)
+            }
             .accessibilityLabel("이전 폴더")
             .accessibilityHint("길게 누르면 NasFinder 첫 화면으로 바로 이동합니다.")
             .accessibilityAddTraits(.isButton)
@@ -633,23 +661,23 @@ struct FileBrowserView: View {
     }
 
     private var coverFlowBackButton: some View {
-        Button {
-            dismiss()
-        } label: {
-            FileBrowserCoverFlowChromeIcon(
-                kind: .back,
-                usesDarkBackground: coverFlowUsesDarkBackground
-            )
-        }
-        .buttonStyle(.plain)
-        .highPriorityGesture(
-            LongPressGesture(minimumDuration: 0.5)
-                .onEnded { _ in
-                    dashboardAction()
-                }
+        FileBrowserCoverFlowChromeIcon(
+            kind: .back,
+            usesDarkBackground: coverFlowUsesDarkBackground
         )
+        .overlay {
+            FileBrowserBackTouchTarget(
+                goBack: { dismiss() },
+                goHome: dashboardAction
+            )
+            .accessibilityHidden(true)
+        }
         .accessibilityLabel("이전 폴더")
         .accessibilityHint("길게 누르면 NasFinder 첫 화면으로 바로 이동합니다.")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction {
+            dismiss()
+        }
         .accessibilityAction(named: "NasFinder 첫 화면") {
             dashboardAction()
         }
@@ -681,13 +709,15 @@ struct FileBrowserView: View {
 
     @ViewBuilder
     private var browserStatusOverlay: some View {
-        if layoutStyle != .coverFlow {
+        if layoutStyle != .coverFlow || shareCoordinator.isPreparing {
             VStack(spacing: 8) {
                 if shareCoordinator.isPreparing {
                     SharePreparationBanner(
                         itemName: shareCoordinator.preparingItemName,
                         completedCount: shareCoordinator.completedCount,
-                        totalCount: shareCoordinator.totalCount
+                        totalCount: shareCoordinator.totalCount,
+                        progress: shareCoordinator.downloadProgress,
+                        isStaging: shareCoordinator.isStaging
                     ) {
                         shareCoordinator.cancelPreparation()
                     }
@@ -828,7 +858,6 @@ struct FileBrowserView: View {
         recursively: Bool,
         generationMode: RemoteVideoThumbnailGenerationMode = .bounded
     ) {
-        ownsAutomaticThumbnailPreheat = false
         if item.isDirectory {
             Task {
                 do {
@@ -861,32 +890,6 @@ struct FileBrowserView: View {
             generationMode: generationMode,
             service: viewModel.service
         )
-    }
-
-    private func restartAutomaticThumbnailPreheatingForNetworkChange() {
-        guard ownsAutomaticThumbnailPreheat,
-              !viewModel.items.isEmpty else { return }
-        automaticThumbnailRestartTask?.cancel()
-        thumbnailPreheater.cancel()
-        automaticThumbnailRestartTask = Task { @MainActor in
-            while thumbnailPreheater.isRunning {
-                guard !Task.isCancelled else { return }
-                await Task.yield()
-            }
-            guard !Task.isCancelled,
-                  ownsAutomaticThumbnailPreheat,
-                  !viewModel.items.isEmpty else { return }
-            thumbnailPreheater.start(
-                rootItems: viewModel.items,
-                rootPath: viewModel.path,
-                recursively: false,
-                requiresExternalPower: false,
-                allowsConstrainedRun: true,
-                generationMode: .bounded,
-                service: viewModel.service
-            )
-            automaticThumbnailRestartTask = nil
-        }
     }
 
     private var sortOptions: FileBrowserSortOptions {
@@ -1066,15 +1069,6 @@ struct FileBrowserView: View {
         await RemoteVideoThumbnailTrafficBudget.sftpShared.reset()
         thumbnailActivity.beginNewSession()
         thumbnailReloadVersion &+= 1
-        ownsAutomaticThumbnailPreheat = true
-        thumbnailPreheater.start(
-            rootItems: viewModel.items,
-            rootPath: viewModel.path,
-            recursively: false,
-            requiresExternalPower: false,
-            allowsConstrainedRun: true,
-            service: viewModel.service
-        )
     }
 
     private var canPerformPasteAction: Bool {
@@ -1512,9 +1506,6 @@ struct FileBrowserView: View {
                 if thumbnailPreheater.isRunning {
                     CompactPanelButton(title: "생성 중지", systemImage: "stop.circle", tint: .red) {
                         performContextPanelAction {
-                            ownsAutomaticThumbnailPreheat = false
-                            automaticThumbnailRestartTask?.cancel()
-                            automaticThumbnailRestartTask = nil
                             thumbnailPreheater.cancel()
                         }
                     }
@@ -1766,7 +1757,6 @@ struct FileBrowserView: View {
     private var canBeginUserPresentation: Bool {
         !shareCoordinator.isPreparing
             && !operationCoordinator.isBusy
-            && !thumbnailPreheater.isRunning
             && !hasBlockingPresentation
             && !hasPendingError
     }
@@ -2078,7 +2068,10 @@ private extension RemoteFileItem {
 
 @MainActor
 private final class RemoteFileShareCoordinator: ObservableObject {
+    @Published private(set) var isPreparing = false
     @Published private(set) var preparingItemName: String?
+    @Published private(set) var downloadProgress: RemoteDownloadProgress?
+    @Published private(set) var isStaging = false
     @Published private(set) var completedCount = 0
     @Published private(set) var totalCount = 0
     @Published var preparedShare: PreparedRemoteFileShare?
@@ -2088,8 +2081,6 @@ private final class RemoteFileShareCoordinator: ObservableObject {
     private var operationID: UUID?
     private var presentedTemporaryDirectoryURL: URL?
 
-    var isPreparing: Bool { preparationTask != nil }
-
     func prepare(items: [RemoteFileItem], using service: any RemoteFileService) {
         let files = items.filter { !$0.isDirectory }
         guard !files.isEmpty,
@@ -2098,7 +2089,13 @@ private final class RemoteFileShareCoordinator: ObservableObject {
 
         let currentOperationID = UUID()
         operationID = currentOperationID
+        isPreparing = true
         preparingItemName = files.first?.name
+        downloadProgress = RemoteDownloadProgress(
+            completedByteCount: 0,
+            totalByteCount: files.first?.size
+        )
+        isStaging = false
         completedCount = 0
         totalCount = files.count
         errorMessage = nil
@@ -2120,25 +2117,41 @@ private final class RemoteFileShareCoordinator: ObservableObject {
                         throw CancellationError()
                     }
                     self.preparingItemName = item.name
-
-                    let downloadedURL = try await service.download(item)
-                    try Task.checkCancellation()
-                    let baseFilename = Self.safeFilename(
-                        item.name,
-                        fallbackURL: downloadedURL
+                    self.isStaging = false
+                    self.downloadProgress = RemoteDownloadProgress(
+                        completedByteCount: 0,
+                        totalByteCount: item.size
                     )
-                    let filename = Self.uniqueFilename(
-                        baseFilename,
-                        usedFilenames: &usedFilenames
-                    )
-                    let stagedURL = temporaryDirectoryURL.appending(
-                        path: filename,
-                        directoryHint: .notDirectory
-                    )
-                    try await Self.stageForSharing(
-                        downloadedURL: downloadedURL,
-                        stagedURL: stagedURL
-                    )
+                    // Other thumbnail downloads must not evict this file before staging.
+                    await DownloadCache.shared.protect(item)
+                    let stagedURL: URL
+                    do {
+                        let downloadedURL = try await service.download(item) { [weak self] update in
+                            await self?.updateProgress(update, operationID: currentOperationID)
+                        }
+                        try Task.checkCancellation()
+                        self.isStaging = true
+                        let baseFilename = Self.safeFilename(
+                            item.name,
+                            fallbackURL: downloadedURL
+                        )
+                        let filename = Self.uniqueFilename(
+                            baseFilename,
+                            usedFilenames: &usedFilenames
+                        )
+                        stagedURL = temporaryDirectoryURL.appending(
+                            path: filename,
+                            directoryHint: .notDirectory
+                        )
+                        try await Self.stageForSharing(
+                            downloadedURL: downloadedURL,
+                            stagedURL: stagedURL
+                        )
+                    } catch {
+                        await DownloadCache.shared.release(item)
+                        throw error
+                    }
+                    await DownloadCache.shared.release(item)
                     stagedURLs.append(stagedURL)
                     self.completedCount = index + 1
                 }
@@ -2171,6 +2184,9 @@ private final class RemoteFileShareCoordinator: ObservableObject {
         operationID = nil
         preparationTask?.cancel()
         preparationTask = nil
+        isPreparing = false
+        downloadProgress = nil
+        isStaging = false
         preparingItemName = nil
         completedCount = 0
         totalCount = 0
@@ -2189,7 +2205,15 @@ private final class RemoteFileShareCoordinator: ObservableObject {
         guard operationID == completedOperationID else { return }
         operationID = nil
         preparationTask = nil
+        isPreparing = false
         preparingItemName = nil
+        downloadProgress = nil
+        isStaging = false
+    }
+
+    private func updateProgress(_ progress: RemoteDownloadProgress, operationID: UUID) {
+        guard self.operationID == operationID else { return }
+        downloadProgress = progress
     }
 
     private static func createShareDirectory(at url: URL) async throws {
@@ -2572,27 +2596,73 @@ private struct SharePreparationBanner: View {
     let itemName: String?
     let completedCount: Int
     let totalCount: Int
+    let progress: RemoteDownloadProgress?
+    let isStaging: Bool
     let onCancel: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
-            ProgressView()
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text("공유할 파일을 내려받는 중…")
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Text(isStaging ? "공유 준비 중" : "내려받는 중")
                     .font(.subheadline.weight(.semibold))
-                Text(progressDescription)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                    .layoutPriority(1)
+
+                if totalCount > 1 {
+                    Text("\(min(completedCount + 1, totalCount)) / \(totalCount)")
+                        .font(.caption)
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer(minLength: 4)
+
+                Button("취소", role: .cancel, action: onCancel)
+                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.red)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(.red.opacity(0.1), in: Capsule())
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
             }
 
-            Spacer(minLength: 8)
+            Text(itemName ?? "파일 준비 중")
+                .font(.subheadline)
+                .foregroundStyle(.primary)
+                .lineLimit(3)
+                .truncationMode(.middle)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
 
-            Button("취소", role: .cancel, action: onCancel)
-                .buttonStyle(.bordered)
+            VStack(spacing: 6) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    if let progress {
+                        Text(byteProgressDescription(progress))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer(minLength: 4)
+
+                    if let fraction = progress?.fractionCompleted {
+                        Text(fraction, format: .percent.precision(.fractionLength(0)))
+                            .font(.caption.weight(.semibold))
+                    }
+                }
+                .monospacedDigit()
+
+                if let fraction = progress?.fractionCompleted {
+                    ProgressView(value: fraction)
+                } else {
+                    ProgressView()
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
         }
-        .padding(14)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
         .overlay {
             RoundedRectangle(cornerRadius: 16)
@@ -2602,10 +2672,13 @@ private struct SharePreparationBanner: View {
         .accessibilityElement(children: .contain)
     }
 
-    private var progressDescription: String {
-        let name = itemName ?? "파일 준비 중"
-        guard totalCount > 1 else { return name }
-        return "\(completedCount) / \(totalCount) • \(name)"
+    private func byteProgressDescription(_ progress: RemoteDownloadProgress) -> String {
+        let received = ByteCountFormatter.string(
+            fromByteCount: progress.completedByteCount,
+            countStyle: .file
+        )
+        guard let total = progress.totalByteCount else { return received }
+        return "\(received) / \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))"
     }
 }
 
@@ -2697,20 +2770,6 @@ private extension RemoteOperationPhase {
         case .deleting: "삭제 중"
         case .rollingBack: "복구 중"
         case .completed: "완료"
-        }
-    }
-}
-
-private struct ThumbnailNetworkChangeModifier: ViewModifier {
-    let onChange: () -> Void
-
-    func body(content: Content) -> some View {
-        content.onReceive(
-            NotificationCenter.default.publisher(
-                for: .thumbnailNetworkPathDidChange
-            )
-        ) { _ in
-            onChange()
         }
     }
 }

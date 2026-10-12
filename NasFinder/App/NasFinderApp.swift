@@ -22,9 +22,10 @@ struct NasFinderApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        // Build synchronously: the lazy scene builder can run off MainActor on redraw.
+        WindowGroup(content: {
             adaptiveRootView
-        }
+        })
     }
 
     private var isRunningOnMac: Bool {
