@@ -570,27 +570,28 @@ struct RemotePreviewView: View {
                             || viewModel.isPreparingExternalPlayback
                     )
                     .accessibilityLabel("다른 플레이어로 열기")
-                } else if let url = viewModel.localURL {
-                    Button {
-                        shareCoordinator.prepare(
-                            cachedURL: url,
-                            originalFilename: viewModel.currentItem.name
-                        )
-                    } label: {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 16, weight: .semibold))
-                            .frame(width: 44, height: 44)
-                            .background(.ultraThinMaterial, in: Circle())
-                    }
-                    .disabled(shareCoordinator.isPreparing)
-                    .accessibilityLabel("현재 파일 공유")
                 } else {
-                    Image(systemName: "square.and.arrow.up")
+                    Button {
+                        shareCurrentItem()
+                    } label: {
+                        Group {
+                            if shareCoordinator.isPreparing
+                                || viewModel.isPreparingExternalPlayback {
+                                ProgressView()
+                                    .tint(.white)
+                            } else {
+                                Image(systemName: "square.and.arrow.up")
+                            }
+                        }
                         .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 42, height: 42)
-                        .background(.black.opacity(0.35), in: Circle())
-                        .foregroundStyle(.white.opacity(0.35))
-                        .accessibilityHidden(true)
+                        .frame(width: 44, height: 44)
+                        .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .disabled(
+                        shareCoordinator.isPreparing
+                            || viewModel.isPreparingExternalPlayback
+                    )
+                    .accessibilityLabel("현재 파일 공유")
                 }
             }
             .frame(width: 42, height: 42)
@@ -604,6 +605,27 @@ struct RemotePreviewView: View {
             get: { shareCoordinator.errorMessage != nil },
             set: { if !$0 { shareCoordinator.errorMessage = nil } }
         )
+    }
+
+    private func shareCurrentItem() {
+        if let url = viewModel.localURL {
+            shareCoordinator.prepare(
+                cachedURL: url,
+                originalFilename: viewModel.currentItem.name
+            )
+            return
+        }
+        Task {
+            do {
+                let url = try await viewModel.prepareExternalPlaybackFile()
+                shareCoordinator.prepare(
+                    cachedURL: url,
+                    originalFilename: viewModel.currentItem.name
+                )
+            } catch {
+                shareCoordinator.errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private func openInAnotherPlayer() {

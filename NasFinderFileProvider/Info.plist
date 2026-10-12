@@ -17,9 +17,9 @@
 	<key>CFBundlePackageType</key>
 	<string>XPC!</string>
 	<key>CFBundleShortVersionString</key>
-	<string>2.2.3</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>202609051155</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NasFinderKeychainAccessGroup</key>
 	<string>$(AppIdentifierPrefix)com.armsone.nasfinder.shared</string>
 	<key>NSAppTransportSecurity</key>
