@@ -81,6 +81,7 @@ struct ReceivedFilesView: View {
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.system.rawValue
     @State private var previewItem: RemoteFileItem?
+    @State private var trailerSelection: VideoTrailerSelection?
     @State private var isSelecting = false
     @State private var selectedRecordIDs: Set<SharedInboxRecord.ID> = []
     @State private var uploadableRecordIDs: Set<SharedInboxRecord.ID> = []
@@ -294,6 +295,9 @@ struct ReceivedFilesView: View {
             }
         } message: {
             Text("선택한 \(selectedRecords.count)개 파일이 이 기기에서 삭제됩니다.")
+        }
+        .fullScreenCover(item: $trailerSelection, onDismiss: { reloadInbox() }) { selection in
+            VideoTrailerView(items: selection.items, service: LocalInboxFileService(records: inboxStore.records))
         }
         .fullScreenCover(item: $previewItem) { item in
             let records = inboxStore.records
@@ -516,6 +520,10 @@ struct ReceivedFilesView: View {
     @ViewBuilder
     private func recordContextMenu(_ record: SharedInboxRecord) -> some View {
         if !isSelecting {
+            let item = LocalInboxFileService.remoteItem(for: record)
+            if item.isVideo {
+                Button("예고편 보기", systemImage: "film") { trailerSelection = VideoTrailerSelection(items: [item]) }
+            }
             if isUploadableFile(record) {
                 Button("NAS로 보내기", systemImage: "arrow.up.doc") {
                     beginUpload(of: [record])
@@ -674,6 +682,14 @@ struct ReceivedFilesView: View {
 
     private var uploadSelectionBar: some View {
         VStack(spacing: 10) {
+            Button("예고편 보기", systemImage: "film") {
+                let videos = selectedRecords.map { LocalInboxFileService.remoteItem(for: $0) }
+                guard !videos.isEmpty, videos.allSatisfy(\.isVideo) else { return }
+                trailerSelection = VideoTrailerSelection(items: videos)
+                endSelection()
+            }
+            .buttonStyle(.bordered)
+            .disabled(selectedRecords.isEmpty || !selectedRecords.allSatisfy { LocalInboxFileService.remoteItem(for: $0).isVideo })
             Button("NAS로 보내기", systemImage: "arrow.up.doc") {
                 beginUpload(of: selectedUploadableRecords)
             }

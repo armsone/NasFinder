@@ -240,6 +240,7 @@ struct FileBrowserView: View {
     @StateObject private var interactionCoordinator = FileBrowserInteractionCoordinator()
     @ObservedObject private var thumbnailActivity = RemoteThumbnailActivityTracker.shared
     @State private var previewItem: RemoteFileItem?
+    @State private var trailerSelection: VideoTrailerSelection?
     @State private var navigatedFolder: RemoteFileItem?
     @State private var isSelecting = false
     @State private var selectedItemIDs: Set<RemoteFileItem.ID> = []
@@ -443,6 +444,9 @@ struct FileBrowserView: View {
             onDismiss: { shareCoordinator.shareSheetDidDismiss() }
         ) { preparedShare in
             RemoteFileActivityView(fileURLs: preparedShare.fileURLs)
+        }
+        .fullScreenCover(item: $trailerSelection) { selection in
+            VideoTrailerView(items: selection.items, service: viewModel.service)
         }
         .fullScreenCover(item: $previewItem) { item in
             RemotePreviewView(
@@ -1486,6 +1490,16 @@ struct FileBrowserView: View {
                     }
                 }
 
+                if item.isVideo {
+                    CompactPanelButton(title: "예고편 보기", systemImage: "film") {
+                        performContextPanelAction {
+                            guard canBeginUserPresentation else { return }
+                            trailerSelection = VideoTrailerSelection(items: [item])
+                        }
+                    }
+                    .disabled(!canBeginUserPresentation)
+                }
+
                 if !item.isDirectory {
                     CompactPanelButton(title: "받기", systemImage: "arrow.down.circle") {
                         performContextPanelAction {
@@ -1610,6 +1624,15 @@ struct FileBrowserView: View {
                             pendingDeleteItems = selectedItems
                         }
                     }
+
+                    selectionActionButton("예고편 보기", systemImage: "film") {
+                        guard canBeginUserPresentation else { return }
+                        let videos = selectedItems.filter(\.isVideo)
+                        guard !videos.isEmpty, videos.count == selectedItems.count else { return }
+                        trailerSelection = VideoTrailerSelection(items: videos)
+                        endSelection()
+                    }
+                    .disabled(selectedItems.isEmpty || !selectedItems.allSatisfy(\.isVideo))
 
                     selectionActionButton("공유", systemImage: "square.and.arrow.up") {
                         guard canBeginUserPresentation else { return }
@@ -1768,6 +1791,7 @@ struct FileBrowserView: View {
     private var hasBlockingPresentation: Bool {
         shareCoordinator.preparedShare != nil
             || previewItem != nil
+            || trailerSelection != nil
             || !pendingDeleteItems.isEmpty
             || renameItem != nil
             || isCreatingFolder

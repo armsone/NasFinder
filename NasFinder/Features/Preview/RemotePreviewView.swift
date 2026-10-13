@@ -83,12 +83,22 @@ struct RemotePreviewView: View {
     @State private var videoVerticalDragMode: RemotePreviewVerticalDragMode?
     @State private var systemVolumeSlider: UISlider?
     @State private var screenAwakeActivityID = UUID()
+    @State private var resumeAfterSuspension = false
+    private let accessoryControls: AnyView?
+    private let onClose: (() -> Void)?
+    private let playbackSuspended: Bool
 
     init(
         item: RemoteFileItem,
         sequentialItems: [RemoteFileItem],
-        service: any RemoteFileService
+        service: any RemoteFileService,
+        accessoryControls: AnyView? = nil,
+        onClose: (() -> Void)? = nil,
+        playbackSuspended: Bool = false
     ) {
+        self.accessoryControls = accessoryControls
+        self.onClose = onClose
+        self.playbackSuspended = playbackSuspended
         let orderedItems: [RemoteFileItem]
         if item.isImage || item.isVideo {
             let mediaItems = sequentialItems.filter { $0.isImage || $0.isVideo }
@@ -123,13 +133,6 @@ struct RemotePreviewView: View {
                     viewportSize: geometry.size
                 )
 
-                if viewModel.shouldOfferExternalPlayer {
-                    alwaysVisibleExternalPlayerButton
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
-                        .padding(.top, max(geometry.safeAreaInsets.top, 8) + 70)
-                        .padding(.trailing, max(geometry.safeAreaInsets.trailing, 8) + 8)
-                }
-
                 if viewModel.currentItem.isImage, viewModel.isPlaying {
                     photoSlideshowEdgeControls(safeAreaInsets: geometry.safeAreaInsets)
                     photoSlideshowProgress
@@ -156,6 +159,17 @@ struct RemotePreviewView: View {
         }
         .task(id: viewModel.currentItem.id) {
             await viewModel.loadCurrentItem()
+        }
+        .onChange(of: playbackSuspended) { _, suspended in
+            if suspended {
+                resumeAfterSuspension = viewModel.isPlaying
+                viewModel.pauseForLifecycle()
+            } else {
+                resumeSuspendedPlaybackIfReady()
+            }
+        }
+        .onChange(of: viewModel.hasVideoPlayer) { _, _ in
+            resumeSuspendedPlaybackIfReady()
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
@@ -256,15 +270,6 @@ struct RemotePreviewView: View {
                     }
                     .buttonStyle(.borderedProminent)
 
-                    if viewModel.currentItem.isVideo {
-                        Button("다른 플레이어로 열기") {
-                            openInAnotherPlayer()
-                        }
-                        .disabled(
-                            shareCoordinator.isPreparing
-                                || viewModel.isPreparingExternalPlayback
-                        )
-                    }
                 }
                 .foregroundStyle(.white)
             } else {
@@ -274,7 +279,7 @@ struct RemotePreviewView: View {
             if let image = viewModel.image {
                 ZoomableMediaImageView(
                     image: image,
-                    onDismiss: { dismiss() },
+                    onDismiss: { closePreview() },
                     onNavigate: { offset in
                         viewModel.navigate(by: offset)
                     },
@@ -522,10 +527,20 @@ struct RemotePreviewView: View {
         .accessibilityHidden(true)
     }
 
+    private func resumeSuspendedPlaybackIfReady() {
+        guard !playbackSuspended, resumeAfterSuspension, viewModel.hasVideoPlayer else { return }
+        if !viewModel.isPlaying { viewModel.togglePlayback() }
+        resumeAfterSuspension = false
+    }
+
+    private func closePreview() {
+        if let onClose { onClose() } else { dismiss() }
+    }
+
     private func topBar(showsPosition: Bool) -> some View {
         HStack(spacing: 10) {
             Button {
-                dismiss()
+                closePreview()
             } label: {
                 SharedPlayerCircleLabel(systemImage: "xmark")
             }
@@ -546,55 +561,15 @@ struct RemotePreviewView: View {
             .frame(maxWidth: .infinity)
             .padding(.horizontal, 4)
 
-            Group {
-                if viewModel.currentItem.isVideo,
-                   viewModel.shouldOfferExternalPlayer {
-                    Button {
-                        openInAnotherPlayer()
-                    } label: {
-                        Group {
-                            if shareCoordinator.isPreparing
-                                || viewModel.isPreparingExternalPlayback {
-                                ProgressView()
-                                    .tint(.white)
-                            } else {
-                                Image(systemName: "rectangle.on.rectangle.angled")
-                            }
-                        }
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 44, height: 44)
-                        .background(.ultraThinMaterial, in: Circle())
-                    }
-                    .disabled(
-                        shareCoordinator.isPreparing
-                            || viewModel.isPreparingExternalPlayback
-                    )
-                    .accessibilityLabel("다른 플레이어로 열기")
-                } else {
-                    Button {
-                        shareCurrentItem()
-                    } label: {
-                        Group {
-                            if shareCoordinator.isPreparing
-                                || viewModel.isPreparingExternalPlayback {
-                                ProgressView()
-                                    .tint(.white)
-                            } else {
-                                Image(systemName: "square.and.arrow.up")
-                            }
-                        }
-                        .font(.system(size: 16, weight: .semibold))
-                        .frame(width: 44, height: 44)
-                        .background(.ultraThinMaterial, in: Circle())
-                    }
-                    .disabled(
-                        shareCoordinator.isPreparing
-                            || viewModel.isPreparingExternalPlayback
-                    )
-                    .accessibilityLabel("현재 파일 공유")
+            if let accessoryControls {
+                accessoryControls
+            } else {
+                Button { shareCurrentItem() } label: {
+                    SharedPlayerCircleLabel(systemImage: "square.and.arrow.up")
                 }
+                .disabled(shareCoordinator.isPreparing || viewModel.isPreparingExternalPlayback)
+                .accessibilityLabel("현재 파일 공유")
             }
-            .frame(width: 42, height: 42)
         }
         .foregroundStyle(.white)
         .shadow(color: .black.opacity(0.45), radius: 5, y: 2)
@@ -626,55 +601,6 @@ struct RemotePreviewView: View {
                 shareCoordinator.errorMessage = error.localizedDescription
             }
         }
-    }
-
-    private func openInAnotherPlayer() {
-        viewModel.acceptExternalPlayerOffer()
-        Task {
-            do {
-                let url = try await viewModel.prepareExternalPlaybackFile()
-                shareCoordinator.prepare(
-                    cachedURL: url,
-                    originalFilename: viewModel.currentItem.name
-                )
-            } catch {
-                shareCoordinator.errorMessage = error.localizedDescription
-            }
-        }
-    }
-
-    private var alwaysVisibleExternalPlayerButton: some View {
-        Button {
-            openInAnotherPlayer()
-        } label: {
-            Label(
-                viewModel.externalPlayerCountdownSeconds.map {
-                    "다른 플레이어로 열기 · \($0)"
-                } ?? "다른 플레이어로 열기",
-                systemImage: "rectangle.on.rectangle.angled"
-            )
-                .font(.subheadline.weight(.semibold))
-                .padding(.horizontal, 14)
-                .frame(height: 42)
-                .background(.ultraThinMaterial, in: Capsule())
-                .foregroundStyle(.white)
-        }
-        .buttonStyle(.plain)
-        .disabled(
-            shareCoordinator.isPreparing
-                || viewModel.isPreparingExternalPlayback
-        )
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 20)
-                .onEnded { value in
-                    guard value.translation.height >= 120,
-                          abs(value.translation.height) > abs(value.translation.width) else {
-                        return
-                    }
-                    viewModel.tearDown()
-                    dismiss()
-                }
-        )
     }
 
     private func bottomControls(isLandscape: Bool) -> some View {
@@ -942,7 +868,7 @@ struct RemotePreviewView: View {
                             var transaction = Transaction(animation: nil)
                             transaction.disablesAnimations = true
                             withTransaction(transaction) {
-                                dismiss()
+                                closePreview()
                             }
                         }
                     } else {
@@ -1138,8 +1064,6 @@ final class RemotePreviewViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isPreparingVideo = false
     @Published private(set) var isPreparingExternalPlayback = false
-    @Published private(set) var shouldOfferExternalPlayer = false
-    @Published private(set) var externalPlayerCountdownSeconds: Int?
     @Published private(set) var downloadProgress: RemoteDownloadProgress?
     @Published private(set) var streamedVideoByteCount: Int64 = 0
     @Published private(set) var videoPlaybackSource: RemoteVideoPlaybackSource?
@@ -1174,8 +1098,6 @@ final class RemotePreviewViewModel: ObservableObject {
     private var didRetrySoftwareDecodingForCurrentItem = false
     private var currentItemWasSequentiallyAdvanced = false
     private var sequentiallyFailedItemIDs: Set<RemoteFileItem.ID> = []
-    private var externalPlayerAdvanceTask: Task<Void, Never>?
-    private var externalPlayerOfferGeneration: UUID?
     private let downloadInactivityTimeout: Duration
     private let downloadInactivityPollInterval: Duration
     private let compatibilityPlaybackStallTimeout: Duration
@@ -1232,8 +1154,6 @@ final class RemotePreviewViewModel: ObservableObject {
     ) async {
         let requestedItem = currentItem
         guard !isLoading else { return }
-        cancelExternalPlayerOffer()
-        shouldOfferExternalPlayer = false
         let requiresLocalCompatibilityInspection =
             CompatibilityVideoFormatPolicy.requiresLocalCompatibilityInspection(
                 for: requestedItem
@@ -1395,7 +1315,6 @@ final class RemotePreviewViewModel: ObservableObject {
                    at: url
                ) {
                 guard isCurrentLoad(generation, itemID: requestedItem.id) else { return }
-                beginExternalPlayerOffer(for: requestedItem.id)
                 effectiveSoftwareDecoding = true
                 didRetrySoftwareDecodingForCurrentItem = true
             }
@@ -1501,65 +1420,9 @@ final class RemotePreviewViewModel: ObservableObject {
         return localURL
     }
 
-    func acceptExternalPlayerOffer() {
-        cancelExternalPlayerOffer()
-    }
-
-    private func beginExternalPlayerOffer(for itemID: RemoteFileItem.ID) {
-        guard currentItem.id == itemID,
-              externalPlayerOfferGeneration == nil else { return }
-        cancelExternalPlayerOffer()
-        let generation = UUID()
-        externalPlayerOfferGeneration = generation
-        shouldOfferExternalPlayer = true
-        externalPlayerCountdownSeconds = 4
-        externalPlayerAdvanceTask = Task { [weak self] in
-            for remaining in stride(from: 3, through: 1, by: -1) {
-                try? await Task.sleep(for: .seconds(1))
-                guard !Task.isCancelled,
-                      let self,
-                      self.externalPlayerOfferGeneration == generation,
-                      self.currentItem.id == itemID else { return }
-                self.externalPlayerCountdownSeconds = remaining
-            }
-            try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled,
-                  let self,
-                  self.externalPlayerOfferGeneration == generation,
-                  self.currentItem.id == itemID else { return }
-            self.externalPlayerAdvanceTask = nil
-            self.externalPlayerOfferGeneration = nil
-            self.shouldOfferExternalPlayer = false
-            self.externalPlayerCountdownSeconds = nil
-            self.advanceAfterExternalPlayerOfferTimeout(itemID: itemID)
-        }
-    }
-
-    private func cancelExternalPlayerOffer() {
-        externalPlayerOfferGeneration = nil
-        externalPlayerAdvanceTask?.cancel()
-        externalPlayerAdvanceTask = nil
-        shouldOfferExternalPlayer = false
-        externalPlayerCountdownSeconds = nil
-    }
-
-    private func advanceAfterExternalPlayerOfferTimeout(
-        itemID: RemoteFileItem.ID
-    ) {
+    private func reportPlaybackFailure(for itemID: RemoteFileItem.ID) {
         guard currentItem.id == itemID else { return }
-        sequentiallyFailedItemIDs.insert(itemID)
-        let nextIndex = items.indices
-            .dropFirst(currentIndex + 1)
-            .first {
-                (items[$0].isImage || items[$0].isVideo)
-                    && !sequentiallyFailedItemIDs.contains(items[$0].id)
-            }
-        guard let nextIndex else {
-            tearDown()
-            errorMessage = "다음에 표시할 사진이나 영상이 없습니다."
-            return
-        }
-        move(to: nextIndex, sequentialAdvance: true)
+        errorMessage = errorMessage ?? "전용 플레이어에서 이 영상을 재생할 수 없습니다."
     }
 
     func navigate(by offset: Int, autoplay: Bool = false) {
@@ -1708,7 +1571,6 @@ final class RemotePreviewViewModel: ObservableObject {
     }
 
     func tearDown() {
-        cancelExternalPlayerOffer()
         pauseForLifecycle()
         streamingLoader?.cancel()
         streamingLoader = nil
@@ -1734,7 +1596,6 @@ final class RemotePreviewViewModel: ObservableObject {
     }
 
     private func move(to index: Int, sequentialAdvance: Bool = false) {
-        cancelExternalPlayerOffer()
         guard items.indices.contains(index), index != currentIndex else {
             if currentItem.isImage, isPlaying {
                 schedulePhotoAdvance()
@@ -1775,7 +1636,6 @@ final class RemotePreviewViewModel: ObservableObject {
         errorMessage = nil
         isLoading = false
         didRetrySoftwareDecodingForCurrentItem = false
-        shouldOfferExternalPlayer = false
         currentItemWasSequentiallyAdvanced = sequentialAdvance
         if !sequentialAdvance {
             sequentiallyFailedItemIDs.removeAll()
@@ -1880,7 +1740,7 @@ final class RemotePreviewViewModel: ObservableObject {
                           let newPlayer,
                           self.compatibilityPlayer === newPlayer,
                           self.currentItem.id == itemID else { return }
-                    self.beginExternalPlayerOffer(for: itemID)
+                    self.reportPlaybackFailure(for: itemID)
                 },
                 onStall: { [weak self, weak newPlayer] in
                     guard let self,
