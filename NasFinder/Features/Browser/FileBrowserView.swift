@@ -127,10 +127,10 @@ private struct FileBrowserPageTitle: View {
     var body: some View {
         VStack(spacing: 1) {
             Text(title)
-                .font(.headline)
+                .uiBarFont(.headline)
                 .lineLimit(1)
 
-            HStack(spacing: 7) {
+            HStack(spacing: ui(7)) {
                 trafficValue(
                     symbol: "arrow.up",
                     value: trafficTracker.uploadedByteCount,
@@ -147,11 +147,11 @@ private struct FileBrowserPageTitle: View {
                     accessibilityLabel: "합계"
                 )
             }
-            .font(.caption2)
+            .uiBarFont(.caption2)
             .foregroundStyle(.secondary)
             .monospacedDigit()
         }
-        .frame(maxWidth: 230, minHeight: 44)
+        .frame(maxWidth: ui(230), minHeight: uiBar(44))
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
@@ -167,7 +167,7 @@ private struct FileBrowserPageTitle: View {
                 .fixedSize(horizontal: true, vertical: false)
         } icon: {
             Image(systemName: symbol)
-                .font(.caption2)
+                .uiBarFont(.caption2)
                 .imageScale(.small)
         }
         .labelStyle(.titleAndIcon)
@@ -240,6 +240,8 @@ struct FileBrowserView: View {
     @StateObject private var interactionCoordinator = FileBrowserInteractionCoordinator()
     @ObservedObject private var thumbnailActivity = RemoteThumbnailActivityTracker.shared
     @State private var previewItem: RemoteFileItem?
+    @State private var trailerSelection: VideoTrailerSelection?
+    @State private var folderTrailerScopeChoice: RemoteFileItem?
     @State private var navigatedFolder: RemoteFileItem?
     @State private var isSelecting = false
     @State private var selectedItemIDs: Set<RemoteFileItem.ID> = []
@@ -444,6 +446,9 @@ struct FileBrowserView: View {
         ) { preparedShare in
             RemoteFileActivityView(fileURLs: preparedShare.fileURLs)
         }
+        .fullScreenCover(item: $trailerSelection) { selection in
+            VideoTrailerView(items: selection.items, service: viewModel.service, mode: selection.mode)
+        }
         .fullScreenCover(item: $previewItem) { item in
             RemotePreviewView(
                 item: item,
@@ -469,6 +474,28 @@ struct FileBrowserView: View {
             }
         } message: {
             Text("폴더를 선택한 경우 안의 파일도 함께 삭제됩니다. 이 작업은 되돌릴 수 없습니다.")
+        }
+        .confirmationDialog(
+            "예고편에 포함할 범위",
+            isPresented: Binding(
+                get: { folderTrailerScopeChoice != nil },
+                set: { if !$0 { folderTrailerScopeChoice = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("현재 폴더만") {
+                if let folder = folderTrailerScopeChoice {
+                    folderTrailerScopeChoice = nil
+                    collectFolderTrailerCandidates(folder, recursive: false)
+                }
+            }
+            Button("하위 폴더 포함") {
+                if let folder = folderTrailerScopeChoice {
+                    folderTrailerScopeChoice = nil
+                    collectFolderTrailerCandidates(folder, recursive: true)
+                }
+            }
+            Button("취소", role: .cancel) { folderTrailerScopeChoice = nil }
         }
         .alert("이름 수정", isPresented: renameAlertBinding) {
             TextField("새 이름", text: $renameText)
@@ -530,46 +557,55 @@ struct FileBrowserView: View {
     @ToolbarContentBuilder
     private var browserToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
-            if layoutStyle != .coverFlow {
-                browserBackButton
+            Group {
+                if layoutStyle != .coverFlow {
+                    browserBackButton
+                }
             }
+            .uiBarFont()
         }
 
         ToolbarItem(placement: .principal) {
-            if layoutStyle != .coverFlow {
-                Button {
-                    isSearchPresented = true
-                } label: {
-                    FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
+            Group {
+                if layoutStyle != .coverFlow {
+                    Button {
+                        isSearchPresented = true
+                    } label: {
+                        FileBrowserPageTitle(title: title, trafficTracker: trafficTracker)
+                    }
+                    .buttonStyle(.plain)
+                    .contentShape(Rectangle())
+                    .accessibilityLabel("\(title), 검색")
+                    .accessibilityHint("현재 폴더에서 파일을 검색합니다.")
                 }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
-                .accessibilityLabel("\(title), 검색")
-                .accessibilityHint("현재 폴더에서 파일을 검색합니다.")
             }
+            .uiBarFont()
         }
 
         ToolbarItemGroup(placement: .topBarTrailing) {
-            if layoutStyle != .coverFlow {
-                if isSelecting {
-                    Button("완료") {
-                        endSelection()
+            Group {
+                if layoutStyle != .coverFlow {
+                    if isSelecting {
+                        Button("완료") {
+                            endSelection()
+                        }
+                        .disabled(shareCoordinator.isPreparing)
+                    } else {
+                        regularMoreButton
                     }
-                    .disabled(shareCoordinator.isPreparing)
-                } else {
-                    regularMoreButton
                 }
             }
+            .uiBarFont()
         }
     }
 
     private var browserBackButton: some View {
         Image(systemName: "chevron.left")
-            .font(.system(size: 17, weight: .semibold))
+            .font(.system(size: ui(17), weight: .semibold))
             .foregroundStyle(SkyBreezeTheme.accent)
-            .frame(width: 32, height: 32)
+            .frame(width: ui(32), height: ui(32))
             .background(SkyBreezeTheme.accent.opacity(0.12), in: Circle())
-            .frame(width: 44, height: 44)
+            .frame(width: uiBar(44), height: uiBar(44))
             .overlay {
                 FileBrowserBackTouchTarget(
                     goBack: { dismiss() },
@@ -593,9 +629,9 @@ struct FileBrowserView: View {
             interactionCoordinator.showBrowserPanel()
         } label: {
             Image(systemName: "ellipsis")
-                .font(.system(size: 15, weight: .bold))
+                .font(.system(size: ui(15), weight: .bold))
                 .foregroundStyle(SkyBreezeTheme.accent)
-                .frame(width: 32, height: 32)
+                .frame(width: ui(32), height: ui(32))
                 .background(SkyBreezeTheme.accent.opacity(0.16), in: Circle())
                 .overlay {
                     Circle().stroke(
@@ -607,16 +643,7 @@ struct FileBrowserView: View {
         .disabled(operationCoordinator.isBusy)
         .accessibilityLabel("더 보기")
         .accessibilityHint("파일 작업, 새로 고침과 보기 설정 메뉴를 엽니다.")
-        .popover(
-            item: $interactionCoordinator.panel,
-            attachmentAnchor: .rect(.bounds),
-            arrowEdge: .top
-        ) { panel in
-            interactionPanel(panel)
-                .onDisappear {
-                    interactionCoordinator.panelDidDisappear()
-                }
-        }
+        .modifier(panelPopover(for: .browser) { browserMorePanel })
     }
 
     @ViewBuilder
@@ -632,7 +659,7 @@ struct FileBrowserView: View {
                         isSearchPresented = true
                     } label: {
                         Text(title)
-                            .font(.subheadline.weight(.medium))
+                            .font(.ui(.subheadline).weight(.medium))
                             .foregroundStyle(
                                 FileBrowserCoverFlowChromePolicy.foreground(
                                     usesDarkBackground: coverFlowUsesDarkBackground
@@ -653,7 +680,7 @@ struct FileBrowserView: View {
                     .accessibilityLabel("\(title), 검색")
                     .accessibilityHint("현재 폴더에서 파일을 검색합니다.")
 
-                    Spacer(minLength: 8)
+                    Spacer(minLength: ui(8))
                     coverFlowMoreButton
                 }
             }
@@ -695,22 +722,13 @@ struct FileBrowserView: View {
         .buttonStyle(.plain)
         .disabled(operationCoordinator.isBusy)
         .accessibilityLabel("더 보기")
-        .popover(
-            item: $interactionCoordinator.panel,
-            attachmentAnchor: .rect(.bounds),
-            arrowEdge: .top
-        ) { panel in
-            interactionPanel(panel)
-                .onDisappear {
-                    interactionCoordinator.panelDidDisappear()
-                }
-        }
+        .modifier(panelPopover(for: .browser) { browserMorePanel })
     }
 
     @ViewBuilder
     private var browserStatusOverlay: some View {
         if layoutStyle != .coverFlow || shareCoordinator.isPreparing {
-            VStack(spacing: 8) {
+            VStack(spacing: ui(8)) {
                 if shareCoordinator.isPreparing {
                     SharePreparationBanner(
                         itemName: shareCoordinator.preparingItemName,
@@ -753,7 +771,7 @@ struct FileBrowserView: View {
                 }
 
             }
-            .padding()
+            .padding(.all, MacUIScale.defaultPadding)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
     }
@@ -800,7 +818,12 @@ struct FileBrowserView: View {
                         )
                     },
                     onActivate: activate,
-                    onShowActions: showItemPanel
+                    onShowActions: showItemPanel,
+                    actionsPopover: { item in
+                        panelPopover(for: .item(item)) {
+                            AnyView(contextActionPopover(for: item))
+                        }
+                    }
                 )
             }
         }
@@ -892,6 +915,69 @@ struct FileBrowserView: View {
         )
     }
 
+    /// Checks the folder's immediate children. If it contains subfolders, asks the user
+    /// whether to include them before building the trailer selection; otherwise proceeds
+    /// immediately with the immediate-only default.
+    private func buildFolderTrailerSelection(_ folder: RemoteFileItem) {
+        Task {
+            do {
+                let children = try await viewModel.service.list(directory: folder.path)
+                    .filter { RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name) }
+                if children.contains(where: \.isDirectory) {
+                    folderTrailerScopeChoice = folder
+                } else {
+                    let candidates = children.filter { !$0.isDirectory && $0.isTrailerEligible }
+                    guard !candidates.isEmpty else {
+                        downloadErrorMessage = "이 폴더에 예고편으로 쓸 수 있는 사진이나 영상이 없습니다."
+                        return
+                    }
+                    trailerSelection = VideoTrailerSelection(items: candidates)
+                }
+            } catch {
+                downloadErrorMessage = "폴더 내용을 확인하지 못했습니다: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    /// Reads the folder's children; when `recursive` is true, also walks immediate
+    /// subfolders (depth-first, tracking visited paths to avoid cycles/duplicates from
+    /// symlink-like providers). Non-media files are skipped silently; files that fail
+    /// actual decode validation are skipped individually while the trailer is being
+    /// built, without aborting the rest of the batch.
+    private func collectFolderTrailerCandidates(_ folder: RemoteFileItem, recursive: Bool) {
+        Task {
+            do {
+                var candidates: [RemoteFileItem] = []
+                var visitedPaths: Set<String> = []
+                try await appendFolderTrailerCandidates(folder, recursive: recursive,
+                    visitedPaths: &visitedPaths, into: &candidates)
+                guard !candidates.isEmpty else {
+                    downloadErrorMessage = "이 폴더에 예고편으로 쓸 수 있는 사진이나 영상이 없습니다."
+                    return
+                }
+                trailerSelection = VideoTrailerSelection(items: candidates)
+            } catch {
+                downloadErrorMessage = "폴더 내용을 확인하지 못했습니다: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func appendFolderTrailerCandidates(
+        _ folder: RemoteFileItem, recursive: Bool,
+        visitedPaths: inout Set<String>, into candidates: inout [RemoteFileItem]
+    ) async throws {
+        guard !visitedPaths.contains(folder.path) else { return }
+        visitedPaths.insert(folder.path)
+        let children = try await viewModel.service.list(directory: folder.path)
+            .filter { RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name) }
+        candidates.append(contentsOf: children.filter { !$0.isDirectory && $0.isTrailerEligible })
+        guard recursive else { return }
+        for subfolder in children where subfolder.isDirectory {
+            try await appendFolderTrailerCandidates(subfolder, recursive: true,
+                visitedPaths: &visitedPaths, into: &candidates)
+        }
+    }
+
     private var sortOptions: FileBrowserSortOptions {
         FileBrowserSortOptions(
             field: FileBrowserSortField(rawValue: storedSortField) ?? .name,
@@ -901,14 +987,15 @@ struct FileBrowserView: View {
         )
     }
 
-    @ViewBuilder
-    private func interactionPanel(_ panel: FileBrowserInteractionCoordinator.Panel) -> some View {
-        switch panel {
-        case .browser:
-            browserMorePanel
-        case .item(let item):
-            contextActionPopover(for: item)
-        }
+    private func panelPopover<PanelContent: View>(
+        for panel: FileBrowserInteractionCoordinator.Panel,
+        @ViewBuilder content: @escaping () -> PanelContent
+    ) -> FileBrowserPanelPopover<PanelContent> {
+        FileBrowserPanelPopover(
+            coordinator: interactionCoordinator,
+            panel: panel,
+            panelContent: content
+        )
     }
 
     private var browserMorePanel: some View {
@@ -916,7 +1003,7 @@ struct FileBrowserView: View {
             VStack(alignment: .leading, spacing: 0) {
                 MorePanelSectionTitle("파일 작업")
 
-                HStack(spacing: 4) {
+                HStack(spacing: ui(4)) {
                     CompactPanelButton(title: "선택", systemImage: "checkmark.circle") {
                         performMorePanelAction { isSelecting = true }
                     }
@@ -947,10 +1034,10 @@ struct FileBrowserView: View {
 
                 Divider()
                     .overlay(Color(uiColor: .separator).opacity(0.32))
-                    .padding(.vertical, 6)
+                    .padding(.vertical, ui(6))
                 MorePanelSectionTitle("보기")
 
-                HStack(spacing: 4) {
+                HStack(spacing: ui(4)) {
                     ForEach(availableLayoutStyles) { style in
                         CompactPanelButton(
                             title: style.title,
@@ -968,7 +1055,7 @@ struct FileBrowserView: View {
 
                 if layoutStyle == .coverFlow {
                     CompactPanelOptionRow(title: "배경") {
-                        HStack(spacing: 4) {
+                        HStack(spacing: ui(4)) {
                             ForEach(FileBrowserCoverFlowBackground.allCases) { background in
                                 CompactPanelOptionButton(
                                     title: background.title,
@@ -987,11 +1074,11 @@ struct FileBrowserView: View {
 
                 Divider()
                     .overlay(Color(uiColor: .separator).opacity(0.32))
-                    .padding(.vertical, 6)
+                    .padding(.vertical, ui(6))
                 MorePanelSectionTitle("정렬")
 
                 CompactPanelOptionRow(title: "기준") {
-                    HStack(spacing: 4) {
+                    HStack(spacing: ui(4)) {
                         ForEach(FileBrowserSortField.allCases) { field in
                             CompactPanelOptionButton(
                                 title: field.title,
@@ -1004,7 +1091,7 @@ struct FileBrowserView: View {
                 }
 
                 CompactPanelOptionRow(title: "순서") {
-                    HStack(spacing: 4) {
+                    HStack(spacing: ui(4)) {
                         ForEach(FileBrowserSortDirection.allCases) { direction in
                             CompactPanelOptionButton(
                                 title: direction.title,
@@ -1017,7 +1104,7 @@ struct FileBrowserView: View {
                 }
 
                 CompactPanelOptionRow(title: "이름 우선") {
-                    HStack(spacing: 4) {
+                    HStack(spacing: ui(4)) {
                         ForEach(FileBrowserNamePriority.allCases) { priority in
                             CompactPanelOptionButton(
                                 title: priority.title,
@@ -1032,7 +1119,7 @@ struct FileBrowserView: View {
                 }
 
                 CompactPanelOptionRow(title: "폴더 먼저") {
-                    HStack(spacing: 4) {
+                    HStack(spacing: ui(4)) {
                         CompactPanelOptionButton(title: "끔", isSelected: !foldersFirst) {
                             foldersFirst = false
                         }
@@ -1042,11 +1129,13 @@ struct FileBrowserView: View {
                     }
                 }
             }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .padding(.horizontal, ui(12))
+            .padding(.vertical, ui(10))
         }
         .scrollIndicators(.visible)
-        .frame(width: 340, height: 460)
+        // An ideal size instead of a fixed one: a window smaller than the panel shrinks it and
+        // the content scrolls, rather than the panel being cut off at the window edge.
+        .frame(idealWidth: ui(340), maxWidth: ui(340), idealHeight: ui(460), maxHeight: ui(460))
         .background(Color(uiColor: .systemBackground))
         .presentationCompactAdaptation(.popover)
         .buttonStyle(.plain)
@@ -1105,9 +1194,9 @@ struct FileBrowserView: View {
     }
 
     private var currentPathBar: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: ui(8)) {
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 5) {
+                HStack(spacing: ui(5)) {
                     if let parentPathComponent {
                         NavigationLink {
                             pathDestination(
@@ -1116,12 +1205,12 @@ struct FileBrowserView: View {
                             )
                         } label: {
                             Image(systemName: "arrow.up")
-                                .font(.caption.weight(.bold))
+                                .font(.ui(.caption).weight(.bold))
                                 .foregroundStyle(SkyBreezeTheme.accent)
-                                .frame(width: 36, height: 28)
+                                .frame(width: ui(36), height: ui(28))
                                 .background(
                                     SkyBreezeTheme.accent.opacity(0.12),
-                                    in: RoundedRectangle(cornerRadius: 7)
+                                    in: RoundedRectangle(cornerRadius: ui(7))
                                 )
                                 .contentShape(Rectangle())
                         }
@@ -1147,13 +1236,13 @@ struct FileBrowserView: View {
                     .disabled(viewModel.path == viewModel.connection.normalizedRootPath)
 
                     Image(systemName: "chevron.right")
-                        .font(.caption2.weight(.bold))
+                        .font(.ui(.caption2).weight(.bold))
                         .foregroundStyle(.tertiary)
 
                     ForEach(Array(pathComponents.enumerated()), id: \.element.id) { index, component in
                         if index > 0 {
                             Image(systemName: "chevron.right")
-                                .font(.system(size: 8, weight: .bold))
+                                .font(.system(size: ui(8), weight: .bold))
                                 .foregroundStyle(.tertiary)
                         }
                         NavigationLink {
@@ -1175,9 +1264,9 @@ struct FileBrowserView: View {
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
         }
-        .font(.caption)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .font(.ui(.caption))
+        .padding(.horizontal, ui(12))
+        .padding(.vertical, ui(8))
         .background(Color(uiColor: .secondarySystemBackground))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
@@ -1236,15 +1325,15 @@ struct FileBrowserView: View {
                     }
                 }
             }
-            .frame(height: 3)
+            .frame(height: ui(3))
 
             if let limitMessage = thumbnailActivity.limitMessage {
                 Text(limitMessage)
-                    .font(.caption2)
+                    .font(.ui(.caption2))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
+                    .padding(.horizontal, ui(12))
+                    .padding(.vertical, ui(4))
                     .background(.thinMaterial)
             }
         }
@@ -1274,13 +1363,13 @@ struct FileBrowserView: View {
         ScrollView {
             LazyVGrid(
                 columns: columns(for: style),
-                spacing: style == .largeThumbnails ? 20 : 12
+                spacing: ui(style == .largeThumbnails ? 20 : 12)
             ) {
                 ForEach(displayedItems) { item in
                     gridItem(item, style: style)
                 }
             }
-            .padding(style == .largeThumbnails ? 16 : 10)
+            .padding(ui(style == .largeThumbnails ? 16 : 10))
         }
     }
 
@@ -1291,21 +1380,21 @@ struct FileBrowserView: View {
 
         switch style {
         case .list:
-            minimum = 320
-            maximum = 600
-            spacing = 12
+            minimum = ui(320)
+            maximum = ui(600)
+            spacing = ui(12)
         case .smallThumbnails:
-            minimum = dynamicTypeSize.isAccessibilitySize ? 118 : 78
-            maximum = dynamicTypeSize.isAccessibilitySize ? 155 : 104
-            spacing = 8
+            minimum = ui(dynamicTypeSize.isAccessibilitySize ? 118 : 78)
+            maximum = ui(dynamicTypeSize.isAccessibilitySize ? 155 : 104)
+            spacing = ui(8)
         case .largeThumbnails:
-            minimum = dynamicTypeSize.isAccessibilitySize ? 270 : 158
-            maximum = 340
-            spacing = 16
+            minimum = ui(dynamicTypeSize.isAccessibilitySize ? 270 : 158)
+            maximum = ui(340)
+            spacing = ui(16)
         case .coverFlow:
-            minimum = 320
-            maximum = 600
-            spacing = 12
+            minimum = ui(320)
+            maximum = ui(600)
+            spacing = ui(12)
         }
 
         return [
@@ -1335,18 +1424,19 @@ struct FileBrowserView: View {
 
             if isSelecting {
                 selectionIndicator(isSelected: selectedItemIDs.contains(item.id))
-                    .padding(style == .largeThumbnails ? 8 : 4)
+                    .padding(ui(style == .largeThumbnails ? 8 : 4))
             }
         }
         .contentShape(Rectangle())
         .gesture(itemInteractionGesture(for: item))
+        .modifier(panelPopover(for: .item(item)) { contextActionPopover(for: item) })
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { activate(item) }
         .accessibilityAction(named: "작업 보기") { showItemPanel(for: item) }
     }
 
     private func listItem(_ item: RemoteFileItem) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: ui(8)) {
             RemoteFileListRow(
                 item: item,
                 service: viewModel.service,
@@ -1360,6 +1450,7 @@ struct FileBrowserView: View {
         }
         .contentShape(Rectangle())
         .gesture(itemInteractionGesture(for: item))
+        .modifier(panelPopover(for: .item(item)) { contextActionPopover(for: item) })
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { activate(item) }
         .accessibilityAction(named: "작업 보기") { showItemPanel(for: item) }
@@ -1400,25 +1491,32 @@ struct FileBrowserView: View {
     }
 
     private func contextActionPopover(for item: RemoteFileItem) -> some View {
-        itemActionPanel(for: item)
-            .frame(width: 340)
-            .presentationCompactAdaptation(.popover)
+        // The panel keeps its natural size while the window has room for it and scrolls when it
+        // does not, so no part of it is cut off at the window edge.
+        ViewThatFits(in: .vertical) {
+            itemActionPanel(for: item)
+            ScrollView {
+                itemActionPanel(for: item)
+            }
+        }
+        .frame(idealWidth: ui(340), maxWidth: ui(340))
+        .presentationCompactAdaptation(.popover)
     }
 
     private func selectionIndicator(isSelected: Bool) -> some View {
         Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-            .font(.title2.weight(.semibold))
+            .font(.ui(.title2).weight(.semibold))
             .foregroundStyle(isSelected ? Color.accentColor : .secondary)
             .background(.regularMaterial, in: Circle())
             .accessibilityHidden(true)
     }
 
     private func itemActionPanel(for item: RemoteFileItem) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: ui(12)) {
             Text(item.isDirectory ? "폴더 작업" : "파일 작업")
-                .font(.subheadline.weight(.semibold))
+                .font(.ui(.subheadline).weight(.semibold))
 
-            HStack(spacing: 4) {
+            HStack(spacing: ui(4)) {
                 CompactPanelButton(title: "선택", systemImage: "checkmark.circle") {
                     performContextPanelAction { beginQuickSelection(with: item) }
                 }
@@ -1476,7 +1574,7 @@ struct FileBrowserView: View {
                 )
             }
 
-            HStack(spacing: 4) {
+            HStack(spacing: ui(4)) {
                 CompactPanelButton(
                     title: favoriteStore.contains(item) ? "별 해제" : "즐겨찾기",
                     systemImage: favoriteStore.contains(item) ? "star.slash" : "star"
@@ -1484,6 +1582,36 @@ struct FileBrowserView: View {
                     performContextPanelAction {
                         favoriteStore.toggle(item)
                     }
+                }
+
+                if item.isTrailerEligible {
+                    CompactPanelButton(title: "예고편 보기", systemImage: "film") {
+                        performContextPanelAction {
+                            guard canBeginUserPresentation else { return }
+                            trailerSelection = VideoTrailerSelection(items: [item])
+                        }
+                    }
+                    .disabled(!canBeginUserPresentation)
+                }
+
+                if item.isVideo {
+                    CompactPanelButton(title: "음악 입히기", systemImage: "music.note") {
+                        performContextPanelAction {
+                            guard canBeginUserPresentation else { return }
+                            trailerSelection = VideoTrailerSelection(items: [item], mode: .mediaMusic)
+                        }
+                    }
+                    .disabled(!canBeginUserPresentation)
+                }
+
+                if item.isDirectory {
+                    CompactPanelButton(title: "예고편 만들기", systemImage: "film") {
+                        performContextPanelAction {
+                            guard canBeginUserPresentation else { return }
+                            buildFolderTrailerSelection(item)
+                        }
+                    }
+                    .disabled(!canBeginUserPresentation)
                 }
 
                 if !item.isDirectory {
@@ -1525,14 +1653,14 @@ struct FileBrowserView: View {
 
             itemInformationPanel(item)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 4)
-        .padding(.bottom, 16)
+        .padding(.horizontal, ui(16))
+        .padding(.top, ui(4))
+        .padding(.bottom, ui(16))
         .buttonStyle(.plain)
     }
 
     private func itemInformationPanel(_ item: RemoteFileItem) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: ui(4)) {
             CompactInformationRow(title: "이름", value: item.name)
             CompactInformationRow(title: "미디어", value: item.browserMediaLabel)
             CompactInformationRow(title: "특징", value: item.browserFeatureLabel)
@@ -1542,10 +1670,10 @@ struct FileBrowserView: View {
                 value: item.browserFormattedSize ?? (item.isDirectory ? "폴더" : "알 수 없음")
             )
         }
-        .padding(10)
+        .padding(ui(10))
         .background(
             Color(uiColor: .secondarySystemBackground),
-            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+            in: RoundedRectangle(cornerRadius: ui(12), style: .continuous)
         )
         .accessibilityElement(children: .contain)
     }
@@ -1570,10 +1698,10 @@ struct FileBrowserView: View {
     }
 
     private var selectionBar: some View {
-        VStack(spacing: 8) {
-            HStack(spacing: 12) {
+        VStack(spacing: ui(8)) {
+            HStack(spacing: ui(12)) {
                 Label("\(selectedItemIDs.count)개 선택", systemImage: "checkmark.circle.fill")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.ui(.subheadline).weight(.semibold))
                     .monospacedDigit()
                     .foregroundStyle(selectedItemIDs.isEmpty ? .secondary : .primary)
 
@@ -1582,14 +1710,14 @@ struct FileBrowserView: View {
                 Button(selectAllButtonTitle) {
                     toggleSelectAll()
                 }
-                .font(.subheadline.weight(.semibold))
+                .font(.ui(.subheadline).weight(.semibold))
                 .disabled(displayedItems.isEmpty || selectionInteractionsAreBlocked)
             }
 
             Divider()
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 20) {
+                HStack(spacing: ui(20)) {
                     if viewModel.service.capabilities.supports(.copy) {
                         selectionActionButton("복사", systemImage: "doc.on.doc") {
                             operationCoordinator.placeOnClipboard(selectedItems, mode: .copy)
@@ -1610,6 +1738,24 @@ struct FileBrowserView: View {
                             pendingDeleteItems = selectedItems
                         }
                     }
+
+                    selectionActionButton("예고편 보기", systemImage: "film") {
+                        guard canBeginUserPresentation else { return }
+                        let clips = selectedItems.filter(\.isTrailerEligible)
+                        guard !clips.isEmpty, clips.count == selectedItems.count else { return }
+                        trailerSelection = VideoTrailerSelection(items: clips)
+                        endSelection()
+                    }
+                    .disabled(selectedItems.isEmpty || !selectedItems.allSatisfy(\.isTrailerEligible))
+
+                    selectionActionButton("음악 입히기", systemImage: "music.note") {
+                        guard canBeginUserPresentation else { return }
+                        let clips = selectedItems.filter(\.isTrailerEligible)
+                        guard !clips.isEmpty, clips.count == selectedItems.count else { return }
+                        trailerSelection = VideoTrailerSelection(items: clips, mode: .mediaMusic)
+                        endSelection()
+                    }
+                    .disabled(selectedItems.isEmpty || !selectedItems.allSatisfy(\.isTrailerEligible))
 
                     selectionActionButton("공유", systemImage: "square.and.arrow.up") {
                         guard canBeginUserPresentation else { return }
@@ -1634,9 +1780,9 @@ struct FileBrowserView: View {
                 .frame(maxWidth: .infinity)
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, 8)
+        .padding(.horizontal, ui(16))
+        .padding(.top, ui(10))
+        .padding(.bottom, ui(8))
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
     }
@@ -1659,13 +1805,13 @@ struct FileBrowserView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(role: role, action: action) {
-            VStack(spacing: 2) {
+            VStack(spacing: ui(2)) {
                 Image(systemName: systemImage)
-                    .font(.body.weight(.semibold))
+                    .font(.ui(.body).weight(.semibold))
                 Text(title)
-                    .font(.caption2)
+                    .font(.ui(.caption2))
             }
-            .frame(minWidth: 58)
+            .frame(minWidth: ui(58))
         }
         .buttonStyle(.plain)
         .disabled(
@@ -1768,6 +1914,7 @@ struct FileBrowserView: View {
     private var hasBlockingPresentation: Bool {
         shareCoordinator.preparedShare != nil
             || previewItem != nil
+            || trailerSelection != nil
             || !pendingDeleteItems.isEmpty
             || renameItem != nil
             || isCreatingFolder
@@ -1849,7 +1996,7 @@ private struct RemoteFileGridCell: View {
     let thumbnailReloadVersion: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: isLarge ? 9 : 6) {
+        VStack(alignment: .leading, spacing: ui(isLarge ? 9 : 6)) {
             RemoteThumbnailView(
                 item: item,
                 service: service,
@@ -1860,16 +2007,16 @@ private struct RemoteFileGridCell: View {
                 .frame(maxWidth: .infinity)
                 .background(
                     SkyBreezeTheme.thumbnailSurface,
-                    in: RoundedRectangle(cornerRadius: isLarge ? 15 : 11)
+                    in: RoundedRectangle(cornerRadius: ui(isLarge ? 15 : 11))
                 )
                 .overlay {
-                    RoundedRectangle(cornerRadius: isLarge ? 15 : 11)
+                    RoundedRectangle(cornerRadius: ui(isLarge ? 15 : 11))
                         .stroke(SkyBreezeTheme.thumbnailBorder, lineWidth: 1)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: isLarge ? 15 : 11))
+                .clipShape(RoundedRectangle(cornerRadius: ui(isLarge ? 15 : 11)))
 
             Text(item.name)
-                .font(isLarge ? .headline : .caption)
+                .font(isLarge ? .ui(.headline) : .ui(.caption))
                 .fontWeight(isLarge ? .semibold : .regular)
                 .foregroundStyle(SkyBreezeTheme.primaryText)
                 .lineLimit(2)
@@ -1878,6 +2025,16 @@ private struct RemoteFileGridCell: View {
                 .truncationMode(.tail)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity)
+
+            if item.isDirectory {
+                FolderItemCountLabel(
+                    item: item,
+                    service: service,
+                    generation: thumbnailReloadVersion,
+                    style: isLarge ? .caption : .caption2
+                )
+                .foregroundStyle(.secondary)
+            }
 
             RemoteFileMetadataView(
                 item: item,
@@ -1908,27 +2065,40 @@ private struct RemoteFileListRow: View {
     let thumbnailReloadVersion: Int
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: ui(12)) {
             RemoteThumbnailView(
                 item: item,
                 service: service,
-                size: CGSize(width: thumbnailSide, height: thumbnailSide),
+                size: CGSize(
+                    width: thumbnailSide / MacUIScale.factor,
+                    height: thumbnailSide / MacUIScale.factor
+                ),
                 reloadVersion: thumbnailReloadVersion
             )
                 .frame(width: thumbnailSide, height: thumbnailSide)
-                .background(SkyBreezeTheme.thumbnailSurface, in: RoundedRectangle(cornerRadius: 9))
+                .background(SkyBreezeTheme.thumbnailSurface, in: RoundedRectangle(cornerRadius: ui(9)))
                 .overlay {
-                    RoundedRectangle(cornerRadius: 9)
+                    RoundedRectangle(cornerRadius: ui(9))
                         .stroke(SkyBreezeTheme.thumbnailBorder, lineWidth: 1)
                 }
-                .clipShape(RoundedRectangle(cornerRadius: 9))
+                .clipShape(RoundedRectangle(cornerRadius: ui(9)))
 
-            VStack(alignment: .leading, spacing: 4) {
+            VStack(alignment: .leading, spacing: ui(4)) {
                 Text(item.name)
-                    .font(.body)
+                    .font(.ui(.body))
                     .foregroundStyle(SkyBreezeTheme.primaryText)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? 3 : 2)
                     .fixedSize(horizontal: false, vertical: true)
+
+                if item.isDirectory {
+                    FolderItemCountLabel(
+                        item: item,
+                        service: service,
+                        generation: thumbnailReloadVersion,
+                        style: .caption
+                    )
+                    .foregroundStyle(.secondary)
+                }
 
                 RemoteFileMetadataView(
                     item: item,
@@ -1938,14 +2108,14 @@ private struct RemoteFileListRow: View {
                 )
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, ui(2))
         .contentShape(Rectangle())
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(item.browserAccessibilityLabel)
     }
 
     private var thumbnailSide: CGFloat {
-        dynamicTypeSize.isAccessibilitySize ? 50 : 58
+        ui(dynamicTypeSize.isAccessibilitySize ? 50 : 58)
     }
 }
 
@@ -1956,12 +2126,12 @@ private struct RemoteFileMetadataView: View {
     let compact: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: ui(2)) {
             if !item.isDirectory {
                 if compact {
-                    HStack(spacing: 4) {
+                    HStack(spacing: ui(4)) {
                         Image(systemName: item.systemImage)
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.system(size: ui(9), weight: .semibold))
                             .accessibilityLabel(item.browserKindLabel)
 
                         Text(item.browserFormattedSize ?? "크기 정보 없음")
@@ -1993,7 +2163,7 @@ private struct RemoteFileMetadataView: View {
                 }
             }
         }
-        .font(compact ? .caption2 : .caption)
+        .font(compact ? .ui(.caption2) : .ui(.caption))
         .foregroundStyle(SkyBreezeTheme.secondaryText)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2367,34 +2537,34 @@ private struct ThumbnailPreheatProgressBanner: View {
     @ObservedObject var preheater: ThumbnailPreheater
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: ui(12)) {
             if let fraction = preheater.fractionCompleted {
                 ProgressView(value: fraction)
-                    .frame(width: 54)
+                    .frame(width: ui(54))
             } else {
                 ProgressView()
             }
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: ui(2)) {
                 Text(preheater.totalCount == 0 ? "미디어 폴더 검색 중…" : "썸네일 미리 만드는 중…")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.ui(.subheadline).weight(.semibold))
                 Text(progressDescription)
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: ui(8))
 
             Button("중지", role: .cancel) {
                 preheater.cancel()
             }
             .buttonStyle(.bordered)
         }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(ui(14))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: ui(16)))
         .overlay {
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: ui(16))
                 .stroke(.separator.opacity(0.25), lineWidth: 0.5)
         }
         .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
@@ -2432,11 +2602,11 @@ private struct MorePanelSectionTitle: View {
 
     var body: some View {
         Text(title)
-            .font(.subheadline.weight(.bold))
+            .font(.ui(.subheadline).weight(.bold))
             .foregroundStyle(.primary)
             .textCase(.uppercase)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.horizontal, ui(8))
+            .padding(.vertical, ui(6))
     }
 }
 
@@ -2449,25 +2619,25 @@ private struct CompactPanelButton: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 3) {
+            VStack(spacing: ui(3)) {
                 Image(systemName: systemImage)
-                    .font(.system(size: 19, weight: .medium))
-                    .frame(width: 24, height: 24)
+                    .font(.system(size: ui(19), weight: .medium))
+                    .frame(width: ui(24), height: ui(24))
 
                 Text(title)
-                    .font(.system(size: 10, weight: .semibold))
+                    .font(.system(size: ui(10), weight: .semibold))
                     .lineLimit(1)
                     .minimumScaleFactor(0.65)
             }
             .foregroundStyle(isSelected ? Color.white : tint)
             .frame(maxWidth: .infinity)
-            .frame(height: 52)
+            .frame(height: ui(52))
             .background(
                 isSelected ? SkyBreezeTheme.accent : Color(uiColor: .secondarySystemBackground),
-                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                in: RoundedRectangle(cornerRadius: ui(10), style: .continuous)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: ui(10), style: .continuous)
                     .stroke(
                         isSelected
                             ? SkyBreezeTheme.accent
@@ -2491,16 +2661,16 @@ private struct CompactPanelOptionRow<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: ui(5)) {
             Text(title)
-                .font(.caption2.weight(.semibold))
+                .font(.ui(.caption2).weight(.semibold))
                 .foregroundStyle(.primary)
-                .padding(.horizontal, 2)
+                .padding(.horizontal, ui(2))
 
             content
                 .frame(maxWidth: .infinity)
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, ui(5))
     }
 }
 
@@ -2512,7 +2682,7 @@ private struct CompactPanelOptionButton: View {
     var body: some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                .font(.system(size: ui(12), weight: isSelected ? .semibold : .regular))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .foregroundStyle(
@@ -2521,15 +2691,15 @@ private struct CompactPanelOptionButton: View {
                         : Color(uiColor: .label)
                 )
                 .frame(maxWidth: .infinity)
-                .frame(minHeight: 44)
+                .frame(minHeight: ui(44))
                 .background(
                     isSelected
                         ? SkyBreezeTheme.accent
                         : Color(uiColor: .secondarySystemBackground),
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    in: RoundedRectangle(cornerRadius: ui(10), style: .continuous)
                 )
                 .overlay {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: ui(10), style: .continuous)
                         .stroke(
                             isSelected
                                 ? SkyBreezeTheme.accent
@@ -2548,14 +2718,14 @@ private struct CompactInformationRow: View {
     let value: String
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: ui(8)) {
             Text(title)
-                .font(.caption2)
+                .font(.ui(.caption2))
                 .foregroundStyle(.tertiary)
-                .frame(width: 54, alignment: .leading)
+                .frame(width: ui(54), alignment: .leading)
 
             Text(value)
-                .font(.caption)
+                .font(.ui(.caption))
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
 
@@ -2570,25 +2740,25 @@ private struct MorePanelRow: View {
     var showsDisclosure = false
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: ui(12)) {
             Image(systemName: systemImage)
-                .frame(width: 22)
+                .frame(width: ui(22))
                 .foregroundStyle(.tint)
 
             Text(title)
                 .foregroundStyle(.primary)
 
-            Spacer(minLength: 8)
+            Spacer(minLength: ui(8))
 
             if showsDisclosure {
                 Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
+                    .font(.ui(.caption).weight(.semibold))
                     .foregroundStyle(.tertiary)
             }
         }
         .contentShape(Rectangle())
-        .padding(.horizontal, 8)
-        .padding(.vertical, 10)
+        .padding(.horizontal, ui(8))
+        .padding(.vertical, ui(10))
     }
 }
 
@@ -2601,53 +2771,53 @@ private struct SharePreparationBanner: View {
     let onCancel: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: ui(10)) {
+            HStack(spacing: ui(8)) {
                 Text(isStaging ? "공유 준비 중" : "내려받는 중")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.ui(.subheadline).weight(.semibold))
                     .layoutPriority(1)
 
                 if totalCount > 1 {
                     Text("\(min(completedCount + 1, totalCount)) / \(totalCount)")
-                        .font(.caption)
+                        .font(.ui(.caption))
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
                 }
 
-                Spacer(minLength: 4)
+                Spacer(minLength: ui(4))
 
                 Button("취소", role: .cancel, action: onCancel)
-                    .font(.caption.weight(.semibold))
+                    .font(.ui(.caption).weight(.semibold))
                     .buttonStyle(.plain)
                     .foregroundStyle(.red)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
+                    .padding(.horizontal, ui(12))
+                    .padding(.vertical, ui(6))
                     .background(.red.opacity(0.1), in: Capsule())
-                    .frame(minHeight: 44)
+                    .frame(minHeight: ui(44))
                     .contentShape(Rectangle())
             }
 
             Text(itemName ?? "파일 준비 중")
-                .font(.subheadline)
+                .font(.ui(.subheadline))
                 .foregroundStyle(.primary)
                 .lineLimit(3)
                 .truncationMode(.middle)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            VStack(spacing: 6) {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
+            VStack(spacing: ui(6)) {
+                HStack(alignment: .firstTextBaseline, spacing: ui(8)) {
                     if let progress {
                         Text(byteProgressDescription(progress))
-                            .font(.caption)
+                            .font(.ui(.caption))
                             .foregroundStyle(.secondary)
                     }
 
-                    Spacer(minLength: 4)
+                    Spacer(minLength: ui(4))
 
                     if let fraction = progress?.fractionCompleted {
                         Text(fraction, format: .percent.precision(.fractionLength(0)))
-                            .font(.caption.weight(.semibold))
+                            .font(.ui(.caption).weight(.semibold))
                     }
                 }
                 .monospacedDigit()
@@ -2660,12 +2830,12 @@ private struct SharePreparationBanner: View {
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, ui(16))
+        .padding(.vertical, ui(10))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: ui(16)))
         .overlay {
-            RoundedRectangle(cornerRadius: 16)
+            RoundedRectangle(cornerRadius: ui(16))
                 .stroke(.separator.opacity(0.25), lineWidth: 0.5)
         }
         .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
@@ -2688,33 +2858,33 @@ struct FileOperationProgressBanner: View {
     let onCancel: () -> Void
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: ui(12)) {
             if let fraction = progress?.fractionCompleted {
                 ProgressView(value: fraction)
-                    .frame(width: 54)
+                    .frame(width: ui(54))
             } else {
                 ProgressView()
             }
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: ui(2)) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.ui(.subheadline).weight(.semibold))
                     .lineLimit(1)
                 if let progress {
                     Text(progressDescription(progress))
-                        .font(.caption)
+                        .font(.ui(.caption))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
             }
 
-            Spacer(minLength: 8)
+            Spacer(minLength: ui(8))
 
             Button("취소", role: .cancel, action: onCancel)
                 .buttonStyle(.bordered)
         }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(ui(14))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: ui(16)))
         .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
     }
 
@@ -2741,21 +2911,21 @@ struct FileOperationStatusBanner: View {
     let onDismiss: () -> Void
 
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: ui(10)) {
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.green)
             Text(message)
-                .font(.subheadline.weight(.semibold))
+                .font(.ui(.subheadline).weight(.semibold))
                 .lineLimit(2)
-            Spacer(minLength: 8)
+            Spacer(minLength: ui(8))
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
             }
             .buttonStyle(.plain)
             .accessibilityLabel("상태 메시지 닫기")
         }
-        .padding(14)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .padding(ui(14))
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: ui(16)))
         .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
     }
 }

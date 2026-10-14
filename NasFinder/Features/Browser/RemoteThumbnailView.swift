@@ -317,7 +317,7 @@ private struct RemoteThumbnailRenderedContent: View {
                 if loader.isLoading {
                     ProgressView()
                         .controlSize(.small)
-                        .padding(7)
+                        .padding(ui(7))
                         .background(.ultraThinMaterial, in: Circle())
                 }
             }

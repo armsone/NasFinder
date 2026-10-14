@@ -14,12 +14,15 @@ final class SharedInboxStore: ObservableObject {
     @Published var errorMessage: String?
     @Published var shouldPresentInbox = false
     @Published private(set) var pendingPreviewRecordID: UUID?
+    /// Whether PhoneHard's physical Music folder exists, even while it is still empty.
+    @Published private(set) var musicFolderExists = false
 
     init() {
         reload()
     }
 
     func reload() {
+        musicFolderExists = SharedInbox.musicDirectoryExists()
         do {
             records = try SharedInbox.records().sorted {
                 if $0.importedAt == $1.importedAt {
@@ -37,7 +40,7 @@ final class SharedInboxStore: ObservableObject {
     func delete(_ record: SharedInboxRecord) {
         do {
             try SharedInbox.delete(record)
-            records.removeAll { $0.id == record.id }
+            reload()
             errorMessage = nil
         } catch {
             let deletionErrorMessage = "\(record.originalFilename)을(를) 삭제하지 못했습니다: \(error.localizedDescription)"
@@ -46,6 +49,9 @@ final class SharedInboxStore: ObservableObject {
         }
     }
 
+    /// Deleting a folder also removes every descendant on disk and in the manifest, so
+    /// the in-memory list is always reloaded from disk afterward rather than trimmed by
+    /// hand; a hand-trimmed list would otherwise keep showing a deleted folder's children.
     func delete(_ recordsToDelete: [SharedInboxRecord]) {
         guard !recordsToDelete.isEmpty else { return }
 
@@ -53,18 +59,94 @@ final class SharedInboxStore: ObservableObject {
         for record in recordsToDelete {
             do {
                 try SharedInbox.delete(record)
-                records.removeAll { $0.id == record.id }
             } catch {
                 failedFilenames.append(record.originalFilename)
             }
         }
 
-        if failedFilenames.isEmpty {
-            errorMessage = nil
-        } else {
+        reload()
+        errorMessage = failedFilenames.isEmpty
+            ? nil
+            : "일부 파일을 삭제하지 못했습니다: \(failedFilenames.joined(separator: ", "))"
+    }
+
+    /// Children directly inside `path` (`nil` is the PhoneHard root). Never includes
+    /// grandchildren, so folder navigation only ever shows one level at a time.
+    func children(of path: String?) -> [SharedInboxRecord] {
+        records.filter { Self.parentPath(of: $0.storedFilename) == path }
+    }
+
+    static func parentPath(of storedFilename: String) -> String? {
+        let parent = (storedFilename as NSString).deletingLastPathComponent
+        return parent.isEmpty ? nil : parent
+    }
+
+    /// Count of every real file and folder physically on disk under `storedFilename`
+    /// (the folder itself is not included), hidden ones included, since those are exactly
+    /// what a recursive delete removes. Reads disk metadata directly rather than the
+    /// manifest, which is reconciled with `.skipsHiddenFiles` and would otherwise miss
+    /// hidden files or anything just dropped in by another process (e.g. a WebHard
+    /// upload) before the next reload. Callers should `reload()` immediately before
+    /// reading it so the folder itself is known to still exist.
+    func descendantCount(of storedFilename: String) -> Int {
+        (try? SharedInbox.descendantCount(of: storedFilename)) ?? 0
+    }
+
+    @discardableResult
+    func createFolder(named name: String, in parentPath: String?) async -> Bool {
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try SharedInbox.createFolder(named: name, in: parentPath)
+            }.value
             reload()
-            errorMessage = "일부 파일을 삭제하지 못했습니다: \(failedFilenames.joined(separator: ", "))"
+            errorMessage = nil
+            return true
+        } catch {
+            reload()
+            errorMessage = "폴더를 만들지 못했습니다: \(error.localizedDescription)"
+            return false
         }
+    }
+
+    /// Moves every selected record into `destinationPath`, keeping each `id`. Stops
+    /// counting a record as failed only once its own move actually threw; every attempted
+    /// record (success or failure) is reflected accurately in `errorMessage`.
+    func move(_ recordsToMove: [SharedInboxRecord], toFolder destinationPath: String?) async {
+        guard !recordsToMove.isEmpty else { return }
+        var failedNames: [String] = []
+        for record in recordsToMove {
+            do {
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try SharedInbox.moveItem(record, toFolder: destinationPath)
+                }.value
+            } catch {
+                failedNames.append(record.originalFilename)
+            }
+        }
+        reload()
+        errorMessage = failedNames.isEmpty
+            ? nil
+            : "일부 항목을 이동하지 못했습니다: \(failedNames.joined(separator: ", "))"
+    }
+
+    /// Copies every selected record into `destinationPath`. Every copy (including the
+    /// whole subtree of a copied folder) gets brand-new ids; originals are never touched.
+    func copy(_ recordsToCopy: [SharedInboxRecord], toFolder destinationPath: String?) async {
+        guard !recordsToCopy.isEmpty else { return }
+        var failedNames: [String] = []
+        for record in recordsToCopy {
+            do {
+                _ = try await Task.detached(priority: .userInitiated) {
+                    try SharedInbox.copyItem(record, toFolder: destinationPath)
+                }.value
+            } catch {
+                failedNames.append(record.originalFilename)
+            }
+        }
+        reload()
+        errorMessage = failedNames.isEmpty
+            ? nil
+            : "일부 항목을 복사하지 못했습니다: \(failedNames.joined(separator: ", "))"
     }
 
     func sceneDidBecomeActive() {
@@ -179,6 +261,32 @@ final class SharedInboxStore: ObservableObject {
     ) async throws -> SharedInboxRecord {
         let record = try await Task.detached(priority: .userInitiated) {
             let record = try SharedInbox.importTemporaryFile(
+                at: url,
+                originalFilename: originalFilename,
+                contentTypeIdentifier: contentTypeIdentifier
+            )
+            do {
+                try SharedInbox.append(records: [record])
+                return record
+            } catch {
+                try? SharedInbox.delete(record)
+                throw error
+            }
+        }.value
+        reload()
+        return record
+    }
+
+    /// Stores a downloaded music file in PhoneHard's Music folder and commits it to the
+    /// normal manifest. Existing audio records stay where they are.
+    @discardableResult
+    func importMusicFile(
+        at url: URL,
+        originalFilename: String,
+        contentTypeIdentifier: String?
+    ) async throws -> SharedInboxRecord {
+        let record = try await Task.detached(priority: .userInitiated) {
+            let record = try SharedInbox.importTemporaryMusicFile(
                 at: url,
                 originalFilename: originalFilename,
                 contentTypeIdentifier: contentTypeIdentifier

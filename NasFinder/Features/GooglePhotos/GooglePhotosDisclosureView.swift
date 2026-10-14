@@ -10,10 +10,10 @@ struct GooglePhotosDisclosureView: View {
     var body: some View {
         VStack(spacing: 0) {
             ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: ui(22)) {
                     header
 
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: ui(16)) {
                         disclosureRow(
                             systemImage: "hand.tap",
                             title: "선택한 항목에만 접근",
@@ -42,12 +42,12 @@ struct GooglePhotosDisclosureView: View {
                     }
 
                     Link("개인정보 처리방침 보기", destination: Self.privacyPolicyURL)
-                        .font(.footnote)
+                        .font(.ui(.footnote))
                         .accessibilityLabel("개인정보 처리방침 보기")
                 }
-                .padding(.horizontal, 22)
-                .padding(.vertical, 18)
-                .frame(maxWidth: 560)
+                .padding(.horizontal, ui(22))
+                .padding(.vertical, ui(18))
+                .frame(maxWidth: ui(560))
                 .frame(maxWidth: .infinity)
             }
 
@@ -56,17 +56,17 @@ struct GooglePhotosDisclosureView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: ui(8)) {
             Image(systemName: "photo.on.rectangle.angled")
-                .font(.largeTitle)
+                .font(.ui(.largeTitle))
                 .foregroundStyle(SkyBreezeTheme.accent)
                 .accessibilityHidden(true)
 
             Text("Google 포토에서 가져오기")
-                .font(.title3.weight(.semibold))
+                .font(.ui(.title3).weight(.semibold))
 
             Text("가져오기를 시작하기 전에 NasFinder가 사진을 다루는 방식을 확인해 주세요.")
-                .font(.subheadline)
+                .font(.ui(.subheadline))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -74,18 +74,18 @@ struct GooglePhotosDisclosureView: View {
     }
 
     private func disclosureRow(systemImage: String, title: String, detail: String) -> some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: ui(12)) {
             Image(systemName: systemImage)
-                .font(.title3)
+                .font(.ui(.title3))
                 .foregroundStyle(SkyBreezeTheme.accent)
-                .frame(width: 30)
+                .frame(width: ui(30))
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: ui(3)) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.ui(.subheadline).weight(.semibold))
                 Text(detail)
-                    .font(.footnote)
+                    .font(.ui(.footnote))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -94,7 +94,7 @@ struct GooglePhotosDisclosureView: View {
     }
 
     private var footer: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: ui(10)) {
             Button("계속") {
                 onContinue()
             }
@@ -106,13 +106,13 @@ struct GooglePhotosDisclosureView: View {
             Button("취소") {
                 onCancel()
             }
-            .font(.subheadline)
+            .font(.ui(.subheadline))
             .foregroundStyle(.secondary)
         }
-        .padding(.horizontal, 22)
-        .padding(.top, 12)
-        .padding(.bottom, 10)
-        .frame(maxWidth: 560)
+        .padding(.horizontal, ui(22))
+        .padding(.top, ui(12))
+        .padding(.bottom, ui(10))
+        .frame(maxWidth: ui(560))
         .frame(maxWidth: .infinity)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }

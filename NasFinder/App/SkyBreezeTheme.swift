@@ -484,7 +484,7 @@ struct WorkbenchDecoration: View {
     var body: some View {
         VStack(alignment: .leading, spacing: max(size.height * 0.022, 12)) {
             ForEach(Array(lines.enumerated()), id: \.offset) { index, line in
-                HStack(spacing: 10) {
+                HStack(spacing: ui(10)) {
                     Text(String(format: "%02d", index + 1))
                         .foregroundStyle(Color.white.opacity(0.18))
                     Text(line)
@@ -506,7 +506,7 @@ struct WorkbenchDecoration: View {
 
 struct ThemedSymbol: View {
     let systemName: String
-    var size: CGFloat = 25
+    var size: CGFloat = ui(25)
     var symbolSize: CGFloat? = nil
     var showsStatus = false
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =

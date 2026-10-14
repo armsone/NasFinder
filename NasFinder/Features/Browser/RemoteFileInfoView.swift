@@ -10,22 +10,22 @@ struct RemoteFileInfoView: View {
         NavigationStack {
             Form {
                 Section {
-                    VStack(spacing: 12) {
+                    VStack(spacing: ui(12)) {
                         Image(systemName: item.systemImage)
-                            .font(.system(size: 46))
+                            .font(.system(size: ui(46)))
                             .foregroundStyle(item.isDirectory ? Color.blue : Color.accentColor)
                             .accessibilityHidden(true)
 
                         Text(item.name)
-                            .font(.headline)
+                            .font(.ui(.headline))
                             .multilineTextAlignment(.center)
                             .textSelection(.enabled)
                     }
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, ui(8))
                 }
 
-                Section("일반") {
+                Section {
                     LabeledContent("종류", value: kindDescription)
                     if !item.isDirectory {
                         LabeledContent("크기", value: sizeDescription)
@@ -44,21 +44,25 @@ struct RemoteFileInfoView: View {
                             )
                         }
                     }
+                } header: {
+                    Text("일반").font(MacUIScale.sectionNoteFont)
                 }
 
-                Section("위치") {
+                Section {
                     LabeledContent("연결", value: connection.name)
                     LabeledContent("방식", value: connection.kind.title)
                     LabeledContent("서버", value: connection.endpointDescription)
-                    VStack(alignment: .leading, spacing: 6) {
+                    VStack(alignment: .leading, spacing: ui(6)) {
                         Text("전체 경로")
-                            .font(.caption)
+                            .font(.ui(.caption))
                             .foregroundStyle(.secondary)
                         Text(item.path)
-                            .font(.system(.body, design: .monospaced))
+                            .font(.ui(.body, design: .monospaced))
                             .textSelection(.enabled)
                     }
                     .accessibilityElement(children: .combine)
+                } header: {
+                    Text("위치").font(MacUIScale.sectionNoteFont)
                 }
             }
             .scrollContentBackground(.hidden)
@@ -67,7 +71,10 @@ struct RemoteFileInfoView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("완료") { dismiss() }
+                    Group {
+                        Button("완료") { dismiss() }
+                    }
+                    .uiBarFont()
                 }
             }
         }

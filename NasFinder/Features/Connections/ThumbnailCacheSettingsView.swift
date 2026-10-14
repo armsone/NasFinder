@@ -13,8 +13,8 @@ struct ThumbnailCacheSettingsLink: View {
                 Text(Self.formattedByteCount(statistics.totalBytes))
                     .foregroundStyle(.secondary)
             } label: {
-                HStack(spacing: 7) {
-                    ThemedSymbol(systemName: "photo.stack", size: 32, symbolSize: 17)
+                HStack(spacing: ui(7)) {
+                    ThemedSymbol(systemName: "photo.stack", size: ui(32), symbolSize: ui(17))
                     Text("썸네일 캐시")
                 }
             }
@@ -40,13 +40,15 @@ private struct ThumbnailCacheSettingsView: View {
 
     var body: some View {
         List {
-            Section("현재 캐시") {
+            Section {
                 LabeledContent("사용량") {
                     Text(formattedByteCount(statistics.totalBytes))
                 }
                 LabeledContent("파일") {
                     Text("\(statistics.fileCount)개")
                 }
+            } header: {
+                Text("현재 캐시").font(MacUIScale.sectionNoteFont)
             }
 
             Section {
@@ -60,11 +62,13 @@ private struct ThumbnailCacheSettingsView: View {
                 }
             } header: {
                 Text("자동 정리")
+                    .font(MacUIScale.sectionNoteFont)
             } footer: {
                 Text(
                     "용량을 넘거나 30일이 지나면 오래된 캐시부터 정리합니다.\n"
                         + "최대 5,000개를 보관합니다."
                 )
+                .font(MacUIScale.sectionNoteFont)
             }
 
             Section {
@@ -74,6 +78,7 @@ private struct ThumbnailCacheSettingsView: View {
                 .disabled(statistics.fileCount == 0)
             } footer: {
                 Text("원본 영상과 폰하드 파일은 삭제하지 않습니다.")
+                    .font(MacUIScale.sectionNoteFont)
             }
         }
         .scrollContentBackground(.hidden)

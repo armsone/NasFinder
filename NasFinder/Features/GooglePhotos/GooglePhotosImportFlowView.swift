@@ -94,35 +94,36 @@ struct GooglePhotosImportFlowView: View {
     }
 
     private func statusView(systemImage: String, title: String, detail: String) -> some View {
-        VStack(spacing: 14) {
+        VStack(spacing: ui(14)) {
             Image(systemName: systemImage)
-                .font(.largeTitle)
+                .font(.ui(.largeTitle))
                 .foregroundStyle(SkyBreezeTheme.accent)
                 .accessibilityHidden(true)
 
             Text(title)
-                .font(.headline)
+                .font(.ui(.headline))
                 .multilineTextAlignment(.center)
 
             Text(detail)
-                .font(.subheadline)
+                .font(.ui(.subheadline))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .monospacedDigit()
 
             ProgressView()
-                .padding(.top, 2)
+                .padding(.top, ui(2))
 
             Button("취소") {
                 controller.cancel()
             }
             .buttonStyle(.bordered)
-            .padding(.top, 10)
+            .padding(.top, ui(10))
             .accessibilityLabel("Google 포토 가져오기 취소")
         }
-        .padding(24)
-        .frame(maxWidth: 480)
+        .padding(ui(24))
+        .frame(maxWidth: ui(480))
         .accessibilityElement(children: .contain)
+        .modifier(ScrollsWhenTooTall())
     }
 
     private func resultView(imported: Int, skipped: Int, failed: Int) -> some View {
@@ -135,18 +136,18 @@ struct GooglePhotosImportFlowView: View {
     }
 
     private func failureView(message: String) -> some View {
-        VStack(spacing: 14) {
+        VStack(spacing: ui(14)) {
             Image(systemName: "exclamationmark.triangle")
-                .font(.largeTitle)
+                .font(.ui(.largeTitle))
                 .foregroundStyle(.orange)
                 .accessibilityHidden(true)
 
             Text("가져오지 못했습니다")
-                .font(.headline)
+                .font(.ui(.headline))
                 .multilineTextAlignment(.center)
 
             Text(message)
-                .font(.subheadline)
+                .font(.ui(.subheadline))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
@@ -155,31 +156,32 @@ struct GooglePhotosImportFlowView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .padding(.top, 10)
+            .padding(.top, ui(10))
 
             Button("닫기") {
                 dismiss()
             }
-            .font(.subheadline)
+            .font(.ui(.subheadline))
             .foregroundStyle(.secondary)
         }
-        .padding(24)
-        .frame(maxWidth: 480)
+        .padding(ui(24))
+        .frame(maxWidth: ui(480))
+        .modifier(ScrollsWhenTooTall())
     }
 
     private func endView(systemImage: String, iconStyle: Color, title: String, detail: String) -> some View {
-        VStack(spacing: 14) {
+        VStack(spacing: ui(14)) {
             Image(systemName: systemImage)
-                .font(.largeTitle)
+                .font(.ui(.largeTitle))
                 .foregroundStyle(iconStyle)
                 .accessibilityHidden(true)
 
             Text(title)
-                .font(.headline)
+                .font(.ui(.headline))
                 .multilineTextAlignment(.center)
 
             Text(detail)
-                .font(.subheadline)
+                .font(.ui(.subheadline))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .monospacedDigit()
@@ -189,9 +191,20 @@ struct GooglePhotosImportFlowView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .padding(.top, 10)
+            .padding(.top, ui(10))
         }
-        .padding(24)
-        .frame(maxWidth: 480)
+        .padding(ui(24))
+        .frame(maxWidth: ui(480))
+        .modifier(ScrollsWhenTooTall())
+    }
+}
+
+/// Keeps a centered status reachable in a window too short for it by letting it scroll.
+private struct ScrollsWhenTooTall: ViewModifier {
+    func body(content: Content) -> some View {
+        ViewThatFits(in: .vertical) {
+            content
+            ScrollView { content }
+        }
     }
 }

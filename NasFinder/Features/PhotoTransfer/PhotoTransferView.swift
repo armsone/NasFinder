@@ -52,8 +52,8 @@ struct PhotoTransferView: View {
                 pairingSection
             }
         }
-        .frame(maxWidth: isRunningOnMac ? 907 : nil)
-        .environment(\.defaultMinListRowHeight, isRunningOnMac ? 72 : 44)
+        .frame(maxWidth: isRunningOnMac ? ui(907) : nil)
+        .environment(\.defaultMinListRowHeight, ui(isRunningOnMac ? 72 : 44))
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(SkyBreezeBackground())
@@ -86,13 +86,13 @@ struct PhotoTransferView: View {
                 isSendingFlowSelected = true
             } label: {
                 Label("보내기", systemImage: "paperplane")
-                    .font(.subheadline)
+                    .font(.ui(.subheadline))
             }
             Button {
                 pairingRole = .receiver
             } label: {
                 Label("받기", systemImage: "qrcode")
-                    .font(.subheadline)
+                    .font(.ui(.subheadline))
             }
             .accessibilityHint("수신을 시작하고 QR 코드를 표시합니다.")
         }
@@ -104,7 +104,7 @@ struct PhotoTransferView: View {
                 pairingRole = .sender
             } label: {
                 Label("QR 스캔해서 연결", systemImage: "qrcode.viewfinder")
-                    .font(.subheadline)
+                    .font(.ui(.subheadline))
             }
             .accessibilityHint("받는 기기에 표시된 QR 코드를 스캔해 연결합니다.")
             .disabled(selectedItems.isEmpty)
@@ -112,7 +112,7 @@ struct PhotoTransferView: View {
             sectionHeader("3 다른 폰 연결", systemImage: "wifi")
         } footer: {
             Text("두 기기가 같은 Wi-Fi에 있어야 합니다.")
-                .font(.caption2)
+                .font(.ui(.caption2))
                 .foregroundStyle(.tertiary)
         }
     }
@@ -131,7 +131,7 @@ struct PhotoTransferView: View {
                     hasSelection ? "다시 선택" : "사진 보관함에서 선택",
                     systemImage: "photo.badge.plus"
                 )
-                .font(.subheadline)
+                .font(.ui(.subheadline))
             }
             .accessibilityHint("사진, 영상, Live Photo를 한 번에 여러 개 선택할 수 있습니다.")
         } header: {
@@ -142,14 +142,14 @@ struct PhotoTransferView: View {
                     ? "선택한 항목은 QR 연결 후 한 번에 보낼 수 있습니다."
                     : "사진, 영상, Live Photo를 한 번에 여러 개 선택할 수 있습니다."
             )
-            .font(.caption2)
+            .font(.ui(.caption2))
             .foregroundStyle(.tertiary)
         }
     }
 
     private var itemListSection: some View {
         Section {
-            LazyVGrid(columns: [GridItem(.adaptive(minimum: 104, maximum: 150), spacing: 10)], spacing: 10) {
+            LazyVGrid(columns: [GridItem(.adaptive(minimum: ui(104), maximum: ui(150)), spacing: ui(10))], spacing: ui(10)) {
                 ForEach(classifiedItems) { item in
                     ZStack(alignment: .topTrailing) {
                         ZStack {
@@ -158,11 +158,11 @@ struct PhotoTransferView: View {
                                     .resizable()
                                     .scaledToFill()
                             } else {
-                                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                RoundedRectangle(cornerRadius: ui(12), style: .continuous)
                                     .fill(.quaternary)
                                 if item.previewLoaded {
                                     Image(systemName: item.kind.systemImage)
-                                        .font(.title2)
+                                        .font(.ui(.title2))
                                         .foregroundStyle(.secondary)
                                 } else {
                                     ProgressView()
@@ -171,27 +171,27 @@ struct PhotoTransferView: View {
 
                             if item.kind == .video {
                                 Image(systemName: "play.circle.fill")
-                                    .font(.title)
+                                    .font(.ui(.title))
                                     .foregroundStyle(.white)
                                     .shadow(radius: 2)
                             }
                         }
-                        .frame(height: 112)
+                        .frame(height: ui(112))
                         .frame(maxWidth: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: ui(12), style: .continuous))
                         .overlay(alignment: .bottomLeading) {
-                            HStack(spacing: 4) {
+                            HStack(spacing: ui(4)) {
                                 Text(item.kind.title)
                                 if let duration = item.duration, item.kind == .video {
                                     Text(Self.durationText(duration))
                                 }
                             }
-                            .font(.caption2.weight(.semibold))
+                            .font(.ui(.caption2).weight(.semibold))
                             .foregroundStyle(.white)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 4)
+                            .padding(.horizontal, ui(7))
+                            .padding(.vertical, ui(4))
                             .background(.black.opacity(0.62), in: Capsule())
-                            .padding(6)
+                            .padding(ui(6))
                         }
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel(
@@ -206,19 +206,19 @@ struct PhotoTransferView: View {
                             removeSelection(id: item.id)
                         } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .font(.title3)
+                                .font(.ui(.title3))
                                 .symbolRenderingMode(.palette)
                                 .foregroundStyle(.white, .black.opacity(0.65))
                         }
                         .buttonStyle(.plain)
-                        .padding(6)
+                        .padding(ui(6))
                         .accessibilityLabel("항목 \(item.index) 삭제")
                         .accessibilityHint("선택 목록에서 이 항목을 제거합니다.")
                     }
                     .accessibilityElement(children: .contain)
                 }
             }
-            .padding(.vertical, 4)
+            .padding(.vertical, ui(4))
         } header: {
             sectionHeader("2 선택 검토 · \(summary.totalCount)개", systemImage: "photo.on.rectangle")
         }
@@ -282,12 +282,12 @@ struct PhotoTransferView: View {
     }
 
     private func sectionHeader(_ title: String, systemImage: String) -> some View {
-        HStack(spacing: 3) {
+        HStack(spacing: ui(3)) {
             Image(systemName: systemImage)
             Text(title)
             Spacer(minLength: 0)
         }
-        .font(.footnote.weight(.medium))
+        .font(.ui(.footnote).weight(.medium))
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
     }

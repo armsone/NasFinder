@@ -11,6 +11,10 @@ struct RemoteFileItem: Identifiable, Hashable, Sendable {
         "3g2", "3gp", "asf", "avi", "flv", "m2ts", "m4v", "mkv", "mov", "mpe",
         "mpeg", "mpg", "mp4", "mts", "ogv", "qt", "ts", "vob", "webm", "wmv"
     ]
+    private static let audioFilenameExtensions: Set<String> = [
+        "aac", "aif", "aiff", "caf", "flac", "m4a", "m4b", "mp3", "oga", "ogg",
+        "opus", "wav", "wma"
+    ]
     private static let quickLookThumbnailFilenameExtensions: Set<String> = [
         "csv", "doc", "docx", "epub", "htm", "html", "key", "markdown", "md",
         "numbers", "pages", "pdf", "ppt", "pptx", "rtf", "rtfd", "txt", "usdz",
@@ -93,6 +97,20 @@ struct RemoteFileItem: Identifiable, Hashable, Sendable {
                 || Self.videoFilenameExtensions.contains(normalizedFilenameExtension)
         )
     }
+
+    /// Recognition by type or name only; whether this device can actually decode the
+    /// audio is checked when the file is picked or exported.
+    static func isAudio(filename: String, contentType: UTType?) -> Bool {
+        contentType?.conforms(to: .audio) == true
+            || audioFilenameExtensions.contains((filename as NSString).pathExtension.lowercased())
+    }
+
+    var isAudio: Bool {
+        !isDirectory && !isVideo && Self.isAudio(filename: name, contentType: contentType)
+    }
+
+    /// Video trailer entry points accept both videos and still images as clip sources.
+    var isTrailerEligible: Bool { isVideo || isImage }
 
     /// File types for which iOS Quick Look can commonly create a meaningful
     /// preview after the remote file has been cached locally.

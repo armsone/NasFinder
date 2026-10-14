@@ -126,21 +126,21 @@ struct AppIconPickerSection: View {
     private var pickerSection: some View {
         Group {
             Section {
-                VStack(spacing: 10) {
+                VStack(spacing: ui(10)) {
                     LazyVGrid(
                         columns: [
-                            GridItem(.flexible(), spacing: 8, alignment: .top),
-                            GridItem(.flexible(), spacing: 8, alignment: .top),
-                            GridItem(.flexible(), spacing: 8, alignment: .top),
+                            GridItem(.flexible(), spacing: ui(8), alignment: .top),
+                            GridItem(.flexible(), spacing: ui(8), alignment: .top),
+                            GridItem(.flexible(), spacing: ui(8), alignment: .top),
                         ],
                         alignment: .center,
-                        spacing: 8
+                        spacing: ui(8)
                     ) {
                         ForEach(AppIconChoice.allCases) { icon in
                             Button {
                                 select(icon)
                             } label: {
-                                VStack(spacing: 8) {
+                                VStack(spacing: ui(8)) {
                                     Image(icon.previewAssetName)
                                         .resizable()
                                         .interpolation(.high)
@@ -161,7 +161,7 @@ struct AppIconPickerSection: View {
                                         }
                                         .shadow(color: .black.opacity(0.12), radius: 4, y: 2)
 
-                                    HStack(spacing: 4) {
+                                    HStack(spacing: ui(4)) {
                                         Text(icon.title)
                                             .lineLimit(1)
                                             .minimumScaleFactor(0.8)
@@ -172,18 +172,18 @@ struct AppIconPickerSection: View {
                                                 .foregroundStyle(.tint)
                                         }
                                     }
-                                    .font(.caption.weight(.medium))
+                                    .font(.ui(.caption).weight(.medium))
                                     .frame(maxWidth: .infinity)
                                 }
-                                .padding(8)
+                                .padding(ui(8))
                                 .frame(maxWidth: .infinity)
-                                .frame(height: 104)
+                                .frame(height: ui(104))
                                 .background {
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    RoundedRectangle(cornerRadius: ui(12), style: .continuous)
                                         .fill(Color(uiColor: .secondarySystemGroupedBackground))
                                 }
                                 .overlay {
-                                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                                    RoundedRectangle(cornerRadius: ui(12), style: .continuous)
                                         .stroke(
                                             selectedIcon == icon
                                                 ? Color.accentColor.opacity(0.75)
@@ -208,8 +208,8 @@ struct AppIconPickerSection: View {
                             : "선택한 아이콘은 홈 화면과 앱 보관함에 적용됩니다."
                     )
                 }
-                .padding(.vertical, 6)
-                .listRowInsets(EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12))
+                .padding(.vertical, ui(6))
+                .listRowInsets(EdgeInsets(top: ui(10), leading: ui(12), bottom: ui(10), trailing: ui(12)))
             } header: {
                 SettingsSectionHeader(title: "앱 아이콘", systemImage: "app.badge")
             }
@@ -228,8 +228,8 @@ struct AppIconPickerSection: View {
         }
     }
 
-    private var iconSide: CGFloat { compact ? 54 : 60 }
-    private var iconCornerRadius: CGFloat { compact ? 12 : 13 }
+    private var iconSide: CGFloat { ui(compact ? 54 : 60) }
+    private var iconCornerRadius: CGFloat { ui(compact ? 12 : 13) }
 
     private var errorBinding: Binding<Bool> {
         Binding(
@@ -278,12 +278,12 @@ struct SettingsSectionHeader: View {
     }
 
     var body: some View {
-        HStack(spacing: selectedTheme == .skeuomorphism ? 7 : 3) {
+        HStack(spacing: ui(selectedTheme == .skeuomorphism ? 7 : 3)) {
             ThemedSymbol(systemName: systemImage)
             Text(title)
             Spacer(minLength: 0)
         }
-        .font(.footnote.weight(.medium))
+        .font(.ui(.footnote).weight(.medium))
         .foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -298,7 +298,7 @@ struct SettingsPanelDescription: View {
 
     var body: some View {
         Text(text)
-            .font(.caption2)
+            .font(.ui(.caption2))
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
     }

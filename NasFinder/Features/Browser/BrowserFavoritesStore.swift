@@ -229,8 +229,8 @@ struct BrowserFavoriteFavicon: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .frame(width: 28, height: 28)
-        .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: 6))
+        .frame(width: ui(28), height: ui(28))
+        .background(Color.secondary.opacity(0.10), in: RoundedRectangle(cornerRadius: ui(6)))
     }
 
     static func displayTitle(for address: String) -> String {
@@ -262,18 +262,18 @@ struct BrowserFavoritesEditorView: View {
         NavigationStack {
             List {
                 ForEach(store.favorites, id: \.self) { favorite in
-                    HStack(spacing: 12) {
+                    HStack(spacing: ui(12)) {
                         BrowserFavoriteFavicon(address: favorite)
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: ui(3)) {
                             Text(BrowserFavoriteFavicon.displayTitle(for: favorite))
-                                .font(.subheadline.weight(.semibold))
+                                .font(.ui(.subheadline).weight(.semibold))
                                 .lineLimit(1)
                             Text(favorite)
-                                .font(.caption2)
+                                .font(.ui(.caption2))
                                 .foregroundStyle(.secondary)
                                 .lineLimit(1)
                         }
-                        Spacer(minLength: 6)
+                        Spacer(minLength: ui(6))
                         Button(role: .destructive) {
                             store.remove(favorite)
                         } label: {
@@ -281,7 +281,7 @@ struct BrowserFavoritesEditorView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    .padding(.vertical, 5)
+                    .padding(.vertical, ui(5))
                 }
                 .onMove(perform: store.move)
             }
@@ -295,23 +295,29 @@ struct BrowserFavoritesEditorView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button("전체삭제", systemImage: "trash", role: .destructive) {
-                        store.removeAll()
-                    }
-                    .disabled(store.favorites.isEmpty)
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    HStack(spacing: 10) {
-                        Button {
-                            isExporting = true
-                        } label: {
-                            Image(systemName: "square.and.arrow.up")
+                    Group {
+                        Button("전체삭제", systemImage: "trash", role: .destructive) {
+                            store.removeAll()
                         }
                         .disabled(store.favorites.isEmpty)
-                        .accessibilityLabel("즐겨찾기 파일로 저장")
-                        Button("닫기", systemImage: "xmark") { dismiss() }
-                            .labelStyle(.iconOnly)
                     }
+                    .uiBarFont()
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Group {
+                        HStack(spacing: ui(10)) {
+                            Button {
+                                isExporting = true
+                            } label: {
+                                Image(systemName: "square.and.arrow.up")
+                            }
+                            .disabled(store.favorites.isEmpty)
+                            .accessibilityLabel("즐겨찾기 파일로 저장")
+                            Button("닫기", systemImage: "xmark") { dismiss() }
+                                .labelStyle(.iconOnly)
+                        }
+                    }
+                    .uiBarFont()
                 }
             }
         }

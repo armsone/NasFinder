@@ -107,18 +107,18 @@ struct FavoriteShelfView: View {
     let openFavorite: (FavoriteItem) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: ui(12)) {
             if favoriteStore.items.isEmpty {
                 Text("길게 눌러 즐겨찾기에 추가하세요.")
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, ui(8))
             } else {
                 ScrollViewReader { scrollProxy in
                     ZStack(alignment: .topLeading) {
                         ScrollView(.horizontal, showsIndicators: false) {
-                            LazyHStack(alignment: .top, spacing: 9) {
+                            LazyHStack(alignment: .top, spacing: ui(9)) {
                                 ForEach(favoriteStore.items) { favorite in
                                     FavoriteShelfTile(
                                         favorite: favorite,
@@ -166,8 +166,8 @@ struct FavoriteShelfView: View {
                         .scrollClipDisabled()
 
                         if let dragState {
-                            FavoriteCell(favorite: dragState.favorite, side: 52)
-                                .frame(width: 56)
+                            FavoriteCell(favorite: dragState.favorite, side: ui(52))
+                                .frame(width: ui(56))
                                 .shadow(color: .black.opacity(0.2), radius: 6, y: 3)
                                 .position(
                                     x: dragState.location.x + dragState.centerOffset.width,
@@ -201,7 +201,7 @@ struct FavoriteShelfView: View {
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, ui(4))
     }
 
     private func updateLongPress(
@@ -355,8 +355,8 @@ private struct FavoriteShelfTile: View {
     @State private var suppressNextOpen = false
 
     var body: some View {
-        FavoriteCell(favorite: favorite, side: 52)
-            .frame(width: 56)
+        FavoriteCell(favorite: favorite, side: ui(52))
+            .frame(width: ui(56))
             .contentShape(Rectangle())
             .shadow(
                 color: isRemovalPresented ? .black.opacity(0.18) : .clear,
@@ -543,22 +543,22 @@ private struct FavoriteRemovalPopover: View {
     let remove: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 10) {
+        VStack(alignment: .leading, spacing: ui(12)) {
+            HStack(alignment: .top, spacing: ui(10)) {
                 Image(systemName: "star.slash")
-                    .font(.caption.weight(.semibold))
+                    .font(.ui(.caption).weight(.semibold))
                     .foregroundStyle(.primary.opacity(0.72))
-                    .frame(width: 30, height: 30)
+                    .frame(width: ui(30), height: ui(30))
                     .background(.primary.opacity(0.07), in: Circle())
                     .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: ui(3)) {
                     Text("즐겨찾기에서 제거")
-                        .font(.caption.weight(.semibold))
+                        .font(.ui(.caption).weight(.semibold))
                         .foregroundStyle(.primary.opacity(0.88))
 
                     Text(favoriteName)
-                        .font(.caption2)
+                        .font(.ui(.caption2))
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
                 }
@@ -567,25 +567,25 @@ private struct FavoriteRemovalPopover: View {
             Divider()
                 .opacity(0.45)
 
-            HStack(spacing: 8) {
+            HStack(spacing: ui(8)) {
                 Button("유지", role: .cancel, action: cancel)
-                    .font(.caption.weight(.medium))
+                    .font(.ui(.caption).weight(.medium))
                     .foregroundStyle(.primary.opacity(0.68))
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, ui(8))
                     .background(.primary.opacity(0.06), in: Capsule())
 
                 Button("제거", role: .destructive, action: remove)
-                    .font(.caption.weight(.semibold))
+                    .font(.ui(.caption).weight(.semibold))
                     .foregroundStyle(.red)
                     .frame(maxWidth: .infinity)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, ui(8))
                     .background(.red.opacity(0.11), in: Capsule())
             }
             .buttonStyle(.plain)
         }
-        .padding(14)
-        .frame(width: 224)
+        .padding(ui(14))
+        .frame(idealWidth: ui(224), maxWidth: ui(224))
         .presentationBackground(.ultraThinMaterial)
         .presentationCornerRadius(20)
     }
@@ -607,7 +607,7 @@ struct FavoriteListView: View {
             count = 3
         }
         return Array(
-            repeating: GridItem(.flexible(), spacing: 12, alignment: .top),
+            repeating: GridItem(.flexible(), spacing: ui(12), alignment: .top),
             count: count
         )
     }
@@ -622,12 +622,12 @@ struct FavoriteListView: View {
                 )
             } else {
                 ScrollView {
-                    LazyVGrid(columns: columns, spacing: 18) {
+                    LazyVGrid(columns: columns, spacing: ui(18)) {
                         ForEach(favoriteStore.items) { favorite in
                             NavigationLink {
                                 FavoriteDestinationView(favorite: favorite)
                             } label: {
-                                FavoriteCell(favorite: favorite, side: 72)
+                                FavoriteCell(favorite: favorite, side: ui(72))
                             }
                             .buttonStyle(.plain)
                             .contextMenu {
@@ -637,7 +637,7 @@ struct FavoriteListView: View {
                             }
                         }
                     }
-                    .padding(16)
+                    .padding(ui(16))
                 }
             }
         }
@@ -677,7 +677,7 @@ private struct FavoriteCell: View {
     let side: CGFloat
 
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: ui(6)) {
             Group {
                 if let service {
                     if favorite.remoteItem.isDirectory {
@@ -690,7 +690,7 @@ private struct FavoriteCell: View {
                         RemoteThumbnailView(
                             item: favorite.remoteItem,
                             service: service,
-                            size: CGSize(width: side, height: side)
+                            size: CGSize(width: side / MacUIScale.factor, height: side / MacUIScale.factor)
                         )
                     }
                 } else {
@@ -700,25 +700,25 @@ private struct FavoriteCell: View {
                 }
             }
             .frame(width: side, height: side)
-            .background(SkyBreezeTheme.thumbnailSurface, in: RoundedRectangle(cornerRadius: 11))
+            .background(SkyBreezeTheme.thumbnailSurface, in: RoundedRectangle(cornerRadius: ui(11)))
             .overlay {
-                RoundedRectangle(cornerRadius: 11)
+                RoundedRectangle(cornerRadius: ui(11))
                     .stroke(SkyBreezeTheme.thumbnailBorder, lineWidth: 1)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 11))
+            .clipShape(RoundedRectangle(cornerRadius: ui(11)))
             .overlay(alignment: .topTrailing) {
                 if let connectionKind {
                     FavoriteConnectionBadge(kind: connectionKind, side: side)
-                        .padding(4)
+                        .padding(ui(4))
                 }
             }
 
             Text(favorite.name)
-                .font(.caption2)
+                .font(.ui(.caption2))
                 .foregroundStyle(.primary)
                 .lineLimit(2)
                 .multilineTextAlignment(.center)
-                .frame(width: max(side, 56))
+                .frame(width: max(side, ui(56)))
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel(accessibilityLabel)
@@ -797,7 +797,7 @@ private struct FavoriteFolderThumbnailView: View {
             await loader.load(
                 item: folder,
                 service: service,
-                size: CGSize(width: side, height: side),
+                size: CGSize(width: side / MacUIScale.factor, height: side / MacUIScale.factor),
                 reloadVersion: 0
             )
             sheetLookupFinished = true
@@ -845,7 +845,10 @@ private struct FavoriteFolderMosaicView: View {
                             RemoteThumbnailView(
                                 item: items[index],
                                 service: service,
-                                size: CGSize(width: cellSide, height: cellSide),
+                                size: CGSize(
+                                    width: cellSide / MacUIScale.factor,
+                                    height: cellSide / MacUIScale.factor
+                                ),
                                 blursSkinToneDominantImage: true
                             )
                             .frame(width: cellSide, height: cellSide)

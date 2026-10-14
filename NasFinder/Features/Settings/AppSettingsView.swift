@@ -34,8 +34,8 @@ struct AppSettingsView: View {
             openSourceSection
             creatorSection
         }
-        .frame(maxWidth: isRunningOnMac ? 1_360 : nil)
-        .environment(\.defaultMinListRowHeight, isRunningOnMac ? 72 : 44)
+        .frame(maxWidth: isRunningOnMac ? ui(1_360) : nil)
+        .environment(\.defaultMinListRowHeight, ui(isRunningOnMac ? 72 : 44))
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(SkyBreezeBackground())
@@ -50,7 +50,7 @@ struct AppSettingsView: View {
 
             updateStatusView
 
-            HStack(spacing: 12) {
+            HStack(spacing: ui(12)) {
                 updatePrimaryButton
                 updateSecondaryButtons
             }
@@ -58,6 +58,7 @@ struct AppSettingsView: View {
             SettingsSectionHeader(title: "Mac 업데이트", systemImage: "arrow.down.circle")
         } footer: {
             Text("Mac용 직접 배포판에서만 사용합니다. 설치는 확인된 DMG를 연 뒤 사용자가 직접 진행합니다.")
+                .font(MacUIScale.sectionNoteFont)
         }
     }
 
@@ -74,7 +75,7 @@ struct AppSettingsView: View {
         case .available(let release):
             updateReleaseSummary(release, title: "새 버전 발견")
         case .downloading(let release, let progress, let isPaused):
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: ui(8)) {
                 updateReleaseSummary(release, title: isPaused ? "다운로드 일시정지" : "다운로드 중")
                 ProgressView(value: progress)
                     .accessibilityValue("\(Int(progress * 100))퍼센트")
@@ -91,17 +92,17 @@ struct AppSettingsView: View {
     }
 
     private func updateReleaseSummary(_ release: DirectUpdateRelease, title: String) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(title).font(.subheadline.weight(.semibold))
+        VStack(alignment: .leading, spacing: ui(5)) {
+            Text(title).font(.ui(.subheadline).weight(.semibold))
             Text("NasFinder \(release.version) · 빌드 \(release.build) · \(formattedSize(release.expectedByteCount))")
-                .font(.caption)
+                .font(.ui(.caption))
                 .foregroundStyle(.secondary)
             if let firstNote = release.releaseNotes
                 .split(whereSeparator: \.isNewline)
                 .map(String.init)
                 .first(where: { !$0.contains(":") && !$0.isEmpty }) {
                 Text(firstNote)
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
             }
@@ -166,7 +167,7 @@ struct AppSettingsView: View {
     private var themePaletteSection: some View {
         Section {
             GeometryReader { geometry in
-                let spacing: CGFloat = 8
+                let spacing: CGFloat = ui(8)
                 let cardWidth = (geometry.size.width - spacing * 2) / 3
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.fixed(cardWidth), spacing: spacing), count: 3),
@@ -177,9 +178,9 @@ struct AppSettingsView: View {
                     }
                 }
             }
-            .frame(height: 328)
+            .frame(height: ui(328))
             .listRowInsets(
-                EdgeInsets(top: 10, leading: 12, bottom: 10, trailing: 12)
+                EdgeInsets(top: ui(10), leading: ui(12), bottom: ui(10), trailing: ui(12))
             )
 
             SettingsPanelDescription(
@@ -200,14 +201,14 @@ struct AppSettingsView: View {
                 selectedThemeRawValue = theme.rawValue
             }
         } label: {
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: ui(7)) {
                 HStack {
                     Image(systemName: theme.systemImage)
-                        .font(.caption.weight(.medium))
+                        .font(.ui(.caption).weight(.medium))
                     Spacer(minLength: 0)
                     if isSelected {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.caption)
+                            .font(.ui(.caption))
                     }
                 }
                 .foregroundStyle(themePreviewForeground(theme))
@@ -215,25 +216,25 @@ struct AppSettingsView: View {
                 Spacer(minLength: 0)
 
                 Text(theme.title)
-                    .font(.caption.weight(.semibold))
+                    .font(.ui(.caption).weight(.semibold))
                     .foregroundStyle(themePreviewForeground(theme))
                     .lineLimit(1)
                     .minimumScaleFactor(0.68)
 
-                HStack(spacing: 3) {
+                HStack(spacing: ui(3)) {
                     ForEach(Array(ThemeServicePalette.colors(for: theme).prefix(4).enumerated()), id: \.offset) { _, color in
-                        Circle().fill(color).frame(width: 5, height: 5)
+                        Circle().fill(color).frame(width: ui(5), height: ui(5))
                     }
                 }
             }
-            .padding(9)
-            .frame(height: 104)
+            .padding(ui(9))
+            .frame(height: ui(104))
             .background {
                 ThemePreviewBackground(theme: theme)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .clipShape(RoundedRectangle(cornerRadius: ui(12)))
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: ui(12))
                     .stroke(
                         isSelected ? SkyBreezeTheme.accent : Color.secondary.opacity(0.18),
                         lineWidth: isSelected ? 1.5 : 0.5
@@ -259,7 +260,7 @@ struct AppSettingsView: View {
                     ? "먼저 NAS 또는 SFTP 연결을 추가해 주세요."
                     : "현재 저장된 원격 위치 \(connectionCount)개를 Apple 파일 앱에서도 열 수 있습니다."
             )
-            .font(.subheadline)
+            .font(.ui(.subheadline))
             .foregroundStyle(.secondary)
 
             SettingsIntegrationStep(number: 1, text: "Apple 파일 앱을 열고 ‘탐색’을 선택합니다.")
@@ -277,11 +278,11 @@ struct AppSettingsView: View {
 
     private var openSourceSection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: ui(5)) {
                 Text("VLCKit 4.0.0a23")
-                    .font(.subheadline)
+                    .font(.ui(.subheadline))
                 Text("일부 호환 영상 재생에 VideoLAN의 VLCKit을 사용합니다. VLCKit은 GNU LGPL 2.1 이상으로 제공됩니다.")
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.secondary)
             }
 
@@ -331,7 +332,7 @@ private struct ThemePreviewBackground: View {
                     Circle()
                         .stroke(.white.opacity(0.75), lineWidth: 7)
                         .shadow(color: .black.opacity(0.24), radius: 2, x: 1, y: 2)
-                        .padding(18)
+                        .padding(ui(18))
                 }
             }
         }
@@ -400,15 +401,15 @@ private struct SettingsIntegrationStep: View {
     let text: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: ui(10)) {
             Text(number, format: .number)
-                .font(.caption2.weight(.bold))
+                .font(.ui(.caption2).weight(.bold))
                 .foregroundStyle(.white)
-                .frame(width: 22, height: 22)
+                .frame(width: ui(22), height: ui(22))
                 .background(SkyBreezeTheme.accent, in: Circle())
 
             Text(text)
-                .font(.subheadline)
+                .font(.ui(.subheadline))
                 .foregroundStyle(.primary)
         }
         .accessibilityElement(children: .combine)

@@ -7,6 +7,20 @@ struct BrowserDownloadedFile: Identifiable, Equatable {
     let temporaryURL: URL
     let filename: String
     let contentTypeIdentifier: String?
+    /// Started by the explicit "음악 다운로드" action, so it goes to PhoneHard's Music folder.
+    var isMusic = false
+    var mimeType: String?
+}
+
+/// A music file found on the current page. Only its file name is ever shown; the
+/// address itself stays inside the web view's own download.
+struct BrowserMusicCandidate: Identifiable, Equatable {
+    let url: URL
+    var id: String { url.absoluteString }
+    var displayName: String {
+        let name = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
+        return name.isEmpty || name == "/" ? (url.host ?? "음악") : name
+    }
 }
 
 enum BrowserURLPolicy {
@@ -29,6 +43,29 @@ enum BrowserURLPolicy {
             .joined(separator: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? "download" : cleaned
+    }
+
+    static func isAudio(filename: String, mimeType: String?) -> Bool {
+        if mimeType?.lowercased().hasPrefix("audio/") == true { return true }
+        let type = UTType(filenameExtension: (filename as NSString).pathExtension)
+        return RemoteFileItem.isAudio(filename: filename, contentType: type)
+    }
+
+    /// What a browser sends by default: the whole page address to the same origin, only
+    /// the origin to another one, and nothing from a secure page to an insecure one.
+    static func referer(from page: URL?, to target: URL) -> String? {
+        guard let page, let scheme = page.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              let host = page.host,
+              !(scheme == "https" && target.scheme?.lowercased() != "https") else { return nil }
+        let origin = "\(scheme)://\(host)" + (page.port.map { ":\($0)" } ?? "")
+        let sameOrigin = target.scheme?.lowercased() == scheme && target.host == host && target.port == page.port
+        guard sameOrigin, var components = URLComponents(url: page, resolvingAgainstBaseURL: false) else {
+            return origin + "/"
+        }
+        components.fragment = nil
+        components.user = nil
+        components.password = nil
+        return components.string ?? origin + "/"
     }
 }
 
@@ -88,6 +125,10 @@ final class NasFinderBrowserSessionStore {
 }
 
 struct WebBrowserView: View {
+    /// Set only when the trailer editor opened this browser to fetch music: a saved
+    /// music file is handed back and the browser closes itself.
+    var onMusicSaved: ((SharedInboxRecord) -> Void)? = nil
+
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @EnvironmentObject private var favoritesStore: BrowserFavoritesStore
@@ -113,6 +154,10 @@ struct WebBrowserView: View {
     @State private var errorMessage: String?
     @State private var showFavoritePanel = false
     @State private var showFavoriteEditor = false
+    @State private var musicCandidates: [BrowserMusicCandidate] = []
+    @State private var musicDownloadTarget: BrowserMusicCandidate?
+    @State private var musicDownloadTrigger = 0
+    @State private var isChoosingMusicCandidate = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -131,9 +176,16 @@ struct WebBrowserView: View {
                     reloadTrigger: $reloadTrigger,
                     cancelDownloadTrigger: $cancelDownloadTrigger,
                     isDownloading: $isDownloading,
+                    musicCandidates: $musicCandidates,
+                    musicDownloadTarget: musicDownloadTarget,
+                    musicDownloadTrigger: $musicDownloadTrigger,
                     onDownloaded: {
-                        pendingDownload = $0
-                        isSaveDialogPresented = true
+                        if $0.isMusic {
+                            saveMusicDownload($0)
+                        } else {
+                            pendingDownload = $0
+                            isSaveDialogPresented = true
+                        }
                     },
                     onError: { errorMessage = $0 }
                 )
@@ -144,12 +196,12 @@ struct WebBrowserView: View {
                     favoritePanel
                 } else if let statusMessage {
                     Text(statusMessage)
-                        .font(.caption)
+                        .font(.ui(.caption))
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, ui(12))
+                        .padding(.vertical, ui(8))
                         .background(.regularMaterial, in: Capsule())
-                        .padding(.top, 10)
+                        .padding(.top, ui(10))
                         .onTapGesture { self.statusMessage = nil }
                 }
             }
@@ -158,6 +210,11 @@ struct WebBrowserView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(uiColor: .systemBackground))
+        .overlay(alignment: .bottom) {
+            if !isDownloading, !musicCandidates.isEmpty || onMusicSaved != nil {
+                musicDownloadBar
+            }
+        }
         .toolbar(.hidden, for: .navigationBar)
         .onChange(of: currentURLText) { _, newValue in
             addressText = newValue
@@ -168,6 +225,10 @@ struct WebBrowserView: View {
             titleVisibility: .visible
         ) {
             Button("폰하드에 저장") { savePendingDownloadToInbox() }
+            if let file = pendingDownload,
+               BrowserURLPolicy.isAudio(filename: file.filename, mimeType: file.mimeType) {
+                Button("폰하드 Music 폴더에 저장") { savePendingDownloadToMusic() }
+            }
             Button("네트워크 위치 선택") { chooseNetworkDestination() }
             Button("취소", role: .cancel) { cancelPendingDownload() }
         } message: {
@@ -196,11 +257,11 @@ struct WebBrowserView: View {
     }
 
     private var addressBar: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: ui(7)) {
             Image(systemName: canGoBack ? "chevron.left" : "xmark")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: ui(13), weight: .semibold))
                 .foregroundStyle(Color.primary.opacity(0.68))
-                .frame(width: 32, height: 32)
+                .frame(width: ui(32), height: ui(32))
                 .background(Color.secondary.opacity(0.10), in: Circle())
                 .contentShape(Circle())
                 .gesture(backOrCloseGesture)
@@ -208,10 +269,10 @@ struct WebBrowserView: View {
                 .accessibilityLabel(canGoBack ? "이전 페이지" : "브라우저 닫기")
                 .accessibilityHint("길게 누르면 브라우저를 닫습니다.")
 
-            HStack(spacing: 4) {
+            HStack(spacing: ui(4)) {
                 TextField("웹 주소 입력", text: $addressText)
                     .focused($isAddressFocused)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: ui(13), weight: .medium))
                     .keyboardType(.URL)
                     .textInputAutocapitalization(.never)
                     .autocorrectionDisabled()
@@ -223,15 +284,15 @@ struct WebBrowserView: View {
                         addressText = ""
                     } label: {
                         Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 14))
+                            .font(.system(size: ui(14)))
                             .foregroundStyle(.tertiary)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("주소 모두 지우기")
                 }
             }
-                .padding(.horizontal, 10)
-                .frame(height: 32)
+                .padding(.horizontal, ui(10))
+                .frame(height: ui(32))
                 .background(.thinMaterial, in: Capsule())
 
             browserIcon(isPageLoading ? "xmark" : "arrow.right", primary: true)
@@ -248,9 +309,9 @@ struct WebBrowserView: View {
             .accessibilityLabel("새로고침")
 
             Image(systemName: isCurrentFavorite ? "bookmark.fill" : "bookmark")
-                .font(.system(size: 13, weight: .semibold))
+                .font(.system(size: ui(13), weight: .semibold))
                 .foregroundStyle(isCurrentFavorite ? SkyBreezeTheme.accent : Color.primary.opacity(0.68))
-                .frame(width: 32, height: 32)
+                .frame(width: ui(32), height: ui(32))
                 .background(
                     isCurrentFavorite
                         ? SkyBreezeTheme.accent.opacity(0.12)
@@ -263,17 +324,17 @@ struct WebBrowserView: View {
                 .accessibilityLabel(showFavoritePanel ? "즐겨찾기 목록 닫기" : "즐겨찾기 목록 열기")
                 .accessibilityHint("길게 누르면 현재 주소를 즐겨찾기에 추가하거나 해제합니다.")
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 9)
+        .padding(.horizontal, ui(12))
+        .padding(.vertical, ui(9))
         .background(.bar)
-        .overlay(alignment: .bottom) { pageLoadProgressBar.frame(height: 2) }
+        .overlay(alignment: .bottom) { pageLoadProgressBar.frame(height: ui(2)) }
     }
 
     private func browserIcon(_ systemName: String, primary: Bool = false) -> some View {
         Image(systemName: systemName)
-            .font(.system(size: 13, weight: .semibold))
+            .font(.system(size: ui(13), weight: .semibold))
             .foregroundStyle(primary ? Color.white : Color.primary.opacity(0.68))
-            .frame(width: 32, height: 32)
+            .frame(width: ui(32), height: ui(32))
             .background(primary ? SkyBreezeTheme.accent : Color.secondary.opacity(0.10), in: Circle())
     }
 
@@ -290,17 +351,98 @@ struct WebBrowserView: View {
     }
 
     private var downloadOverlay: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: ui(10)) {
             ProgressView()
             Text("파일을 내려받는 중…")
-                .font(.subheadline)
+                .font(.ui(.subheadline))
             Button("취소", role: .cancel) { cancelDownloadTrigger += 1 }
-                .font(.caption)
+                .font(.ui(.caption))
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .padding(.horizontal, ui(14))
+        .padding(.vertical, ui(10))
         .background(.regularMaterial, in: Capsule())
-        .padding(.top, 10)
+        .padding(.top, ui(10))
+    }
+
+    /// Recognizing music on a page only offers this action; nothing is downloaded until
+    /// the user taps it.
+    private var musicDownloadBar: some View {
+        HStack(spacing: ui(8)) {
+            Image(systemName: "music.note")
+            if musicCandidates.isEmpty {
+                Text("음악 파일이 있는 페이지를 열면 받을 수 있어요")
+                    .font(.ui(.caption))
+                    .foregroundStyle(.secondary)
+            } else {
+                Button("음악 다운로드") {
+                    if musicCandidates.count == 1 {
+                        requestMusicDownload(musicCandidates[0])
+                    } else {
+                        isChoosingMusicCandidate = true
+                    }
+                }
+                .font(.ui(.subheadline).weight(.semibold))
+                if musicCandidates.count > 1 {
+                    Text("\(musicCandidates.count)개")
+                        .font(.ui(.caption))
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .padding(.horizontal, ui(14))
+        .padding(.vertical, ui(10))
+        .background(.regularMaterial, in: Capsule())
+        .padding(.bottom, ui(14))
+        .confirmationDialog(
+            "받을 음악을 선택하세요",
+            isPresented: $isChoosingMusicCandidate,
+            titleVisibility: .visible
+        ) {
+            ForEach(musicCandidates.prefix(12)) { candidate in
+                Button(candidate.displayName) { requestMusicDownload(candidate) }
+            }
+            Button("취소", role: .cancel) {}
+        }
+    }
+
+    private func requestMusicDownload(_ candidate: BrowserMusicCandidate) {
+        guard !isDownloading else { return }
+        musicDownloadTarget = candidate
+        musicDownloadTrigger += 1
+    }
+
+    private func savePendingDownloadToMusic() {
+        guard let file = pendingDownload else { return }
+        pendingDownload = nil
+        isSaveDialogPresented = false
+        saveMusicDownload(file)
+    }
+
+    /// The Music folder takes anything recognized as audio; whether it can really be
+    /// decoded is checked when it is picked for a video.
+    private func saveMusicDownload(_ file: BrowserDownloadedFile) {
+        Task {
+            defer { removeTemporaryDownload(file) }
+            guard BrowserURLPolicy.isAudio(filename: file.filename, mimeType: file.mimeType) else {
+                errorMessage = "받은 파일이 음악 파일이 아니어서 저장하지 않았습니다."
+                return
+            }
+            do {
+                let record = try await inboxStore.importMusicFile(
+                    at: file.temporaryURL,
+                    originalFilename: file.filename,
+                    contentTypeIdentifier: file.contentTypeIdentifier
+                )
+                if let onMusicSaved {
+                    onMusicSaved(record)
+                    dismiss()
+                } else {
+                    statusMessage = "폰하드 Music 폴더에 저장했습니다."
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private var initialURL: URL {
@@ -376,53 +518,53 @@ struct WebBrowserView: View {
         VStack(spacing: 0) {
             HStack {
                 Label("즐겨찾기", systemImage: "bookmark.fill")
-                    .font(.subheadline.weight(.semibold))
+                    .font(.ui(.subheadline).weight(.semibold))
                 Spacer()
                 Button {
                     showFavoritePanel = false
                     showFavoriteEditor = true
                 } label: {
                     Image(systemName: "slider.horizontal.3")
-                        .frame(width: 32, height: 32)
+                        .frame(width: ui(32), height: ui(32))
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("즐겨찾기 편집")
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.horizontal, ui(14))
+            .padding(.vertical, ui(10))
 
             Divider()
 
             if favoritesStore.favorites.isEmpty {
                 Text("등록된 즐겨찾기가 없습니다.")
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.secondary)
-                    .padding(24)
+                    .padding(ui(24))
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 4) {
+                    LazyVStack(spacing: ui(4)) {
                         ForEach(favoritesStore.favorites, id: \.self) { favorite in
                             favoriteRow(favorite)
                         }
                     }
-                    .padding(8)
+                    .padding(ui(8))
                 }
-                .frame(maxHeight: 360)
+                .frame(maxHeight: ui(360))
             }
         }
         .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: ui(10), style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: ui(10), style: .continuous)
                 .stroke(Color.secondary.opacity(0.20), lineWidth: 1)
         }
         .shadow(color: .black.opacity(0.16), radius: 14, y: 6)
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
+        .padding(.horizontal, ui(12))
+        .padding(.top, ui(8))
     }
 
     private func favoriteRow(_ favorite: String) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: ui(10)) {
             BrowserFavoriteFavicon(address: favorite)
                 .contentShape(Rectangle())
                 .onTapGesture { favoritesStore.remove(favorite) }
@@ -436,21 +578,21 @@ struct WebBrowserView: View {
                     requestedURL = url
                 }
             } label: {
-                HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: ui(8)) {
+                    VStack(alignment: .leading, spacing: ui(2)) {
                         Text(BrowserFavoriteFavicon.displayTitle(for: favorite))
-                            .font(.caption.weight(.semibold))
+                            .font(.ui(.caption).weight(.semibold))
                             .foregroundStyle(.primary)
                             .lineLimit(1)
                         Text(favorite)
-                            .font(.caption2)
+                            .font(.ui(.caption2))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
-                    Spacer(minLength: 4)
+                    Spacer(minLength: ui(4))
                     if favorite == favoritesStore.favorites.first {
                         Image(systemName: "house.fill")
-                            .font(.caption2.weight(.bold))
+                            .font(.ui(.caption2).weight(.bold))
                             .foregroundStyle(SkyBreezeTheme.accent)
                     }
                 }
@@ -458,9 +600,9 @@ struct WebBrowserView: View {
             }
             .buttonStyle(.plain)
         }
-        .padding(.horizontal, 8)
-        .frame(height: 50)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+        .padding(.horizontal, ui(8))
+        .frame(height: ui(50))
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: ui(8)))
     }
 
     private func savePendingDownloadToInbox() {
@@ -540,6 +682,9 @@ private struct NasFinderWebView: UIViewRepresentable {
     @Binding var reloadTrigger: Int
     @Binding var cancelDownloadTrigger: Int
     @Binding var isDownloading: Bool
+    @Binding var musicCandidates: [BrowserMusicCandidate]
+    let musicDownloadTarget: BrowserMusicCandidate?
+    @Binding var musicDownloadTrigger: Int
     let onDownloaded: (BrowserDownloadedFile) -> Void
     let onError: (String) -> Void
 
@@ -561,6 +706,7 @@ private struct NasFinderWebView: UIViewRepresentable {
             webView.load(URLRequest(url: initialURL))
         } else {
             context.coordinator.updateState(from: webView)
+            context.coordinator.scheduleMusicScan(in: webView)
         }
         return webView
     }
@@ -593,7 +739,15 @@ private struct NasFinderWebView: UIViewRepresentable {
         private var handledStopLoadingTrigger = 0
         private var handledReloadTrigger = 0
         private var handledCancelDownloadTrigger = 0
+        private var handledMusicDownloadTrigger = 0
         private var popupReturnURL: URL?
+        private var isMusicDownload = false
+        private var downloadMIMEType: String?
+        private var musicScanTask: Task<Void, Never>?
+        /// Audio responses seen as navigations: the one that is about to become the
+        /// page itself, and the ones loaded into frames of the current page.
+        private var pendingMainFrameMusicURL: URL?
+        private var responseMusicURLs: [URL] = []
 
         init(parent: NasFinderWebView) { self.parent = parent }
 
@@ -607,6 +761,8 @@ private struct NasFinderWebView: UIViewRepresentable {
         func invalidate() {
             progressObservation?.invalidate()
             progressObservation = nil
+            musicScanTask?.cancel()
+            musicScanTask = nil
         }
 
         func handleControls(in webView: WKWebView) {
@@ -627,6 +783,81 @@ private struct NasFinderWebView: UIViewRepresentable {
                 handledCancelDownloadTrigger = parent.cancelDownloadTrigger
                 cancelDownload()
             }
+            if parent.musicDownloadTrigger != handledMusicDownloadTrigger {
+                handledMusicDownloadTrigger = parent.musicDownloadTrigger
+                if let target = parent.musicDownloadTarget { startMusicDownload(target, in: webView) }
+            }
+        }
+
+        /// Runs through the web view's own download, so the page's cookies, redirects
+        /// and authentication apply exactly as for any other download here.
+        private func startMusicDownload(_ candidate: BrowserMusicCandidate, in webView: WKWebView) {
+            guard activeDownload == nil, destinationURL == nil, !isMusicDownload else { return }
+            var request = URLRequest(url: candidate.url)
+            if let referer = BrowserURLPolicy.referer(from: webView.url, to: candidate.url) {
+                request.setValue(referer, forHTTPHeaderField: "Referer")
+            }
+            isMusicDownload = true
+            beginDownload()
+            webView.startDownload(using: request) { [weak self] download in
+                guard let self else { return }
+                guard self.isMusicDownload else {
+                    download.cancel { _ in }
+                    return
+                }
+                self.configure(download)
+            }
+        }
+
+        func scheduleMusicScan(in webView: WKWebView) {
+            musicScanTask?.cancel()
+            // Pages often attach their player after loading, so look again twice.
+            musicScanTask = Task { [weak self, weak webView] in
+                for delay in [0.0, 1.5, 4.0] {
+                    if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
+                    guard !Task.isCancelled, let self, let webView else { return }
+                    self.scanMusic(in: webView)
+                }
+            }
+        }
+
+        private func scanMusic(in webView: WKWebView) {
+            let script = """
+            (() => {
+              const out = [];
+              const add = (value) => { try { if (value) out.push(new URL(value, document.baseURI).href); } catch (_) {} };
+              const music = /\\.(mp3|m4a|m4b|aac|wav|flac|ogg|oga|opus|aiff?|caf|wma)([?#]|$)/i;
+              document.querySelectorAll('audio').forEach((item) => {
+                add(item.currentSrc || item.src);
+                item.querySelectorAll('source').forEach((source) => add(source.src));
+              });
+              document.querySelectorAll('a[href]').forEach((item) => { if (music.test(item.href)) add(item.href); });
+              return out.slice(0, 200);
+            })()
+            """
+            let page = webView.url
+            webView.evaluateJavaScript(script) { [weak self, weak webView] result, _ in
+                guard let self, let webView, webView.url == page else { return }
+                self.publishMusicCandidates(found: (result as? [String] ?? []).compactMap(URL.init(string:)))
+            }
+        }
+
+        /// Only plain web addresses are offered; `blob:` and `data:` sources (streamed or
+        /// protected playback) are never turned into a download.
+        private func publishMusicCandidates(found: [URL]) {
+            var seen = Set<String>()
+            let candidates = (responseMusicURLs + found).filter { url in
+                guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return false }
+                return seen.insert(url.absoluteString).inserted
+            }.prefix(30).map(BrowserMusicCandidate.init(url:))
+            if parent.musicCandidates != candidates { parent.musicCandidates = candidates }
+        }
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            musicScanTask?.cancel()
+            responseMusicURLs = pendingMainFrameMusicURL.map { [$0] } ?? []
+            pendingMainFrameMusicURL = nil
+            publishMusicCandidates(found: [])
         }
 
         func webView(
@@ -679,7 +910,19 @@ private struct NasFinderWebView: UIViewRepresentable {
         ) {
             let response = navigationResponse.response as? HTTPURLResponse
             let disposition = response?.value(forHTTPHeaderField: "Content-Disposition")?.lowercased()
+            if let url = navigationResponse.response.url,
+               BrowserURLPolicy.isAudio(filename: url.lastPathComponent,
+                                        mimeType: navigationResponse.response.mimeType) {
+                // Recognized only: this just makes the "음악 다운로드" action available.
+                if navigationResponse.isForMainFrame {
+                    pendingMainFrameMusicURL = url
+                } else if !responseMusicURLs.contains(url) {
+                    responseMusicURLs.append(url)
+                    publishMusicCandidates(found: parent.musicCandidates.map(\.url))
+                }
+            }
             if !navigationResponse.canShowMIMEType || disposition?.contains("attachment") == true {
+                if navigationResponse.isForMainFrame { pendingMainFrameMusicURL = nil }
                 beginDownload()
                 decisionHandler(.download)
             } else {
@@ -688,6 +931,7 @@ private struct NasFinderWebView: UIViewRepresentable {
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            pendingMainFrameMusicURL = nil
             parent.isPageLoading = true
             updateState(from: webView)
         }
@@ -696,6 +940,7 @@ private struct NasFinderWebView: UIViewRepresentable {
             parent.isPageLoading = false
             parent.pageLoadProgress = 1
             updateState(from: webView)
+            scheduleMusicScan(in: webView)
         }
 
         func webView(
@@ -741,7 +986,21 @@ private struct NasFinderWebView: UIViewRepresentable {
             completionHandler: @escaping @MainActor @Sendable (URL?) -> Void
         ) {
             beginDownload()
-            let filename = BrowserURLPolicy.safeFilename(suggestedFilename, response: response)
+            downloadMIMEType = response.mimeType
+            if isMusicDownload, let status = (response as? HTTPURLResponse)?.statusCode,
+               !(200..<300).contains(status) {
+                resetDownloadState()
+                finishDownload()
+                parent.onError("음악 파일을 받지 못했습니다. (HTTP \(status))")
+                completionHandler(nil)
+                return
+            }
+            var filename = BrowserURLPolicy.safeFilename(suggestedFilename, response: response)
+            if isMusicDownload, (filename as NSString).pathExtension.isEmpty,
+               let mimeType = response.mimeType, mimeType.lowercased().hasPrefix("audio/"),
+               let fileExtension = UTType(mimeType: mimeType)?.preferredFilenameExtension {
+                filename += ".\(fileExtension)"
+            }
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("NasFinder-WebDownloads", isDirectory: true)
                 .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -754,6 +1013,7 @@ private struct NasFinderWebView: UIViewRepresentable {
                 destinationURL = destination
                 completionHandler(destination)
             } catch {
+                resetDownloadState()
                 finishDownload()
                 parent.onError(error.localizedDescription)
                 completionHandler(nil)
@@ -762,26 +1022,29 @@ private struct NasFinderWebView: UIViewRepresentable {
 
         func downloadDidFinish(_ download: WKDownload) {
             defer { finishDownload() }
-            guard let destinationURL else { return }
+            guard let destinationURL else {
+                resetDownloadState()
+                return
+            }
             let filename = destinationURL.lastPathComponent
             let type = UTType(filenameExtension: destinationURL.pathExtension)?.identifier
             parent.onDownloaded(
                 BrowserDownloadedFile(
                     temporaryURL: destinationURL,
                     filename: filename,
-                    contentTypeIdentifier: type
+                    contentTypeIdentifier: type,
+                    isMusic: isMusicDownload,
+                    mimeType: downloadMIMEType
                 )
             )
-            self.destinationURL = nil
-            activeDownload = nil
+            resetDownloadState()
         }
 
         func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
             if let destinationURL {
                 try? FileManager.default.removeItem(at: destinationURL.deletingLastPathComponent())
             }
-            self.destinationURL = nil
-            activeDownload = nil
+            resetDownloadState()
             finishDownload()
             if (error as NSError).code != NSURLErrorCancelled {
                 parent.onError(error.localizedDescription)
@@ -793,9 +1056,15 @@ private struct NasFinderWebView: UIViewRepresentable {
             if let destinationURL {
                 try? FileManager.default.removeItem(at: destinationURL.deletingLastPathComponent())
             }
+            resetDownloadState()
+            finishDownload()
+        }
+
+        private func resetDownloadState() {
             destinationURL = nil
             activeDownload = nil
-            finishDownload()
+            isMusicDownload = false
+            downloadMIMEType = nil
         }
 
         private func configure(_ download: WKDownload) {

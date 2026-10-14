@@ -21,6 +21,10 @@ struct NasFinderApp: App {
         .resolved(selectedThemeRawValue)
     }
 
+    init() {
+        MacUIScale.applyBarAppearance()
+    }
+
     var body: some Scene {
         // Build synchronously: the lazy scene builder can run off MainActor on redraw.
         WindowGroup(content: {
@@ -41,7 +45,9 @@ struct NasFinderApp: App {
         if isRunningOnMac {
             GeometryReader { _ in
                 configuredRootView
-                    .environment(\.dynamicTypeSize, .accessibility3)
+                    .font(.ui(.body))
+                    .environment(\.defaultMinListRowHeight, MacUIScale.minListRowHeight)
+                    .environment(\.dynamicTypeSize, MacUIScale.dynamicTypeSize)
                     .controlSize(.large)
             }
         } else {

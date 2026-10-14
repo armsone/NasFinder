@@ -73,14 +73,14 @@ struct SharedVideoProgressBar: View {
     @State private var timeObserver: Any?
 
     var body: some View {
-        HStack(spacing: compact ? 5 : 10) {
+        HStack(spacing: ui(compact ? 5 : 10)) {
             Text(formattedTime(currentSeconds))
-                .frame(width: compact ? 34 : 42, alignment: .trailing)
+                .frame(width: ui(compact ? 34 : 42), alignment: .trailing)
 
-            VStack(spacing: -4) {
+            VStack(spacing: ui(-4)) {
                 if let sourceLabel {
                     Text(sourceLabel)
-                        .font(.system(size: 8, weight: .medium))
+                        .font(.system(size: ui(8), weight: .medium))
                         .foregroundStyle(.white.opacity(0.48))
                         .lineLimit(1)
                 }
@@ -100,12 +100,12 @@ struct SharedVideoProgressBar: View {
             }
 
             Text(formattedTime(durationSeconds))
-                .frame(width: compact ? 34 : 42, alignment: .leading)
+                .frame(width: ui(compact ? 34 : 42), alignment: .leading)
         }
-        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+        .font(.system(size: ui(11), weight: .semibold, design: .monospaced))
         .foregroundStyle(.white.opacity(0.9))
-        .padding(.horizontal, compact ? 8 : 14)
-        .frame(height: 44)
+        .padding(.horizontal, ui(compact ? 8 : 14))
+        .frame(height: ui(44))
         .background(Color.black.opacity(0.28), in: Capsule())
         .overlay {
             Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1)
@@ -217,9 +217,9 @@ struct SharedPlayerCircleLabel: View {
 
     var body: some View {
         Image(systemName: systemImage)
-            .font(.system(size: 16, weight: .bold))
+            .font(.system(size: ui(16), weight: .bold))
             .foregroundStyle(.white.opacity(0.9))
-            .frame(width: 44, height: 44)
+            .frame(width: ui(44), height: ui(44))
             .background(
                 isActive ? Color.white.opacity(0.16) : Color.black.opacity(0.28),
                 in: Circle()

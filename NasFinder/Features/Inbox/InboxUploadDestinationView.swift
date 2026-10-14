@@ -51,10 +51,13 @@ struct InboxUploadDestinationView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("취소") {
-                        dismiss()
+                    Group {
+                        Button("취소") {
+                            dismiss()
+                        }
+                        .disabled(operationCoordinator.isWorking)
                     }
-                    .disabled(operationCoordinator.isWorking)
+                    .uiBarFont()
                 }
             }
         }
@@ -67,27 +70,27 @@ struct InboxUploadDestinationView: View {
     }
 
     private func connectionRow(_ connection: RemoteConnection) -> some View {
-        HStack(spacing: 12) {
+        HStack(spacing: ui(12)) {
             Image(systemName: connection.kind.systemImage)
-                .font(.title3)
+                .font(.ui(.title3))
                 .foregroundStyle(.tint)
-                .frame(width: 34, height: 34)
+                .frame(width: ui(34), height: ui(34))
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: ui(3)) {
                 Text(connection.name)
-                    .font(.headline)
+                    .font(.ui(.headline))
                 Text(connection.endpointDescription)
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 Label(connection.normalizedRootPath, systemImage: "folder")
-                    .font(.caption2)
+                    .font(.ui(.caption2))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
             }
         }
-        .padding(.vertical, 3)
+        .padding(.vertical, ui(3))
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(connection.name), \(connection.kind.title)")
         .accessibilityValue("시작 폴더 \(connection.normalizedRootPath)")
@@ -217,12 +220,12 @@ private struct InboxUploadFolderView: View {
                         )
                     } label: {
                         Label {
-                            VStack(alignment: .leading, spacing: 2) {
+                            VStack(alignment: .leading, spacing: ui(2)) {
                                 Text(folder.name)
                                     .foregroundStyle(.primary)
                                 if let modifiedAt = folder.modifiedAt {
                                     Text(modifiedAt, format: .dateTime.year().month().day())
-                                        .font(.caption)
+                                        .font(.ui(.caption))
                                         .foregroundStyle(.secondary)
                                 }
                             }
@@ -273,7 +276,7 @@ private struct InboxUploadFolderView: View {
     }
 
     private var operationBar: some View {
-        VStack(spacing: 10) {
+        VStack(spacing: ui(10)) {
             if operationCoordinator.isWorking {
                 FileOperationProgressBanner(
                     title: operationCoordinator.operationTitle ?? "파일 업로드 중…",
@@ -296,8 +299,8 @@ private struct InboxUploadFolderView: View {
             .buttonStyle(.borderedProminent)
             .disabled(sources.isEmpty || operationCoordinator.isBusy)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .padding(.horizontal, ui(16))
+        .padding(.vertical, ui(10))
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
     }

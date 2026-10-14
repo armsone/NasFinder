@@ -190,63 +190,107 @@ struct WebHardConnectionPanel: View {
     @EnvironmentObject private var controller: WebHardServerController
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.system.rawValue
+    @State private var isExpanded = false
 
     private var isEnamel: Bool {
         AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 9) {
-                if isEnamel {
-                    PhoneHardMark(size: 28)
-                } else {
-                    ThemedSymbol(
-                        systemName: "externaldrive.fill.badge.wifi",
-                        size: 28,
-                        symbolSize: 15
-                    )
+        VStack(alignment: .leading, spacing: ui(10)) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isExpanded.toggle()
                 }
+            } label: {
+                HStack(spacing: ui(9)) {
+                    if isEnamel {
+                        PhoneHardMark(size: ui(28))
+                    } else {
+                        ThemedSymbol(
+                            systemName: "externaldrive.fill.badge.wifi",
+                            size: ui(28),
+                            symbolSize: ui(15)
+                        )
+                    }
 
-                Text("서버 열기")
-                    .font(.headline.weight(isEnamel ? .bold : .semibold))
-                    .foregroundStyle(isEnamel ? bkCharcoal : Color.primary)
+                    Text("서버 열기")
+                        .font(.ui(.headline).weight(isEnamel ? .bold : .semibold))
+                        .foregroundStyle(isEnamel ? bkCharcoal : Color.primary)
 
-                Spacer(minLength: 8)
+                    if !isExpanded, controller.isRunning {
+                        Label("실행 중", systemImage: "circle.fill")
+                            .labelStyle(.iconOnly)
+                            .font(.ui(.caption2))
+                            .foregroundStyle(.green)
+                            .accessibilityHidden(true)
+                    }
 
-                Button {
-                    controller.refreshAddresses()
-                } label: {
-                    ThemedSymbol(systemName: "arrow.clockwise", size: 30, symbolSize: 15)
-                        .frame(width: 44, height: 44)
+                    Spacer(minLength: ui(8))
+
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.ui(.caption).weight(.semibold))
+                        .foregroundStyle(.secondary)
                 }
-                .disabled(controller.isRunning)
-                .accessibilityLabel("접속 주소 새로고침")
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("서버 열기")
+            .accessibilityValue(isExpanded ? "펼쳐짐" : "접힘")
+            .accessibilityHint(isExpanded ? "서버 열기 설정을 접습니다." : "서버 열기 설정을 펼칩니다.")
 
-            WebHardConnectionControls()
+            if isExpanded {
+                HStack(spacing: ui(9)) {
+                    Spacer(minLength: 0)
+                    Button {
+                        controller.refreshAddresses()
+                    } label: {
+                        ThemedSymbol(systemName: "arrow.clockwise", size: ui(30), symbolSize: ui(15))
+                            .frame(width: ui(44), height: ui(44))
+                    }
+                    .disabled(controller.isRunning)
+                    .accessibilityLabel("접속 주소 새로고침")
+                }
+
+                WebHardConnectionControls()
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            } else if controller.isRunning {
+                compactRunningStatus
+            }
         }
-        .padding(14)
+        .padding(ui(14))
         .background(
             panelFill,
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
+            in: RoundedRectangle(cornerRadius: ui(16), style: .continuous)
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: ui(16), style: .continuous)
                 .stroke(panelRim, lineWidth: isEnamel ? 1.25 : 1)
         }
         .overlay(alignment: .top) {
             if isEnamel {
                 Capsule()
                     .fill(.white.opacity(0.96))
-                    .frame(height: 1)
-                    .padding(.horizontal, 22)
-                    .padding(.top, 2)
+                    .frame(height: ui(1))
+                    .padding(.horizontal, ui(22))
+                    .padding(.top, ui(2))
             }
         }
         .shadow(color: .black.opacity(isEnamel ? 0.14 : 0.06), radius: 8, y: 4)
         .onAppear {
             if !controller.isRunning { controller.refreshAddresses() }
+        }
+    }
+
+    @ViewBuilder
+    private var compactRunningStatus: some View {
+        if let accessURL = controller.accessURL {
+            Text(accessURL.absoluteString)
+                .font(.ui(.footnote).monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
         }
     }
 
@@ -299,7 +343,7 @@ private struct WebHardConnectionControls: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: ui(9)) {
             addressInfoRow
 
             if isPasswordExpanded {
@@ -307,14 +351,14 @@ private struct WebHardConnectionControls: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            HStack(spacing: 10) {
+            HStack(spacing: ui(10)) {
                 passwordDisclosureButton
                 toggleButton
             }
 
             if case let .failed(message) = controller.state {
                 Label(message, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.red)
             }
         }
@@ -325,41 +369,37 @@ private struct WebHardConnectionControls: View {
     private var addressInfoRow: some View {
         if controller.selectedAddress == nil {
             Label("사용 가능한 접속 주소가 없습니다", systemImage: "network.slash")
-                .font(.subheadline)
+                .font(.ui(.subheadline))
                 .foregroundStyle(.secondary)
         } else {
-            ViewThatFits(in: .horizontal) {
-                LabeledContent {
-                    addressText(alignment: .trailing)
-                } label: {
-                    addressLabel
-                }
-
-                VStack(alignment: .leading, spacing: 3) {
-                    addressLabel
-                    addressText(alignment: .leading)
-                }
+            HStack(spacing: ui(8)) {
+                addressLabel
+                    .fixedSize()
+                Spacer(minLength: 0)
+                addressText(alignment: .trailing)
+                    .layoutPriority(1)
             }
-            .frame(minHeight: 32)
+            .frame(minHeight: ui(32))
             .accessibilityElement(children: .combine)
         }
     }
 
     private var addressLabel: some View {
         Text("접속 주소")
-            .font(.caption)
+            .font(.ui(.caption))
             .foregroundStyle(.secondary)
     }
 
     private func addressText(alignment: TextAlignment) -> some View {
         Text(addressValue)
-            .font(.footnote.monospaced())
+            .font(.ui(.footnote).monospaced())
             .foregroundStyle(
                 isEnamel ? Color(red: 0.12, green: 0.13, blue: 0.14) : Color.primary
             )
             .multilineTextAlignment(alignment)
             .textSelection(.enabled)
-            .lineLimit(2)
+            .lineLimit(1)
+            .minimumScaleFactor(0.8)
             .truncationMode(.middle)
     }
 
@@ -377,19 +417,19 @@ private struct WebHardConnectionControls: View {
             passwordField
                 .textFieldStyle(.plain)
                 .foregroundStyle(Color(red: 0.12, green: 0.13, blue: 0.14))
-                .padding(.horizontal, 11)
-                .frame(minWidth: 140, maxWidth: .infinity, minHeight: 40)
+                .padding(.horizontal, ui(11))
+                .frame(minWidth: ui(140), maxWidth: .infinity, minHeight: ui(40))
                 .background(BKWebHardRecessedSurface())
         } else {
             passwordField
                 .textFieldStyle(.roundedBorder)
-                .frame(minWidth: 140, maxWidth: .infinity, minHeight: 40)
+                .frame(minWidth: ui(140), maxWidth: .infinity, minHeight: ui(40))
         }
     }
 
     private var passwordField: some View {
         SecureField("비밀번호 (선택)", text: $controller.password)
-            .font(.subheadline)
+            .font(.ui(.subheadline))
             .controlSize(.small)
             .textContentType(.password)
             .disabled(controller.isRunning)
@@ -399,17 +439,17 @@ private struct WebHardConnectionControls: View {
         Button {
             isPasswordExpanded.toggle()
         } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: ui(6)) {
                 Text("비밀번호")
                 Image(systemName: isPasswordExpanded ? "chevron.up" : "chevron.down")
-                    .font(.caption.weight(.semibold))
+                    .font(.ui(.caption).weight(.semibold))
             }
             .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
         .tint(isEnamel ? Color(red: 0.12, green: 0.13, blue: 0.14) : .accentColor)
-        .frame(minWidth: 120, maxWidth: .infinity, minHeight: 40)
+        .frame(minWidth: ui(120), maxWidth: .infinity, minHeight: ui(40))
         .accessibilityValue(isPasswordExpanded ? "펼쳐짐" : "접힘")
         .accessibilityHint(
             isPasswordExpanded ? "비밀번호 입력을 접습니다." : "비밀번호 입력을 펼칩니다."
@@ -421,13 +461,13 @@ private struct WebHardConnectionControls: View {
         if isEnamel {
             connectionToggleButton
                 .buttonStyle(BKWebHardToggleButtonStyle(isRunning: controller.isRunning))
-                .frame(minWidth: 88, maxWidth: .infinity)
+                .frame(minWidth: ui(88), maxWidth: .infinity)
                 .opacity(toggleIsDisabled ? 0.45 : 1)
         } else {
             connectionToggleButton
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
-                .frame(minWidth: 88, maxWidth: .infinity)
+                .frame(minWidth: ui(88), maxWidth: .infinity)
         }
     }
 
@@ -453,7 +493,7 @@ private struct WebHardConnectionControls: View {
 
 private struct BKWebHardRecessedSurface: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 9, style: .continuous)
+        RoundedRectangle(cornerRadius: ui(9), style: .continuous)
             .fill(
                 LinearGradient(
                     colors: [
@@ -465,7 +505,7 @@ private struct BKWebHardRecessedSurface: View {
                 )
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                RoundedRectangle(cornerRadius: ui(9), style: .continuous)
                     .stroke(Color.black.opacity(0.16), lineWidth: 1)
             }
             .shadow(color: .white.opacity(0.88), radius: 0, y: 1)
@@ -477,28 +517,28 @@ private struct BKWebHardToggleButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.headline.weight(.semibold))
+            .font(.ui(.headline).weight(.semibold))
             .foregroundStyle(
                 isRunning
                     ? Color(red: 0.12, green: 0.13, blue: 0.14)
                     : Color.white
             )
-            .padding(.horizontal, 16)
-            .frame(minWidth: 88, maxWidth: .infinity, minHeight: 40)
+            .padding(.horizontal, ui(16))
+            .frame(minWidth: ui(88), maxWidth: .infinity, minHeight: ui(40))
             .background {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: ui(10), style: .continuous)
                     .fill(buttonFill)
             }
             .overlay {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: ui(10), style: .continuous)
                     .stroke(buttonRim, lineWidth: 1)
             }
             .overlay(alignment: .top) {
                 Capsule()
                     .fill(.white.opacity(isRunning ? 0.92 : 0.36))
-                    .frame(height: 1)
-                    .padding(.horizontal, 12)
-                    .padding(.top, 2)
+                    .frame(height: ui(1))
+                    .padding(.horizontal, ui(12))
+                    .padding(.top, ui(2))
             }
             .shadow(color: .black.opacity(0.20), radius: 4, y: 2)
             .scaleEffect(configuration.isPressed ? 0.98 : 1)
@@ -589,19 +629,25 @@ struct WebHardServerView: View {
             if !showsCoverFlow {
                 if isEnamel {
                     ToolbarItem(placement: .principal) {
-                        HStack(spacing: 8) {
-                            PhoneHardMark(size: 26)
-                            Text("폰하드")
-                                .font(.headline)
-                                .foregroundStyle(.primary)
+                        Group {
+                            HStack(spacing: ui(8)) {
+                                PhoneHardMark(size: uiBar(26))
+                                Text("폰하드")
+                                    .uiBarFont(.headline)
+                                    .foregroundStyle(.primary)
+                            }
                         }
+                        .uiBarFont()
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button("주소 새로고침", systemImage: "arrow.clockwise") {
-                        controller.refreshAddresses()
+                    Group {
+                        Button("주소 새로고침", systemImage: "arrow.clockwise") {
+                            controller.refreshAddresses()
+                        }
+                        .disabled(controller.isRunning)
                     }
-                    .disabled(controller.isRunning)
+                    .uiBarFont()
                 }
             }
         }
@@ -678,7 +724,7 @@ struct WebHardServerView: View {
     private var coverFlowNavigationOverlay: some View {
         if showsCoverFlow {
             GeometryReader { geometry in
-                HStack(spacing: 8) {
+                HStack(spacing: ui(8)) {
                     Button {
                         if controller.currentPath == "/" {
                             dismiss()
@@ -687,8 +733,8 @@ struct WebHardServerView: View {
                         }
                     } label: {
                         Image(systemName: "chevron.left")
-                            .font(.system(size: 22, weight: .semibold))
-                            .frame(width: 44, height: 44)
+                            .font(.system(size: ui(22), weight: .semibold))
+                            .frame(width: ui(44), height: ui(44))
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -703,25 +749,25 @@ struct WebHardServerView: View {
                     .accessibilityLabel(controller.currentPath == "/" ? "폰하드 닫기" : "상위 폴더")
 
                     Text(controller.currentPath == "/" ? "폰하드" : controller.currentPath)
-                        .font(.subheadline.weight(.medium))
+                        .font(.ui(.subheadline).weight(.medium))
                         .foregroundStyle(coverFlowChromeForeground)
                         .lineLimit(1)
                         .truncationMode(.middle)
                         .frame(
-                            maxWidth: min(geometry.size.width * 0.44, 340),
-                            minHeight: 44,
+                            maxWidth: min(geometry.size.width * 0.44, ui(340)),
+                            minHeight: ui(44),
                             alignment: .leading
                         )
 
-                    Spacer(minLength: 8)
+                    Spacer(minLength: ui(8))
 
                     Menu {
                         Button("흰색") { coverFlowUsesDarkBackground = false }
                         Button("검정") { coverFlowUsesDarkBackground = true }
                     } label: {
                         Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .bold))
-                            .frame(width: 44, height: 44)
+                            .font(.system(size: ui(16), weight: .bold))
+                            .frame(width: ui(44), height: ui(44))
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
@@ -735,8 +781,8 @@ struct WebHardServerView: View {
                     )
                     .accessibilityLabel("오버플로우 배경")
                 }
-                .padding(.horizontal, 12)
-                .padding(.top, geometry.safeAreaInsets.top + 4)
+                .padding(.horizontal, ui(12))
+                .padding(.top, geometry.safeAreaInsets.top + ui(4))
                 .frame(maxWidth: .infinity, alignment: .top)
             }
         }
@@ -775,28 +821,28 @@ struct WebHardServerView: View {
             }
 
             ForEach(controller.uploads) { upload in
-                VStack(alignment: .leading, spacing: 7) {
+                VStack(alignment: .leading, spacing: ui(7)) {
                     HStack {
                         Text(upload.filename)
                             .lineLimit(1)
                             .truncationMode(.middle)
                         Spacer()
                         Text("\(Int((upload.fractionCompleted * 100).rounded()))%")
-                            .font(.caption.monospacedDigit())
+                            .font(.ui(.caption).monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
                     ProgressView(value: upload.fractionCompleted)
                         .tint(serviceColor)
                     Text("\(ByteCountFormatter.string(fromByteCount: upload.receivedBytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: upload.totalBytes, countStyle: .file))")
-                        .font(.caption2)
+                        .font(.ui(.caption2))
                         .foregroundStyle(.secondary)
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, ui(4))
             }
 
             if let message = controller.fileErrorMessage {
                 Text(message)
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.red)
             } else if controller.files.isEmpty && controller.uploads.isEmpty {
                 ContentUnavailableView(
@@ -813,17 +859,17 @@ struct WebHardServerView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer()
-                HStack(spacing: 8) {
+                HStack(spacing: ui(8)) {
                     ForEach(WebHardFileLayoutStyle.allCases) { style in
                         Button {
                             storedLayoutStyle = style.rawValue
                         } label: {
                             Image(systemName: style.systemImage)
-                                .frame(width: 24, height: 24)
+                                .frame(width: ui(24), height: ui(24))
                                 .foregroundStyle(layoutStyle == style ? serviceColor : .secondary)
                                 .background(
                                     layoutStyle == style ? serviceColor.opacity(0.14) : .clear,
-                                    in: RoundedRectangle(cornerRadius: 7)
+                                    in: RoundedRectangle(cornerRadius: ui(7))
                                 )
                         }
                         .buttonStyle(.plain)
@@ -834,6 +880,7 @@ struct WebHardServerView: View {
                 .accessibilityElement(children: .contain)
                 .accessibilityLabel("보기 방식")
             }
+            .font(MacUIScale.sectionNoteFont)
         }
     }
 
@@ -844,13 +891,13 @@ struct WebHardServerView: View {
                 Button {
                     if item.isDirectory { controller.openDirectory(item) }
                 } label: {
-                    HStack(spacing: 12) {
+                    HStack(spacing: ui(12)) {
                         WebHardThumbnailView(
                             item: item,
                             fileURL: controller.fileURL(for: item),
                             generation: controller.thumbnailGeneration
                         )
-                        .frame(width: 52, height: 52)
+                        .frame(width: ui(52), height: ui(52))
                         fileMetadata(item)
                         Spacer()
                         if item.isDirectory {
@@ -866,10 +913,10 @@ struct WebHardServerView: View {
             let columnCount = layoutStyle == .largeThumbnails ? 2 : 3
             LazyVGrid(
                 columns: Array(
-                    repeating: GridItem(.flexible(), spacing: 10, alignment: .top),
+                    repeating: GridItem(.flexible(), spacing: ui(10), alignment: .top),
                     count: columnCount
                 ),
-                spacing: 14
+                spacing: ui(14)
             ) {
                 ForEach(controller.files, id: \.path) { item in
                     fileGridCell(item)
@@ -885,12 +932,12 @@ struct WebHardServerView: View {
     private var portraitPosterGridHeight: CGFloat {
         let screenSize = UIScreen.main.bounds.size
         let portraitWidth = min(screenSize.width, screenSize.height)
-        let listContentWidth = max(1, portraitWidth - 32)
-        let cellWidth = max(1, (listContentWidth - 10) / 2)
+        let listContentWidth = max(1, portraitWidth - ui(32))
+        let cellWidth = max(1, (listContentWidth - ui(10)) / 2)
         let rowCount = (controller.files.count + 1) / 2
         guard rowCount > 0 else { return 0 }
-        return CGFloat(rowCount) * (cellWidth + 50)
-            + CGFloat(rowCount - 1) * 14
+        return CGFloat(rowCount) * (cellWidth + ui(50))
+            + CGFloat(rowCount - 1) * ui(14)
     }
 
     private func fileGridCell(_ item: WebHardFileItem) -> some View {
@@ -906,16 +953,16 @@ struct WebHardServerView: View {
                 .aspectRatio(1, contentMode: .fit)
 
                 fileMetadata(item)
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, ui(10))
+                    .padding(.vertical, ui(8))
                     .frame(
-                        height: layoutStyle == .largeThumbnails ? 50 : 40,
+                        height: ui(layoutStyle == .largeThumbnails ? 50 : 40),
                         alignment: .topLeading
                     )
             }
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .background(SkyBreezeTheme.thumbnailSurface)
-            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: ui(14), style: .continuous))
         }
         .buttonStyle(.plain)
         .contextMenu { itemContextMenu(item) }
@@ -926,9 +973,9 @@ struct WebHardServerView: View {
         let filenameStem = filenameExtension.isEmpty
             ? item.name
             : (item.name as NSString).deletingPathExtension
-        let metadataFontSize: CGFloat = layoutStyle == .largeThumbnails ? 12.75 : 9
+        let metadataFontSize: CGFloat = ui(layoutStyle == .largeThumbnails ? 12.75 : 9)
 
-        return VStack(alignment: .leading, spacing: 2) {
+        return VStack(alignment: .leading, spacing: ui(2)) {
             HStack(spacing: 0) {
                 Text(filenameStem)
                     .lineLimit(1)
@@ -997,7 +1044,7 @@ private struct WebHardThumbnailView: View {
     var body: some View {
         GeometryReader { proxy in
             ZStack {
-                RoundedRectangle(cornerRadius: 11)
+                RoundedRectangle(cornerRadius: ui(11))
                     .fill(SkyBreezeTheme.thumbnailSurface)
                 if let image {
                     Image(uiImage: image)
@@ -1010,12 +1057,12 @@ private struct WebHardThumbnailView: View {
                         .resizable()
                         .scaledToFit()
                         .foregroundStyle(item.isDirectory ? Color.accentColor : Color.secondary)
-                        .padding(item.isDirectory ? 10 : 16)
+                        .padding(ui(item.isDirectory ? 10 : 16))
                 }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 11))
+            .clipShape(RoundedRectangle(cornerRadius: ui(11)))
             .overlay {
-                RoundedRectangle(cornerRadius: 11)
+                RoundedRectangle(cornerRadius: ui(11))
                     .stroke(SkyBreezeTheme.thumbnailBorder, lineWidth: 1)
             }
         }

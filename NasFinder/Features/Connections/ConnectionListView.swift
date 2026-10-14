@@ -73,7 +73,7 @@ struct ConnectionListView: View {
     }
 
     private var dashboardContentMaxWidth: CGFloat? {
-        isRunningOnMac ? 1_520 : nil
+        isRunningOnMac ? ui(1_520) : nil
     }
 
     init() {
@@ -92,7 +92,7 @@ struct ConnectionListView: View {
                 dashboardSections
             }
             .frame(maxWidth: dashboardContentMaxWidth)
-            .environment(\.defaultMinListRowHeight, isRunningOnMac ? 72 : 44)
+            .environment(\.defaultMinListRowHeight, ui(isRunningOnMac ? 72 : 44))
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(SkyBreezeBackground())
@@ -216,6 +216,22 @@ struct ConnectionListView: View {
 
     private var networkSection: some View {
         Section {
+            NavigationLink {
+                LocalPhotoLibraryView()
+            } label: {
+                HStack(spacing: ui(7)) {
+                    ThemedSymbol(
+                        systemName: "photo.on.rectangle.angled",
+                        size: ui(32),
+                        symbolSize: ui(17)
+                    )
+                    Text("내 사진·영상")
+                }
+                .font(.ui(.subheadline))
+                .foregroundStyle(.secondary)
+            }
+            .accessibilityHint("NAS 연결 없이 iPhone의 사진과 영상을 선택해 미리 보고 예고편을 만듭니다.")
+
             if !store.connections.isEmpty {
                 ForEach(store.connections) { connection in
                     NetworkLocationCard(
@@ -248,25 +264,25 @@ struct ConnectionListView: View {
             Button {
                 isAddingConnection = true
             } label: {
-                HStack(spacing: 7) {
-                    ThemedSymbol(systemName: "plus", size: 32, symbolSize: 17)
+                HStack(spacing: ui(7)) {
+                    ThemedSymbol(systemName: "plus", size: ui(32), symbolSize: ui(17))
                     Text(store.connections.isEmpty ? "네트워크를 추가해 주세요" : "네트워크 추가")
                 }
             }
-            .font(.subheadline)
+            .font(.ui(.subheadline))
             .foregroundStyle(.secondary)
             .modifier(
                 IOSAppOnMacShortcutModifier(key: "n", modifiers: .command)
             )
         } header: {
             sectionHeader("네트워크", systemImage: "network")
-                .padding(.top, 8)
+                .padding(.top, ui(8))
         } footer: {
             Text(networkFooterText)
-                .font(.caption2)
+                .font(.ui(.caption2))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
-                .padding(.top, -4)
+                .padding(.top, ui(-4))
         }
         .listSectionSpacing(.custom(10))
     }
@@ -286,15 +302,15 @@ struct ConnectionListView: View {
             NavigationLink {
                 PhotoTransferView()
             } label: {
-                HStack(spacing: 7) {
+                HStack(spacing: ui(7)) {
                     ThemedSymbol(
                         systemName: "photo.on.rectangle.angled",
-                        size: 32,
-                        symbolSize: 17
+                        size: ui(32),
+                        symbolSize: ui(17)
                     )
                     Text("Live Photos & Motion Photos")
                 }
-                .font(.subheadline)
+                .font(.ui(.subheadline))
                 .foregroundStyle(.secondary)
             }
             .accessibilityHint("사진과 영상을 함께 보내는 화면을 엽니다.")
@@ -305,7 +321,7 @@ struct ConnectionListView: View {
         } header: {
             sectionHeader("내 파일", systemImage: "folder")
         }
-        .font(.subheadline)
+        .font(.ui(.subheadline))
         .foregroundStyle(.secondary)
     }
 
@@ -314,27 +330,27 @@ struct ConnectionListView: View {
             Button {
                 isImportingFromFiles = true
             } label: {
-                HStack(spacing: 12) {
-                    ThemedSymbol(systemName: "folder", size: 32, symbolSize: 17)
+                HStack(spacing: ui(12)) {
+                    ThemedSymbol(systemName: "folder", size: ui(32), symbolSize: ui(17))
                         .foregroundStyle(.blue)
-                        .frame(width: 32)
+                        .frame(width: ui(32))
                         .accessibilityHidden(true)
 
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: ui(3)) {
                         Text("iPhone 저장공간")
                             .foregroundStyle(.primary)
                         Text(deviceStorageSummary)
-                            .font(.caption)
+                            .font(.ui(.caption))
                             .foregroundStyle(.secondary)
                         Text("파일 앱 열기 · iCloud Drive 지원")
-                            .font(.caption2)
+                            .font(.ui(.caption2))
                             .foregroundStyle(.tertiary)
                     }
 
-                    Spacer(minLength: 8)
+                    Spacer(minLength: ui(8))
 
                     Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
+                        .font(.ui(.caption).weight(.semibold))
                         .foregroundStyle(.tertiary)
                         .accessibilityHidden(true)
                 }
@@ -356,7 +372,7 @@ struct ConnectionListView: View {
         } header: {
             sectionHeader("저장공간", systemImage: "internaldrive")
         }
-        .font(.subheadline)
+        .font(.ui(.subheadline))
         .foregroundStyle(.secondary)
     }
 
@@ -365,17 +381,17 @@ struct ConnectionListView: View {
             NavigationLink {
                 AppSettingsView(connectionCount: store.connections.count)
             } label: {
-                HStack(spacing: 7) {
-                    ThemedSymbol(systemName: "gearshape", size: 32, symbolSize: 17)
+                HStack(spacing: ui(7)) {
+                    ThemedSymbol(systemName: "gearshape", size: ui(32), symbolSize: ui(17))
                     Text("설정")
                 }
-                    .font(.subheadline)
+                    .font(.ui(.subheadline))
                     .foregroundStyle(.secondary)
             }
         } footer: {
             if let versionText = AppVersionDisplayPolicy.text() {
                 Text(versionText)
-                    .font(.caption2)
+                    .font(.ui(.caption2))
                     .foregroundStyle(.secondary)
             }
         }
@@ -437,7 +453,7 @@ struct ConnectionListView: View {
 
     private var quickLocationsSection: some View {
         DashboardSection(title: "빠른 위치", subtitle: "자주 쓰는 파일 흐름으로 바로 이동합니다.") {
-            LazyVGrid(columns: quickLocationColumns, spacing: 12) {
+            LazyVGrid(columns: quickLocationColumns, spacing: ui(12)) {
                 NavigationLink {
                     ReceivedFilesView()
                 } label: {
@@ -492,7 +508,7 @@ struct ConnectionListView: View {
                 : "저장된 NAS와 SFTP 서버를 선택해 파일을 엽니다.",
             badge: store.connections.isEmpty ? nil : "\(store.connections.count)"
         ) {
-            LazyVGrid(columns: networkColumns, spacing: 12) {
+            LazyVGrid(columns: networkColumns, spacing: ui(12)) {
                 ForEach(store.connections) { connection in
                     NetworkLocationCard(
                         connection: connection,
@@ -528,12 +544,12 @@ struct ConnectionListView: View {
 
     private var quickLocationColumns: [GridItem] {
         if dynamicTypeSize.isAccessibilitySize {
-            return [GridItem(.flexible(), spacing: 12, alignment: .top)]
+            return [GridItem(.flexible(), spacing: ui(12), alignment: .top)]
         }
 
         let count = horizontalSizeClass == .regular ? 3 : 2
         return Array(
-            repeating: GridItem(.flexible(), spacing: 12, alignment: .top),
+            repeating: GridItem(.flexible(), spacing: ui(12), alignment: .top),
             count: count
         )
     }
@@ -563,14 +579,14 @@ struct ConnectionListView: View {
     private var networkColumns: [GridItem] {
         let count = horizontalSizeClass == .regular && !dynamicTypeSize.isAccessibilitySize ? 2 : 1
         return Array(
-            repeating: GridItem(.flexible(), spacing: 12, alignment: .top),
+            repeating: GridItem(.flexible(), spacing: ui(12), alignment: .top),
             count: count
         )
     }
 
     private var pageHorizontalPadding: CGFloat {
         if isRunningOnMac {
-            return horizontalSizeClass == .regular ? 48 : 32
+            return ui(horizontalSizeClass == .regular ? 48 : 32)
         }
         return horizontalSizeClass == .regular ? 24 : 16
     }
@@ -605,13 +621,13 @@ struct ConnectionListView: View {
             selectNextTheme()
         } label: {
             Image(systemName: selectedTheme.systemImage)
-                .font(.system(size: isRunningOnMac ? 12 : 9, weight: .bold))
+                .font(.system(size: ui(isRunningOnMac ? 12 : 9), weight: .bold))
                 .foregroundStyle(
                     selectedTheme.preferredColorScheme == .dark ? .white : .black.opacity(0.72)
                 )
                 .frame(
-                    width: isRunningOnMac ? 51 : 38,
-                    height: isRunningOnMac ? 24 : 18
+                    width: ui(isRunningOnMac ? 51 : 38),
+                    height: ui(isRunningOnMac ? 24 : 18)
                 )
                 .background {
                     Capsule()
@@ -641,34 +657,35 @@ struct ConnectionListView: View {
 
     private var dashboardLogo: some View {
         Button(action: openRememberedLocation) {
-            HStack(spacing: isRunningOnMac ? 11 : 8) {
+            HStack(spacing: ui(isRunningOnMac ? 11 : 8)) {
                 Image(currentLogoAssetName)
                     .resizable()
                     .scaledToFill()
                     .frame(
-                        width: isRunningOnMac ? 51 : 38,
-                        height: isRunningOnMac ? 51 : 38
+                        width: uiBar(isRunningOnMac ? 51 : 38),
+                        height: uiBar(isRunningOnMac ? 51 : 38)
                     )
                     .clipShape(
                         RoundedRectangle(
-                            cornerRadius: isRunningOnMac ? 12 : 9,
+                            cornerRadius: ui(isRunningOnMac ? 12 : 9),
                             style: .continuous
                         )
                     )
                     .overlay {
                         RoundedRectangle(
-                            cornerRadius: isRunningOnMac ? 12 : 9,
+                            cornerRadius: ui(isRunningOnMac ? 12 : 9),
                             style: .continuous
                         )
                             .stroke(.primary.opacity(0.08), lineWidth: 0.5)
                     }
 
                 Text("NasFinder")
-                    .font(.subheadline.weight(.semibold))
+                    .uiBarFont(.subheadline, weight: .semibold)
                     .foregroundStyle(.primary.opacity(0.82))
                     .fixedSize(horizontal: true, vertical: false)
             }
-            .padding(.vertical, isRunningOnMac ? 4 : 3)
+            // The Mac logo already fills the bar's height.
+            .padding(.vertical, isRunningOnMac ? 0 : 3)
             .fixedSize(horizontal: true, vertical: false)
         }
         .buttonStyle(.plain)
@@ -703,30 +720,42 @@ struct ConnectionListView: View {
     private var dashboardLogoToolbar: some ToolbarContent {
         if #available(iOS 26.0, *) {
             ToolbarItem(placement: .topBarLeading) {
-                dashboardLogo
+                Group {
+                    dashboardLogo
+                }
+                .uiBarFont()
             }
             .sharedBackgroundVisibility(.hidden)
             ToolbarItem(placement: .topBarTrailing) {
-                currentThemeBadge
+                Group {
+                    currentThemeBadge
+                }
+                .uiBarFont()
             }
             .sharedBackgroundVisibility(.hidden)
         } else {
             ToolbarItem(placement: .topBarLeading) {
-                dashboardLogo
+                Group {
+                    dashboardLogo
+                }
+                .uiBarFont()
             }
             ToolbarItem(placement: .topBarTrailing) {
-                currentThemeBadge
+                Group {
+                    currentThemeBadge
+                }
+                .uiBarFont()
             }
         }
     }
 
     private func sectionHeader(_ title: String, systemImage: String) -> some View {
-        HStack(spacing: selectedTheme == .skeuomorphism ? 7 : 3) {
+        HStack(spacing: ui(selectedTheme == .skeuomorphism ? 7 : 3)) {
             ThemedSymbol(systemName: systemImage)
             Text(title)
             Spacer(minLength: 0)
         }
-            .font(.footnote.weight(.medium))
+            .font(.ui(.footnote).weight(.medium))
             .foregroundStyle(.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -770,38 +799,38 @@ struct ConnectionListView: View {
 
 private struct WebNetworkLocationRow: View {
     var body: some View {
-        HStack(spacing: 4) {
-            HStack(spacing: 13) {
-                ThemedSymbol(systemName: "globe", size: 32, symbolSize: 17)
-                    .font(.title3)
+        HStack(spacing: ui(4)) {
+            HStack(spacing: ui(13)) {
+                ThemedSymbol(systemName: "globe", size: ui(32), symbolSize: ui(17))
+                    .font(.ui(.title3))
                     .foregroundStyle(SkyBreezeTheme.browserOrange)
-                    .frame(width: 32, height: 32)
+                    .frame(width: ui(32), height: ui(32))
                     .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: ui(4)) {
+                    HStack(spacing: ui(6)) {
                         Text("Browser")
-                            .font(.subheadline.weight(.medium))
+                            .font(.ui(.subheadline).weight(.medium))
                             .foregroundStyle(.primary)
 
                         Text("WWW")
-                            .font(.caption2.weight(.semibold))
+                            .font(.ui(.caption2).weight(.semibold))
                             .foregroundStyle(SkyBreezeTheme.browserOrange)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
+                            .padding(.horizontal, ui(6))
+                            .padding(.vertical, ui(2))
                             .background(SkyBreezeTheme.browserOrange.opacity(0.1), in: Capsule())
                     }
                 }
 
                 Spacer(minLength: 0)
             }
-            .padding(.vertical, 2)
+            .padding(.vertical, ui(2))
             .frame(maxWidth: .infinity, alignment: .leading)
 
             Image(systemName: "arrow.right")
-                .font(.body.weight(.medium))
+                .font(.ui(.body).weight(.medium))
                 .foregroundStyle(SkyBreezeTheme.accent)
-                .frame(width: 44, height: 48)
+                .frame(width: ui(44), height: ui(48))
                 .contentShape(Rectangle())
                 .accessibilityHidden(true)
         }
@@ -826,28 +855,28 @@ private struct WebHardNetworkLocationRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 7) {
+        HStack(spacing: ui(7)) {
             if isEnamel {
-                PhoneHardMark(size: 32)
+                PhoneHardMark(size: ui(32))
                     .accessibilityHidden(true)
             } else {
                 Image("PhoneHardLogo")
                     .resizable()
                     .scaledToFit()
-                    .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .frame(width: 32, height: 32)
+                    .clipShape(RoundedRectangle(cornerRadius: ui(7), style: .continuous))
+                    .frame(width: ui(32), height: ui(32))
                     .accessibilityHidden(true)
             }
 
             Text("폰하드")
-                .font(.subheadline.weight(.medium))
+                .font(.ui(.subheadline).weight(.medium))
                 .foregroundStyle(.primary)
 
-            Spacer(minLength: 8)
+            Spacer(minLength: ui(8))
 
             if let summary {
                 Text(summary)
-                    .font(.subheadline)
+                    .font(.ui(.subheadline))
                     .foregroundStyle(.secondary)
             }
         }
@@ -865,23 +894,23 @@ private struct StorageOverviewCard: View {
     let columns: Int
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 5) {
+        VStack(alignment: .leading, spacing: ui(16)) {
+            VStack(alignment: .leading, spacing: ui(5)) {
                 Label("저장공간", systemImage: "internaldrive.fill")
-                    .font(.title3.weight(.semibold))
+                    .font(.ui(.title3).weight(.semibold))
                     .foregroundStyle(.primary)
 
                 Text("iPhone의 폰하드 파일과 연결된 원격 위치를 한눈에 확인하세요.")
-                    .font(.subheadline)
+                    .font(.ui(.subheadline))
                     .foregroundStyle(.secondary)
             }
 
             LazyVGrid(
                 columns: Array(
-                    repeating: GridItem(.flexible(), spacing: 10, alignment: .topLeading),
+                    repeating: GridItem(.flexible(), spacing: ui(10), alignment: .topLeading),
                     count: columns
                 ),
-                spacing: 10
+                spacing: ui(10)
             ) {
                 StorageMetric(
                     title: "폰하드",
@@ -913,14 +942,14 @@ private struct StorageOverviewCard: View {
             }
 
             if deviceStorage.hasCapacity {
-                VStack(alignment: .leading, spacing: 7) {
+                VStack(alignment: .leading, spacing: ui(7)) {
                     HStack {
                         Text("iPhone 저장공간 사용량")
                         Spacer()
                         Text(deviceStorage.usedFraction, format: .percent.precision(.fractionLength(0)))
                             .monospacedDigit()
                     }
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.secondary)
 
                     ProgressView(value: deviceStorage.usedFraction)
@@ -935,10 +964,10 @@ private struct StorageOverviewCard: View {
                 }
             }
         }
-        .padding(18)
-        .background(.background, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .padding(ui(18))
+        .background(.background, in: RoundedRectangle(cornerRadius: ui(22), style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 22, style: .continuous)
+            RoundedRectangle(cornerRadius: ui(22), style: .continuous)
                 .stroke(.quaternary, lineWidth: 1)
         }
         .accessibilityElement(children: .contain)
@@ -953,24 +982,24 @@ private struct StorageMetric: View {
     let tint: Color
 
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: ui(10)) {
             Image(systemName: systemImage)
-                .font(.body.weight(.semibold))
+                .font(.ui(.body).weight(.semibold))
                 .foregroundStyle(tint)
-                .frame(width: 34, height: 34)
-                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+                .frame(width: ui(34), height: ui(34))
+                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: ui(10)))
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: ui(2)) {
                 Text(title)
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.secondary)
                 Text(value)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.ui(.subheadline).weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
                 Text(detail)
-                    .font(.caption2)
+                    .font(.ui(.caption2))
                     .foregroundStyle(.tertiary)
                     .lineLimit(2)
             }
@@ -999,25 +1028,25 @@ private struct DashboardSection<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
+        VStack(alignment: .leading, spacing: ui(12)) {
+            VStack(alignment: .leading, spacing: ui(3)) {
+                HStack(spacing: ui(8)) {
                     Text(title)
-                        .font(.headline)
+                        .font(.ui(.headline))
 
                     if let badge {
                         Text(badge)
-                            .font(.caption.monospacedDigit().weight(.semibold))
+                            .font(.ui(.caption).monospacedDigit().weight(.semibold))
                             .foregroundStyle(.secondary)
-                            .padding(.horizontal, 7)
-                            .padding(.vertical, 2)
+                            .padding(.horizontal, ui(7))
+                            .padding(.vertical, ui(2))
                             .background(.quaternary, in: Capsule())
                             .accessibilityLabel("\(badge)개")
                     }
                 }
 
                 Text(subtitle)
-                    .font(.subheadline)
+                    .font(.ui(.subheadline))
                     .foregroundStyle(.secondary)
             }
 
@@ -1033,35 +1062,35 @@ private struct QuickLocationCard: View {
     let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: ui(12)) {
             Image(systemName: systemImage)
-                .font(.title3.weight(.semibold))
+                .font(.ui(.title3).weight(.semibold))
                 .foregroundStyle(tint)
-                .frame(width: 42, height: 42)
-                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 12))
+                .frame(width: ui(42), height: ui(42))
+                .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: ui(12)))
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: ui(3)) {
                 Text(title)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.ui(.subheadline).weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
                 Text(subtitle)
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.secondary)
                     .lineLimit(3)
             }
 
             Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: 118, alignment: .topLeading)
-        .padding(14)
-        .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .frame(maxWidth: .infinity, minHeight: ui(118), alignment: .topLeading)
+        .padding(ui(14))
+        .background(.background, in: RoundedRectangle(cornerRadius: ui(18), style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
+            RoundedRectangle(cornerRadius: ui(18), style: .continuous)
                 .stroke(.quaternary, lineWidth: 1)
         }
-        .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: ui(18), style: .continuous))
         .accessibilityElement(children: .combine)
     }
 }
@@ -1080,38 +1109,38 @@ private struct NetworkLocationCard: View {
     let requestDeletion: () -> Void
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: ui(4)) {
             Button(action: requestOpening) {
-                HStack(spacing: 13) {
+                HStack(spacing: ui(13)) {
                     ThemedSymbol(
                         systemName: connection.kind.systemImage,
-                        size: 32,
-                        symbolSize: 17
+                        size: ui(32),
+                        symbolSize: ui(17)
                     )
-                        .font(.title3)
+                        .font(.ui(.title3))
                         .foregroundStyle(connection.kind.dashboardTint)
-                        .frame(width: 32, height: 32)
+                        .frame(width: ui(32), height: ui(32))
                         .accessibilityHidden(true)
 
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack(spacing: 6) {
+                    VStack(alignment: .leading, spacing: ui(4)) {
+                        HStack(spacing: ui(6)) {
                             Text(connection.name)
-                                .font(.subheadline.weight(.medium))
+                                .font(.ui(.subheadline).weight(.medium))
                                 .foregroundStyle(.primary)
                                 .lineLimit(2)
 
                             if isPreferred {
                                 Image(systemName: "star.fill")
-                                    .font(.caption)
+                                    .font(.ui(.caption))
                                     .foregroundStyle(SkyBreezeTheme.accent)
                                     .accessibilityLabel("기본 위치")
                             }
 
                             Text(connection.kind.dashboardLabel)
-                                .font(.caption2.weight(.semibold))
+                                .font(.ui(.caption2).weight(.semibold))
                                 .foregroundStyle(connection.kind.dashboardTint)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
+                                .padding(.horizontal, ui(6))
+                                .padding(.vertical, ui(2))
                                 .background(
                                     connection.kind.dashboardTint.opacity(0.1),
                                     in: Capsule()
@@ -1119,14 +1148,14 @@ private struct NetworkLocationCard: View {
                         }
 
                         Text(connection.host)
-                            .font(.caption2)
+                            .font(.ui(.caption2))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
                     }
 
                     Spacer(minLength: 0)
                 }
-                .padding(.vertical, 2)
+                .padding(.vertical, ui(2))
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
@@ -1166,8 +1195,8 @@ private struct NetworkLocationCard: View {
                 }
             } label: {
                 Image(systemName: "ellipsis")
-                    .font(.body.weight(.semibold))
-                    .frame(width: 44, height: 54)
+                    .font(.ui(.body).weight(.semibold))
+                    .frame(width: ui(44), height: ui(54))
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("\(connection.name) 연결 메뉴")
@@ -1186,44 +1215,44 @@ private struct AddNetworkLocationCard: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 13) {
+            HStack(spacing: ui(13)) {
                 Group {
                     if isBKStyle {
-                        ThemedSymbol(systemName: "plus", size: 32, symbolSize: 17)
+                        ThemedSymbol(systemName: "plus", size: ui(32), symbolSize: ui(17))
                     } else {
                         Image(systemName: "plus")
-                            .font(.title3.weight(.semibold))
+                            .font(.ui(.title3).weight(.semibold))
                             .foregroundStyle(.blue)
-                            .frame(width: 46, height: 46)
+                            .frame(width: ui(46), height: ui(46))
                             .background(
                                 .blue.opacity(0.12),
-                                in: RoundedRectangle(cornerRadius: 13)
+                                in: RoundedRectangle(cornerRadius: ui(13))
                             )
                     }
                 }
-                .frame(width: 46, height: 46)
+                .frame(width: ui(46), height: ui(46))
                 .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: ui(4)) {
                     Text("네트워크 추가")
-                        .font(.headline)
+                        .font(.ui(.headline))
                         .foregroundStyle(.primary)
                     Text("Synology File Station 또는 SFTP 서버")
-                        .font(.caption)
+                        .font(.ui(.caption))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.leading)
                 }
 
                 Spacer(minLength: 0)
             }
-            .padding(14)
-            .frame(maxWidth: .infinity, minHeight: 90, alignment: .leading)
-            .background(.background, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .padding(ui(14))
+            .frame(maxWidth: .infinity, minHeight: ui(90), alignment: .leading)
+            .background(.background, in: RoundedRectangle(cornerRadius: ui(18), style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                RoundedRectangle(cornerRadius: ui(18), style: .continuous)
                     .stroke(.blue.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
             }
-            .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: ui(18), style: .continuous))
         }
         .buttonStyle(.plain)
         .accessibilityHint("새 원격 저장공간 연결 화면을 엽니다.")
@@ -1235,20 +1264,20 @@ private struct FileAppIntegrationBanner: View {
         NavigationLink {
             FilesAppIntegrationGuideView(connectionCount: nil)
         } label: {
-            HStack(alignment: .top, spacing: 12) {
+            HStack(alignment: .top, spacing: ui(12)) {
                 Image(systemName: "folder.fill")
-                    .font(.title3)
+                    .font(.ui(.title3))
                     .foregroundStyle(.blue)
-                    .frame(width: 38, height: 38)
-                    .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 11))
+                    .frame(width: ui(38), height: ui(38))
+                    .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: ui(11)))
                     .accessibilityHidden(true)
 
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: ui(4)) {
                     Text("Apple 파일 앱에서도 열 수 있어요")
-                        .font(.subheadline.weight(.semibold))
+                        .font(.ui(.subheadline).weight(.semibold))
                         .foregroundStyle(.primary)
                     Text("파일 앱의 ‘탐색 > 위치’에서 추가한 NAS와 SFTP 연결을 확인하세요.")
-                        .font(.caption)
+                        .font(.ui(.caption))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.leading)
                 }
@@ -1256,13 +1285,13 @@ private struct FileAppIntegrationBanner: View {
                 Spacer(minLength: 0)
 
                 Image(systemName: "chevron.right")
-                    .font(.caption.weight(.semibold))
+                    .font(.ui(.caption).weight(.semibold))
                     .foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
             }
-            .padding(14)
-            .background(.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
-            .contentShape(RoundedRectangle(cornerRadius: 18))
+            .padding(ui(14))
+            .background(.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: ui(18)))
+            .contentShape(RoundedRectangle(cornerRadius: ui(18)))
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
@@ -1275,57 +1304,57 @@ struct FilesAppIntegrationGuideView: View {
 
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
-                VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: ui(24)) {
+                VStack(alignment: .leading, spacing: ui(12)) {
                     Image(systemName: "folder.fill.badge.gearshape")
-                        .font(.system(size: 34, weight: .semibold))
+                        .font(.system(size: ui(34), weight: .semibold))
                         .foregroundStyle(.blue)
-                        .frame(width: 64, height: 64)
-                        .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 18))
+                        .frame(width: ui(64), height: ui(64))
+                        .background(.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: ui(18)))
                         .accessibilityHidden(true)
 
                     Text("NasFinder의 원격 위치를 Apple 파일 앱에서도 찾아볼 수 있습니다.")
-                        .font(.title3.weight(.semibold))
+                        .font(.ui(.title3).weight(.semibold))
 
                     if let connectionCount {
                         Text(connectionCount == 0
                             ? "먼저 NasFinder에서 NAS 또는 SFTP 연결을 추가해 주세요."
                             : "현재 저장된 원격 위치 \(connectionCount)개가 파일 앱에 각각 표시됩니다.")
-                            .font(.subheadline)
+                            .font(.ui(.subheadline))
                             .foregroundStyle(.secondary)
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: ui(16)) {
                     Text("설정 방법")
-                        .font(.headline)
+                        .font(.ui(.headline))
 
                     IntegrationStep(number: 1, text: "Apple 파일 앱을 열고 아래의 ‘탐색’을 선택합니다.")
                     IntegrationStep(number: 2, text: "오른쪽 위의 더 보기(…)를 누른 다음 ‘편집’을 선택합니다.")
                     IntegrationStep(number: 3, text: "NasFinder에서 추가한 NAS 또는 SFTP 이름을 켭니다.")
                     IntegrationStep(number: 4, text: "‘위치’에서 서버 이름을 선택해 원격 파일을 엽니다.")
                 }
-                .padding(18)
-                .background(.background, in: RoundedRectangle(cornerRadius: 20))
+                .padding(ui(18))
+                .background(.background, in: RoundedRectangle(cornerRadius: ui(20)))
 
                 Label {
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: ui(4)) {
                         Text("파일 작업 범위")
-                            .font(.subheadline.weight(.semibold))
+                            .font(.ui(.subheadline).weight(.semibold))
                         Text("SFTP 위치는 파일 앱에서도 복사, 업로드, 이동, 이름 변경과 삭제를 지원합니다. Synology 위치는 서버 작업 검증이 끝날 때까지 열기와 내려받기만 지원합니다.")
-                            .font(.caption)
+                            .font(.ui(.caption))
                             .foregroundStyle(.secondary)
                     }
                 } icon: {
                     Image(systemName: "info.circle.fill")
                         .foregroundStyle(.blue)
                 }
-                .padding(16)
-                .background(.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: 18))
+                .padding(ui(16))
+                .background(.blue.opacity(0.07), in: RoundedRectangle(cornerRadius: ui(18)))
                 .accessibilityElement(children: .combine)
             }
-            .padding(16)
-            .frame(maxWidth: 720)
+            .padding(ui(16))
+            .frame(maxWidth: ui(720))
             .frame(maxWidth: .infinity)
         }
         .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
@@ -1339,16 +1368,16 @@ private struct IntegrationStep: View {
     let text: String
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
+        HStack(alignment: .top, spacing: ui(12)) {
             Text(number, format: .number)
-                .font(.caption.weight(.bold))
+                .font(.ui(.caption).weight(.bold))
                 .foregroundStyle(.white)
-                .frame(width: 26, height: 26)
+                .frame(width: ui(26), height: ui(26))
                 .background(.blue, in: Circle())
                 .accessibilityHidden(true)
 
             Text(text)
-                .font(.subheadline)
+                .font(.ui(.subheadline))
                 .fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)

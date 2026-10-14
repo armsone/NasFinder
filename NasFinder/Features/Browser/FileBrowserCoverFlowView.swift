@@ -124,7 +124,7 @@ struct FileBrowserCoverFlowGeometry: Equatable {
 
 enum FileBrowserCoverFlowGeometryPolicy {
     static let horizontalInset: CGFloat = 16
-    static let chromeClearance: CGFloat = 60
+    static let chromeClearance: CGFloat = ui(60)
     static let reflectionReserve: CGFloat = 64
 
     static func mainImageBottomGap(safeAreaBottom: CGFloat) -> CGFloat {
@@ -310,13 +310,13 @@ enum FileBrowserOrientationController {
 }
 
 enum FileBrowserCoverFlowChromePolicy {
-    static let buttonSize: CGFloat = 44
-    static let horizontalPadding: CGFloat = 12
-    static let safeAreaTopPadding: CGFloat = 4
-    static let itemSpacing: CGFloat = 8
+    static let buttonSize: CGFloat = ui(44)
+    static let horizontalPadding: CGFloat = ui(12)
+    static let safeAreaTopPadding: CGFloat = ui(4)
+    static let itemSpacing: CGFloat = ui(8)
 
     static func titleMaximumWidth(containerWidth: CGFloat) -> CGFloat {
-        min(containerWidth * 0.44, 340)
+        min(containerWidth * 0.44, ui(340))
     }
 
     static func foreground(usesDarkBackground: Bool) -> Color {
@@ -372,8 +372,8 @@ struct FileBrowserCoverFlowChromeIcon: View {
         Image(systemName: kind == .back ? "chevron.left" : "ellipsis")
             .font(
                 kind == .back
-                    ? .system(size: 22, weight: .semibold)
-                    : .system(size: 16, weight: .bold)
+                    ? .system(size: ui(22), weight: .semibold)
+                    : .system(size: ui(16), weight: .bold)
             )
             .frame(
                 width: FileBrowserCoverFlowChromePolicy.buttonSize,
@@ -435,6 +435,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
     ) -> Thumbnail
     let onActivate: (Item) -> Void
     let onShowActions: ((Item) -> Void)?
+    var actionsPopover: ((Item) -> FileBrowserPanelPopover<AnyView>)? = nil
 
     @State private var selectedIndex = 0
     @State private var scrollPosition: CGFloat = 0
@@ -464,7 +465,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
                     startPoint: .top,
                     endPoint: .bottom
                 )
-                .frame(height: usesDarkBackground ? 72 : 82)
+                .frame(height: ui(usesDarkBackground ? 72 : 82))
                 .blur(radius: usesDarkBackground ? 5 : 8)
                 .position(x: proxy.size.width / 2, y: layout.floorCenterY)
                 .allowsHitTesting(false)
@@ -480,7 +481,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
 
                 if let centeredItem {
                     Text(itemName(centeredItem))
-                        .font(.system(size: 13, weight: .medium))
+                        .font(.system(size: ui(13), weight: .medium))
                         .foregroundStyle(
                             usesDarkBackground
                                 ? Color.white.opacity(0.74)
@@ -495,11 +496,11 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
                         )
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .padding(.horizontal, 16)
+                        .padding(.horizontal, ui(16))
                         .frame(
                             maxWidth: min(
-                                proxy.size.width - proxy.safeAreaInsets.leading - proxy.safeAreaInsets.trailing - 32,
-                                max(layout.centerSide + 60, 240)
+                                proxy.size.width - proxy.safeAreaInsets.leading - proxy.safeAreaInsets.trailing - ui(32),
+                                max(layout.centerSide + ui(60), ui(240))
                             )
                         )
                         .position(
@@ -669,6 +670,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
         .onLongPressGesture(minimumDuration: 0.45) {
             onShowActions?(item)
         }
+        .fileBrowserPanelPopover(actionsPopover?(item))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(itemName(item))
         .accessibilityHint("두 번 탭하여 열기")

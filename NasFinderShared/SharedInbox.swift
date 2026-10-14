@@ -7,6 +7,9 @@ public struct SharedInboxRecord: Codable, Sendable, Identifiable, Hashable {
     public let contentTypeIdentifier: String?
     public let byteCount: Int64
     public let importedAt: Date
+    /// User-created folders only. Absent in every manifest written before this feature,
+    /// so decoding defaults it to `false` and keeps those legacy file records unchanged.
+    public let isDirectory: Bool
 
     public init(
         id: UUID,
@@ -14,7 +17,8 @@ public struct SharedInboxRecord: Codable, Sendable, Identifiable, Hashable {
         storedFilename: String,
         contentTypeIdentifier: String?,
         byteCount: Int64,
-        importedAt: Date
+        importedAt: Date,
+        isDirectory: Bool = false
     ) {
         self.id = id
         self.originalFilename = originalFilename
@@ -22,11 +26,28 @@ public struct SharedInboxRecord: Codable, Sendable, Identifiable, Hashable {
         self.contentTypeIdentifier = contentTypeIdentifier
         self.byteCount = byteCount
         self.importedAt = importedAt
+        self.isDirectory = isDirectory
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        originalFilename = try container.decode(String.self, forKey: .originalFilename)
+        storedFilename = try container.decode(String.self, forKey: .storedFilename)
+        contentTypeIdentifier = try container.decodeIfPresent(String.self, forKey: .contentTypeIdentifier)
+        byteCount = try container.decode(Int64.self, forKey: .byteCount)
+        importedAt = try container.decode(Date.self, forKey: .importedAt)
+        isDirectory = try container.decodeIfPresent(Bool.self, forKey: .isDirectory) ?? false
     }
 }
 
 public enum SharedInbox {
     public static let appGroupIdentifier = "group.com.armsone.nasfinder"
+
+    /// PhoneHard's physical music folder, directly inside the inbox. Only music saved
+    /// there carries a `Music/<filename>` relative `storedFilename`; every other record
+    /// keeps its existing flat name and location.
+    public static let musicDirectoryName = "Music"
 
     private static let inboxDirectoryName = "SharedInbox"
     private static let manifestFilename = ".nasfinder-manifest.json"
@@ -39,6 +60,13 @@ public enum SharedInbox {
         case sourceUnavailable
         case duplicateRecord
         case coordinationFailed(String)
+        case musicFolderUnavailable
+        case destinationNotFound
+        case destinationNotAFolder
+        case destinationAlreadyExists(String)
+        case destinationInsideSource
+        case staleRecord
+        case partialMoveFailure(String)
 
         public var errorDescription: String? {
             switch self {
@@ -52,6 +80,20 @@ public enum SharedInbox {
                 "이미 있는 폰하드 파일과 식별자가 충돌했습니다."
             case let .coordinationFailed(message):
                 "공유 저장소를 조정하지 못했습니다: \(message)"
+            case .musicFolderUnavailable:
+                "폰하드에 Music이라는 이름의 다른 항목이 있어 Music 폴더를 쓸 수 없습니다. 그 항목의 이름을 바꾼 뒤 다시 시도하세요."
+            case .destinationNotFound:
+                "이동할 폴더를 찾을 수 없습니다."
+            case .destinationNotAFolder:
+                "선택한 위치는 폴더가 아닙니다."
+            case let .destinationAlreadyExists(name):
+                "\(name) 위치에 같은 이름의 항목이 이미 있습니다."
+            case .destinationInsideSource:
+                "폴더를 자기 자신이나 그 안의 하위 폴더로 옮기거나 복사할 수 없습니다."
+            case .staleRecord:
+                "이동할 항목의 저장된 정보가 오래되어 이동할 수 없습니다. 목록을 새로고침한 뒤 다시 시도하세요."
+            case let .partialMoveFailure(message):
+                "항목이 새 위치로 옮겨졌지만 목록 정보를 갱신하지 못했습니다: \(message). 목록을 새로고침해 실제 위치를 확인하세요."
             }
         }
     }
@@ -82,6 +124,18 @@ public enum SharedInbox {
         }
     }
 
+    public static func isMusicStoredFilename(_ storedFilename: String) -> Bool {
+        storedFilename.hasPrefix(musicDirectoryName + "/")
+    }
+
+    /// Whether the Music folder is already there as a real directory. Never creates it.
+    public static func musicDirectoryExists() -> Bool {
+        withProcessLock {
+            guard let locations = try? prepareLocations() else { return false }
+            return (try? existingMusicDirectory(inboxURL: locations.inboxURL)) != nil
+        }
+    }
+
     /// Copies a provider-owned temporary item into the durable App Group inbox.
     /// The caller commits one or more returned records with `append(records:)`.
     @discardableResult
@@ -89,6 +143,37 @@ public enum SharedInbox {
         at sourceURL: URL,
         originalFilename: String,
         contentTypeIdentifier: String?
+    ) throws -> SharedInboxRecord {
+        try importTemporaryFile(
+            at: sourceURL,
+            originalFilename: originalFilename,
+            contentTypeIdentifier: contentTypeIdentifier,
+            intoMusicDirectory: false
+        )
+    }
+
+    /// Same as `importTemporaryFile`, but the single regular file lands in the physical
+    /// Music folder. An existing Music directory is reused as-is; a file or link already
+    /// using that name is an error and is never replaced.
+    @discardableResult
+    public static func importTemporaryMusicFile(
+        at sourceURL: URL,
+        originalFilename: String,
+        contentTypeIdentifier: String?
+    ) throws -> SharedInboxRecord {
+        try importTemporaryFile(
+            at: sourceURL,
+            originalFilename: originalFilename,
+            contentTypeIdentifier: contentTypeIdentifier,
+            intoMusicDirectory: true
+        )
+    }
+
+    private static func importTemporaryFile(
+        at sourceURL: URL,
+        originalFilename: String,
+        contentTypeIdentifier: String?,
+        intoMusicDirectory: Bool
     ) throws -> SharedInboxRecord {
         try withProcessLock {
             let fileManager = FileManager.default
@@ -99,10 +184,14 @@ public enum SharedInbox {
                 .isSymbolicLinkKey,
             ])
 
-            guard sourceValues.isRegularFile == true || sourceValues.isDirectory == true,
+            guard sourceValues.isRegularFile == true
+                    || (sourceValues.isDirectory == true && !intoMusicDirectory),
                   sourceValues.isSymbolicLink != true else {
                 throw InboxError.sourceUnavailable
             }
+            let directoryURL = try intoMusicDirectory
+                ? prepareMusicDirectory(inboxURL: locations.inboxURL)
+                : locations.inboxURL
 
             let existingIDs = Set(try readRecords(at: locations.manifestURL).map(\.id))
             let safeOriginalName = displayFilename(originalFilename, fallbackURL: sourceURL)
@@ -113,8 +202,11 @@ public enum SharedInbox {
                 identifier = UUID()
                 storedFilename = uniqueStoredFilename(
                     preferredName: safeOriginalName,
-                    inboxURL: locations.inboxURL
+                    inboxURL: directoryURL
                 )
+                if intoMusicDirectory {
+                    storedFilename = musicDirectoryName + "/" + storedFilename
+                }
                 destinationURL = try validatedFileURL(
                     storedFilename: storedFilename,
                     inboxURL: locations.inboxURL
@@ -167,34 +259,8 @@ public enum SharedInbox {
     /// Atomically commits a batch so the host app never observes a half-finished share.
     public static func append(records newRecords: [SharedInboxRecord]) throws {
         guard !newRecords.isEmpty else { return }
-
         try withProcessLock {
-            let locations = try prepareLocations()
-            try updateRecords(at: locations.manifestURL) { currentRecords in
-                let currentIDs = Set(currentRecords.map(\.id))
-                let currentFilenames = Set(currentRecords.map(\.storedFilename))
-                let incomingIDs = Set(newRecords.map(\.id))
-                let incomingFilenames = Set(newRecords.map(\.storedFilename))
-
-                guard incomingIDs.count == newRecords.count,
-                      incomingFilenames.count == newRecords.count,
-                      currentIDs.isDisjoint(with: incomingIDs),
-                      currentFilenames.isDisjoint(with: incomingFilenames) else {
-                    throw InboxError.duplicateRecord
-                }
-
-                for record in newRecords {
-                    let fileURL = try validatedFileURL(
-                        storedFilename: record.storedFilename,
-                        inboxURL: locations.inboxURL
-                    )
-                    guard FileManager.default.fileExists(atPath: fileURL.path) else {
-                        throw InboxError.sourceUnavailable
-                    }
-                }
-
-                currentRecords.append(contentsOf: newRecords)
-            }
+            try appendLocked(records: newRecords, locations: try prepareLocations())
         }
     }
 
@@ -205,24 +271,163 @@ public enum SharedInbox {
                 storedFilename: record.storedFilename,
                 inboxURL: locations.inboxURL
             )
+
+            if FileManager.default.fileExists(atPath: storedURL.path) {
+                var bodyError: Error?
+                var coordinationError: NSError?
+                NSFileCoordinator(filePresenter: nil).coordinate(
+                    writingItemAt: storedURL,
+                    options: .forDeleting,
+                    error: &coordinationError
+                ) { coordinatedURL in
+                    do {
+                        try FileManager.default.removeItem(at: coordinatedURL)
+                    } catch {
+                        bodyError = error
+                    }
+                }
+                if let coordinationError {
+                    throw InboxError.coordinationFailed(coordinationError.localizedDescription)
+                }
+                if let bodyError { throw bodyError }
+            }
+
+            // The filesystem above is the source of truth: only drop manifest entries for
+            // items that are actually gone. A partial failure elsewhere in the tree then
+            // keeps every still-present file's original id reachable instead of orphaning it.
             try updateRecords(at: locations.manifestURL) { records in
-                records.removeAll {
-                    $0.id == record.id || $0.storedFilename == record.storedFilename
+                records.removeAll { candidate in
+                    let matchesTarget = candidate.id == record.id
+                        || candidate.storedFilename == record.storedFilename
+                        || candidate.storedFilename.hasPrefix(record.storedFilename + "/")
+                    guard matchesTarget else { return false }
+                    guard let candidateURL = try? validatedFileURL(
+                        storedFilename: candidate.storedFilename,
+                        inboxURL: locations.inboxURL
+                    ) else { return true }
+                    return !FileManager.default.fileExists(atPath: candidateURL.path)
+                }
+            }
+        }
+    }
+
+    /// Creates a real, empty, physical subfolder under `parentStoredPath` (`nil` is the
+    /// PhoneHard root) and commits it as a manifest record so it keeps showing up, even
+    /// while empty, across refreshes and relaunches. Never overwrites an existing item.
+    @discardableResult
+    public static func createFolder(
+        named name: String,
+        in parentStoredPath: String?
+    ) throws -> SharedInboxRecord {
+        try withProcessLock {
+            let locations = try prepareLocations()
+            let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedName.isEmpty,
+                  trimmedName != ".",
+                  trimmedName != "..",
+                  !trimmedName.contains("/"),
+                  !trimmedName.contains("\\") else {
+                throw InboxError.unsafeFilename(name)
+            }
+
+            try validateFolderDestination(parentStoredPath, inboxURL: locations.inboxURL)
+            let storedFilename = Self.joined(parentStoredPath, trimmedName)
+            try rejectReservedRootName(storedFilename, parentStoredPath: parentStoredPath)
+            let destinationURL = try validatedFileURL(
+                storedFilename: storedFilename,
+                inboxURL: locations.inboxURL
+            )
+            guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
+                throw InboxError.destinationAlreadyExists(trimmedName)
+            }
+
+            try FileManager.default.createDirectory(
+                at: destinationURL,
+                withIntermediateDirectories: false,
+                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+            )
+
+            let existingIDs = Set(try readRecords(at: locations.manifestURL).map(\.id))
+            var identifier = UUID()
+            while existingIDs.contains(identifier) { identifier = UUID() }
+
+            let record = SharedInboxRecord(
+                id: identifier,
+                originalFilename: trimmedName,
+                storedFilename: storedFilename,
+                contentTypeIdentifier: nil,
+                byteCount: 0,
+                importedAt: Date(),
+                isDirectory: true
+            )
+            do {
+                try appendLocked(records: [record], locations: locations)
+            } catch {
+                try? FileManager.default.removeItem(at: destinationURL)
+                throw error
+            }
+            return record
+        }
+    }
+
+    /// Moves a file or folder (with every descendant) to a new parent folder, keeping
+    /// every affected record's `id`. A name collision at the destination is resolved with
+    /// a unique name, exactly like importing a duplicate file; nothing is ever overwritten.
+    @discardableResult
+    public static func moveItem(
+        _ record: SharedInboxRecord,
+        toFolder destinationStoredPath: String?
+    ) throws -> SharedInboxRecord {
+        try withProcessLock {
+            let locations = try prepareLocations()
+            let sourceURL = try validatedFileURL(
+                storedFilename: record.storedFilename,
+                inboxURL: locations.inboxURL
+            )
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                throw InboxError.sourceUnavailable
+            }
+
+            let currentParent = Self.parentPath(of: record.storedFilename)
+            if Self.normalized(currentParent) == Self.normalized(destinationStoredPath) {
+                return record
+            }
+
+            try validateFolderDestination(destinationStoredPath, inboxURL: locations.inboxURL)
+            if record.isDirectory, let destinationStoredPath {
+                guard destinationStoredPath != record.storedFilename,
+                      !destinationStoredPath.hasPrefix(record.storedFilename + "/") else {
+                    throw InboxError.destinationInsideSource
                 }
             }
 
-            // Commit the manifest first. A failed file removal can only leave an orphan,
-            // never a manifest entry pointing at a missing item.
-            guard FileManager.default.fileExists(atPath: storedURL.path) else { return }
+            let destinationParentURL = try validatedDirectoryURL(
+                for: destinationStoredPath,
+                inboxURL: locations.inboxURL
+            )
+            let itemName = (record.storedFilename as NSString).lastPathComponent
+            let uniqueName = uniqueStoredFilename(
+                preferredName: itemName,
+                inboxURL: destinationParentURL
+            )
+            let newStoredFilename = Self.joined(destinationStoredPath, uniqueName)
+            try rejectReservedRootName(newStoredFilename, parentStoredPath: destinationStoredPath)
+            let destinationURL = try validatedFileURL(
+                storedFilename: newStoredFilename,
+                inboxURL: locations.inboxURL
+            )
+
             var bodyError: Error?
             var coordinationError: NSError?
             NSFileCoordinator(filePresenter: nil).coordinate(
-                writingItemAt: storedURL,
-                options: .forDeleting,
+                writingItemAt: sourceURL,
+                options: .forMoving,
+                writingItemAt: destinationURL,
+                options: [],
                 error: &coordinationError
-            ) { coordinatedURL in
+            ) { coordinatedSource, coordinatedDestination in
                 do {
-                    try FileManager.default.removeItem(at: coordinatedURL)
+                    try FileManager.default.moveItem(at: coordinatedSource, to: coordinatedDestination)
                 } catch {
                     bodyError = error
                 }
@@ -231,6 +436,325 @@ public enum SharedInbox {
                 throw InboxError.coordinationFailed(coordinationError.localizedDescription)
             }
             if let bodyError { throw bodyError }
+
+            let oldPrefix = record.storedFilename + "/"
+            let newPrefix = newStoredFilename + "/"
+            var movedRecord = record
+            do {
+                try updateRecords(at: locations.manifestURL) { records in
+                    var matchedCount = 0
+                    for index in records.indices {
+                        if records[index].id == record.id
+                            || records[index].storedFilename == record.storedFilename {
+                            matchedCount += 1
+                            let updated = SharedInboxRecord(
+                                id: records[index].id,
+                                originalFilename: records[index].originalFilename,
+                                storedFilename: newStoredFilename,
+                                contentTypeIdentifier: records[index].contentTypeIdentifier,
+                                byteCount: records[index].byteCount,
+                                importedAt: records[index].importedAt,
+                                isDirectory: records[index].isDirectory
+                            )
+                            records[index] = updated
+                            movedRecord = updated
+                        } else if records[index].storedFilename.hasPrefix(oldPrefix) {
+                            let suffix = records[index].storedFilename.dropFirst(oldPrefix.count)
+                            records[index] = SharedInboxRecord(
+                                id: records[index].id,
+                                originalFilename: records[index].originalFilename,
+                                storedFilename: newPrefix + suffix,
+                                contentTypeIdentifier: records[index].contentTypeIdentifier,
+                                byteCount: records[index].byteCount,
+                                importedAt: records[index].importedAt,
+                                isDirectory: records[index].isDirectory
+                            )
+                        }
+                    }
+                    // A stale `record` (unknown id, already-renamed storedFilename) must
+                    // never report success after the filesystem already moved the item;
+                    // the catch below undoes the move so the manifest and disk agree again.
+                    guard matchedCount >= 1 else {
+                        throw InboxError.staleRecord
+                    }
+                }
+            } catch {
+                // The manifest never reflects a location the filesystem does not have.
+                // Moving the item back keeps both in lockstep instead of losing the record.
+                // If the rollback itself fails, the file is genuinely stuck at the new
+                // location with no manifest entry; report that distinctly instead of
+                // silently swallowing it, so the caller never believes the move fully
+                // failed when the item actually moved. The next reconcile still picks the
+                // file up at its new physical location under a fresh, stable id.
+                var rollbackError: NSError?
+                var rollbackBodyError: Error?
+                NSFileCoordinator(filePresenter: nil).coordinate(
+                    writingItemAt: destinationURL,
+                    options: .forMoving,
+                    writingItemAt: sourceURL,
+                    options: [],
+                    error: &rollbackError
+                ) { coordinatedDestination, coordinatedSource in
+                    do {
+                        try FileManager.default.moveItem(at: coordinatedDestination, to: coordinatedSource)
+                    } catch {
+                        rollbackBodyError = error
+                    }
+                }
+                if rollbackError != nil || rollbackBodyError != nil {
+                    throw InboxError.partialMoveFailure(error.localizedDescription)
+                }
+                throw error
+            }
+            return movedRecord
+        }
+    }
+
+    /// Copies a file or folder (with every descendant) into a new parent folder. Every
+    /// copied record, including the top-level item, gets a brand-new `id`; the original
+    /// is left completely untouched. A name collision at the destination is resolved with
+    /// a unique name rather than overwriting anything.
+    @discardableResult
+    public static func copyItem(
+        _ record: SharedInboxRecord,
+        toFolder destinationStoredPath: String?
+    ) throws -> [SharedInboxRecord] {
+        try withProcessLock {
+            let locations = try prepareLocations()
+            let sourceURL = try validatedFileURL(
+                storedFilename: record.storedFilename,
+                inboxURL: locations.inboxURL
+            )
+            guard FileManager.default.fileExists(atPath: sourceURL.path) else {
+                throw InboxError.sourceUnavailable
+            }
+
+            try validateFolderDestination(destinationStoredPath, inboxURL: locations.inboxURL)
+            // Same self/descendant guard as moveItem: without it the API (not just the
+            // picker UI, which merely hides the source row) would let `A` be copied into
+            // its own descendant `A/B`.
+            if record.isDirectory, let destinationStoredPath {
+                guard destinationStoredPath != record.storedFilename,
+                      !destinationStoredPath.hasPrefix(record.storedFilename + "/") else {
+                    throw InboxError.destinationInsideSource
+                }
+            }
+
+            let destinationParentURL = try validatedDirectoryURL(
+                for: destinationStoredPath,
+                inboxURL: locations.inboxURL
+            )
+            let itemName = (record.storedFilename as NSString).lastPathComponent
+            let uniqueName = uniqueStoredFilename(
+                preferredName: itemName,
+                inboxURL: destinationParentURL
+            )
+            let newStoredFilename = Self.joined(destinationStoredPath, uniqueName)
+            try rejectReservedRootName(newStoredFilename, parentStoredPath: destinationStoredPath)
+            let destinationURL = try validatedFileURL(
+                storedFilename: newStoredFilename,
+                inboxURL: locations.inboxURL
+            )
+            guard !FileManager.default.fileExists(atPath: destinationURL.path) else {
+                throw InboxError.destinationAlreadyExists(uniqueName)
+            }
+
+            // Existing manifest records for the subtree are mirrored into the copy so
+            // nested, user-created folders (and their records) keep showing up; loose
+            // files are rediscovered automatically on the next `records()` reconcile.
+            let trackedDescendants = try readRecords(at: locations.manifestURL).filter {
+                $0.id != record.id && $0.storedFilename.hasPrefix(record.storedFilename + "/")
+            }
+
+            // Copy into a hidden, task-owned staging name first and rename into place only
+            // once the whole tree has fully landed. A failure at either step can only ever
+            // remove the staging item we just created: reconcile ignores dotfiles, so a
+            // half-written staging tree never surfaces as a record, and a race where
+            // another writer claims `destinationURL` first surfaces as a plain rename
+            // failure that leaves that preexisting item completely untouched.
+            let stagingURL = destinationParentURL.appendingPathComponent(
+                ".nasfinder-copy-\(UUID().uuidString)",
+                isDirectory: false
+            )
+            do {
+                try FileManager.default.copyItem(at: sourceURL, to: stagingURL)
+            } catch {
+                try? FileManager.default.removeItem(at: stagingURL)
+                throw error
+            }
+            do {
+                try FileManager.default.moveItem(at: stagingURL, to: destinationURL)
+            } catch let error as CocoaError where error.code == .fileWriteFileExists {
+                try? FileManager.default.removeItem(at: stagingURL)
+                throw InboxError.destinationAlreadyExists(uniqueName)
+            } catch {
+                try? FileManager.default.removeItem(at: stagingURL)
+                throw error
+            }
+
+            let oldPrefix = record.storedFilename + "/"
+            var newRecords: [SharedInboxRecord] = [
+                SharedInboxRecord(
+                    id: UUID(),
+                    originalFilename: record.originalFilename,
+                    storedFilename: newStoredFilename,
+                    contentTypeIdentifier: record.contentTypeIdentifier,
+                    byteCount: record.isDirectory ? 0 : record.byteCount,
+                    importedAt: Date(),
+                    isDirectory: record.isDirectory
+                ),
+            ]
+            for descendant in trackedDescendants {
+                let suffix = descendant.storedFilename.dropFirst(oldPrefix.count)
+                newRecords.append(
+                    SharedInboxRecord(
+                        id: UUID(),
+                        originalFilename: descendant.originalFilename,
+                        storedFilename: newStoredFilename + "/" + suffix,
+                        contentTypeIdentifier: descendant.contentTypeIdentifier,
+                        byteCount: descendant.isDirectory ? 0 : descendant.byteCount,
+                        importedAt: Date(),
+                        isDirectory: descendant.isDirectory
+                    )
+                )
+            }
+
+            do {
+                try appendLocked(records: newRecords, locations: locations)
+            } catch {
+                try? FileManager.default.removeItem(at: destinationURL)
+                throw error
+            }
+            return newRecords
+        }
+    }
+
+    /// Counts every real file and folder physically on disk under `storedFilename`,
+    /// including hidden ones, since a recursive delete removes them too and the manifest
+    /// (reconciled with `.skipsHiddenFiles`) would otherwise undercount what a deletion
+    /// confirmation promises. Symlinks are counted as the single entry they are but never
+    /// followed, so nothing outside the inbox root is ever walked. The hidden manifest
+    /// file itself only ever lives at the inbox root, never inside a subfolder, so no
+    /// reserved name needs filtering here.
+    public static func descendantCount(of storedFilename: String) throws -> Int {
+        try withProcessLock {
+            let locations = try prepareLocations()
+            let folderURL = try validatedFileURL(
+                storedFilename: storedFilename,
+                inboxURL: locations.inboxURL
+            )
+            var isDirectory: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: folderURL.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                return 0
+            }
+            guard let enumerator = FileManager.default.enumerator(
+                at: folderURL,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                options: []
+            ) else { return 0 }
+
+            var count = 0
+            for case let url as URL in enumerator {
+                let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                if values.isSymbolicLink == true {
+                    enumerator.skipDescendants()
+                }
+                count += 1
+            }
+            return count
+        }
+    }
+
+    /// `nil` means the PhoneHard root, which always exists. Anything else must already be
+    /// a real, manifest-reserved-name-free, non-symlink directory under the root.
+    private static func validateFolderDestination(
+        _ storedPath: String?,
+        inboxURL: URL
+    ) throws {
+        guard let storedPath else { return }
+        guard storedPath != legacyManifestFilename, storedPath != manifestFilename else {
+            throw InboxError.destinationNotAFolder
+        }
+        let url = try validatedFileURL(storedFilename: storedPath, inboxURL: inboxURL)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw InboxError.destinationNotFound
+        }
+        let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+        guard values.isSymbolicLink != true, values.isDirectory == true else {
+            throw InboxError.destinationNotAFolder
+        }
+    }
+
+    /// `manifest.json` and the hidden manifest file are only reserved at the PhoneHard
+    /// root: `reconciledRecords` silently drops any record with that exact stored
+    /// filename there, so landing a create/move/copy result on one would make the item
+    /// vanish on the very next reload while the file stays on disk forever. The same name
+    /// one level deeper (e.g. `Music/manifest.json`) is an ordinary, trackable file.
+    private static func rejectReservedRootName(
+        _ storedFilename: String,
+        parentStoredPath: String?
+    ) throws {
+        guard parentStoredPath == nil,
+              storedFilename == legacyManifestFilename || storedFilename == manifestFilename else {
+            return
+        }
+        throw InboxError.unsafeFilename(storedFilename)
+    }
+
+    private static func validatedDirectoryURL(
+        for storedPath: String?,
+        inboxURL: URL
+    ) throws -> URL {
+        guard let storedPath else { return inboxURL }
+        return try validatedFileURL(storedFilename: storedPath, inboxURL: inboxURL)
+    }
+
+    private static func joined(_ parentStoredPath: String?, _ name: String) -> String {
+        guard let parentStoredPath, !parentStoredPath.isEmpty else { return name }
+        return parentStoredPath + "/" + name
+    }
+
+    private static func parentPath(of storedFilename: String) -> String? {
+        let parent = (storedFilename as NSString).deletingLastPathComponent
+        return parent.isEmpty ? nil : parent
+    }
+
+    private static func normalized(_ storedPath: String?) -> String {
+        storedPath ?? ""
+    }
+
+    /// Appends records while already holding `processLock`; callers of the public
+    /// `append(records:)` acquire that lock themselves, so this avoids a re-entrant lock.
+    private static func appendLocked(
+        records newRecords: [SharedInboxRecord],
+        locations: Locations
+    ) throws {
+        guard !newRecords.isEmpty else { return }
+        try updateRecords(at: locations.manifestURL) { currentRecords in
+            let currentIDs = Set(currentRecords.map(\.id))
+            let currentFilenames = Set(currentRecords.map(\.storedFilename))
+            let incomingIDs = Set(newRecords.map(\.id))
+            let incomingFilenames = Set(newRecords.map(\.storedFilename))
+
+            guard incomingIDs.count == newRecords.count,
+                  incomingFilenames.count == newRecords.count,
+                  currentIDs.isDisjoint(with: incomingIDs),
+                  currentFilenames.isDisjoint(with: incomingFilenames) else {
+                throw InboxError.duplicateRecord
+            }
+
+            for record in newRecords {
+                let fileURL = try validatedFileURL(
+                    storedFilename: record.storedFilename,
+                    inboxURL: locations.inboxURL
+                )
+                guard FileManager.default.fileExists(atPath: fileURL.path) else {
+                    throw InboxError.sourceUnavailable
+                }
+            }
+
+            currentRecords.append(contentsOf: newRecords)
         }
     }
 
@@ -267,6 +791,42 @@ public enum SharedInbox {
         return Locations(inboxURL: inboxURL, manifestURL: manifestURL)
     }
 
+    /// The Music folder only when it is a real directory with exactly that name; a file,
+    /// a symbolic link or a differently-cased folder on a case-insensitive volume all
+    /// count as a name collision.
+    private static func existingMusicDirectory(inboxURL: URL) throws -> URL {
+        let musicURL = inboxURL.appendingPathComponent(musicDirectoryName, isDirectory: true)
+        let values = try musicURL.resourceValues(forKeys: [
+            .isDirectoryKey,
+            .isSymbolicLinkKey,
+            .canonicalPathKey,
+        ])
+        guard values.isSymbolicLink != true,
+              values.isDirectory == true,
+              values.canonicalPath.map({ ($0 as NSString).lastPathComponent }) == musicDirectoryName else {
+            throw InboxError.musicFolderUnavailable
+        }
+        return musicURL
+    }
+
+    private static func prepareMusicDirectory(inboxURL: URL) throws -> URL {
+        let musicURL = inboxURL.appendingPathComponent(musicDirectoryName, isDirectory: true)
+        do {
+            try FileManager.default.createDirectory(
+                at: musicURL,
+                withIntermediateDirectories: false,
+                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+            )
+        } catch let error as CocoaError where error.code == .fileWriteFileExists {
+            // Something already has the name; reuse it only if it is the real folder.
+        }
+        do {
+            return try existingMusicDirectory(inboxURL: inboxURL)
+        } catch {
+            throw InboxError.musicFolderUnavailable
+        }
+    }
+
     private static func readRecords(at manifestURL: URL) throws -> [SharedInboxRecord] {
         var data: Data?
         var bodyError: Error?
@@ -300,7 +860,6 @@ public enum SharedInbox {
         let fileManager = FileManager.default
         var reconciled: [SharedInboxRecord] = []
         var representedPaths = Set<String>()
-        var representedDirectories = Set<String>()
 
         for record in records {
             guard record.storedFilename != legacyManifestFilename else { continue }
@@ -320,9 +879,6 @@ public enum SharedInbox {
             }
             reconciled.append(record)
             representedPaths.insert(record.storedFilename)
-            if values.isDirectory == true {
-                representedDirectories.insert(record.storedFilename)
-            }
         }
 
         guard let enumerator = fileManager.enumerator(
@@ -337,6 +893,12 @@ public enum SharedInbox {
             options: [.skipsHiddenFiles]
         ) else { return reconciled }
 
+        // Any physical directory or file under the root is adopted here, including ones
+        // nested inside an already-tracked folder and legacy/WebHard-written trees that
+        // never went through a manifest write (WebHardFileStore creates directories and
+        // commits uploads directly against this same root). `.skipsHiddenFiles` already
+        // keeps the manifest itself and any dotfile-prefixed internal staging item out of
+        // this walk, so nothing here needs a bespoke skip for those.
         for case let url as URL in enumerator {
             let values = try url.resourceValues(forKeys: [
                 .isRegularFileKey,
@@ -349,14 +911,11 @@ public enum SharedInbox {
                 if values.isDirectory == true { enumerator.skipDescendants() }
                 continue
             }
-            guard values.isRegularFile == true else { continue }
+            guard values.isRegularFile == true || values.isDirectory == true else { continue }
 
             let storedFilename = try relativeStoredFilename(for: url, inboxURL: inboxURL)
             guard storedFilename != legacyManifestFilename,
-                  !representedPaths.contains(storedFilename),
-                  !representedDirectories.contains(where: {
-                      storedFilename.hasPrefix($0 + "/")
-                  }) else { continue }
+                  !representedPaths.contains(storedFilename) else { continue }
 
             reconciled.append(
                 SharedInboxRecord(
@@ -364,8 +923,9 @@ public enum SharedInbox {
                     originalFilename: url.lastPathComponent,
                     storedFilename: storedFilename,
                     contentTypeIdentifier: nil,
-                    byteCount: Int64(values.fileSize ?? 0),
-                    importedAt: values.contentModificationDate ?? Date()
+                    byteCount: values.isDirectory == true ? 0 : Int64(values.fileSize ?? 0),
+                    importedAt: values.contentModificationDate ?? Date(),
+                    isDirectory: values.isDirectory == true
                 )
             )
             representedPaths.insert(storedFilename)

@@ -52,21 +52,27 @@ struct AddConnectionView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("취소") { dismiss() }
+                    Group {
+                        Button("취소") { dismiss() }
+                    }
+                    .uiBarFont()
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    if !kind.isOAuthCloud {
-                        Button {
-                            Task { await connectAndSave() }
-                        } label: {
-                            if isTesting || isSaving {
-                                ProgressView()
-                            } else {
-                                Text(editingConnection == nil ? "연결" : "저장")
+                    Group {
+                        if !kind.isOAuthCloud {
+                            Button {
+                                Task { await connectAndSave() }
+                            } label: {
+                                if isTesting || isSaving {
+                                    ProgressView()
+                                } else {
+                                    Text(editingConnection == nil ? "연결" : "저장")
+                                }
                             }
+                            .disabled(!isValid || isSaving || isTesting)
                         }
-                        .disabled(!isValid || isSaving || isTesting)
                     }
+                    .uiBarFont()
                 }
             }
             .onChange(of: kind) { _, newKind in
@@ -149,16 +155,16 @@ struct AddConnectionView: View {
     }
 
     private var connectionKindSection: some View {
-        Section("연결 방식") {
-            LazyVGrid(columns: connectionKindColumns, spacing: 8) {
+        Section {
+            LazyVGrid(columns: connectionKindColumns, spacing: ui(8)) {
                 ForEach(ConnectionKind.allCases) { candidate in
                     connectionKindButton(candidate)
                 }
             }
-            .padding(.vertical, 2)
+            .padding(.vertical, ui(2))
 
             Text(kind.subtitle)
-                .font(.footnote)
+                .font(.ui(.footnote))
                 .foregroundStyle(.secondary)
 
             if kind == .webDAV {
@@ -168,11 +174,13 @@ struct AddConnectionView: View {
                     }
                 }
             }
+        } header: {
+            Text("연결 방식").font(MacUIScale.sectionNoteFont)
         }
     }
 
     private var connectionKindColumns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 8), count: 3)
+        Array(repeating: GridItem(.flexible(), spacing: ui(8)), count: 3)
     }
 
     private var cloudAccountSection: some View {
@@ -189,15 +197,17 @@ struct AddConnectionView: View {
             .disabled(isSaving)
         } header: {
             Text("계정")
+                .font(MacUIScale.sectionNoteFont)
         } footer: {
             Text("로그인 토큰은 이 iPhone의 키체인에만 저장됩니다. NasFinder는 계정 비밀번호를 보거나 저장하지 않습니다.")
+                .font(MacUIScale.sectionNoteFont)
         }
     }
 
     private var serverSection: some View {
         Section {
             Text("필수 항목을 입력하면 연결할 수 있습니다.")
-                .font(.caption)
+                .font(.ui(.caption))
                 .foregroundStyle(.secondary)
             TextField("표시 이름 · 필수 (예: 우리집 NAS)", text: $name)
             TextField("서버 주소 · 필수 (예: nas.example.com)", text: $host)
@@ -206,7 +216,7 @@ struct AddConnectionView: View {
                 .keyboardType(.URL)
             if let addressValidationMessage {
                 Label(addressValidationMessage, systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.red)
             }
             LabeledContent("포트 · 필수") {
@@ -218,11 +228,11 @@ struct AddConnectionView: View {
 
             if parsedServerAddress?.explicitPort != nil {
                 Text("서버 주소에 포트가 포함되어 있어 해당 포트를 사용합니다.")
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.secondary)
             } else if kind == .synology {
                 Text("DSM 기본 포트: HTTPS 5001 · HTTP 5000. SFTP 포트 22와는 다릅니다.")
-                    .font(.caption)
+                    .font(.ui(.caption))
                     .foregroundStyle(.secondary)
             }
 
@@ -232,7 +242,7 @@ struct AddConnectionView: View {
                     "22번은 SFTP 포트입니다. Synology 연결에는 DSM HTTPS 5001, HTTP 5000 또는 DSM에서 지정한 웹 포트를 입력하세요.",
                     systemImage: "exclamationmark.triangle.fill"
                 )
-                .font(.caption)
+                .font(.ui(.caption))
                 .foregroundStyle(.orange)
             }
 
@@ -241,7 +251,7 @@ struct AddConnectionView: View {
                     .disabled(parsedServerAddress?.inferredTLS != nil)
                 if parsedServerAddress?.inferredTLS != nil {
                     Text("주소의 http:// 또는 https:// 표시에 맞춰 보안 연결 설정을 사용합니다.")
-                        .font(.caption)
+                        .font(.ui(.caption))
                         .foregroundStyle(.secondary)
                 }
             }
@@ -254,18 +264,22 @@ struct AddConnectionView: View {
             }
         } header: {
             Text("서버")
+                .font(MacUIScale.sectionNoteFont)
         } footer: {
             Text("시작 폴더를 변경하지 않으면 서비스의 기본 위치에서 시작합니다.")
+                .font(MacUIScale.sectionNoteFont)
         }
     }
 
     private var passwordSection: some View {
-        Section("로그인") {
+        Section {
             TextField("사용자 이름 · 필수", text: $username)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
             SecureField("비밀번호 · 필수", text: $password)
                 .textContentType(.password)
+        } header: {
+            Text("로그인").font(MacUIScale.sectionNoteFont)
         }
     }
 
@@ -284,11 +298,12 @@ struct AddConnectionView: View {
 
             if let testMessage {
                 Label(testMessage, systemImage: "checkmark.circle.fill")
-                    .font(.footnote)
+                    .font(.ui(.footnote))
                     .foregroundStyle(.green)
             }
         } footer: {
             Text(securityFootnote)
+                .font(MacUIScale.sectionNoteFont)
         }
     }
 
@@ -347,17 +362,17 @@ struct AddConnectionView: View {
         return Button {
             kind = candidate
         } label: {
-            VStack(spacing: 5) {
+            VStack(spacing: ui(5)) {
                 ThemedSymbol(systemName: candidate.systemImage)
                 Text(candidate.compactTitle)
-                    .font(.caption.weight(isSelected ? .semibold : .regular))
+                    .font(.ui(.caption).weight(isSelected ? .semibold : .regular))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
             }
             .foregroundStyle(serviceColor)
-            .frame(maxWidth: .infinity, minHeight: 48)
+            .frame(maxWidth: .infinity, minHeight: ui(48))
             .background(
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                RoundedRectangle(cornerRadius: ui(11), style: .continuous)
                     .fill(
                         isSelected
                             ? serviceColor.opacity(0.14)
@@ -365,7 +380,7 @@ struct AddConnectionView: View {
                     )
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 11, style: .continuous)
+                RoundedRectangle(cornerRadius: ui(11), style: .continuous)
                     .stroke(
                         isSelected ? serviceColor.opacity(0.55) : serviceColor.opacity(0.14),
                         lineWidth: 1
