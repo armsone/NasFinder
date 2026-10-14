@@ -12,4 +12,8 @@ while read -r _local_ref _local_sha _remote_ref _remote_sha; do
     set -- "$@" "$_local_sha"
 done
 
-"$repository_root/scripts/repository_guard.sh" push "$@"
+if [[ $# -eq 0 ]]; then
+    "$repository_root/scripts/repository_guard.sh" status
+else
+    "$repository_root/scripts/repository_guard.sh" push "$@"
+fi
