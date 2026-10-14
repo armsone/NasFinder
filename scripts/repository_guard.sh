@@ -3,6 +3,7 @@
 set -euo pipefail
 
 mode="${1:-status}"
+if [[ $# -gt 0 ]]; then shift; fi
 case "$mode" in
     status|push|install) ;;
     *)
@@ -28,10 +29,18 @@ fi
 
 if [[ "$mode" == "push" ]]; then
     if [[ -n "$(git status --porcelain=v1 --untracked-files=all)" ]]; then
-        echo "error: 커밋되지 않은 변경이 있습니다." >&2
-        echo "       Git push는 작업 폴더의 변경을 포함하지 않습니다. 먼저 모두 커밋하세요." >&2
-        git status --short >&2
-        failed=1
+        committed_only=1
+        if [[ $# -eq 0 ]]; then committed_only=0; fi
+        for pushed_commit in "$@"; do
+            if [[ "$pushed_commit" != "$head_sha" ]]; then committed_only=0; fi
+        done
+        if [[ $committed_only -eq 1 ]]; then
+            echo "repository guard: 현재 HEAD 커밋만 푸시합니다. 미커밋 파일은 그대로 보존됩니다."
+        else
+            echo "error: 미커밋 파일이 있으므로 현재 HEAD만 푸시하는지 확인해야 합니다." >&2
+            echo "       pre-push 훅이 실제 푸시 대상 커밋을 확인한 경우에만 진행합니다." >&2
+            failed=1
+        fi
     fi
 fi
 
