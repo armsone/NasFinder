@@ -25,6 +25,26 @@ private struct IOSAppOnMacShortcutModifier: ViewModifier {
     }
 }
 
+/// On Mac, the system toolbar compresses or hides the adjacent "NasFinder" text next to the
+/// logo, so the logo and theme badge are shown instead in a fixed in-app header above the
+/// scrolling dashboard. The header stays put via safeAreaInset; it is not part of the list
+/// content and does not scroll with it.
+private struct MacDashboardHeaderModifier<Header: View>: ViewModifier {
+    let isActive: Bool
+    @ViewBuilder let header: () -> Header
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isActive {
+            content.safeAreaInset(edge: .top, spacing: 0) {
+                header()
+            }
+        } else {
+            content
+        }
+    }
+}
+
 enum AppVersionDisplayPolicy {
     static func text(shortVersion: String?, buildNumber: String?) -> String? {
         guard let shortVersion, !shortVersion.isEmpty,
@@ -96,6 +116,11 @@ struct ConnectionListView: View {
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .background(SkyBreezeBackground())
+            .modifier(
+                MacDashboardHeaderModifier(isActive: isRunningOnMac) {
+                    macDashboardHeader
+                }
+            )
             .navigationTitle("")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -716,35 +741,51 @@ struct ConnectionListView: View {
 
     @ToolbarContentBuilder
     private var dashboardLogoToolbar: some ToolbarContent {
-        if #available(iOS 26.0, *) {
-            ToolbarItem(placement: .topBarLeading) {
-                Group {
-                    dashboardLogo
+        // On Mac, the logo and theme badge are shown in a fixed in-app header
+        // (macDashboardHeader) instead, since the system toolbar compresses or
+        // hides the adjacent "NasFinder" text next to the logo there.
+        if !isRunningOnMac {
+            if #available(iOS 26.0, *) {
+                ToolbarItem(placement: .topBarLeading) {
+                    Group {
+                        dashboardLogo
+                    }
+                    .uiBarFont()
                 }
-                .uiBarFont()
-            }
-            .sharedBackgroundVisibility(.hidden)
-            ToolbarItem(placement: .topBarTrailing) {
-                Group {
-                    currentThemeBadge
+                .sharedBackgroundVisibility(.hidden)
+                ToolbarItem(placement: .topBarTrailing) {
+                    Group {
+                        currentThemeBadge
+                    }
+                    .uiBarFont()
                 }
-                .uiBarFont()
-            }
-            .sharedBackgroundVisibility(.hidden)
-        } else {
-            ToolbarItem(placement: .topBarLeading) {
-                Group {
-                    dashboardLogo
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .topBarLeading) {
+                    Group {
+                        dashboardLogo
+                    }
+                    .uiBarFont()
                 }
-                .uiBarFont()
-            }
-            ToolbarItem(placement: .topBarTrailing) {
-                Group {
-                    currentThemeBadge
+                ToolbarItem(placement: .topBarTrailing) {
+                    Group {
+                        currentThemeBadge
+                    }
+                    .uiBarFont()
                 }
-                .uiBarFont()
             }
         }
+    }
+
+    private var macDashboardHeader: some View {
+        HStack {
+            dashboardLogo
+            Spacer(minLength: ui(12))
+            currentThemeBadge
+        }
+        .padding(.horizontal, ui(16))
+        .padding(.vertical, ui(10))
+        .background(.bar)
     }
 
     private func sectionHeader(_ title: String, systemImage: String) -> some View {
@@ -911,26 +952,12 @@ private struct PhoneHardEntryLink: View {
 
     private var hasDrafts: Bool { !draftStore.entries.isEmpty }
 
-    private var draftHint: String {
-        draftStore.entries.count == 1
-            ? "보관한 \(draftStore.entries[0].title) 편집이 있습니다. 길게 누르면 이어서 합니다."
-            : "보관한 편집이 \(draftStore.entries.count)개 있습니다. 길게 누르면 골라서 이어서 합니다."
-    }
-
     var body: some View {
         Button {
             inboxStore.shouldPresentInbox = true
         } label: {
-            HStack(spacing: ui(7)) {
-                WebHardNetworkLocationRow(summary: summary)
-                if hasDrafts {
-                    Image(systemName: "pencil.circle.fill")
-                        .font(.ui(.subheadline))
-                        .foregroundStyle(Color.accentColor)
-                        .accessibilityLabel(draftHint)
-                }
-            }
-            .contentShape(Rectangle())
+            WebHardNetworkLocationRow(summary: summary)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         // Over the row's content only, and only while an editor is waiting, so the tap
