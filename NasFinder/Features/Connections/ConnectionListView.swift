@@ -110,7 +110,7 @@ struct ConnectionListView: View {
                     .environmentObject(store)
             }
             .navigationDestination(isPresented: $inboxStore.shouldPresentInbox) {
-                ReceivedFilesView()
+                PhoneHardBrowserView()
             }
             .navigationDestination(item: $browserDestination) { destination in
                 FileBrowserContainerView(
@@ -216,6 +216,9 @@ struct ConnectionListView: View {
 
     private var networkSection: some View {
         Section {
+            // The storage on this device comes first, as one of the places files live.
+            PhoneHardEntryLink(summary: inboxSummary)
+
             NavigationLink {
                 LocalPhotoLibraryView()
             } label: {
@@ -291,12 +294,6 @@ struct ConnectionListView: View {
         Section {
             FavoriteShelfView { favorite in
                 selectedFavorite = favorite
-            }
-
-            NavigationLink {
-                ReceivedFilesView()
-            } label: {
-                WebHardNetworkLocationRow(summary: inboxSummary)
             }
 
             NavigationLink {
@@ -433,6 +430,7 @@ struct ConnectionListView: View {
     private func returnToDashboard() {
         browserDestination = nil
         selectedFavorite = nil
+        inboxStore.shouldPresentInbox = false
         Task { @MainActor in
             await Task.yield()
             navigationIdentity = UUID()
@@ -455,7 +453,7 @@ struct ConnectionListView: View {
         DashboardSection(title: "빠른 위치", subtitle: "자주 쓰는 파일 흐름으로 바로 이동합니다.") {
             LazyVGrid(columns: quickLocationColumns, spacing: ui(12)) {
                 NavigationLink {
-                    ReceivedFilesView()
+                    PhoneHardBrowserView()
                 } label: {
                     QuickLocationCard(
                         title: "폰하드",
@@ -855,7 +853,7 @@ private struct WebHardNetworkLocationRow: View {
     }
 
     var body: some View {
-        HStack(spacing: ui(7)) {
+        HStack(spacing: ui(13)) {
             if isEnamel {
                 PhoneHardMark(size: ui(32))
                     .accessibilityHidden(true)
@@ -868,21 +866,120 @@ private struct WebHardNetworkLocationRow: View {
                     .accessibilityHidden(true)
             }
 
-            Text("폰하드")
-                .font(.ui(.subheadline).weight(.medium))
-                .foregroundStyle(.primary)
+            VStack(alignment: .leading, spacing: ui(4)) {
+                HStack(spacing: ui(6)) {
+                    Text("폰하드")
+                        .font(.ui(.subheadline).weight(.medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(2)
 
-            Spacer(minLength: ui(8))
+                    Text("로컬")
+                        .font(.ui(.caption2).weight(.semibold))
+                        .foregroundStyle(SkyBreezeTheme.accent)
+                        .padding(.horizontal, ui(6))
+                        .padding(.vertical, ui(2))
+                        .background(SkyBreezeTheme.accent.opacity(0.1), in: Capsule())
+                }
 
-            if let summary {
-                Text(summary)
-                    .font(.ui(.subheadline))
+                Text(summary.map { "이 기기 · \($0)" } ?? "이 기기")
+                    .font(.ui(.caption2))
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(.vertical, ui(2))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("폰하드, 이 기기의 로컬 저장소")
+        .accessibilityValue(summary ?? "")
+        .accessibilityHint("파일 목록을 엽니다.")
+    }
+}
+
+/// The dashboard's PhoneHard entry, listed with the network connections as the storage on
+/// this device. A tap opens it in the same browser those open in. While a trailer or
+/// music editor is waiting, a long press on the entry reopens that editor as it was left,
+/// or asks which one when there are several.
+private struct PhoneHardEntryLink: View {
+    let summary: String?
+    @EnvironmentObject private var inboxStore: SharedInboxStore
+    @ObservedObject private var draftStore = TrailerDraftStore.shared
+    @State private var resumingDraft: TrailerDraftEntry?
+    @State private var isChoosingDraft = false
+
+    private var hasDrafts: Bool { !draftStore.entries.isEmpty }
+
+    private var draftHint: String {
+        draftStore.entries.count == 1
+            ? "보관한 \(draftStore.entries[0].title) 편집이 있습니다. 길게 누르면 이어서 합니다."
+            : "보관한 편집이 \(draftStore.entries.count)개 있습니다. 길게 누르면 골라서 이어서 합니다."
+    }
+
+    var body: some View {
+        Button {
+            inboxStore.shouldPresentInbox = true
+        } label: {
+            HStack(spacing: ui(7)) {
+                WebHardNetworkLocationRow(summary: summary)
+                if hasDrafts {
+                    Image(systemName: "pencil.circle.fill")
+                        .font(.ui(.subheadline))
+                        .foregroundStyle(Color.accentColor)
+                        .accessibilityLabel(draftHint)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // Over the row's content only, and only while an editor is waiting, so the tap
+        // that opens PhoneHard and the long press are told apart by one gesture, as in
+        // the file browser. The cover below stays attached either way: the editor takes
+        // its entry out of the store as soon as it is showing.
+        .overlay {
+            if hasDrafts {
+                Color.clear.contentShape(Rectangle()).gesture(
+                    LongPressGesture(minimumDuration: 0.5)
+                        .exclusively(before: TapGesture())
+                        .onEnded { result in
+                            switch result {
+                            case .first:
+                                resumeDraft()
+                            case .second:
+                                inboxStore.shouldPresentInbox = true
+                            }
+                        }
+                )
             }
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("폰하드")
-        .accessibilityHint("폰하드 파일을 엽니다.")
+        .accessibilityActions {
+            if hasDrafts {
+                Button("보관한 편집 이어서 하기") { resumeDraft() }
+            }
+        }
+        .alert("이어서 할 편집", isPresented: $isChoosingDraft) {
+            ForEach(draftStore.entries) { entry in
+                Button(entry.title) { resumingDraft = entry }
+            }
+            Button("취소", role: .cancel) { }
+        } message: {
+            Text("보관해 둔 편집을 골라 주세요. 고르지 않은 편집도 그대로 남습니다.")
+        }
+        .fullScreenCover(item: $resumingDraft) { entry in
+            VideoTrailerView(items: entry.items, service: entry.service, mode: entry.mode, resuming: entry)
+                .environmentObject(inboxStore)
+        }
+    }
+
+    private func resumeDraft() {
+        // One editor at a time: nothing is presented over an editor already showing.
+        guard resumingDraft == nil, !isChoosingDraft else { return }
+        if draftStore.entries.count == 1 {
+            resumingDraft = draftStore.entries[0]
+        } else if draftStore.entries.count > 1 {
+            isChoosingDraft = true
+        }
     }
 }
 

@@ -725,19 +725,30 @@ private struct FavoriteCell: View {
     }
 
     private var connection: RemoteConnection? {
-        connectionStore.connections.first { $0.id == favorite.connectionID }
+        // PhoneHard is on this device and is not one of the saved connections.
+        if favorite.connectionID == LocalInboxFileService.connectionID {
+            return LocalInboxFileService.phoneHardConnection
+        }
+        return connectionStore.connections.first { $0.id == favorite.connectionID }
     }
 
+    /// PhoneHard carries no service badge: it is not a NAS or any other network service.
     private var connectionKind: ConnectionKind? {
-        connection?.kind
+        favorite.connectionID == LocalInboxFileService.connectionID ? nil : connection?.kind
     }
 
     private var accessibilityLabel: String {
+        if favorite.connectionID == LocalInboxFileService.connectionID {
+            return "\(favorite.name), 폰하드"
+        }
         guard let connectionKind else { return favorite.name }
         return "\(favorite.name), \(connectionKind.dashboardSourceName)"
     }
 
     private var service: (any RemoteFileService)? {
+        if favorite.connectionID == LocalInboxFileService.connectionID {
+            return LocalInboxFileService()
+        }
         guard let connection,
               let credential = try? connectionStore.credential(for: connection) else {
             return nil
@@ -964,10 +975,17 @@ struct FavoriteDestinationView: View {
     }
 
     private var connection: RemoteConnection? {
-        connectionStore.connections.first { $0.id == favorite.connectionID }
+        // PhoneHard is on this device and is not one of the saved connections.
+        if favorite.connectionID == LocalInboxFileService.connectionID {
+            return LocalInboxFileService.phoneHardConnection
+        }
+        return connectionStore.connections.first { $0.id == favorite.connectionID }
     }
 
     private var service: (any RemoteFileService)? {
+        if favorite.connectionID == LocalInboxFileService.connectionID {
+            return LocalInboxFileService()
+        }
         guard let connection,
               let credential = try? connectionStore.credential(for: connection) else {
             return nil

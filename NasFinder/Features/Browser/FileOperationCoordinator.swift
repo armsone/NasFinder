@@ -86,13 +86,14 @@ final class FileOperationCoordinator: ObservableObject {
         into directoryPath: String,
         using service: any RemoteFileService,
         conflictPolicy: RemoteConflictPolicy = .keepBoth,
+        operationName: String = "업로드",
         onCompletion: @escaping @MainActor () async -> Void
     ) {
         guard !sources.isEmpty,
               !isWorking,
               service.capabilities.contains(.upload) else { return }
 
-        start(title: "\(sources.count)개 파일 업로드 중…") { [weak self] in
+        start(title: "\(sources.count)개 파일 \(operationName) 중…") { [weak self] in
             guard let self else { return }
 
             var succeededCount = 0
@@ -101,8 +102,8 @@ final class FileOperationCoordinator: ObservableObject {
 
             for (index, source) in sources.enumerated() {
                 self.operationTitle = sources.count == 1
-                    ? "\(source.preferredName) 업로드 중…"
-                    : "\(index + 1)/\(sources.count) • \(source.preferredName) 업로드 중…"
+                    ? "\(source.preferredName) \(operationName) 중…"
+                    : "\(index + 1)/\(sources.count) • \(source.preferredName) \(operationName) 중…"
 
                 do {
                     try Task.checkCancellation()
@@ -182,7 +183,7 @@ final class FileOperationCoordinator: ObservableObject {
             if wasCancelled || Task.isCancelled {
                 self.presentCancellationSummary(
                     succeededCount: succeededCount,
-                    operationName: "업로드",
+                    operationName: operationName,
                     failureMessages: failureMessages
                 )
                 // The remote mutation is already stopped. Refresh separately
@@ -195,7 +196,7 @@ final class FileOperationCoordinator: ObservableObject {
             self.presentSummary(
                 succeededCount: succeededCount,
                 totalCount: sources.count,
-                operationName: "업로드",
+                operationName: operationName,
                 failureMessages: failureMessages
             )
         }

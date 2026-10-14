@@ -277,6 +277,38 @@ final class SharedInboxStore: ObservableObject {
         return record
     }
 
+    /// Adds a staged download, a single file or a whole folder tree, to `folderPath`
+    /// (`nil` is the PhoneHard root) under a name nothing there uses yet; existing items
+    /// are never replaced or merged into. The staged item is copied, so the caller keeps
+    /// ownership of its temporary copy. It is written to the chosen folder from the
+    /// start, never to the root first, so a download into a subfolder cannot collide with
+    /// a root name or be left behind there by a failed move. A folder is committed as a
+    /// folder record; the files and folders inside it are adopted from disk by the reload
+    /// that follows, so the manifest, the list and the physical tree agree.
+    @discardableResult
+    func importDownloadedItem(
+        at url: URL,
+        originalName: String,
+        contentTypeIdentifier: String?,
+        intoFolder folderPath: String?
+    ) async throws -> SharedInboxRecord {
+        defer { reload() }
+        return try await Task.detached(priority: .userInitiated) {
+            // `manifest.json` is reserved at the PhoneHard root only and would drop out
+            // of the list there; inside a folder it is an ordinary name.
+            let preferredName = folderPath == nil
+                && originalName.caseInsensitiveCompare("manifest.json") == .orderedSame
+                ? "manifest (다운로드).json"
+                : originalName
+            return try SharedInbox.importTemporaryItem(
+                at: url,
+                originalFilename: preferredName,
+                contentTypeIdentifier: contentTypeIdentifier,
+                intoFolder: folderPath
+            )
+        }.value
+    }
+
     /// Stores a downloaded music file in PhoneHard's Music folder and commits it to the
     /// normal manifest. Existing audio records stay where they are.
     @discardableResult

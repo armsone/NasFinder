@@ -6,8 +6,13 @@ import SwiftUI
 struct InboxDestinationPickerView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var inboxStore: SharedInboxStore
-    let operation: InboxFileOperation
+    /// `nil` when the picker only reports the chosen folder through `onPickDestination`.
+    let operation: InboxFileOperation?
     let excludedPaths: Set<String>
+    var title: String?
+    /// Receives the chosen folder (`nil` is the PhoneHard root) instead of running a
+    /// move or copy; the presenter closes the picker.
+    var onPickDestination: ((String?) -> Void)?
 
     @State private var isWorking = false
     @State private var errorMessage: String?
@@ -22,7 +27,7 @@ struct InboxDestinationPickerView: View {
                 isWorking: $isWorking,
                 onChoose: performOperation
             )
-            .navigationTitle(operation.kind == .move ? "이동" : "복사")
+            .navigationTitle(title ?? (operation?.kind == .move ? "이동" : "복사"))
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -51,6 +56,11 @@ struct InboxDestinationPickerView: View {
 
     private func performOperation(destinationPath: String?) {
         guard !isWorking else { return }
+        if let onPickDestination {
+            onPickDestination(destinationPath)
+            return
+        }
+        guard let operation else { return }
         isWorking = true
         Task {
             switch operation.kind {

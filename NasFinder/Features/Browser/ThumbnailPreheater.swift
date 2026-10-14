@@ -271,7 +271,8 @@ final class ThumbnailPreheater: ObservableObject {
         do {
             try validateRuntimeConditions(
                 requiresExternalPower: requiresExternalPower,
-                allowsConstrainedRun: allowsConstrainedRun
+                allowsConstrainedRun: allowsConstrainedRun,
+                bypassesNetworkRequirement: bypassesNetworkRequirement(for: service)
             )
         } catch {
             errorMessage = error.localizedDescription
@@ -446,7 +447,8 @@ final class ThumbnailPreheater: ObservableObject {
                     if candidateIndex.isMultiple(of: 32) {
                         try await waitForRuntimeConditions(
                             requiresExternalPower: requiresExternalPower,
-                            allowsConstrainedRun: allowsConstrainedRun
+                            allowsConstrainedRun: allowsConstrainedRun,
+                            bypassesNetworkRequirement: bypassesNetworkRequirement(for: service)
                         )
                     }
                     var cachedData = await cachedThumbnailData(for: item)
@@ -564,6 +566,7 @@ final class ThumbnailPreheater: ObservableObject {
                 try Task.checkCancellation()
                 let usesCellularBudget = allowsConstrainedRun
                     && generationMode == .bounded
+                    && !bypassesNetworkRequirement(for: service)
                     && !ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
                 let itemMaximumDataBytes = usesCellularBudget
                     ? Self.maximumCellularDataBytes
@@ -581,7 +584,8 @@ final class ThumbnailPreheater: ObservableObject {
                 }
                 try await waitForRuntimeConditions(
                     requiresExternalPower: requiresExternalPower,
-                    allowsConstrainedRun: allowsConstrainedRun
+                    allowsConstrainedRun: allowsConstrainedRun,
+                    bypassesNetworkRequirement: bypassesNetworkRequirement(for: service)
                 )
                 currentItemName = item.name
                 currentItemTransferredBytes = 0
@@ -1002,7 +1006,8 @@ final class ThumbnailPreheater: ObservableObject {
             try Task.checkCancellation()
             try await waitForRuntimeConditions(
                 requiresExternalPower: requiresExternalPower,
-                allowsConstrainedRun: allowsConstrainedRun
+                allowsConstrainedRun: allowsConstrainedRun,
+                bypassesNetworkRequirement: bypassesNetworkRequirement(for: service)
             )
             let directory = pendingDirectories.removeFirst()
             guard visitedPaths.insert(directory.path).inserted else { continue }
@@ -1370,9 +1375,14 @@ final class ThumbnailPreheater: ObservableObject {
             : Self.maximumSFTPDataBytes
     }
 
+    private func bypassesNetworkRequirement(for service: any RemoteFileService) -> Bool {
+        service.connection.id == LocalInboxFileService.connectionID
+    }
+
     private func validateRuntimeConditions(
         requiresExternalPower: Bool,
-        allowsConstrainedRun: Bool
+        allowsConstrainedRun: Bool,
+        bypassesNetworkRequirement: Bool = false
     ) throws {
         guard appIsActive else { throw ThumbnailPreheatError.appInactive }
         if ThumbnailThermalPolicy.shouldPause(
@@ -1386,8 +1396,10 @@ final class ThumbnailPreheater: ObservableObject {
             throw ThumbnailPreheatError.lowBattery
         }
         if allowsConstrainedRun { return }
-        guard ThumbnailNetworkMonitor.shared.isUnmeteredWiFi else {
-            throw ThumbnailPreheatError.wifiRequired
+        if !bypassesNetworkRequirement {
+            guard ThumbnailNetworkMonitor.shared.isUnmeteredWiFi else {
+                throw ThumbnailPreheatError.wifiRequired
+            }
         }
         guard requiresExternalPower else { return }
         guard ThumbnailRuntimePolicy.hasExternalPower(
@@ -1400,7 +1412,8 @@ final class ThumbnailPreheater: ObservableObject {
 
     private func waitForRuntimeConditions(
         requiresExternalPower: Bool,
-        allowsConstrainedRun: Bool
+        allowsConstrainedRun: Bool,
+        bypassesNetworkRequirement: Bool = false
     ) async throws {
         while true {
             try Task.checkCancellation()
@@ -1433,7 +1446,8 @@ final class ThumbnailPreheater: ObservableObject {
                 return
             }
 
-            let hasWiFi = ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
+            let hasWiFi = bypassesNetworkRequirement
+                || ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
             let hasPower = !requiresExternalPower
                 || ThumbnailRuntimePolicy.hasExternalPower(
                     batteryState: UIDevice.current.batteryState

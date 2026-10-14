@@ -109,6 +109,11 @@ struct RemoteFileItem: Identifiable, Hashable, Sendable {
         !isDirectory && !isVideo && Self.isAudio(filename: name, contentType: contentType)
     }
 
+    /// Media the dedicated player opens: video, or music in the player's audio mode.
+    /// The item keeps its real type, so video-only choices (clips, thumbnails) still
+    /// see music as audio.
+    var isPlayerMedia: Bool { isVideo || isAudio }
+
     /// Video trailer entry points accept both videos and still images as clip sources.
     var isTrailerEligible: Bool { isVideo || isImage }
 

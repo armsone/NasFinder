@@ -193,7 +193,7 @@ final class TrailerMusicRemoteLoader: ObservableObject {
         )
         let picked = TrailerMusicSelection(recordID: record.id, name: record.originalFilename,
                                            url: try SharedInbox.fileURL(for: record),
-                                           duration: duration, policy: .fitMusic)
+                                           duration: duration, policy: .loopMusic)
         imported[item.id] = picked
         guard active?.operationID == operationID else { return }
         active = nil

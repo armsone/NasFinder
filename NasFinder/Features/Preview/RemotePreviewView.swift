@@ -249,7 +249,7 @@ struct RemotePreviewView: View {
     private func previewContent(in geometry: GeometryProxy) -> some View {
         switch RemotePreviewContentKind.resolve(
             isImage: viewModel.currentItem.isImage,
-            isVideo: viewModel.currentItem.isVideo,
+            isVideo: viewModel.currentItem.isPlayerMedia,
             hasImage: viewModel.image != nil,
             hasPlayer: viewModel.hasVideoPlayer,
             hasLocalURL: viewModel.localURL != nil,
@@ -438,7 +438,7 @@ struct RemotePreviewView: View {
 
             Spacer(minLength: ui(72))
 
-            if viewModel.currentItem.isImage || viewModel.currentItem.isVideo {
+            if viewModel.currentItem.isImage || viewModel.currentItem.isPlayerMedia {
                 bottomControls(isLandscape: viewportSize.width > viewportSize.height)
                     .padding(.bottom, max(safeAreaInsets.bottom, ui(8)) + ui(10))
             }
@@ -531,6 +531,9 @@ struct RemotePreviewView: View {
         .accessibilityHidden(true)
     }
 
+    /// Music is neither an image nor a video, so its play/pause, close and seek controls
+    /// stay pinned: no auto-hide timer is scheduled and a tap on the surface cannot hide
+    /// them. Video keeps its auto-hide.
     private var requiresAlwaysVisibleChrome: Bool {
         !(viewModel.currentItem.isImage || viewModel.currentItem.isVideo)
     }
@@ -542,6 +545,9 @@ struct RemotePreviewView: View {
     }
 
     private func closePreview() {
+        // Music must stop sounding the moment it is closed, not when the cover finishes
+        // animating away.
+        if viewModel.currentItem.isAudio { viewModel.tearDown() }
         if let onClose { onClose() } else { dismiss() }
     }
 
@@ -617,7 +623,7 @@ struct RemotePreviewView: View {
                 HStack(spacing: ui(12)) {
                     transportControls
 
-                    if viewModel.currentItem.isVideo, viewModel.hasVideoPlayer {
+                    if viewModel.currentItem.isPlayerMedia, viewModel.hasVideoPlayer {
                         videoProgressBar(compact: false)
                             .frame(maxWidth: .infinity)
                     } else {
@@ -631,7 +637,7 @@ struct RemotePreviewView: View {
                 HStack(spacing: ui(8)) {
                     transportControls
 
-                    if viewModel.currentItem.isVideo, viewModel.hasVideoPlayer {
+                    if viewModel.currentItem.isPlayerMedia, viewModel.hasVideoPlayer {
                         videoProgressBar(compact: true)
                             .frame(maxWidth: .infinity)
                     } else {
@@ -1210,7 +1216,7 @@ final class RemotePreviewViewModel: ObservableObject {
                 || CompatibilityVideoFormatPolicy.prefersCompatibilityPlayer(
                     for: requestedItem
                 )
-            if requestedItem.isVideo,
+            if requestedItem.isPlayerMedia,
                shouldUseCompatibilityPlayer,
                 !requiresLocalCompatibilityInspection,
                 !forceFullDownload,
@@ -1247,7 +1253,7 @@ final class RemotePreviewViewModel: ObservableObject {
                 return
             }
 
-            if requestedItem.isVideo,
+            if requestedItem.isPlayerMedia,
                !shouldUseCompatibilityPlayer,
                !forceFullDownload,
                RemoteVideoLoadStrategy.resolve(
@@ -1278,7 +1284,7 @@ final class RemotePreviewViewModel: ObservableObject {
             }
 
             let url: URL
-            if requestedItem.isVideo {
+            if requestedItem.isPlayerMedia {
                 videoPlaybackSource = .completeFile
             }
             if let cachedURL = downloadedURLs[requestedItem.id],
@@ -1346,7 +1352,7 @@ final class RemotePreviewViewModel: ObservableObject {
                 }
                 downloadProgress = nil
                 schedulePhotoAdvance()
-            } else if requestedItem.isVideo {
+            } else if requestedItem.isPlayerMedia {
                 guard isCurrentLoad(generation, itemID: requestedItem.id) else { return }
                 if shouldUseCompatibilityPlayer {
                     let newPlayer = try CompatibilityVideoPlayer(
@@ -1386,7 +1392,7 @@ final class RemotePreviewViewModel: ObservableObject {
             return
         } catch {
             guard isCurrentLoad(generation, itemID: requestedItem.id) else { return }
-            if requestedItem.isVideo {
+            if requestedItem.isPlayerMedia {
                 handleTerminalPlaybackFailure(
                     error.localizedDescription,
                     itemID: requestedItem.id
@@ -1417,7 +1423,7 @@ final class RemotePreviewViewModel: ObservableObject {
         defer { isPreparingExternalPlayback = false }
         await loadCurrentItem(
             forceFullDownload: true,
-            forceCompatibilityPlayer: item.isVideo,
+            forceCompatibilityPlayer: item.isPlayerMedia,
             prefersSoftwareDecoding: didRetrySoftwareDecodingForCurrentItem
         )
         guard currentItem.id == item.id,
@@ -1448,7 +1454,7 @@ final class RemotePreviewViewModel: ObservableObject {
     func togglePlayback() {
         isPlaying.toggle()
 
-        if currentItem.isVideo {
+        if currentItem.isPlayerMedia {
             if isPlaying {
                 SharedMediaAudioSession.activatePlayback()
                 if let compatibilityPlayer {
@@ -1491,7 +1497,7 @@ final class RemotePreviewViewModel: ObservableObject {
     }
 
     func videoDidFinish() {
-        guard currentItem.isVideo else { return }
+        guard currentItem.isPlayerMedia else { return }
 
         switch playbackMode {
         case .repeatOne:
@@ -1512,7 +1518,7 @@ final class RemotePreviewViewModel: ObservableObject {
     }
 
     func beginVideoScrub() {
-        guard currentItem.isVideo else { return }
+        guard currentItem.isPlayerMedia else { return }
         let currentSeconds: Double?
         if let compatibilityPlayer {
             currentSeconds = compatibilityPlayer.currentSeconds

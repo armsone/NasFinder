@@ -1,3 +1,4 @@
+import AVFoundation
 import ImageIO
 import QuickLookThumbnailing
 import SwiftUI
@@ -76,6 +77,8 @@ struct InboxFileOperation: Identifiable {
     let records: [SharedInboxRecord]
 }
 
+/// PhoneHard's earlier own screen. The dashboard now opens `PhoneHardBrowserView`, the
+/// shared browser, instead; this stays as it was and is not routed to.
 struct ReceivedFilesView: View {
     private struct UploadabilityTaskID: Hashable {
         let records: [SharedInboxRecord]
@@ -299,6 +302,9 @@ struct ReceivedFilesView: View {
     private func previewCover(for item: RemoteFileItem) -> some View {
         let records = inboxStore.records
         let service = LocalInboxFileService(records: records)
+        // Music is handed over as the audio item it is: the dedicated player opens it in
+        // its audio mode (`isPlayerMedia`), with pinned controls, and it plays on its own
+        // rather than in a sequence.
         return RemotePreviewView(
             item: item,
             sequentialItems: sequentialMediaItems(from: records, including: item),
@@ -919,7 +925,7 @@ struct ReceivedFilesView: View {
                     .foregroundStyle(.primary)
                     .lineLimit(2)
 
-                Text(ByteCountFormatter.string(fromByteCount: record.byteCount, countStyle: .file))
+                LocalInboxSizeLabel(record: record, item: item)
                     .font(.ui(.caption2))
                     .foregroundStyle(.secondary)
 
@@ -971,10 +977,7 @@ struct ReceivedFilesView: View {
                             .lineLimit(2)
 
                         HStack(spacing: ui(7)) {
-                            Text(ByteCountFormatter.string(
-                                fromByteCount: record.byteCount,
-                                countStyle: .file
-                            ))
+                            LocalInboxSizeLabel(record: record, item: item)
                             Text(record.importedAt, format: .dateTime
                                 .year().month().day().hour().minute())
                         }
@@ -1306,6 +1309,116 @@ enum ReceivedFilesThumbnailPolicy {
     }
 }
 
+/// The file size and, right after it, the playing time of a video or music file. The
+/// time appears only once the file's own length has been read; before that, and for a
+/// file whose length cannot be read, there is just the size. Photos and other files
+/// are never read for this.
+private struct LocalInboxSizeLabel: View {
+    let record: SharedInboxRecord
+    let item: RemoteFileItem
+
+    @State private var loadedSeconds: Double?
+
+    var body: some View {
+        let seconds = loadedSeconds
+            ?? LocalInboxMediaDurationCache.shared.known(LocalInboxMediaDurationCache.key(for: item))
+        HStack(spacing: ui(7)) {
+            Text(ByteCountFormatter.string(fromByteCount: record.byteCount, countStyle: .file))
+            if let seconds {
+                Text(Self.playingTime(seconds))
+                    .monospacedDigit()
+                    .accessibilityLabel("재생 시간 \(Self.playingTime(seconds))")
+            }
+        }
+        .task(id: LocalInboxMediaDurationCache.key(for: item)) {
+            guard item.isVideo || item.isAudio else {
+                loadedSeconds = nil
+                return
+            }
+            loadedSeconds = await LocalInboxMediaDurationCache.shared.seconds(for: record, item: item)
+        }
+    }
+
+    /// mm:ss, or h:mm:ss from one hour.
+    static func playingTime(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        return total >= 3_600
+            ? String(format: "%d:%02d:%02d", total / 3_600, total / 60 % 60, total % 60)
+            : String(format: "%02d:%02d", total / 60, total % 60)
+    }
+}
+
+/// Playing times already read, keyed like the thumbnail cache by the file's id, date
+/// and size, so drawing a row again or scrolling it back in never reads the file again.
+/// A file that reported no usable length is remembered as such and not retried.
+@MainActor
+private final class LocalInboxMediaDurationCache {
+    static let shared = LocalInboxMediaDurationCache()
+
+    private var results: [String: Double?] = [:]
+    private var loads: [String: Task<Double?, Never>] = [:]
+
+    static func key(for item: RemoteFileItem) -> String {
+        "\(item.id)|\(item.modifiedAt?.timeIntervalSince1970 ?? 0)|\(item.size ?? -1)"
+    }
+
+    func known(_ key: String) -> Double? {
+        results[key] ?? nil
+    }
+
+    func seconds(for record: SharedInboxRecord, item: RemoteFileItem) async -> Double? {
+        await seconds(for: item) { try? SharedInbox.fileURL(for: record) }
+    }
+
+    func seconds(for item: RemoteFileItem, fileURL resolve: () async -> URL?) async -> Double? {
+        let key = Self.key(for: item)
+        if let known = results[key] { return known }
+        if let running = loads[key] { return await running.value }
+        guard let fileURL = await resolve() else { return nil }
+        let load = Task.detached(priority: .utility) { () -> Double? in
+            guard let duration = try? await AVURLAsset(url: fileURL).load(.duration) else { return nil }
+            let seconds = duration.seconds
+            return seconds.isFinite && seconds > 0 ? seconds : nil
+        }
+        loads[key] = load
+        let seconds = await load.value
+        loads[key] = nil
+        results.updateValue(seconds, forKey: key)
+        return seconds
+    }
+}
+
+/// The playing time of a PhoneHard video or music file for the shared browser's rows,
+/// shown right after the file size there. Read once per file through the same cache
+/// and drawn as nothing until the length is known.
+struct LocalInboxDurationLabel: View {
+    let item: RemoteFileItem
+
+    @State private var loadedSeconds: Double?
+
+    var body: some View {
+        let seconds = loadedSeconds
+            ?? LocalInboxMediaDurationCache.shared.known(LocalInboxMediaDurationCache.key(for: item))
+        ZStack {
+            if let seconds {
+                Text(LocalInboxSizeLabel.playingTime(seconds))
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .accessibilityLabel("재생 시간 \(LocalInboxSizeLabel.playingTime(seconds))")
+            }
+        }
+        .task(id: LocalInboxMediaDurationCache.key(for: item)) {
+            guard item.isVideo || item.isAudio else {
+                loadedSeconds = nil
+                return
+            }
+            loadedSeconds = await LocalInboxMediaDurationCache.shared.seconds(for: item) {
+                try? await LocalInboxFileService().download(item)
+            }
+        }
+    }
+}
+
 private struct LocalInboxThumbnailView: View {
     let record: SharedInboxRecord
     let item: RemoteFileItem
@@ -1471,40 +1584,256 @@ private struct ReceivedFilesImporterModifier: ViewModifier {
     }
 }
 
+/// PhoneHard as a file service: the files this app keeps on the device, read and changed
+/// through `SharedInbox` only. It backs the same browser, preview and trailer screens a
+/// network connection does. Nothing here talks to a server.
 struct LocalInboxFileService: RemoteFileService {
     static let connectionID = UUID(uuidString: "8E89F463-1601-4A4A-9890-0E7429A5DA94")!
+    static let rootPath = "/"
 
-    let connection = RemoteConnection(
+    /// What the shared screens are handed where they expect a connection. It is never
+    /// saved with the user's connections and has no account, credential or address; the
+    /// kind only selects the photo-and-video rules those screens already apply.
+    static let phoneHardConnection = RemoteConnection(
         id: connectionID,
         name: "폰하드",
         kind: .synology,
         host: "localhost",
-        username: ""
+        username: "",
+        rootPath: rootPath
     )
 
+    let connection = LocalInboxFileService.phoneHardConnection
+
+    /// Copy and move are done in place on the device by `SharedInbox`, which is what the
+    /// "server side" options mean for a service with no transfer of its own.
+    let capabilities: RemoteFileServiceCapabilities = [
+        .createFolder,
+        .rename,
+        .delete,
+        .recursiveDelete,
+        .upload,
+        .serverSideCopy,
+        .serverSideMove,
+    ]
+
+    /// Records handed over by a caller that addresses files by record id.
     private let recordsByPath: [String: SharedInboxRecord]
 
-    init(records: [SharedInboxRecord]) {
+    init(records: [SharedInboxRecord] = []) {
         recordsByPath = Dictionary(
             uniqueKeysWithValues: records.map { ($0.id.uuidString, $0) }
         )
     }
 
+    /// `nil` keeps the flat list of the records this service was created with. A path
+    /// lists exactly one folder level of PhoneHard as it is on disk now.
     func list(directory path: String?) async throws -> [RemoteFileItem] {
-        recordsByPath.values
-            .sorted { $0.importedAt > $1.importedAt }
-            .map { Self.remoteItem(for: $0) }
+        guard let path else {
+            return recordsByPath.values
+                .sorted { $0.importedAt > $1.importedAt }
+                .map { Self.remoteItem(for: $0) }
+        }
+        let parent = Self.storedPath(forBrowserPath: path)
+        return try SharedInbox.records()
+            .filter { Self.parentStoredPath(of: $0.storedFilename) == parent }
+            .map { Self.browserItem(for: $0) }
     }
 
+    /// The stored file itself, never a copy: callers only read it.
     func download(_ item: RemoteFileItem) async throws -> URL {
-        guard let record = recordsByPath[item.path] else {
+        let record = try storedRecord(for: item)
+        guard !record.isDirectory else { throw LocalInboxFileError.recordNotFound }
+        let url = try SharedInbox.fileURL(for: record)
+        guard FileManager.default.fileExists(atPath: url.path) else {
             throw LocalInboxFileError.recordNotFound
         }
-        return try SharedInbox.fileURL(for: record)
+        return url
+    }
+
+    /// Made on the device from the stored file, so the browser's thumbnails need no
+    /// network. `nil` for a file with nothing to draw.
+    func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize
+    ) async throws -> Data? {
+        guard !item.isDirectory, item.supportsQuickLookThumbnail, !item.isAudio else { return nil }
+        let fileURL = try await download(item)
+        let maximumPixelSize: Int
+        switch size {
+        case .small: maximumPixelSize = 360
+        case .medium: maximumPixelSize = 1_024
+        case .large: maximumPixelSize = 1_600
+        }
+        if item.isImage,
+           let image = await LocalInboxImageThumbnailGenerator.generate(
+            fileURL: fileURL,
+            maximumPixelSize: maximumPixelSize
+           ) {
+            return image.jpegData(compressionQuality: 0.84)
+        }
+        let side = CGFloat(maximumPixelSize)
+        let request = QLThumbnailGenerator.Request(
+            fileAt: fileURL,
+            size: CGSize(width: side, height: side),
+            scale: 1,
+            representationTypes: .thumbnail
+        )
+        guard let representation = try? await QLThumbnailGenerator.shared
+            .generateBestRepresentation(for: request) else { return nil }
+        try Task.checkCancellation()
+        return representation.uiImage.jpegData(compressionQuality: 0.84)
     }
 
     func testConnection() async throws {}
 
+    func createFolder(
+        named name: String,
+        in directoryPath: String,
+        context: RemoteOperationContext
+    ) async throws -> RemoteFileItem {
+        try context.checkCancellation()
+        let record = try SharedInbox.createFolder(
+            named: name,
+            in: Self.storedPath(forBrowserPath: directoryPath)
+        )
+        return Self.browserItem(for: record)
+    }
+
+    func rename(
+        _ item: RemoteFileItem,
+        to newName: String,
+        context: RemoteOperationContext
+    ) async throws -> RemoteFileItem {
+        try context.checkCancellation()
+        let record = try storedRecord(for: item)
+        try rejectMusicFolderRelocation(of: record)
+        return Self.browserItem(for: try SharedInbox.renameItem(record, to: newName))
+    }
+
+    func delete(
+        _ item: RemoteFileItem,
+        recursive: Bool,
+        context: RemoteOperationContext
+    ) async throws -> RemoteOperationResult {
+        try context.checkCancellation()
+        try SharedInbox.delete(try storedRecord(for: item))
+        return RemoteOperationResult(
+            operationID: context.operationID,
+            operation: .delete,
+            outcomes: [.succeeded(sourcePath: item.path)]
+        )
+    }
+
+    /// Adds a copy of `localURL` to the folder under a name nothing there uses yet. The
+    /// picked file is only read, and nothing already in PhoneHard is replaced.
+    func upload(
+        localURL: URL,
+        to directoryPath: String,
+        preferredName: String?,
+        conflictPolicy: RemoteConflictPolicy,
+        context: RemoteOperationContext
+    ) async throws -> RemoteOperationResult {
+        try context.checkCancellation()
+        let folderPath = Self.storedPath(forBrowserPath: directoryPath)
+        var name = preferredName ?? localURL.lastPathComponent
+        // Reserved at the PhoneHard root only; inside a folder it is an ordinary name.
+        if folderPath == nil, name.caseInsensitiveCompare("manifest.json") == .orderedSame {
+            name = "manifest (가져옴).json"
+        }
+        let contentTypeIdentifier = try? localURL
+            .resourceValues(forKeys: [.contentTypeKey]).contentType?.identifier
+
+        // Coordinated like every other import, so a file still in iCloud is fetched first.
+        var imported: Result<SharedInboxRecord, Error>?
+        var coordinationError: NSError?
+        NSFileCoordinator(filePresenter: nil).coordinate(
+            readingItemAt: localURL,
+            options: .withoutChanges,
+            error: &coordinationError
+        ) { coordinatedURL in
+            imported = Result {
+                try SharedInbox.importTemporaryItem(
+                    at: coordinatedURL,
+                    originalFilename: name,
+                    contentTypeIdentifier: contentTypeIdentifier,
+                    intoFolder: folderPath
+                )
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        guard let imported else { throw LocalInboxFileError.recordNotFound }
+        let item = Self.browserItem(for: try imported.get())
+        return RemoteOperationResult(
+            operationID: context.operationID,
+            operation: .upload,
+            outcomes: [
+                .succeeded(
+                    sourcePath: localURL.path,
+                    destinationPath: item.path,
+                    resultingItem: item
+                ),
+            ]
+        )
+    }
+
+    /// The original stays as it is; a name already used in the folder gets a new one.
+    func copy(
+        _ item: RemoteFileItem,
+        to directoryPath: String,
+        conflictPolicy: RemoteConflictPolicy,
+        strategy: RemoteTransferStrategy,
+        context: RemoteOperationContext
+    ) async throws -> RemoteOperationResult {
+        try context.checkCancellation()
+        let copies = try SharedInbox.copyItem(
+            try storedRecord(for: item),
+            toFolder: Self.storedPath(forBrowserPath: directoryPath)
+        )
+        let copiedItem = copies.first.map { Self.browserItem(for: $0) }
+        return RemoteOperationResult(
+            operationID: context.operationID,
+            operation: .copy,
+            outcomes: [
+                .succeeded(
+                    sourcePath: item.path,
+                    destinationPath: copiedItem?.path,
+                    resultingItem: copiedItem
+                ),
+            ]
+        )
+    }
+
+    func move(
+        _ item: RemoteFileItem,
+        to directoryPath: String,
+        conflictPolicy: RemoteConflictPolicy,
+        strategy: RemoteTransferStrategy,
+        context: RemoteOperationContext
+    ) async throws -> RemoteOperationResult {
+        try context.checkCancellation()
+        let record = try storedRecord(for: item)
+        try rejectMusicFolderRelocation(of: record)
+        let movedItem = Self.browserItem(
+            for: try SharedInbox.moveItem(
+                record,
+                toFolder: Self.storedPath(forBrowserPath: directoryPath)
+            )
+        )
+        return RemoteOperationResult(
+            operationID: context.operationID,
+            operation: .move,
+            outcomes: [
+                .succeeded(
+                    sourcePath: item.path,
+                    destinationPath: movedItem.path,
+                    resultingItem: movedItem
+                ),
+            ]
+        )
+    }
+
+    /// An item addressed by record id, as the screens that are handed records use it.
     static func remoteItem(for record: SharedInboxRecord) -> RemoteFileItem {
         RemoteFileItem(
             connectionID: connectionID,
@@ -1516,13 +1845,71 @@ struct LocalInboxFileService: RemoteFileService {
             contentTypeIdentifier: record.contentTypeIdentifier
         )
     }
+
+    /// An item addressed by where it is stored, as the browser lists it: a folder's path
+    /// is what its own listing is asked for.
+    static func browserItem(for record: SharedInboxRecord) -> RemoteFileItem {
+        RemoteFileItem(
+            connectionID: connectionID,
+            path: rootPath + record.storedFilename,
+            name: record.originalFilename,
+            kind: record.isDirectory ? .folder : .file,
+            size: record.isDirectory ? nil : record.byteCount,
+            modifiedAt: record.importedAt,
+            contentTypeIdentifier: record.contentTypeIdentifier
+        )
+    }
+
+    /// A browser path as `SharedInbox` names it; `nil` is the PhoneHard root.
+    static func storedPath(forBrowserPath path: String) -> String? {
+        let trimmed = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private static func parentStoredPath(of storedFilename: String) -> String? {
+        let parent = (storedFilename as NSString).deletingLastPathComponent
+        return parent.isEmpty ? nil : parent
+    }
+
+    /// A browser item carries everything `SharedInbox` matches a stored item by, so it
+    /// is addressed by where it is stored without reading the manifest again.
+    private func storedRecord(for item: RemoteFileItem) throws -> SharedInboxRecord {
+        if let record = recordsByPath[item.path] { return record }
+        guard item.connectionID == Self.connectionID,
+              item.path.hasPrefix(Self.rootPath),
+              let storedFilename = Self.storedPath(forBrowserPath: item.path) else {
+            throw LocalInboxFileError.recordNotFound
+        }
+        return SharedInboxRecord(
+            id: UUID(),
+            originalFilename: item.name,
+            storedFilename: storedFilename,
+            contentTypeIdentifier: item.contentTypeIdentifier,
+            byteCount: item.size ?? 0,
+            importedAt: item.modifiedAt ?? Date(),
+            isDirectory: item.isDirectory
+        )
+    }
+
+    /// Music picked for a video is looked for in the root Music folder by that name.
+    private func rejectMusicFolderRelocation(of record: SharedInboxRecord) throws {
+        if record.storedFilename == SharedInbox.musicDirectoryName {
+            throw LocalInboxFileError.musicFolderFixed
+        }
+    }
 }
 
 private enum LocalInboxFileError: LocalizedError {
     case recordNotFound
+    case musicFolderFixed
 
     var errorDescription: String? {
-        "폰하드 파일을 찾을 수 없습니다. 목록을 새로 고친 뒤 다시 시도하세요."
+        switch self {
+        case .recordNotFound:
+            "폰하드 파일을 찾을 수 없습니다. 목록을 새로 고친 뒤 다시 시도하세요."
+        case .musicFolderFixed:
+            "Music 폴더는 음악 입히기가 음악을 찾는 폴더라 이름을 바꾸거나 옮길 수 없습니다. 안의 파일은 그대로 다룰 수 있습니다."
+        }
     }
 }
 

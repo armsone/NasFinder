@@ -308,7 +308,10 @@ final class FileBrowserViewModel: ObservableObject {
             errorMessage = nil
         } catch {
             guard !RemoteRequestCancellation.isCancellation(error) else { return }
-            if connection.kind == .sftp {
+            if connection.id == LocalInboxFileService.connectionID {
+                // PhoneHard is on this device; there is no server to diagnose.
+                errorMessage = "폰하드 파일 목록을 읽지 못했습니다: \(error.localizedDescription)"
+            } else if connection.kind == .sftp {
                 let diagnostic = SFTPConnectionDiagnostics.diagnostic(
                     for: error,
                     rootPath: path

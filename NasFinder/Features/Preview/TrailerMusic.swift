@@ -6,13 +6,32 @@ enum TrailerMusicPolicy: String, CaseIterable, Identifiable {
     case fitMusic
     /// The video keeps its own length; the music repeats to fill it and stops with it.
     case loopMusic
+    /// The user set the video's length by hand: the music plays once from the start and
+    /// is cut where the video ends; a longer video goes on with its own sound only.
+    case single
 
     var id: String { rawValue }
 
+    /// The two automatic policies offered as buttons. `single` is never offered: it is
+    /// what is left when the user changes the total length and neither applies any more.
+    static let selectable: [TrailerMusicPolicy] = [.fitMusic, .loopMusic]
+
     var title: String {
         switch self {
-        case .fitMusic: "음악 길이에 맞추기"
+        case .fitMusic: Self.fitTitle(count: 1)
         case .loopMusic: "음악 반복"
+        case .single: "음악 한 번"
+        }
+    }
+
+    /// "음악 길이에 맞추기", then "두 번 맞추기", "세 번", "네 번" and "5번" onwards.
+    static func fitTitle(count: Int) -> String {
+        switch count {
+        case ...1: "음악 길이에 맞추기"
+        case 2: "음악 길이에 두 번 맞추기"
+        case 3: "음악 길이에 세 번 맞추기"
+        case 4: "음악 길이에 네 번 맞추기"
+        default: "음악 길이에 \(count)번 맞추기"
         }
     }
 }
@@ -24,6 +43,12 @@ struct TrailerMusicSelection: Equatable {
     let url: URL
     let duration: Double
     var policy: TrailerMusicPolicy
+    /// How many times the music is laid end to end when the video is fitted to it.
+    /// Only `fitMusic` reads it; it is 1 under every other policy.
+    var fitCount = 1
+
+    /// The length a fitted video comes to: the music's own length times `fitCount`.
+    var fittedDuration: Double { duration * Double(max(1, fitCount)) }
 }
 
 enum TrailerMusicError: LocalizedError {
@@ -271,7 +296,6 @@ private enum TrailerMusicLocation: String, CaseIterable, Identifiable {
 /// inside this picker, so the editor underneath and its session stay alive.
 struct TrailerMusicPickerView: View {
     let currentID: UUID?
-    let policy: TrailerMusicPolicy
     let onPick: (TrailerMusicSelection?) -> Void
 
     @Environment(\.dismiss) private var dismiss
@@ -367,8 +391,7 @@ struct TrailerMusicPickerView: View {
         .onAppear { remote.attach(audition: audition, inboxStore: inboxStore) }
         .onDisappear { remote.reset() }
         .onChange(of: remote.selection) { _, selection in
-            guard var selection else { return }
-            selection.policy = policy
+            guard let selection else { return }
             remote.reset()
             onPick(selection)
             dismiss()
@@ -465,7 +488,7 @@ struct TrailerMusicPickerView: View {
         guard let duration = durations[record.id], let url = try? SharedInbox.fileURL(for: record) else { return }
         remote.reset()
         onPick(TrailerMusicSelection(recordID: record.id, name: record.originalFilename, url: url,
-                                     duration: duration, policy: policy))
+                                     duration: duration, policy: .loopMusic))
         dismiss()
     }
 

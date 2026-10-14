@@ -99,6 +99,23 @@ private struct TrailerSettingsDraft {
     var clipLength: Double
     var aspectRatio: OutputAspectRatio?
     var music: TrailerMusicSelection?
+    /// Whether each "다른 길이" slider is open.
+    var showingDuration = false
+    var showingClipLength = false
+}
+
+/// What a suspended editor leaves in `TrailerDraftStore` and takes back when it is
+/// reopened: the session itself, so nothing is fetched, analysed or shuffled again.
+private final class TrailerSuspendedSession {
+    let model: VideoTrailerModel
+    let draft: TrailerSettingsDraft?
+    let showedSettings: Bool
+
+    init(model: VideoTrailerModel, draft: TrailerSettingsDraft?, showedSettings: Bool) {
+        self.model = model
+        self.draft = draft
+        self.showedSettings = showedSettings
+    }
 }
 
 /// One showing of the editor together with the draft it opens on, so the editor is never
@@ -119,10 +136,34 @@ struct VideoTrailerView: View {
     var mode = VideoTrailerMode.trailer
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var inboxStore: SharedInboxStore
-    @StateObject private var model = VideoTrailerModel()
+    @StateObject private var model: VideoTrailerModel
     @State private var presentedSettings: TrailerSettingsPresentation?
     @State private var draft: TrailerSettingsDraft?
+    /// This editing session in `TrailerDraftStore`, the same before and after a suspension.
+    @State private var sessionID: UUID
+    @State private var didBegin = false
+    /// The user already chose how this showing ends, so `onDisappear` leaves it alone.
+    @State private var exitHandled = false
+    @State private var showingReplacePrompt = false
+    @State private var showingStalePrompt = false
+    @State private var resumeNotice: String?
+    private let isResumed: Bool
+    private let reopensSettings: Bool
     private var showingSettings: Bool { presentedSettings != nil }
+
+    /// With `resuming` the editor continues that suspended session instead of starting one.
+    init(items: [RemoteFileItem], service: any RemoteFileService, mode: VideoTrailerMode = .trailer,
+         resuming entry: TrailerDraftEntry? = nil) {
+        self.items = items
+        self.service = service
+        self.mode = mode
+        let suspended = entry?.session as? TrailerSuspendedSession
+        isResumed = suspended != nil
+        reopensSettings = suspended?.showedSettings ?? false
+        _model = StateObject(wrappedValue: suspended?.model ?? VideoTrailerModel())
+        _draft = State(initialValue: suspended?.draft)
+        _sessionID = State(initialValue: entry?.id ?? UUID())
+    }
 
     var body: some View {
         NavigationStack {
@@ -131,7 +172,7 @@ struct VideoTrailerView: View {
                     let previewService = TrailerOutputFileService(url: output)
                     RemotePreviewView(item: previewService.item, sequentialItems: [previewService.item],
                         service: previewService, accessoryControls: AnyView(trailerControls),
-                        onClose: { model.stop(); dismiss() },
+                        onClose: requestExit,
                         playbackSuspended: showingSettings || model.isBusy)
                         .id(output)
                     if model.isBusy || model.error != nil {
@@ -196,7 +237,7 @@ struct VideoTrailerView: View {
                     .toolbar {
                         ToolbarItem(placement: .cancellationAction) {
                             Group {
-                                Button("취소") { model.stop(); dismiss() }
+                                Button("취소") { requestExit() }
                             }
                             .uiBarFont()
                         }
@@ -218,13 +259,130 @@ struct VideoTrailerView: View {
             #if !targetEnvironment(macCatalyst)
             .sheet(item: $presentedSettings) { settingsContent($0) }
             #endif
-            .task { if model.sources.isEmpty { model.start(items: items, service: service, mode: mode) } }
+            .task { await begin() }
             // Both modes go straight to the editor once the sources are in, before any
             // clip is joined, any photo scene is encoded or anything is exported.
             .onChange(of: model.isAwaitingSettings) { _, awaiting in
                 if awaiting { openSettings() }
             }
+            // SwiftUI reports this both when the app's return to the dashboard takes the
+            // editor down without either close button and while a full-screen presentation
+            // (the music browser) merely covers it. Either way the session is only kept:
+            // nothing is cancelled or removed, and `begin` takes it back on reappearing.
+            .onDisappear {
+                guard !exitHandled, model.hasResumableWork else { return }
+                suspendSession()
+            }
+            .alert("보관 중인 다른 편집이 있습니다", isPresented: $showingReplacePrompt) {
+                Button("둘 다 보관") { suspendAndDismiss() }
+                Button("이전 편집을 버리고 이 편집 보관", role: .destructive) {
+                    let store = TrailerDraftStore.shared
+                    for other in store.others(mode: mode, than: sessionID) { store.discard(other.id) }
+                    suspendAndDismiss()
+                }
+                Button("이 편집 버리기", role: .destructive) { discardAndDismiss() }
+                Button("계속 편집", role: .cancel) { }
+            } message: {
+                Text("같은 종류의 편집이 이미 보관되어 있습니다. 고르지 않은 편집은 지워지지 않습니다.")
+            }
+            .alert("보관한 편집 파일이 사라졌습니다", isPresented: $showingStalePrompt) {
+                Button("다시 가져오기") {
+                    resumeNotice = nil
+                    model.restage(items: items, service: service, mode: mode)
+                }
+                Button("이 편집 버리기", role: .destructive) { discardAndDismiss() }
+                Button("닫기", role: .cancel) { suspendAndDismiss() }
+            } message: {
+                Text(["이 편집을 위해 받아 둔 사진·영상이 기기에서 지워졌습니다. 순서와 설정은 그대로 두고 원본에서 다시 가져올 수 있습니다.",
+                      resumeNotice].compactMap { $0 }.joined(separator: " "))
+            }
+            .alert("보관한 편집을 다시 열었습니다", isPresented: Binding(
+                get: { resumeNotice != nil && !showingStalePrompt },
+                set: { if !$0 { resumeNotice = nil } })) {
+                Button("확인", role: .cancel) { continueResume() }
+            } message: {
+                Text(resumeNotice ?? "")
+            }
         }
+    }
+
+    /// A new editor stages its sources; a reopened one checks what is really still there
+    /// and continues from it, saying so plainly when something is gone.
+    private func begin() async {
+        TrailerDraftStore.shared.reopen(sessionID)
+        // A render cancelled on the way out may still be unwinding.
+        while model.isSuspending, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
+        guard !Task.isCancelled, !didBegin else { return }
+        didBegin = true
+        guard isResumed else {
+            if model.sources.isEmpty { model.start(items: items, service: service, mode: mode) }
+            return
+        }
+        // Work that was never cancelled is still running and shows its own progress.
+        guard !model.isBusy else { return }
+        let lost = model.reconcile()
+        var notes: [String] = []
+        if lost.output { notes.append("완성했던 영상 파일이 사라져 다시 만들어야 합니다.") }
+        if let music = draft?.music, !model.holdsMusic(music) {
+            draft?.music = nil
+            notes.append("골라 둔 음악 파일을 찾을 수 없어 음악 선택을 비웠습니다.")
+        }
+        resumeNotice = notes.isEmpty ? nil : notes.joined(separator: " ")
+        if lost.sources {
+            showingStalePrompt = true
+        } else if notes.isEmpty {
+            continueResume()
+        }
+    }
+
+    private func continueResume() {
+        if !model.isStaged {
+            // Left while the sources were still coming in: only the missing ones are fetched.
+            model.start(items: items, service: service, mode: mode)
+        } else if reopensSettings || model.outputURL == nil {
+            openSettings()
+        }
+    }
+
+    /// Closing or cancelling suspends the editor; it never resets it. Only a showing with
+    /// nothing staged yet ends the old way, and an earlier suspended editor of the same
+    /// kind is never replaced without the user saying so.
+    private func requestExit() {
+        guard model.hasResumableWork else {
+            exitHandled = true
+            model.stop()
+            dismiss()
+            return
+        }
+        if TrailerDraftStore.shared.others(mode: mode, than: sessionID).isEmpty {
+            suspendAndDismiss()
+        } else {
+            showingReplacePrompt = true
+        }
+    }
+
+    private func suspendSession() {
+        let session = model
+        session.pinMusic(draft?.music)
+        TrailerDraftStore.shared.suspend(TrailerDraftEntry(id: sessionID, mode: mode, items: items, service: service,
+            session: TrailerSuspendedSession(model: session, draft: draft, showedSettings: showingSettings),
+            discard: { session.stop() }))
+    }
+
+    private func suspendAndDismiss() {
+        exitHandled = true
+        // A render still running is cancelled; the staged sources and settings stay.
+        model.suspend()
+        suspendSession()
+        dismiss()
+    }
+
+    private func discardAndDismiss() {
+        exitHandled = true
+        presentedSettings = nil
+        TrailerDraftStore.shared.reopen(sessionID)
+        model.stop()
+        dismiss()
     }
 
     /// The draft brought in line with what is actually staged: the user's order and the
@@ -278,7 +436,8 @@ struct VideoTrailerView: View {
 
     private func settingsContent(_ presentation: TrailerSettingsPresentation) -> some View {
         TrailerSettingsHost(mode: mode, draft: $draft, opening: presentation.draft,
-            skippedCount: model.skippedCount, onClose: { presentedSettings = nil }, apply: apply)
+            skippedCount: model.skippedCount, onClose: { presentedSettings = nil },
+            onDiscard: discardAndDismiss, apply: apply)
             .id(presentation.id)
     }
 
@@ -325,20 +484,22 @@ private struct TrailerSettingsHost: View {
     let opening: TrailerSettingsDraft
     let skippedCount: Int
     let onClose: () -> Void
+    let onDiscard: () -> Void
     let apply: (TrailerSettingsDraft) -> Void
 
     var body: some View {
         let binding = Binding(get: { draft ?? opening }, set: { draft = $0 })
         VideoTrailerSettings(mode: mode, sources: binding.sources, total: binding.total,
             clipLength: binding.clipLength, skippedCount: skippedCount,
-            aspectRatio: binding.aspectRatio, music: binding.music, onClose: onClose,
-            regenerate: { apply(draft ?? opening) })
+            aspectRatio: binding.aspectRatio, music: binding.music,
+            showingDuration: binding.showingDuration, showingClipLength: binding.showingClipLength,
+            onClose: onClose, onDiscard: onDiscard, regenerate: { apply(draft ?? opening) })
     }
 }
 
 private struct VideoTrailerSettings: View {
     let mode: VideoTrailerMode
-    // All five are the caller's draft: nothing here is lost when this view goes away.
+    // Every binding is the caller's draft: nothing here is lost when this view goes away.
     @Binding var sources: [VideoTrailerSource]
     @Binding var total: Double
     @Binding var clipLength: Double
@@ -346,13 +507,15 @@ private struct VideoTrailerSettings: View {
     @Binding var aspectRatio: OutputAspectRatio?
     /// Draft only: the session's music changes after a new video is actually made.
     @Binding var music: TrailerMusicSelection?
+    @Binding var showingDuration: Bool
+    @Binding var showingClipLength: Bool
     let onClose: () -> Void
+    let onDiscard: () -> Void
     let regenerate: () -> Void
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @State private var showingMusicPicker = false
+    @State private var confirmingDiscard = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var showingDuration = false
-    @State private var showingClipLength = false
     @State private var draggedSourceID: Int?
     @State private var dragLocation = CGPoint.zero
     @State private var dragAnchor = CGSize.zero
@@ -377,9 +540,11 @@ private struct VideoTrailerSettings: View {
         guard let music else { return baseProposal }
         switch music.policy {
         case .fitMusic:
-            return VideoTrailerBatchPlan.fitted(baseProposal, to: music.duration) ?? []
+            return VideoTrailerBatchPlan.fitted(baseProposal, to: music.fittedDuration) ?? []
         case .loopMusic:
             return musicRepeatCount <= TrailerMusic.maximumRepeats ? baseProposal : []
+        case .single:
+            return baseProposal
         }
     }
     private var musicRepeatCount: Int {
@@ -392,11 +557,15 @@ private struct VideoTrailerSettings: View {
         guard !proposal.isEmpty else { return TrailerMusicError.tooManyRepeats.errorDescription }
         switch music.policy {
         case .fitMusic:
-            if baseTotal < music.duration - 0.05 { return "영상이 음악보다 짧아 장면을 처음부터 다시 이어 붙여요" }
-            if baseTotal > music.duration + 0.05 { return "음악이 끝나는 곳에서 영상도 끝나요 · 뒤쪽 장면은 잘려요" }
-            return "영상과 음악 길이가 같아요"
+            let repeats = music.fitCount > 1 ? "음악을 \(music.fitCount)번 이어 틀어요 · " : ""
+            if baseTotal < music.fittedDuration - 0.05 { return repeats + "영상이 음악보다 짧아 장면을 처음부터 다시 이어 붙여요" }
+            if baseTotal > music.fittedDuration + 0.05 { return repeats + "음악이 끝나는 곳에서 영상도 끝나요 · 뒤쪽 장면은 잘려요" }
+            return repeats + "영상과 음악 길이가 같아요"
         case .loopMusic:
             return musicRepeatCount > 1 ? "음악을 \(musicRepeatCount)번 이어 틀고 영상 끝에서 멈춰요" : "영상이 끝나면 음악도 멈춰요"
+        case .single:
+            return baseTotal > music.duration + 0.05 ? "음악은 한 번만 나오고, 끝난 뒤에는 원본 소리만 나와요"
+                : "음악은 한 번만 나오고 영상이 끝나면 멈춰요"
         }
     }
     private var actualTotal: Double { proposal.reduce(0) { $0 + $1.length } }
@@ -411,7 +580,10 @@ private struct VideoTrailerSettings: View {
     }
     private var musicSummary: String {
         guard let music else { return "음악 없음" }
-        return "\(music.name) · \(videoTrailerTime(music.duration))"
+        guard music.policy == .fitMusic, music.fitCount > 1 else {
+            return "\(music.name) · \(videoTrailerTime(music.duration))"
+        }
+        return "\(music.name) · \(videoTrailerTime(music.duration)) × \(music.fitCount) = \(videoTrailerTime(music.fittedDuration))"
     }
     private var createTitle: String {
         guard mode == .mediaMusic else { return "\(trailerDurationTitle(actualTotal)) 예고편 만들기" }
@@ -428,6 +600,39 @@ private struct VideoTrailerSettings: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: ui(14)) {
                     VStack(alignment: .leading, spacing: ui(4)) {
+                        HStack {
+                            Text("음악").font(.ui(.subheadline).weight(.semibold))
+                            Spacer()
+                            Text(musicSummary)
+                                .font(.ui(.caption)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                        }
+                        HStack(spacing: ui(5)) {
+                            TrailerChoiceButton(title: music == nil ? "음악 고르기" : "음악 바꾸기", selected: false) {
+                                showingMusicPicker = true
+                            }
+                            if music != nil {
+                                TrailerChoiceButton(title: "음악 없음", selected: false) { music = nil }
+                            }
+                        }
+                        if let music {
+                            HStack(spacing: ui(5)) {
+                                ForEach(TrailerMusicPolicy.selectable) { policy in
+                                    TrailerChoiceButton(title: musicPolicyTitle(policy), selected: music.policy == policy) {
+                                        chooseMusicPolicy(policy)
+                                    }
+                                }
+                            }
+                            if let musicHint {
+                                Text(musicHint).font(.ui(.caption)).foregroundStyle(proposal.isEmpty ? Color.red : Color.secondary)
+                            }
+                            Text("원본 소리가 나는 곳에서는 음악이 작아지고, 조용한 곳과 사진에서는 커져요")
+                                .font(.ui(.caption)).foregroundStyle(.secondary)
+                        } else if mode == .mediaMusic {
+                            Text("음악을 골라야 영상을 만들 수 있어요").font(.ui(.caption)).foregroundStyle(.secondary)
+                        }
+                    }
+                    Divider()
+                    VStack(alignment: .leading, spacing: ui(4)) {
                         HStack(alignment: .firstTextBaseline) {
                             Text(trailerDurationTitle(actualTotal)).font(.ui(.title2).weight(.semibold)).monospacedDigit()
                             Spacer()
@@ -442,7 +647,7 @@ private struct VideoTrailerSettings: View {
                         HStack(spacing: ui(5)) {
                             ForEach([30.0, 60, 120, 180, 300], id: \.self) { value in
                                 TrailerChoiceButton(title: trailerDurationTitle(value), selected: abs(total - value) < 0.01) {
-                                    total = value
+                                    setManualTotal(value)
                                     showingDuration = false
                                 }
                                 .disabled(value > originalTotal)
@@ -451,7 +656,10 @@ private struct VideoTrailerSettings: View {
                         }
                         otherLengthButton(value: trailerDurationTitle(total), expanded: showingDuration) { showingDuration.toggle() }
                         if showingDuration, originalTotal > 1 {
-                            Slider(value: $total, in: 1...originalTotal, step: 1)
+                            // A length fitted to the music can be longer than the originals.
+                            Slider(value: Binding(get: { min(max(1, total), originalTotal) },
+                                                  set: { if abs($0 - total) >= 0.01 { setManualTotal($0) } }),
+                                   in: 1...originalTotal, step: 1)
                                 .accessibilityLabel("예고편 총길이")
                                 .accessibilityValue(trailerDurationTitle(total))
                         }
@@ -492,38 +700,6 @@ private struct VideoTrailerSettings: View {
                             }
                         }
                     }
-                    }
-                    VStack(alignment: .leading, spacing: ui(4)) {
-                        HStack {
-                            Text("음악").font(.ui(.subheadline).weight(.semibold))
-                            Spacer()
-                            Text(musicSummary)
-                                .font(.ui(.caption)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        }
-                        HStack(spacing: ui(5)) {
-                            TrailerChoiceButton(title: music == nil ? "음악 고르기" : "음악 바꾸기", selected: false) {
-                                showingMusicPicker = true
-                            }
-                            if music != nil {
-                                TrailerChoiceButton(title: "음악 없음", selected: false) { music = nil }
-                            }
-                        }
-                        if let music {
-                            HStack(spacing: ui(5)) {
-                                ForEach(TrailerMusicPolicy.allCases) { policy in
-                                    TrailerChoiceButton(title: policy.title, selected: music.policy == policy) {
-                                        self.music?.policy = policy
-                                    }
-                                }
-                            }
-                            if let musicHint {
-                                Text(musicHint).font(.ui(.caption)).foregroundStyle(proposal.isEmpty ? Color.red : Color.secondary)
-                            }
-                            Text("원본 소리가 나는 곳에서는 음악이 작아지고, 조용한 곳과 사진에서는 커져요")
-                                .font(.ui(.caption)).foregroundStyle(.secondary)
-                        } else if mode == .mediaMusic {
-                            Text("음악을 골라야 영상을 만들 수 있어요").font(.ui(.caption)).foregroundStyle(.secondary)
-                        }
                     }
                     VStack(alignment: .leading, spacing: ui(4)) {
                         HStack {
@@ -662,7 +838,7 @@ private struct VideoTrailerSettings: View {
                         Text("모든 영상이 제거되어 예고편을 만들 수 없습니다. 영상을 다시 추가해 주세요.")
                             .font(.ui(.caption)).foregroundStyle(.red)
                     }
-                    if mode == .trailer, abs(total - baseTotal) >= 0.5 {
+                    if mode == .trailer, music?.policy != .fitMusic, abs(total - baseTotal) >= 0.5 {
                         Text("선택한 \(trailerDurationTitle(total))에 가장 가까운 길이로 맞췄어요")
                             .font(.ui(.caption)).foregroundStyle(.secondary)
                     }
@@ -677,11 +853,14 @@ private struct VideoTrailerSettings: View {
                         Button("자동 추천으로 되돌리기") {
                             clipLength = VideoTrailerModel.recommendedLength(sources)
                             total = sources.reduce(0) { $0 + $1.plan.recommendedTotal }
+                            syncTotalToFit(music)
                             showingDuration = false
                             showingClipLength = false
                         }
                         .font(.ui(.caption)).frame(minHeight: ui(30))
                     }
+                    Button("이 편집 버리기", role: .destructive) { confirmingDiscard = true }
+                        .font(.ui(.caption)).frame(minHeight: ui(30))
                 }
                 .padding(ui(16))
                 #if targetEnvironment(macCatalyst)
@@ -718,12 +897,61 @@ private struct VideoTrailerSettings: View {
         // Presented on top of this editor, so its draft, the session's temporary files and
         // the playing preview underneath are all still here when the picker closes.
         .sheet(isPresented: $showingMusicPicker) {
-            TrailerMusicPickerView(currentID: music?.recordID, policy: music?.policy ?? .fitMusic) { music = $0 }
-                .environmentObject(inboxStore)
+            TrailerMusicPickerView(currentID: music?.recordID) { picked in
+                // Only an actual pick arrives here, and every pick, the music already in
+                // use included, starts on "음악 반복" with the count back at 1. Closing the
+                // picker or reopening a suspended editor changes nothing.
+                music = picked
+            }
+            .environmentObject(inboxStore)
+        }
+        .alert("이 편집을 버릴까요?", isPresented: $confirmingDiscard) {
+            Button("버리기", role: .destructive, action: onDiscard)
+            Button("취소", role: .cancel) { }
+        } message: {
+            Text("이 편집을 위해 받아 둔 사본과 폰하드에 저장하지 않은 완성 영상이 지워집니다. 원본과 폰하드에 저장한 파일은 그대로입니다.")
         }
     }
 
     private var settingsTitle: String { mode == .mediaMusic ? "음악 입히기" : "예고편 조절" }
+
+    private func musicPolicyTitle(_ policy: TrailerMusicPolicy) -> String {
+        guard policy == .fitMusic, let music, music.policy == .fitMusic else { return policy.title }
+        return TrailerMusicPolicy.fitTitle(count: music.fitCount)
+    }
+
+    /// Tapping "음악 길이에 맞추기" while it is already chosen fits one more run of the
+    /// music; arriving from any other policy starts again at one.
+    private func chooseMusicPolicy(_ policy: TrailerMusicPolicy) {
+        guard var selection = music else { return }
+        if policy == .fitMusic, selection.policy == .fitMusic {
+            selection.fitCount = min(TrailerMusic.maximumRepeats, selection.fitCount + 1)
+        } else {
+            selection.fitCount = 1
+        }
+        selection.policy = policy
+        music = selection
+        syncTotalToFit(selection)
+    }
+
+    /// Under "음악 길이에 맞추기" the length shown in "얼마나 길게 볼까요?" is the music's
+    /// own length times the count, the same as the header. It is set here and not through
+    /// `setManualTotal`, so the chosen policy stays chosen.
+    private func syncTotalToFit(_ selection: TrailerMusicSelection?) {
+        guard mode == .trailer, let selection, selection.policy == .fitMusic else { return }
+        total = selection.fittedDuration
+    }
+
+    /// The total length picked by hand (a preset or the slider). The music stays, but
+    /// neither automatic policy applies any more. Only these controls call this, so a
+    /// length that changes for any other reason never clears the chosen policy.
+    private func setManualTotal(_ value: Double) {
+        total = value
+        guard var selection = music, selection.policy != .single else { return }
+        selection.policy = .single
+        selection.fitCount = 1
+        music = selection
+    }
 
     #if targetEnvironment(macCatalyst)
     private var macHeader: some View {
@@ -1149,6 +1377,13 @@ private final class VideoTrailerModel: ObservableObject {
     /// Session-owned copies of picked music, by PhoneHard record. The render only ever
     /// reads these, never the file in PhoneHard.
     private var musicSnapshots: [UUID: URL] = [:]
+    /// Every item has been staged or skipped. False while they are still coming in, so a
+    /// reopened editor fetches the rest instead of treating a part as the whole.
+    private(set) var isStaged = false
+    /// The running work was cancelled by `suspend`, not by `stop`: only what that one
+    /// attempt made is removed.
+    private(set) var isSuspending = false
+    private var isSaving = false
     private var exporter: AVAssetExportSession?
     private var awakeActivityID: UUID?
     /// Ids removed from this trailer by the user; never re-downloaded or re-added,
@@ -1339,6 +1574,7 @@ private final class VideoTrailerModel: ObservableObject {
                 exportProgress = nil
                 joinProgress = nil
                 isBusy = false
+                isSuspending = false
                 task = nil
             }
             // Where the run stopped and what it was working on, for the failure log only.
@@ -1426,6 +1662,7 @@ private final class VideoTrailerModel: ObservableObject {
                     }
                 }
                 guard !sources.isEmpty else { throw TrailerError.noUsableSources }
+                isStaged = true
                 stage = "plan"
                 if let sourceOrder {
                     // The requested order is the exact retained subset: ids are sparse after
@@ -1488,7 +1725,8 @@ private final class VideoTrailerModel: ObservableObject {
                             naturalTimeScale: (try? await track.load(.naturalTimeScale)) ?? 0,
                             rangeStartValue: range.start.value, rangeStartTimescale: range.start.timescale,
                             rangeDurationValue: range.duration.value, rangeDurationTimescale: range.duration.timescale,
-                            policy: music.policy.rawValue)
+                            policy: music.policy == .fitMusic && music.fitCount > 1
+                                ? "\(music.policy.rawValue) x\(music.fitCount)" : music.policy.rawValue)
                         try TrailerMusic.validate(duration: range.duration.seconds)
                         musicInput = (musicAsset, track, range)
                     } catch let error as TrailerMusicError {
@@ -1514,8 +1752,10 @@ private final class VideoTrailerModel: ObservableObject {
                             clipLength: clipLength ?? recommendedClipLength)
                     guard !baseSelected.isEmpty else { throw TrailerError.exportFailed }
                     if let music, let musicInput, music.policy == .fitMusic {
-                        // Same ordered scenes, repeated or cut at the end to the music's length.
-                        guard let fitted = VideoTrailerBatchPlan.fitted(baseSelected, to: musicInput.range.duration.seconds) else {
+                        // Same ordered scenes, repeated or cut at the end to the music's length
+                        // laid end to end `fitCount` times; the music loop below fills the same.
+                        guard let fitted = VideoTrailerBatchPlan.fitted(baseSelected,
+                            to: musicInput.range.duration.seconds * Double(max(1, music.fitCount))) else {
                             throw TrailerMusicError.tooManyRepeats
                         }
                         selected = fitted
@@ -1656,7 +1896,10 @@ private final class VideoTrailerModel: ObservableObject {
                         // same way on every repeat; the last piece is cut where the video ends.
                         var musicCursor = CMTime.zero
                         var pieces = 0
-                        while CMTimeCompare(musicCursor, cursor) < 0 {
+                        // A hand-set length plays the music once: it is cut where the video
+                        // ends, and a longer video goes on with its own sound only.
+                        let playsOnce = music?.policy == .single
+                        while CMTimeCompare(musicCursor, cursor) < 0, !(playsOnce && pieces == 1) {
                             pieces += 1
                             guard pieces <= TrailerMusic.maximumRepeats else { throw TrailerMusicError.tooManyRepeats }
                             let piece = CMTimeMinimum(musicInput.range.duration, CMTimeSubtract(cursor, musicCursor))
@@ -1669,7 +1912,7 @@ private final class VideoTrailerModel: ObservableObject {
                         // sound's track has none and is mixed at its normal level.
                         let parameters = AVMutableAudioMixInputParameters(track: musicTrack)
                         let audible = TrailerMusicDucking.audibleIntervals(clips: originalSound)
-                        for ramp in TrailerMusicDucking.ramps(audible: audible, total: cursor.seconds) {
+                        for ramp in TrailerMusicDucking.ramps(audible: audible, total: musicCursor.seconds) {
                             // Shared boundaries convert to the same time, so ramps never overlap.
                             let rampStart = CMTime(seconds: ramp.start, preferredTimescale: 600)
                             let rampEnd = CMTime(seconds: ramp.end, preferredTimescale: 600)
@@ -1783,6 +2026,16 @@ private final class VideoTrailerModel: ObservableObject {
                     ? "영상 \(videoTrailerTime(cursor.seconds)) · \(selected.count)개 장면 · 음악 포함"
                     : "원본 \(videoTrailerTime(originalTotal)) → 예고편 \(videoTrailerTime(cursor.seconds)) · \(selected.count)개 클립"
                         + (music == nil ? "" : " · 음악 포함")
+            } catch let error where isSuspending && (error is CancellationError || Task.isCancelled) {
+                // Left mid-run without discarding: only this attempt's unfinished output and
+                // photo clips go. The staged sources, the picked music's copy and an
+                // earlier finished video all stay for when the editor is reopened.
+                Self.logger.notice("trailer model \(self.identity, privacy: .public) suspended at \(stage, privacy: .public)")
+                exporter = nil
+                if let exportOutput, exportOutput != outputURL { try? FileManager.default.removeItem(at: exportOutput) }
+                for file in attemptFiles { try? FileManager.default.removeItem(at: file) }
+                status = mode == .mediaMusic ? "음악을 고르면 영상을 만듭니다."
+                    : "예고편 조절에서 만들기를 누르면 예고편을 만듭니다."
             } catch is CancellationError {
                 cleanup(reason: "cancelled at \(stage)")
             } catch {
@@ -1821,8 +2074,10 @@ private final class VideoTrailerModel: ObservableObject {
     func save(to store: SharedInboxStore, filename: String, suffix: String = "예고편") {
         guard let outputURL, !isBusy, !isSaved else { return }
         isBusy = true
+        isSaving = true
         error = nil
         task = Task {
+            defer { isSaving = false }
             do {
                 let base = (filename as NSString).deletingPathExtension
                 _ = try await store.importDownloadedFile(at: outputURL,
@@ -1842,12 +2097,93 @@ private final class VideoTrailerModel: ObservableObject {
     /// only while it is still running; a finished session is left alone so its output is
     /// never discarded underneath the verification step.
     func stop() {
+        isSuspending = false
         if let awakeActivityID { ScreenAwakeController.shared.finishActivity(awakeActivityID) }
         let session = exporter
         Self.logger.notice("trailer model \(self.identity, privacy: .public) stop: task \(self.task != nil ? 1 : 0, privacy: .public) export status \(session?.status.rawValue ?? -1, privacy: .public) output \(self.outputURL != nil ? 1 : 0, privacy: .public)")
         task?.cancel()
         if let session, session.status == .exporting || session.status == .waiting { session.cancelExport() }
         if task == nil { cleanup(reason: "stop") }
+    }
+
+    /// Something of this session is worth coming back to.
+    var hasResumableWork: Bool { !sources.isEmpty || outputURL != nil }
+
+    /// Called when the user leaves the editor without discarding it. A staging, render or
+    /// export still running is cancelled and only its own unfinished files are removed; a
+    /// save to PhoneHard is left to finish. Nothing else of the session changes.
+    func suspend() {
+        guard task != nil, !isSaving else { return }
+        Self.logger.notice("trailer model \(self.identity, privacy: .public) suspend: export status \(self.exporter?.status.rawValue ?? -1, privacy: .public) output \(self.outputURL != nil ? 1 : 0, privacy: .public)")
+        isSuspending = true
+        task?.cancel()
+        if let session = exporter, session.status == .exporting || session.status == .waiting { session.cancelExport() }
+    }
+
+    /// Copies the picked music into this session's own folder while the editor is away,
+    /// as a render does, so the pick does not depend on the PhoneHard file staying put.
+    func pinMusic(_ music: TrailerMusicSelection?) {
+        guard let music, let directory, musicSnapshots[music.recordID] == nil else { return }
+        let original = music.url
+        let copy = directory.appendingPathComponent("music-\(UUID().uuidString)")
+            .appendingPathExtension(original.pathExtension)
+        Task {
+            let copied = await Task.detached(priority: .utility) {
+                (try? FileManager.default.copyItem(at: original, to: copy)) != nil
+            }.value
+            guard copied else { return }
+            if self.directory == directory, musicSnapshots[music.recordID] == nil {
+                musicSnapshots[music.recordID] = copy
+            } else {
+                try? FileManager.default.removeItem(at: copy)
+            }
+        }
+    }
+
+    /// The picked music can still be read, from this session's copy or from PhoneHard.
+    func holdsMusic(_ music: TrailerMusicSelection) -> Bool {
+        let files = FileManager.default
+        if let snapshot = musicSnapshots[music.recordID], files.fileExists(atPath: snapshot.path) { return true }
+        return files.fileExists(atPath: music.url.path)
+    }
+
+    /// Checks a reopened session against what is really on disk. A finished video that is
+    /// gone is no longer offered; staged copies that are gone are only reported, so the
+    /// user decides whether to fetch them again.
+    func reconcile() -> (sources: Bool, output: Bool) {
+        let files = FileManager.default
+        var outputLost = false
+        if let outputURL, !files.fileExists(atPath: outputURL.path) {
+            self.outputURL = nil
+            scenes = []
+            baseScenes = []
+            music = nil
+            isSaved = false
+            outputLost = true
+        }
+        let sourcesLost = sources.contains { !files.fileExists(atPath: $0.url.path) }
+        if sourcesLost || outputLost {
+            Self.logger.notice("trailer model \(self.identity, privacy: .public) reopened stale: \(Self.workspaceState(directory: self.directory, output: self.outputURL, sources: self.sources), privacy: .public)")
+        }
+        return (sourcesLost, outputLost)
+    }
+
+    /// Stages every source again from the untouched originals after this session's own
+    /// copies were lost. A finished video that is still there, and which sources the user
+    /// took out, are kept.
+    func restage(items: [RemoteFileItem], service: any RemoteFileService, mode: VideoTrailerMode) {
+        guard !isBusy else { return }
+        for source in sources { try? FileManager.default.removeItem(at: source.url) }
+        sources = []
+        activityBySourceID = [:]
+        skippedSourceIDs = []
+        skippedCount = 0
+        isStaged = false
+        if let directory, !FileManager.default.fileExists(atPath: directory.path) {
+            self.directory = nil
+            musicSnapshots = [:]
+        }
+        start(items: items, service: service, mode: mode)
     }
 
     private func cleanup(reason: String) {
@@ -1859,6 +2195,7 @@ private final class VideoTrailerModel: ObservableObject {
         baseScenes = []
         music = nil
         isAwaitingSettings = false
+        isStaged = false
         activityBySourceID = [:]
         musicSnapshots = [:]
         outputURL = nil

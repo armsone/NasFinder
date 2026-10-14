@@ -258,11 +258,16 @@ struct FileBrowserView: View {
     @State private var coverFlowEnteredFromPoster = false
     @State private var suppressAutomaticCoverFlowUntil = Date.distantPast
     @State private var browserContentSize = CGSize.zero
-    @State private var downloadTask: Task<Void, Never>?
-    @State private var downloadItemName: String?
-    @State private var downloadCompletedCount = 0
-    @State private var downloadTotalCount = 0
+    @StateObject private var downloadCoordinator = RemoteDownloadCoordinator()
+    @State private var pendingDownloadItems: [RemoteFileItem] = []
+    @State private var downloadDestinationStep: RemoteDownloadDestinationStep?
+    @State private var folderTrailerScopeMode = VideoTrailerMode.trailer
     @State private var downloadErrorMessage: String?
+    /// A folder share is being received; its share sheet opens when that finishes.
+    @State private var isStagingFolderShare = false
+    @State private var isImportingFromGooglePhotos = false
+    @State private var pendingNASUploadSources: [LocalUploadSource] = []
+    @State private var isChoosingNASUploadDestination = false
 
     @MainActor
     init(
@@ -276,7 +281,8 @@ struct FileBrowserView: View {
     ) {
         let tracker = trafficTracker ?? PageNetworkTrafficTracker()
         let measuredService: any RemoteFileService
-        if service is TrafficMeasuringRemoteFileService {
+        // PhoneHard reads files already on the device; none of that is network traffic.
+        if service is TrafficMeasuringRemoteFileService || service is LocalInboxFileService {
             measuredService = service
         } else {
             measuredService = TrafficMeasuringRemoteFileService(base: service, tracker: tracker)
@@ -299,6 +305,23 @@ struct FileBrowserView: View {
 
     private var dashboardAction: ReturnToDashboardAction {
         explicitReturnToDashboardAction ?? returnToDashboard
+    }
+
+    /// PhoneHard, the storage on this device, opened in this same browser.
+    private var isPhoneHard: Bool {
+        viewModel.connection.id == LocalInboxFileService.connectionID
+    }
+
+    /// "서버 열기" belongs to PhoneHard as a whole, so it sits at its root only and
+    /// starts folded.
+    private var showsPhoneHardServerPanel: Bool {
+        isPhoneHard && viewModel.path == LocalInboxFileService.rootPath && !isSelecting
+    }
+
+    private var phoneHardServerPanel: some View {
+        WebHardConnectionPanel()
+            .frame(maxWidth: ui(760))
+            .frame(maxWidth: .infinity)
     }
 
     var body: some View {
@@ -359,10 +382,11 @@ struct FileBrowserView: View {
             case .success(let urls):
                 guard !urls.isEmpty else { return }
                 operationCoordinator.upload(
-                    urls,
+                    urls.map { LocalUploadSource(url: $0) },
                     into: viewModel.path,
                     using: viewModel.service,
-                    conflictPolicy: .keepBoth
+                    conflictPolicy: .keepBoth,
+                    operationName: isPhoneHard ? "가져오기" : "업로드"
                 ) {
                     await viewModel.reloadAfterCurrentLoad()
                 }
@@ -376,8 +400,10 @@ struct FileBrowserView: View {
                 operationCoordinator.errorMessage = error.localizedDescription
             }
         }
-        .fileDialogConfirmationLabel("업로드")
-        .fileDialogMessage("현재 폴더에 올릴 파일을 선택하세요.")
+        .fileDialogConfirmationLabel(isPhoneHard ? "가져오기" : "업로드")
+        .fileDialogMessage(
+            isPhoneHard ? "현재 폴더로 가져올 파일을 선택하세요." : "현재 폴더에 올릴 파일을 선택하세요."
+        )
         .onChange(of: displayRequest, initial: true) { _, request in
             viewModel.configureDisplay(
                 matching: request.query,
@@ -391,11 +417,14 @@ struct FileBrowserView: View {
             }
             trafficTracker.reset()
             thumbnailActivity.beginNewSession()
-            connectionStore.rememberBrowserLocation(
-                connection: viewModel.connection,
-                path: viewModel.path,
-                title: title
-            )
+            // Only a saved connection can be reopened from the dashboard logo.
+            if !isPhoneHard {
+                connectionStore.rememberBrowserLocation(
+                    connection: viewModel.connection,
+                    path: viewModel.path,
+                    title: title
+                )
+            }
         }
         .onChange(of: layoutStyle, initial: true) { _, style in
             updateCoverFlowOrientation(for: style)
@@ -416,6 +445,14 @@ struct FileBrowserView: View {
         .overlay(alignment: .bottom) {
             browserStatusOverlay
         }
+        .modifier(
+            RemoteDownloadDestinationFlow(
+                step: $downloadDestinationStep,
+                inboxStore: inboxStore,
+                itemCount: pendingDownloadItems.count,
+                onChoose: startDownload
+            )
+        )
         .safeAreaInset(edge: .bottom) {
             if isSelecting {
                 selectionBar
@@ -449,6 +486,21 @@ struct FileBrowserView: View {
         .fullScreenCover(item: $trailerSelection) { selection in
             VideoTrailerView(items: selection.items, service: viewModel.service, mode: selection.mode)
         }
+        .modifier(
+            FileBrowserPhoneHardModifier(
+                isPhoneHard: isPhoneHard,
+                items: viewModel.items,
+                inboxStore: inboxStore,
+                isImportingFromGooglePhotos: $isImportingFromGooglePhotos,
+                isChoosingNASUploadDestination: $isChoosingNASUploadDestination,
+                nasUploadSources: pendingNASUploadSources,
+                reloadItems: { await viewModel.reloadAfterCurrentLoad() },
+                nasUploadDidClose: {
+                    pendingNASUploadSources = []
+                    endSelection()
+                }
+            )
+        )
         .fullScreenCover(item: $previewItem) { item in
             RemotePreviewView(
                 item: item,
@@ -476,7 +528,7 @@ struct FileBrowserView: View {
             Text("폴더를 선택한 경우 안의 파일도 함께 삭제됩니다. 이 작업은 되돌릴 수 없습니다.")
         }
         .confirmationDialog(
-            "예고편에 포함할 범위",
+            folderTrailerScopeMode == .mediaMusic ? "음악을 입힐 범위" : "예고편에 포함할 범위",
             isPresented: Binding(
                 get: { folderTrailerScopeChoice != nil },
                 set: { if !$0 { folderTrailerScopeChoice = nil } }
@@ -741,18 +793,15 @@ struct FileBrowserView: View {
                     }
                 }
 
-                if downloadTask != nil {
-                    FileOperationProgressBanner(
-                        title: "폰하드에 저장 중…",
-                        progress: RemoteOperationProgress(
-                            operationID: UUID(),
-                            operation: .copy,
-                            phase: .reading,
-                            unit: .items,
-                            completedUnitCount: Int64(downloadCompletedCount),
-                            totalUnitCount: Int64(downloadTotalCount),
-                            currentPath: downloadItemName
-                        ),
+                if downloadCoordinator.isRunning {
+                    SharePreparationBanner(
+                        itemName: downloadCoordinator.isCancelling
+                            ? "취소하는 중…"
+                            : downloadCoordinator.currentItemName,
+                        completedCount: downloadCoordinator.completedCount,
+                        totalCount: downloadCoordinator.totalCount,
+                        progress: downloadCoordinator.byteProgress,
+                        isStaging: false,
                         onCancel: cancelDownload
                     )
                 }
@@ -792,7 +841,19 @@ struct FileBrowserView: View {
                 .buttonStyle(.borderedProminent)
             }
         } else if viewModel.items.isEmpty {
-            ContentUnavailableView("빈 폴더", systemImage: "folder")
+            if showsPhoneHardServerPanel {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        phoneHardServerPanel
+                            .padding(.horizontal, ui(16))
+                            .padding(.vertical, ui(12))
+                        ContentUnavailableView("빈 폴더", systemImage: "folder")
+                            .padding(.vertical, ui(44))
+                    }
+                }
+            } else {
+                ContentUnavailableView("빈 폴더", systemImage: "folder")
+            }
         } else if displayedItems.isEmpty {
             ContentUnavailableView.search(text: searchText)
         } else {
@@ -918,20 +979,24 @@ struct FileBrowserView: View {
     /// Checks the folder's immediate children. If it contains subfolders, asks the user
     /// whether to include them before building the trailer selection; otherwise proceeds
     /// immediately with the immediate-only default.
-    private func buildFolderTrailerSelection(_ folder: RemoteFileItem) {
+    private func buildFolderTrailerSelection(
+        _ folder: RemoteFileItem,
+        mode: VideoTrailerMode = .trailer
+    ) {
         Task {
             do {
                 let children = try await viewModel.service.list(directory: folder.path)
                     .filter { RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name) }
                 if children.contains(where: \.isDirectory) {
+                    folderTrailerScopeMode = mode
                     folderTrailerScopeChoice = folder
                 } else {
                     let candidates = children.filter { !$0.isDirectory && $0.isTrailerEligible }
                     guard !candidates.isEmpty else {
-                        downloadErrorMessage = "이 폴더에 예고편으로 쓸 수 있는 사진이나 영상이 없습니다."
+                        downloadErrorMessage = Self.emptyFolderMediaMessage(for: mode)
                         return
                     }
-                    trailerSelection = VideoTrailerSelection(items: candidates)
+                    trailerSelection = VideoTrailerSelection(items: candidates, mode: mode)
                 }
             } catch {
                 downloadErrorMessage = "폴더 내용을 확인하지 못했습니다: \(error.localizedDescription)"
@@ -945,6 +1010,7 @@ struct FileBrowserView: View {
     /// actual decode validation are skipped individually while the trailer is being
     /// built, without aborting the rest of the batch.
     private func collectFolderTrailerCandidates(_ folder: RemoteFileItem, recursive: Bool) {
+        let mode = folderTrailerScopeMode
         Task {
             do {
                 var candidates: [RemoteFileItem] = []
@@ -952,14 +1018,20 @@ struct FileBrowserView: View {
                 try await appendFolderTrailerCandidates(folder, recursive: recursive,
                     visitedPaths: &visitedPaths, into: &candidates)
                 guard !candidates.isEmpty else {
-                    downloadErrorMessage = "이 폴더에 예고편으로 쓸 수 있는 사진이나 영상이 없습니다."
+                    downloadErrorMessage = Self.emptyFolderMediaMessage(for: mode)
                     return
                 }
-                trailerSelection = VideoTrailerSelection(items: candidates)
+                trailerSelection = VideoTrailerSelection(items: candidates, mode: mode)
             } catch {
                 downloadErrorMessage = "폴더 내용을 확인하지 못했습니다: \(error.localizedDescription)"
             }
         }
+    }
+
+    private static func emptyFolderMediaMessage(for mode: VideoTrailerMode) -> String {
+        mode == .mediaMusic
+            ? "이 폴더에 음악을 입힐 수 있는 사진이나 영상이 없습니다."
+            : "이 폴더에 예고편으로 쓸 수 있는 사진이나 영상이 없습니다."
     }
 
     private func appendFolderTrailerCandidates(
@@ -1008,10 +1080,29 @@ struct FileBrowserView: View {
                         performMorePanelAction { isSelecting = true }
                     }
 
-                    CompactPanelButton(title: "붙여넣기", systemImage: "doc.on.clipboard") {
+                    // With nothing to paste this button picks files for the current
+                    // folder; PhoneHard says so, since that is how files are brought in.
+                    CompactPanelButton(
+                        title: isPhoneHard && operationCoordinator.clipboard == nil
+                            ? "가져오기"
+                            : "붙여넣기",
+                        systemImage: isPhoneHard && operationCoordinator.clipboard == nil
+                            ? "doc.badge.plus"
+                            : "doc.on.clipboard"
+                    ) {
                         performMorePanelAction(performPasteAction)
                     }
                     .disabled(!canPerformPasteAction)
+
+                    if isPhoneHard {
+                        CompactPanelButton(title: "Google 포토", systemImage: "photo.badge.arrow.down") {
+                            performMorePanelAction {
+                                guard canBeginUserPresentation else { return }
+                                isImportingFromGooglePhotos = true
+                            }
+                        }
+                        .disabled(!canBeginUserPresentation)
+                    }
 
                     CompactPanelButton(title: "새 폴더", systemImage: "folder.badge.plus") {
                         performMorePanelAction {
@@ -1361,6 +1452,11 @@ struct FileBrowserView: View {
 
     private func thumbnailGrid(for style: LayoutStyle) -> some View {
         ScrollView {
+            if showsPhoneHardServerPanel {
+                phoneHardServerPanel
+                    .padding(.horizontal, ui(16))
+                    .padding(.top, ui(12))
+            }
             LazyVGrid(
                 columns: columns(for: style),
                 spacing: ui(style == .largeThumbnails ? 20 : 12)
@@ -1407,8 +1503,15 @@ struct FileBrowserView: View {
     }
 
     private var list: some View {
-        List(displayedItems) { item in
-            listItem(item)
+        List {
+            if showsPhoneHardServerPanel {
+                phoneHardServerPanel
+                    .listRowSeparator(.hidden)
+                    .listRowBackground(Color.clear)
+            }
+            ForEach(displayedItems) { item in
+                listItem(item)
+            }
         }
         .listStyle(.plain)
     }
@@ -1584,52 +1687,54 @@ struct FileBrowserView: View {
                     }
                 }
 
-                if item.isTrailerEligible {
-                    CompactPanelButton(title: "예고편 보기", systemImage: "film") {
-                        performContextPanelAction {
-                            guard canBeginUserPresentation else { return }
+                // Files and folders share the same names and order here. A folder gathers
+                // the photos and videos inside it for the same trailer and music screens.
+                // Both stay in place for every item; one that is neither a photo nor a
+                // video dims them, with the reason below.
+                CompactPanelButton(title: "예고편 보기", systemImage: "film") {
+                    performContextPanelAction {
+                        guard canBeginUserPresentation else { return }
+                        if item.isDirectory {
+                            buildFolderTrailerSelection(item)
+                        } else {
                             trailerSelection = VideoTrailerSelection(items: [item])
                         }
                     }
-                    .disabled(!canBeginUserPresentation)
                 }
+                .disabled(!acceptsMediaActions(item) || !canBeginUserPresentation)
 
-                if item.isVideo {
-                    CompactPanelButton(title: "음악 입히기", systemImage: "music.note") {
-                        performContextPanelAction {
-                            guard canBeginUserPresentation else { return }
+                // The whole photo or video gets the music; no scenes are picked from it.
+                CompactPanelButton(title: "음악 입히기", systemImage: "music.note") {
+                    performContextPanelAction {
+                        guard canBeginUserPresentation else { return }
+                        if item.isDirectory {
+                            buildFolderTrailerSelection(item, mode: .mediaMusic)
+                        } else {
                             trailerSelection = VideoTrailerSelection(items: [item], mode: .mediaMusic)
                         }
                     }
-                    .disabled(!canBeginUserPresentation)
                 }
+                .disabled(!acceptsMediaActions(item) || !canBeginUserPresentation)
 
-                if item.isDirectory {
-                    CompactPanelButton(title: "예고편 만들기", systemImage: "film") {
-                        performContextPanelAction {
-                            guard canBeginUserPresentation else { return }
-                            buildFolderTrailerSelection(item)
-                        }
+                CompactPanelButton(title: "다운로드", systemImage: "arrow.down.circle") {
+                    performContextPanelAction {
+                        requestDownload([item])
                     }
-                    .disabled(!canBeginUserPresentation)
                 }
+                .disabled(downloadCoordinator.isRunning || !canBeginUserPresentation)
 
-                if !item.isDirectory {
-                    CompactPanelButton(title: "받기", systemImage: "arrow.down.circle") {
-                        performContextPanelAction {
-                            downloadToInbox([item])
-                        }
+                // A folder is received through the download staging first and then handed
+                // to the same share sheet; nothing is sent anywhere until the user picks a
+                // target there.
+                CompactPanelButton(title: "공유", systemImage: "square.and.arrow.up") {
+                    performContextPanelAction {
+                        requestShare([item])
                     }
-                    .disabled(downloadTask != nil)
-
-                    CompactPanelButton(title: "공유", systemImage: "square.and.arrow.up") {
-                        performContextPanelAction {
-                            guard canBeginUserPresentation else { return }
-                            shareCoordinator.prepare(items: [item], using: viewModel.service)
-                        }
-                    }
-                    .disabled(!canBeginUserPresentation)
                 }
+                .disabled(
+                    !canBeginUserPresentation
+                        || (item.isDirectory && downloadCoordinator.isRunning)
+                )
 
                 if thumbnailPreheater.isRunning {
                     CompactPanelButton(title: "생성 중지", systemImage: "stop.circle", tint: .red) {
@@ -1637,16 +1742,26 @@ struct FileBrowserView: View {
                             thumbnailPreheater.cancel()
                         }
                     }
-                } else if !item.isDirectory,
-                          ThumbnailPreheatPolicy.canGenerate(
-                    item: item,
-                    connectionKind: viewModel.service.connection.kind,
-                    supportsRangeStreaming: viewModel.service.supportsRangeStreaming
-                ) {
-                    CompactPanelButton(title: "이 파일 썸네일", systemImage: "photo.stack") {
+                } else {
+                    // Always shown under the same name; dimmed with the reason below when
+                    // this connection or item cannot have thumbnails made.
+                    CompactPanelButton(title: "썸네일 만들기", systemImage: "photo.stack") {
                         performContextPanelAction {
                             startThumbnailPreheating(for: item, recursively: false)
                         }
+                    }
+                    .disabled(thumbnailUnavailableReason(for: item) != nil)
+                }
+            }
+
+            let unavailableNotes = unavailableActionNotes(for: item)
+            if !unavailableNotes.isEmpty {
+                VStack(alignment: .leading, spacing: ui(2)) {
+                    ForEach(unavailableNotes, id: \.self) { note in
+                        Text(note)
+                            .font(.ui(.caption2))
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
             }
@@ -1657,6 +1772,68 @@ struct FileBrowserView: View {
         .padding(.top, ui(4))
         .padding(.bottom, ui(16))
         .buttonStyle(.plain)
+    }
+
+    /// Why an action in the panel is dimmed or missing for this item, so an unavailable
+    /// action never looks like one that simply did nothing.
+    private func unavailableActionNotes(for item: RemoteFileItem) -> [String] {
+        var notes: [String] = []
+        let capabilities = viewModel.service.capabilities
+        var unsupported: [String] = []
+        if !capabilities.supports(.copy) { unsupported.append("복사") }
+        if !capabilities.supports(.move) { unsupported.append("이동") }
+        if !capabilities.contains(.rename) { unsupported.append("수정") }
+        if !capabilities.contains(.delete) { unsupported.append("삭제") }
+        if !unsupported.isEmpty {
+            notes.append("이 연결은 \(unsupported.joined(separator: "·"))을(를) 지원하지 않습니다.")
+        }
+        if !acceptsMediaActions(item) {
+            notes.append("예고편 보기와 음악 입히기는 사진, 영상과 폴더에서 쓸 수 있습니다.")
+        }
+        if !thumbnailPreheater.isRunning, let reason = thumbnailUnavailableReason(for: item) {
+            notes.append(reason)
+        }
+        if downloadCoordinator.isRunning {
+            notes.append(
+                item.isDirectory
+                    ? "진행 중인 다운로드가 끝나면 새로 다운로드하거나 폴더를 공유할 수 있습니다."
+                    : "진행 중인 다운로드가 끝나면 새로 다운로드할 수 있습니다."
+            )
+        }
+        return notes
+    }
+
+    /// Trailer and music take photos and videos, or a folder for what is inside it.
+    private func acceptsMediaActions(_ item: RemoteFileItem) -> Bool {
+        item.isTrailerEligible || item.isDirectory
+    }
+
+    /// Why "썸네일 만들기" is dimmed for this item, or `nil` when the existing thumbnail
+    /// engine can take it. A folder uses the same engine on the media directly inside it,
+    /// so it follows the same per-connection conditions as a file.
+    private func thumbnailUnavailableReason(for item: RemoteFileItem) -> String? {
+        let service = viewModel.service
+        switch service.connection.kind {
+        case .dropbox, .oneDrive, .googleDrive:
+            return "이 연결은 썸네일 만들기를 지원하지 않습니다."
+        case .synology:
+            if item.isDirectory || item.isImage || item.isVideo { return nil }
+            return "썸네일 만들기는 사진과 영상에서만 쓸 수 있습니다."
+        case .sftp, .smb, .webDAV, .ftp:
+            guard service.supportsRangeStreaming else {
+                return "이 연결은 부분 전송을 지원하지 않아 썸네일 만들기를 쓸 수 없습니다."
+            }
+            if item.isDirectory {
+                return nil
+            }
+            return ThumbnailPreheatPolicy.canGenerate(
+                item: item,
+                connectionKind: service.connection.kind,
+                supportsRangeStreaming: service.supportsRangeStreaming
+            )
+                ? nil
+                : "이 연결에서 썸네일 만들기는 크기를 알 수 있는 영상에서만 쓸 수 있습니다."
+        }
     }
 
     private func itemInformationPanel(_ item: RemoteFileItem) -> some View {
@@ -1757,27 +1934,35 @@ struct FileBrowserView: View {
                     }
                     .disabled(selectedItems.isEmpty || !selectedItems.allSatisfy(\.isTrailerEligible))
 
-                    selectionActionButton("공유", systemImage: "square.and.arrow.up") {
-                        guard canBeginUserPresentation else { return }
-                        let files = selectedFiles
-                        guard !files.isEmpty else { return }
-                        guard files.count == selectedItems.count else {
-                            shareCoordinator.errorMessage = "폴더는 직접 공유할 수 없습니다. 파일만 선택해 주세요."
-                            return
-                        }
-                        shareCoordinator.prepare(items: files, using: viewModel.service)
+                    // Files and folders alike; the save location is asked for first and
+                    // the selection is kept until a download actually starts.
+                    selectionActionButton("다운로드", systemImage: "arrow.down.circle") {
+                        requestDownload(selectedItems)
                     }
-                    .disabled(selectedFiles.isEmpty || shareCoordinator.isPreparing)
+                    .disabled(selectedItems.isEmpty || downloadCoordinator.isRunning)
 
-                    selectionActionButton("받기", systemImage: "arrow.down.circle") {
-                        let files = selectedFiles
-                        guard !files.isEmpty else { return }
-                        downloadToInbox(files)
-                        endSelection()
+                    selectionActionButton("공유", systemImage: "square.and.arrow.up") {
+                        requestShare(selectedItems)
                     }
-                    .disabled(selectedFiles.isEmpty || downloadTask != nil)
+                    .disabled(selectedItems.isEmpty || shareCoordinator.isPreparing)
+
+                    // PhoneHard's own way out to a network connection, as before.
+                    if isPhoneHard {
+                        selectionActionButton("NAS로 보내기", systemImage: "arrow.up.doc") {
+                            beginNASUpload(of: selectedFiles)
+                        }
+                        .disabled(selectedFiles.isEmpty)
+                    }
                 }
                 .frame(maxWidth: .infinity)
+            }
+
+            if let note = selectionUnavailableNote {
+                Text(note)
+                    .font(.ui(.caption2))
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .padding(.horizontal, ui(16))
@@ -1785,6 +1970,39 @@ struct FileBrowserView: View {
         .padding(.bottom, ui(8))
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
+    }
+
+    /// Why an action in the selection bar is dimmed for what is selected now.
+    private var selectionUnavailableNote: String? {
+        guard !selectedItems.isEmpty else { return nil }
+        if !selectedItems.allSatisfy(\.isTrailerEligible) {
+            return "예고편 보기와 음악 입히기는 사진과 영상만 선택했을 때 쓸 수 있습니다."
+        }
+        if isPhoneHard, selectedFiles.isEmpty {
+            return "NAS로 보내기는 파일만 보낼 수 있습니다."
+        }
+        return nil
+    }
+
+    /// Hands the selected PhoneHard files to the existing send-to-connection screen. The
+    /// stored files are only read from there.
+    private func beginNASUpload(of files: [RemoteFileItem]) {
+        guard !files.isEmpty, canBeginUserPresentation else { return }
+        let service = viewModel.service
+        Task {
+            var sources: [LocalUploadSource] = []
+            for file in files {
+                if let url = try? await service.download(file) {
+                    sources.append(LocalUploadSource(url: url, preferredName: file.name))
+                }
+            }
+            guard !sources.isEmpty else {
+                downloadErrorMessage = "NAS로 보낼 파일을 준비하지 못했습니다. 목록을 새로 고친 뒤 다시 시도하세요."
+                return
+            }
+            pendingNASUploadSources = sources
+            isChoosingNASUploadDestination = true
+        }
     }
 
     private var selectAllButtonTitle: String {
@@ -1902,13 +2120,14 @@ struct FileBrowserView: View {
     /// so its asynchronous completion cannot race a preview or edit confirmation.
     private var canBeginUserPresentation: Bool {
         !shareCoordinator.isPreparing
+            && !isStagingFolderShare
             && !operationCoordinator.isBusy
             && !hasBlockingPresentation
             && !hasPendingError
     }
 
     private var selectionInteractionsAreBlocked: Bool {
-        shareCoordinator.isPreparing || operationCoordinator.isBusy || downloadTask != nil
+        shareCoordinator.isPreparing || operationCoordinator.isBusy || downloadCoordinator.isRunning
     }
 
     private var hasBlockingPresentation: Bool {
@@ -1919,6 +2138,9 @@ struct FileBrowserView: View {
             || renameItem != nil
             || isCreatingFolder
             || isImportingFiles
+            || isImportingFromGooglePhotos
+            || isChoosingNASUploadDestination
+            || downloadDestinationStep != nil
     }
 
     private var hasPendingError: Bool {
@@ -1929,43 +2151,80 @@ struct FileBrowserView: View {
             || (viewModel.errorMessage != nil && !viewModel.items.isEmpty)
     }
 
-    private func downloadToInbox(_ items: [RemoteFileItem]) {
-        let files = FileBrowserDownloadPolicy.downloadableItems(from: items)
-        guard !files.isEmpty, downloadTask == nil else { return }
-        downloadCompletedCount = 0
-        downloadTotalCount = files.count
+    /// Every download entry point, for files and folders alike, comes through here and
+    /// asks for the save location first. Nothing is transferred until one is chosen.
+    private func requestDownload(_ items: [RemoteFileItem]) {
+        guard !items.isEmpty,
+              !downloadCoordinator.isRunning,
+              canBeginUserPresentation else { return }
+        pendingDownloadItems = items
+        downloadDestinationStep = .choosing
+    }
+
+    private func startDownload(to destination: RemoteDownloadDestination) {
+        let items = pendingDownloadItems
+        pendingDownloadItems = []
+        guard !items.isEmpty, !downloadCoordinator.isRunning else { return }
         downloadErrorMessage = nil
-        downloadTask = Task { @MainActor in
-            do {
-                for item in files {
-                    try Task.checkCancellation()
-                    downloadItemName = item.name
-                    let url = try await viewModel.service.download(item)
-                    try Task.checkCancellation()
-                    _ = try await inboxStore.importDownloadedFile(
-                        at: url,
-                        originalFilename: item.name,
-                        contentTypeIdentifier: item.contentTypeIdentifier
-                    )
-                    downloadCompletedCount += 1
-                }
-                operationCoordinator.statusMessage = files.count == 1
-                    ? "폰하드에 저장했습니다."
-                    : "파일 \(files.count)개를 폰하드에 저장했습니다."
-            } catch is CancellationError {
-                // 사용자가 취소한 경우 완료된 파일은 그대로 보존합니다.
-            } catch {
-                downloadErrorMessage = "\(downloadItemName ?? "파일")을 받지 못했습니다: \(error.localizedDescription)"
+        endSelection()
+        downloadCoordinator.start(
+            items: items,
+            service: viewModel.service,
+            destination: destination,
+            inboxStore: inboxStore
+        ) { summary in
+            if summary.isCompleteSuccess {
+                operationCoordinator.statusMessage = summary.message
+            } else if summary.wasCancelled,
+                      summary.failedNames.isEmpty,
+                      summary.skippedNames.isEmpty {
+                operationCoordinator.statusMessage = summary.message
+            } else {
+                downloadErrorMessage = summary.message
             }
-            downloadTask = nil
-            downloadItemName = nil
         }
     }
 
     private func cancelDownload() {
-        downloadTask?.cancel()
-        downloadTask = nil
-        downloadItemName = nil
+        downloadCoordinator.cancel()
+    }
+
+    /// Every share entry point. Files alone keep the existing share preparation; a
+    /// selection with a folder is received whole through the download staging and then
+    /// shown in the same share sheet. Either way nothing is sent until the user chooses
+    /// a target in that sheet, and an incomplete folder is never offered.
+    private func requestShare(_ items: [RemoteFileItem]) {
+        guard !items.isEmpty, canBeginUserPresentation else { return }
+        guard items.contains(where: \.isDirectory) else {
+            shareCoordinator.prepare(items: items, using: viewModel.service)
+            return
+        }
+        guard !downloadCoordinator.isRunning else { return }
+        downloadErrorMessage = nil
+        isStagingFolderShare = true
+        endSelection()
+        downloadCoordinator.start(
+            items: items,
+            service: viewModel.service,
+            destination: .shareSheet,
+            inboxStore: inboxStore
+        ) { summary in
+            isStagingFolderShare = false
+            if let directoryURL = summary.shareDirectoryURL {
+                shareCoordinator.present(
+                    stagedURLs: summary.sharedURLs,
+                    temporaryDirectoryURL: directoryURL
+                )
+            } else if summary.wasCancelled,
+                      summary.failedNames.isEmpty,
+                      summary.skippedNames.isEmpty {
+                operationCoordinator.statusMessage = summary.message
+            } else {
+                downloadErrorMessage = summary.message
+            }
+        }
+        // A start that was refused never reports back.
+        if !downloadCoordinator.isRunning { isStagingFolderShare = false }
     }
 
     private var deleteConfirmationBinding: Binding<Bool> {
@@ -1984,6 +2243,46 @@ struct FileBrowserView: View {
             get: { renameItem != nil },
             set: { if !$0 { renameItem = nil } }
         )
+    }
+}
+
+/// What only PhoneHard adds to the shared browser, kept in one place: its list and the
+/// rest of the app stay in step, and its two own sheets (Google Photos import and
+/// sending files on to a network connection) are presented from here.
+private struct FileBrowserPhoneHardModifier: ViewModifier {
+    let isPhoneHard: Bool
+    let items: [RemoteFileItem]
+    @ObservedObject var inboxStore: SharedInboxStore
+    @Binding var isImportingFromGooglePhotos: Bool
+    @Binding var isChoosingNASUploadDestination: Bool
+    let nasUploadSources: [LocalUploadSource]
+    let reloadItems: @MainActor () async -> Void
+    let nasUploadDidClose: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            // PhoneHard is also changed from outside this screen (a download saved to
+            // it, a finished trailer, the web server), and the dashboard counts what is
+            // in it.
+            .onChange(of: items) { _, _ in
+                if isPhoneHard { inboxStore.reload() }
+            }
+            .onChange(of: inboxStore.records) { _, _ in
+                guard isPhoneHard else { return }
+                Task { await reloadItems() }
+            }
+            .sheet(
+                isPresented: $isImportingFromGooglePhotos,
+                onDismiss: { inboxStore.reload() }
+            ) {
+                GooglePhotosImportFlowView(inboxStore: inboxStore)
+            }
+            .sheet(
+                isPresented: $isChoosingNASUploadDestination,
+                onDismiss: nasUploadDidClose
+            ) {
+                InboxUploadDestinationView(sources: nasUploadSources)
+            }
     }
 }
 
@@ -2125,6 +2424,12 @@ private struct RemoteFileMetadataView: View {
     let includesTime: Bool
     let compact: Bool
 
+    /// A PhoneHard video or music file shows its playing time right after its size; the
+    /// file is on the device, so reading its length costs no transfer.
+    private var showsPlayingTime: Bool {
+        item.connectionID == LocalInboxFileService.connectionID && item.isPlayerMedia
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: ui(2)) {
             if !item.isDirectory {
@@ -2140,6 +2445,16 @@ private struct RemoteFileMetadataView: View {
                             .allowsTightening(true)
                             .monospacedDigit()
                             .layoutPriority(1)
+
+                        if showsPlayingTime {
+                            LocalInboxDurationLabel(item: item)
+                        }
+                    }
+                } else if showsPlayingTime {
+                    HStack(spacing: ui(7)) {
+                        Text(item.browserKindAndSizeLabel)
+                            .lineLimit(2)
+                        LocalInboxDurationLabel(item: item)
                     }
                 } else {
                     Text(item.browserKindAndSizeLabel)
@@ -2348,6 +2663,25 @@ private final class RemoteFileShareCoordinator: ObservableObject {
                 self.finish(operationID: currentOperationID)
             }
         }
+    }
+
+    /// Presents items that were already fully staged under `temporaryDirectoryURL`, which
+    /// this coordinator then owns and removes once the sheet closes.
+    func present(stagedURLs: [URL], temporaryDirectoryURL: URL) {
+        guard !stagedURLs.isEmpty,
+              preparationTask == nil,
+              preparedShare == nil else {
+            Task.detached(priority: .utility) {
+                try? FileManager.default.removeItem(at: temporaryDirectoryURL)
+            }
+            return
+        }
+        errorMessage = nil
+        presentedTemporaryDirectoryURL = temporaryDirectoryURL
+        preparedShare = PreparedRemoteFileShare(
+            fileURLs: stagedURLs,
+            temporaryDirectoryURL: temporaryDirectoryURL
+        )
     }
 
     func cancelPreparation() {
