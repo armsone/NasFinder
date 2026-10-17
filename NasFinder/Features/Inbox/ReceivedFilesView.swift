@@ -140,13 +140,11 @@ struct ReceivedFilesView: View {
             ) {
                 InboxUploadDestinationView(sources: pendingUploadSources)
             }
-            .sheet(
-                isPresented: $isImportingFromGooglePhotos,
-                onDismiss: {
-                    reloadInbox()
-                }
-            ) {
+            .navigationDestination(isPresented: $isImportingFromGooglePhotos) {
                 GooglePhotosImportFlowView(inboxStore: inboxStore)
+            }
+            .onChange(of: isImportingFromGooglePhotos) { _, isPresented in
+                if !isPresented { reloadInbox() }
             }
     }
 
@@ -846,7 +844,7 @@ struct ReceivedFilesView: View {
                     Button("예고편 보기", systemImage: "film") { trailerSelection = VideoTrailerSelection(items: [item]) }
                 }
                 if item.isVideo {
-                    Button("음악 입히기", systemImage: "music.note") {
+                    Button("뮤직비디오", systemImage: "music.note") {
                         trailerSelection = VideoTrailerSelection(items: [item], mode: .mediaMusic)
                     }
                 }
@@ -1020,7 +1018,7 @@ struct ReceivedFilesView: View {
                     trailerSelection = VideoTrailerSelection(items: clips)
                     endSelection()
                 }
-                Button("음악 입히기", systemImage: "music.note") {
+                Button("뮤직비디오", systemImage: "music.note") {
                     let clips = selectedRecords.map { LocalInboxFileService.remoteItem(for: $0) }
                     guard !clips.isEmpty, clips.allSatisfy(\.isTrailerEligible) else { return }
                     trailerSelection = VideoTrailerSelection(items: clips, mode: .mediaMusic)
@@ -1908,7 +1906,7 @@ private enum LocalInboxFileError: LocalizedError {
         case .recordNotFound:
             "폰하드 파일을 찾을 수 없습니다. 목록을 새로 고친 뒤 다시 시도하세요."
         case .musicFolderFixed:
-            "Music 폴더는 음악 입히기가 음악을 찾는 폴더라 이름을 바꾸거나 옮길 수 없습니다. 안의 파일은 그대로 다룰 수 있습니다."
+            "Music 폴더는 뮤직비디오가 음악을 찾는 폴더라 이름을 바꾸거나 옮길 수 없습니다. 안의 파일은 그대로 다룰 수 있습니다."
         }
     }
 }

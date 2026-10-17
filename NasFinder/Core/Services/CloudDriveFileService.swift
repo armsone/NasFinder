@@ -60,6 +60,21 @@ actor CloudDriveFileService: RemoteFileService {
         _ = try await list(directory: "/")
     }
 
+    /// 표시용 계정 정보만 가져온다. 연결의 UUID나 파일 경로는 바꾸지 않는다.
+    func dropboxAccountDisplayName(persistRefreshedCredential: Bool = true) async throws -> String {
+        guard oauth.provider == .dropbox else { throw CloudDriveError.unsupportedProvider }
+        try await refreshAccessTokenIfNeeded(persistCredential: persistRefreshedCredential)
+        var request = authorizedRequest(URL(string: "https://api.dropboxapi.com/2/users/get_current_account")!)
+        request.httpMethod = "POST"
+        let object = try await json(request)
+        let email = (object["email"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = ((object["name"] as? [String: Any])?["display_name"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if let email, !email.isEmpty { return email }
+        if let name, !name.isEmpty { return name }
+        throw CloudDriveError.invalidResponse
+    }
+
     private func listDropbox(directory: String) async throws -> [RemoteFileItem] {
         var request = authorizedRequest(URL(string: "https://api.dropboxapi.com/2/files/list_folder")!)
         request.httpMethod = "POST"
@@ -167,7 +182,8 @@ actor CloudDriveFileService: RemoteFileService {
         return request
     }
 
-    private func refreshAccessTokenIfNeeded() async throws {
+    private func refreshAccessTokenIfNeeded(persistCredential: Bool = true) async throws {
+        let originalOAuth = oauth
         guard let expirationDate = oauth.expirationDate,
               expirationDate <= Date().addingTimeInterval(60) else { return }
         guard let refreshToken = oauth.refreshToken, !refreshToken.isEmpty else {
@@ -197,15 +213,28 @@ actor CloudDriveFileService: RemoteFileService {
 
         let expiresIn = (object["expires_in"] as? NSNumber)?.doubleValue
         let refreshed = OAuthCredential(
-            provider: oauth.provider,
+            provider: originalOAuth.provider,
             accessToken: accessToken,
             refreshToken: (object["refresh_token"] as? String) ?? refreshToken,
             expirationDate: expiresIn.map { Date().addingTimeInterval($0) },
-            accountIdentifier: oauth.accountIdentifier,
+            accountIdentifier: originalOAuth.accountIdentifier,
             grantedScopes: (object["scope"] as? String)?.split(separator: " ").map(String.init)
-                ?? oauth.grantedScopes
+                ?? originalOAuth.grantedScopes
         )
-        try credentialStore.save(.oauth(refreshed), for: connection.id)
+        if persistCredential {
+            let credentialStore = self.credentialStore
+            let connectionID = connection.id
+            // ConnectionStore의 삭제·재연결 쓰기와 같은 actor에서 비교와 저장을 연속 실행한다.
+            // 응답 대기 중 제거되거나 교체된 자격 증명을 복원/덮어쓰지 않는다.
+            let saved = try await MainActor.run {
+                guard try credentialStore.cloudCredential(for: connectionID) == .oauth(originalOAuth) else {
+                    return false
+                }
+                try credentialStore.save(.oauth(refreshed), for: connectionID)
+                return true
+            }
+            guard saved else { throw CloudDriveError.signInRequired }
+        }
         oauth = refreshed
     }
 

@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "backend": "dinov2",
+  "repoId": "facebook/dinov2-small",
+  "revision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+  "sourceWeights": {
+    "file": "model.safetensors",
+    "sha256": "ae1e99fcefd534ed978cdeb8326f08030c96e28b7a81ffcbc98a857c84d14be1",
+    "size": 88249960
+  },
+  "license": "Apache-2.0",
+  "configSha256": "1809f83e3bdb1609a501a610ad4a742f4fd8ae44d72ca4aa0df52d1f2ac8628d",
+  "configSize": 547,
+  "preprocessorConfigSha256": "14e780d86fa1861f8751f868d7f45425b5feb55c38ca26f152ca5097ab30f828",
+  "preprocessorConfigSize": 436,
+  "toolchain": {
+    "coremltools": "9.0",
+    "torch": "2.7.0",
+    "transformers": "4.52.4",
+    "numpy": "1.26.4"
+  },
+  "input": {
+    "name": "pixel_values",
+    "shape": [
+      1,
+      3,
+      224,
+      224
+    ],
+    "dtype": "float32",
+    "layout": "NCHW/RGB"
+  },
+  "output": {
+    "name": "embedding",
+    "shape": [
+      1,
+      384
+    ],
+    "dtype": "float32",
+    "normalization": "L2"
+  },
+  "precision": "FLOAT32",
+  "computeUnits": "CPU_ONLY",
+  "minimumDeploymentTarget": "iOS17",
+  "positionInterpolation": {
+    "method": "baked_from_original_interpolate_pos_encoding",
+    "bakedAtSpatialSize": 224,
+    "note": "The exact constant buffer computed by the original, unmodified Dinov2Embeddings.interpolate_pos_encoding method at 224x224 was captured and is reused in the traced export graph in place of that method, which cannot itself be traced for CoreML conversion. The same model instance is reused for export; its weights are unmodified and the original interpolation formula is neither changed nor approximated."
+  },
+  "syntheticParity": {
+    "zeroInputMaxAbs": 0.0,
+    "seededRandomInputMaxAbs": 0.0,
+    "tolerance": 1e-05
+  },
+  "nativeNumericalParity": "pending",
+  "preprocessing": {
+    "description": "Original RGB image resized by shortest edge to 256 using bicubic resampling, then center-cropped to 224x224, then normalized with ImageNet mean/std. The model input tensor is expected to already be preprocessed and normalized NCHW float32.",
+    "resizeShortestEdge": 256,
+    "resample": "bicubic",
+    "centerCrop": [
+      224,
+      224
+    ],
+    "imageMean": [
+      0.485,
+      0.456,
+      0.406
+    ],
+    "imageStd": [
+      0.229,
+      0.224,
+      0.225
+    ]
+  },
+  "supportedInputSize": "224x224 only"
+}

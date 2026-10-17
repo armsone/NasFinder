@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "productVersion": "0.4.0",
+  "sourceModel": "facebook/dinov2-small",
+  "sourceRevision": "ed25f3a31f01632728cabb09d1542f84ab7b0056",
+  "modelLicense": "Apache-2.0",
+  "files": [
+    {
+      "name": "dinov2-small.onnx",
+      "bytes": 88400292,
+      "sha256": "6b3e37fdea1393dda0ea0312f5f19b20829ca96447ab5b8b3c92a36777fc431d"
+    },
+    {
+      "name": "dinov2-small-fp32-baked.mlpackage/Data/com.apple.CoreML/model.mlmodel",
+      "bytes": 124073,
+      "sha256": "71c55c3a2d16b2044c2a83a985d8a4396e0a1fc666f20c5140eb8f36f7027385"
+    },
+    {
+      "name": "dinov2-small-fp32-baked.mlpackage/Data/com.apple.CoreML/weights/weight.bin",
+      "bytes": 86529472,
+      "sha256": "6ae533cb19ee1359e4e7e871c7b39e8d51550d8793557115c7fd44d12c421ad3"
+    },
+    {
+      "name": "dinov2-small-fp32-baked.mlpackage/Manifest.json",
+      "bytes": 617,
+      "sha256": "5a0b560747655a83457d47fa9864f968a89bc5a1e4697bdf277553587d728dd5"
+    }
+  ]
+}

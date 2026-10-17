@@ -61,7 +61,7 @@ struct VideoTrailerPlan {
     }
 }
 
-/// `mediaMusic` is "영상에 음악 입히기": the selected photos and videos are joined
+/// `mediaMusic` is "영상에 뮤직비디오": the selected photos and videos are joined
 /// whole and in order, with no scene picking, and music is chosen before any export.
 enum VideoTrailerMode {
     case trailer
@@ -88,6 +88,12 @@ struct VideoTrailerSource: Identifiable {
     /// otherwise the remote file's reported modification time. Never the local temp
     /// copy's filesystem creation time, which would reflect only when it was downloaded.
     var captureDate: Date?
+    /// Fraction of the configured video clip length this photo's own scene lasts: set once
+    /// from the staged photo's own HanYang quality/similarity analysis (`VideoTrailerPhotoQuality`)
+    /// right after every photo in the batch finishes staging, so it stays the same across
+    /// every preview redraw, export and resumed session until the photo is staged again.
+    /// This default only shows briefly while that analysis is still running.
+    var imageDurationRatio: Double = 0.55
     var duration: Double { plan.duration }
 }
 
@@ -125,14 +131,7 @@ func videoTrailerTime(_ seconds: Double) -> String {
 }
 
 enum VideoTrailerBatchPlan {
-    /// A photo-only trailer (every retained source is a still image) always uses exactly
-    /// 1 second per photo; a mixed trailer keeps every still image at exactly half the
-    /// video clip length. `photoOnly` must be recomputed from the actual retained sources
-    /// each time (after decode skips, removing the last video, retry, reopen or
-    /// recommend), never decided once from the initial items.
-    static func imageClipLength(for clipLength: Double, photoOnly: Bool) -> Double {
-        photoOnly ? 1 : clipLength / 2
-    }
+    static let maximumRequestedDuration: Double = 7_200
 
     /// Every source once, in order and uncut: whole videos and 1 second per photo.
     static func wholeMedia(sources: [VideoTrailerSource]) -> [VideoTrailerScene] {
@@ -170,21 +169,41 @@ enum VideoTrailerBatchPlan {
         return result.isEmpty ? nil : result
     }
 
-    static func proposal(sources: [VideoTrailerSource], total: Double, clipLength: Double) -> [VideoTrailerScene] {
-        guard clipLength > 0, !sources.isEmpty else { return [] }
-        let photoOnly = sources.allSatisfy(\.isImage)
-        let photoLength = imageClipLength(for: clipLength, photoOnly: photoOnly)
-        // A still image always contributes exactly one clip at `photoLength`, regardless
-        // of its nominal duration; videos planned against the shared duration total still
-        // use the video clip length so timing isn't skewed by the photo length.
+    /// 총길이 지정은 장면 파일을 복제하지 않고 같은 소스 범위를 순서대로 반복한다.
+    /// 음악 길이 맞추기의 별도 장면 제한/정책에는 영향을 주지 않는다.
+    static func looped(_ scenes: [VideoTrailerScene], to seconds: Double) -> [VideoTrailerScene] {
+        guard seconds.isFinite, seconds > 0 else { return [] }
+        let target = Int64((min(maximumRequestedDuration, seconds) * 600).rounded())
+        let usable = scenes.filter { $0.length.isFinite && $0.length * 600 >= 20 }
+        guard target > 0, !usable.isEmpty else { return [] }
+        var result: [VideoTrailerScene] = []
+        var used: Int64 = 0
+        while used < target {
+            let source = usable[result.count % usable.count]
+            let ticks = min(max(20, Int64((source.length * 600).rounded())), target - used)
+            var repeated = VideoTrailerScene(id: result.count, start: source.start, length: Double(ticks) / 600)
+            repeated.sourceID = source.sourceID
+            result.append(repeated)
+            used += ticks
+        }
+        return result
+    }
+
+    static func proposal(sources: [VideoTrailerSource], total: Double, clipLength: Double, repeatToFill: Bool = true) -> [VideoTrailerScene] {
+        guard total.isFinite, total > 0, clipLength.isFinite, clipLength > 0, !sources.isEmpty else { return [] }
+        let requestedTotal = min(maximumRequestedDuration, total)
+        // A still image always contributes exactly one clip, at its own quality/similarity
+        // analysis-derived fraction of the video clip length, regardless of its nominal
+        // duration; videos planned against the shared duration total still use the video
+        // clip length so timing isn't skewed by any one photo's length.
         let capacity = sources.map { $0.isImage ? 1 : max(0, Int(($0.duration / clipLength + 0.000001).rounded(.down))) }
-        let lengthFor: (Int) -> Double = { sources[$0].isImage ? photoLength : clipLength }
+        let lengthFor: (Int) -> Double = { sources[$0].isImage ? clipLength * sources[$0].imageDurationRatio : clipLength }
         guard capacity.contains(where: { $0 > 0 }) else { return [] }
         var counts = Array(repeating: 0, count: sources.count)
-        var remainingTime = total
+        var remainingTime = requestedTotal
         // Include each source once when it has capacity and the budget allows it, then
         // distribute any remaining video-only capacity by duration.
-        for index in sources.indices where capacity[index] > 0 && remainingTime >= lengthFor(index) {
+        for index in sources.indices where capacity[index] > 0 && remainingTime + 0.000001 >= lengthFor(index) {
             counts[index] = 1
             remainingTime -= lengthFor(index)
         }
@@ -203,7 +222,7 @@ enum VideoTrailerBatchPlan {
         var result: [VideoTrailerScene] = []
         for index in sources.indices where counts[index] > 0 {
             if sources[index].isImage {
-                var combined = VideoTrailerScene(id: result.count, start: 0, length: photoLength)
+                var combined = VideoTrailerScene(id: result.count, start: 0, length: lengthFor(index))
                 combined.sourceID = sources[index].id
                 result.append(combined)
             } else {
@@ -214,6 +233,6 @@ enum VideoTrailerBatchPlan {
                 }
             }
         }
-        return result
+        return repeatToFill ? looped(result, to: requestedTotal) : result
     }
 }

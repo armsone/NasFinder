@@ -120,6 +120,10 @@ struct RemotePreviewView: View {
     }
 
     var body: some View {
+        mediaContent.modifier(PreserveMediaNavigation())
+    }
+
+    private var mediaContent: some View {
         GeometryReader { geometry in
             ZStack {
                 Color.black.ignoresSafeArea()

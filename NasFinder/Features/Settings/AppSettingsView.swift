@@ -27,7 +27,7 @@ struct AppSettingsView: View {
             AppIconPickerSection(compact: true)
             screenAwakeSection
             filesAppIntegrationSection
-            GooglePhotosSettingsSection()
+            storageMaintenanceSection
             #if targetEnvironment(macCatalyst)
             macUpdateSection
             #endif
@@ -273,6 +273,15 @@ struct AppSettingsView: View {
             )
         } header: {
             SettingsSectionHeader(title: "Apple 파일 앱 연동", systemImage: "folder")
+        }
+    }
+
+    private var storageMaintenanceSection: some View {
+        Section {
+            ThumbnailCacheSettingsLink()
+            SuperThumbnailLink()
+        } header: {
+            SettingsSectionHeader(title: "썸네일 저장공간", systemImage: "photo.stack")
         }
     }
 

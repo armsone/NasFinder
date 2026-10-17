@@ -38,6 +38,10 @@ final class ForegroundReturnResetCoordinator: ObservableObject {
     /// app to the dashboard. Observers reset on every change.
     @Published private(set) var resetGeneration = 0
     private(set) var wasInBackground = false
+    private var activeMediaViews: Set<UUID> = []
+
+    func preserveMediaView(_ id: UUID) { activeMediaViews.insert(id) }
+    func releaseMediaView(_ id: UUID) { activeMediaViews.remove(id) }
 
     init() {}
 
@@ -47,8 +51,19 @@ final class ForegroundReturnResetCoordinator: ObservableObject {
             phase: phase
         )
         wasInBackground = transition.wasInBackground
-        if transition.shouldReset {
+        if transition.shouldReset && activeMediaViews.isEmpty {
             resetGeneration &+= 1
         }
+    }
+}
+
+/// Keep a selection or editor while a system picker, permissions, or authentication is open.
+struct PreserveMediaNavigation: ViewModifier {
+    @State private var identity = UUID()
+
+    func body(content: Content) -> some View {
+        content
+            .onAppear { ForegroundReturnResetCoordinator.shared.preserveMediaView(identity) }
+            .onDisappear { ForegroundReturnResetCoordinator.shared.releaseMediaView(identity) }
     }
 }

@@ -1,6 +1,6 @@
 import Foundation
 
-/// One editor ("예고편 조절" or "음악 입히기") the user left without discarding it. It keeps
+/// One editor ("예고편 조절" or "뮤직비디오") the user left without discarding it. It keeps
 /// that editor's own session alive in this process: the staged copies, the picked music,
 /// the last finished video and every setting that was on screen. Nothing is written to
 /// disk for it and nothing here survives the app being quit.
@@ -13,9 +13,20 @@ struct TrailerDraftEntry: Identifiable {
     let session: AnyObject
     /// Ends the session and removes its own temporary files. Originals are never touched.
     let discard: @MainActor () -> Void
+    /// This session's own staged copy to draw a thumbnail from, and whether it is a
+    /// still image; both captured when the editor suspended, never the original remote
+    /// file (which the management screen must never touch).
+    var thumbnailURL: URL?
+    var thumbnailIsImage = false
+    /// The actually generated video's own length once one exists, for display only;
+    /// before anything has been generated this is the sum of every staged source's
+    /// nominal duration instead, as a planned-length estimate.
+    var totalDuration: Double = 0
+    /// When this editor was left, for the management screen's "마지막 편집" display.
+    var suspendedAt = Date()
 
     var title: String {
-        let kind = mode == .mediaMusic ? "음악 입히기" : "예고편"
+        let kind = mode == .mediaMusic ? "뮤직비디오" : "예고편"
         guard let first = items.first else { return kind }
         return items.count == 1 ? "\(kind) · \(first.name)" : "\(kind) · \(first.name) 외 \(items.count - 1)개"
     }

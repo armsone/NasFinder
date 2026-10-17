@@ -180,7 +180,7 @@ struct SuperThumbnailView: View {
             }
         }
         .sheet(isPresented: $isSelectingFolder) {
-            SuperThumbnailFolderPickerView { selected in
+            SuperThumbnailFolderPickerView(onCancel: { isSelectingFolder = false }) { selected in
                 selection = selected
                 saveSelection(selected)
                 hasPendingSession = false
@@ -2091,7 +2091,7 @@ private struct SuperThumbnailCoverCard: View {
 }
 
 private struct SuperThumbnailFolderPickerView: View {
-    @Environment(\.dismiss) private var dismiss
+    let onCancel: () -> Void
     @EnvironmentObject private var connectionStore: ConnectionStore
     let onSelect: (SuperThumbnailSelection) -> Void
 
@@ -2134,7 +2134,7 @@ private struct SuperThumbnailFolderPickerView: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Group {
-                        Button("취소") { dismiss() }
+                        Button("취소", action: onCancel)
                     }
                     .uiBarFont()
                 }

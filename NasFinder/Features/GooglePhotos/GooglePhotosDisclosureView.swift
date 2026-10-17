@@ -37,7 +37,7 @@ struct GooglePhotosDisclosureView: View {
                         disclosureRow(
                             systemImage: "gearshape",
                             title: "언제든 삭제·연결 해제 가능",
-                            detail: "폰하드에서 저장된 파일을 삭제할 수 있고, 설정에서 Google 포토 연결을 해제할 수 있습니다."
+                            detail: "폰하드에서 저장된 파일을 삭제할 수 있고, 네트워크의 Google 포토 메뉴에서 연결을 삭제할 수 있습니다."
                         )
                     }
 

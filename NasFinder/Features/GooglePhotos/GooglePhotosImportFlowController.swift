@@ -3,6 +3,8 @@ import Foundation
 import AuthenticationServices
 import UIKit
 import UniformTypeIdentifiers
+import WebKit
+import SwiftUI
 
 /// Google 포토 가져오기 흐름에서 사용자에게 그대로 보여줄 수 있는 안전한 오류.
 /// 토큰·pickerUri·세션 ID 등 민감한 값은 절대 포함하지 않는다.
@@ -58,7 +60,12 @@ final class GooglePhotosImportFlowController: ObservableObject {
         var sleep: @Sendable (TimeInterval) async throws -> Void
         var now: @Sendable () -> Date
 
-        static func live(inboxStore: SharedInboxStore) -> Dependencies {
+        static func live(
+            inboxStore: SharedInboxStore,
+            onImported: @escaping @MainActor @Sendable (SharedInboxRecord) -> Void = { _ in },
+            openPicker: @escaping @MainActor @Sendable (URL) async -> Bool,
+            closePicker: @escaping @MainActor @Sendable () async -> Void
+        ) -> Dependencies {
             let credentialStore = GooglePhotosKeychainCredentialStore()
             return Dependencies(
                 loadConfiguration: { try GooglePhotosOAuthConfiguration.loadFromMainBundle() },
@@ -99,19 +106,15 @@ final class GooglePhotosImportFlowController: ObservableObject {
                 importFile: { fileURL, filename, mimeType in
                     defer { try? FileManager.default.removeItem(at: fileURL) }
                     let typeIdentifier = mimeType.flatMap { UTType(mimeType: $0)?.identifier }
-                    _ = try await inboxStore.importDownloadedFile(
+                    let record = try await inboxStore.importDownloadedFile(
                         at: fileURL,
                         originalFilename: filename,
                         contentTypeIdentifier: typeIdentifier
                     )
+                    onImported(record)
                 },
-                openURL: { url in
-                    if await UIApplication.shared.open(url) { return true }
-                    return await GooglePhotosPickerURLPresenter.present(url)
-                },
-                closePicker: {
-                    await GooglePhotosPickerURLPresenter.dismissIfPresented()
-                },
+                openURL: openPicker,
+                closePicker: closePicker,
                 sleep: { seconds in
                     try await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
                 },
@@ -129,14 +132,17 @@ final class GooglePhotosImportFlowController: ObservableObject {
     @Published private(set) var phase: GooglePhotosImportFlowPhase = .idle
 
     private let dependencies: Dependencies
+    private var forceAuthorization: Bool
     private(set) var activeFlowTask: Task<Void, Never>?
     private var isScenePollingAllowed = true
     private var importedCount = 0
+    private var pickerURL: URL?
     /// 흐름 동안에만 메모리에 유지하는 세션 식별 정보. 어디에도 영속화하지 않는다.
     private var activeSession: (accessToken: String, sessionID: String)?
 
-    init(dependencies: Dependencies) {
+    init(dependencies: Dependencies, forceAuthorization: Bool = false) {
         self.dependencies = dependencies
+        self.forceAuthorization = forceAuthorization
     }
 
     var isRunning: Bool {
@@ -168,6 +174,11 @@ final class GooglePhotosImportFlowController: ObservableObject {
         activeFlowTask?.cancel()
     }
 
+    func reopenPicker() {
+        guard case .waitingForSelection = phase, let pickerURL else { return }
+        Task { _ = await dependencies.openURL(pickerURL) }
+    }
+
     /// 앱/화면이 비활성·백그라운드인 동안에는 세션 폴링을 하지 않는다.
     func setScenePollingAllowed(_ allowed: Bool) {
         isScenePollingAllowed = allowed
@@ -178,16 +189,23 @@ final class GooglePhotosImportFlowController: ObservableObject {
     private func run() async {
         do {
             let configuration = try dependencies.loadConfiguration()
-            let credential = try await resolveCredential(configuration: configuration)
+            var credential = try await resolveCredential(configuration: configuration)
+            let session: GooglePhotosPickingSession
+            do {
+                session = try await dependencies.createSession(credential.accessToken)
+            } catch GooglePhotosPickerError.http(statusCode: 401, category: _) {
+                // A server-invalidated token can precede its locally saved expiry.
+                credential = try await resolveCredential(configuration: configuration, forceRefresh: true)
+                session = try await dependencies.createSession(credential.accessToken)
+            }
             let accessToken = credential.accessToken
-
-            let session = try await dependencies.createSession(accessToken)
             activeSession = (accessToken, session.id)
 
             guard let rawPickerURI = session.pickerURI,
                   let pickerURL = URL(string: rawPickerURI) else {
                 throw GooglePhotosImportFlowError.pickerOpenFailed
             }
+            self.pickerURL = pickerURL
             phase = .waitingForSelection
             try await openPicker(pickerURL)
 
@@ -211,7 +229,16 @@ final class GooglePhotosImportFlowController: ObservableObject {
         } catch {
             await dependencies.closePicker()
             await deleteActiveSession()
-            phase = .failed(message: Self.safeMessage(for: error))
+            // A user-triggered cancel can surface as the auth session's own
+            // cancellation error (e.g. ASWebAuthenticationSessionError) rather
+            // than `CancellationError`, since cancelling it happens out of band
+            // via `withTaskCancellationHandler`. Treat that the same as an
+            // explicit cancel instead of showing a failure.
+            if Task.isCancelled {
+                phase = .cancelled(imported: importedCount)
+            } else {
+                phase = .failed(message: Self.safeMessage(for: error))
+            }
         }
         activeFlowTask = nil
     }
@@ -237,10 +264,13 @@ final class GooglePhotosImportFlowController: ObservableObject {
     }
 
     private func resolveCredential(
-        configuration: GooglePhotosOAuthConfiguration
+        configuration: GooglePhotosOAuthConfiguration,
+        forceRefresh: Bool = false
     ) async throws -> GooglePhotosCredential {
-        if let stored = try dependencies.loadCredential() {
-            if !stored.isExpired(now: dependencies.now()) {
+        let requiresAuthorization = forceAuthorization
+        forceAuthorization = false
+        if !requiresAuthorization, let stored = try dependencies.loadCredential() {
+            if !forceRefresh && !stored.isExpired(now: dependencies.now()) {
                 return stored
             }
             do {
@@ -262,12 +292,10 @@ final class GooglePhotosImportFlowController: ObservableObject {
     ) async throws {
         if initialSession.mediaItemsSet { return }
         var interval = initialSession.pollingConfig?.pollInterval ?? Self.defaultPollInterval
-        var deadline = initialSession.pollingConfig?.timeoutIn.map {
-            dependencies.now().addingTimeInterval($0)
-        }
+        var deadline = dependencies.now().addingTimeInterval(initialSession.pollingConfig?.timeoutIn ?? 600)
         while true {
             try Task.checkCancellation()
-            if let deadline, dependencies.now() >= deadline {
+            if dependencies.now() >= deadline {
                 throw GooglePhotosImportFlowError.selectionTimedOut
             }
             guard isScenePollingAllowed else {
@@ -338,48 +366,49 @@ final class GooglePhotosImportFlowController: ObservableObject {
     }
 }
 
-/// 외부 브라우저나 Google 포토 앱 전환이 거부되는 환경에서는 동일한 HTTPS Picker를
-/// 인증 때와 같은 시스템 웹 세션으로 표시한다. 기존 Google 로그인 쿠키를 재사용하고,
-/// iframe이 아니므로 Picker 보안 제약도 그대로 지킨다.
+/// OAuth 인증과 분리된, 로그인 쿠키를 유지하는 앱 내부 선택 페이지.
+struct GooglePhotosPickerPage: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        GooglePhotosPickerViewController(url: url)
+    }
+
+    func updateUIViewController(_ controller: UIViewController, context: Context) {}
+}
+
 @MainActor
-private final class GooglePhotosPickerURLPresenter: NSObject, ASWebAuthenticationPresentationContextProviding {
-    static let shared = GooglePhotosPickerURLPresenter()
+private final class GooglePhotosPickerViewController: UIViewController, WKUIDelegate {
+    private let url: URL
 
-    private var session: ASWebAuthenticationSession?
-
-    static func present(_ url: URL) async -> Bool {
-        shared.start(url)
+    init(url: URL) {
+        self.url = url
+        super.init(nibName: nil, bundle: nil)
     }
 
-    static func dismissIfPresented() async {
-        shared.stop()
+    required init?(coder: NSCoder) { nil }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.uiDelegate = self
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(webView)
+        NSLayoutConstraint.activate([
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor)
+        ])
+        webView.load(URLRequest(url: url))
+        preferredContentSize = CGSize(width: 1000, height: 760)
     }
 
-    private func start(_ url: URL) -> Bool {
-        guard session == nil else { return false }
-        let webSession = ASWebAuthenticationSession(
-            url: url,
-            callbackURLScheme: nil
-        ) { [weak self] _, _ in
-            self?.session = nil
-        }
-        webSession.presentationContextProvider = self
-        webSession.prefersEphemeralWebBrowserSession = false
-        session = webSession
-        guard webSession.start() else {
-            session = nil
-            return false
-        }
-        return true
-    }
-
-    private func stop() {
-        session?.cancel()
-        session = nil
-    }
-
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-        return scenes.flatMap(\.windows).first(where: \.isKeyWindow) ?? ASPresentationAnchor()
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if navigationAction.targetFrame == nil { webView.load(navigationAction.request) }
+        return nil
     }
 }

@@ -1,8 +1,8 @@
 import SwiftUI
 
 /// Walks PhoneHard's own folder tree (root, user-created folders, and the physical Music
-/// folder) so a move or copy can pick any existing folder as its destination. Nothing is
-/// created here; `SharedInboxStore` validates containment and conflicts when it commits.
+/// folder) so a move or copy can choose its destination. Explicit folder creation uses
+/// SharedInboxStore's normal safe API; containment and conflicts are validated on commit.
 struct InboxDestinationPickerView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var inboxStore: SharedInboxStore
@@ -94,6 +94,10 @@ private struct InboxDestinationFolderView: View {
     @Binding var isWorking: Bool
     let onChoose: (String?) -> Void
 
+    @State private var isCreatingFolder = false
+    @State private var newFolderName = ""
+    @State private var folderError: String?
+
     var body: some View {
         List {
             if folderOptions.isEmpty {
@@ -125,6 +129,39 @@ private struct InboxDestinationFolderView: View {
         .background(SkyBreezeBackground())
         .navigationTitle(displayName)
         .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("새 폴더", systemImage: "folder.badge.plus") {
+                    newFolderName = ""
+                    isCreatingFolder = true
+                }
+                .disabled(isWorking)
+                .uiBarFont()
+            }
+        }
+        .alert("새 폴더", isPresented: $isCreatingFolder) {
+            TextField("폴더 이름", text: $newFolderName)
+            Button("취소", role: .cancel) {}
+            Button("만들기") {
+                let name = newFolderName.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !name.isEmpty else { return }
+                isWorking = true
+                Task {
+                    let created = await inboxStore.createFolder(named: name, in: path)
+                    isWorking = false
+                    if !created {
+                        folderError = inboxStore.errorMessage ?? "폴더를 만들지 못했습니다."
+                        inboxStore.errorMessage = nil
+                    }
+                }
+            }
+            .disabled(newFolderName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        .alert("폴더 만들기", isPresented: Binding(
+            get: { folderError != nil }, set: { if !$0 { folderError = nil } }
+        )) {
+            Button("확인", role: .cancel) { folderError = nil }
+        } message: { Text(folderError ?? "") }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: ui(8)) {
                 if isWorking {

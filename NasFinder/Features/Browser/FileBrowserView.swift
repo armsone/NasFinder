@@ -1704,7 +1704,7 @@ struct FileBrowserView: View {
                 .disabled(!acceptsMediaActions(item) || !canBeginUserPresentation)
 
                 // The whole photo or video gets the music; no scenes are picked from it.
-                CompactPanelButton(title: "음악 입히기", systemImage: "music.note") {
+                CompactPanelButton(title: "뮤직비디오", systemImage: "music.note") {
                     performContextPanelAction {
                         guard canBeginUserPresentation else { return }
                         if item.isDirectory {
@@ -1788,7 +1788,7 @@ struct FileBrowserView: View {
             notes.append("이 연결은 \(unsupported.joined(separator: "·"))을(를) 지원하지 않습니다.")
         }
         if !acceptsMediaActions(item) {
-            notes.append("예고편 보기와 음악 입히기는 사진, 영상과 폴더에서 쓸 수 있습니다.")
+            notes.append("예고편 보기와 뮤직비디오는 사진, 영상과 폴더에서 쓸 수 있습니다.")
         }
         if !thumbnailPreheater.isRunning, let reason = thumbnailUnavailableReason(for: item) {
             notes.append(reason)
@@ -1925,7 +1925,7 @@ struct FileBrowserView: View {
                     }
                     .disabled(selectedItems.isEmpty || !selectedItems.allSatisfy(\.isTrailerEligible))
 
-                    selectionActionButton("음악 입히기", systemImage: "music.note") {
+                    selectionActionButton("뮤직비디오", systemImage: "music.note") {
                         guard canBeginUserPresentation else { return }
                         let clips = selectedItems.filter(\.isTrailerEligible)
                         guard !clips.isEmpty, clips.count == selectedItems.count else { return }
@@ -1976,7 +1976,7 @@ struct FileBrowserView: View {
     private var selectionUnavailableNote: String? {
         guard !selectedItems.isEmpty else { return nil }
         if !selectedItems.allSatisfy(\.isTrailerEligible) {
-            return "예고편 보기와 음악 입히기는 사진과 영상만 선택했을 때 쓸 수 있습니다."
+            return "예고편 보기와 뮤직비디오는 사진과 영상만 선택했을 때 쓸 수 있습니다."
         }
         if isPhoneHard, selectedFiles.isEmpty {
             return "NAS로 보내기는 파일만 보낼 수 있습니다."
@@ -2271,11 +2271,11 @@ private struct FileBrowserPhoneHardModifier: ViewModifier {
                 guard isPhoneHard else { return }
                 Task { await reloadItems() }
             }
-            .sheet(
-                isPresented: $isImportingFromGooglePhotos,
-                onDismiss: { inboxStore.reload() }
-            ) {
+            .navigationDestination(isPresented: $isImportingFromGooglePhotos) {
                 GooglePhotosImportFlowView(inboxStore: inboxStore)
+            }
+            .onChange(of: isImportingFromGooglePhotos) { _, isPresented in
+                if !isPresented { inboxStore.reload() }
             }
             .sheet(
                 isPresented: $isChoosingNASUploadDestination,

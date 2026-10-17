@@ -9,6 +9,8 @@ import UIKit
 @MainActor
 final class GooglePhotosOAuthAuthorizer: NSObject, ASWebAuthenticationPresentationContextProviding {
     private var session: ASWebAuthenticationSession?
+    private var pendingCallback: CheckedContinuation<URL, Error>?
+    private var timeoutTask: Task<Void, Never>?
     private let tokenClientFactory: @Sendable (GooglePhotosOAuthConfiguration) -> GooglePhotosTokenClient
 
     init(
@@ -51,30 +53,41 @@ final class GooglePhotosOAuthAuthorizer: NSObject, ASWebAuthenticationPresentati
         }
         #endif
 
-        let callbackURL: URL = try await withCheckedThrowingContinuation {
-            (continuation: CheckedContinuation<URL, Error>) in
-            let session = ASWebAuthenticationSession(
-                url: components.url!,
-                callbackURLScheme: configuration.callbackScheme
-            ) { url, error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else if let url {
-                    continuation.resume(returning: url)
-                } else {
-                    continuation.resume(throwing: GooglePhotosOAuthError.invalidCallback)
+        try Task.checkCancellation()
+        let callbackURL: URL = try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                pendingCallback = continuation
+                guard !Task.isCancelled else {
+                    finishAuthorization(.failure(CancellationError()))
+                    return
+                }
+                let authSession = ASWebAuthenticationSession(
+                    url: components.url!, callbackURLScheme: configuration.callbackScheme
+                ) { @Sendable [weak self] url, error in
+                    Task { @MainActor in
+                        if let error { self?.finishAuthorization(.failure(error)) }
+                        else if let url { self?.finishAuthorization(.success(url)) }
+                        else { self?.finishAuthorization(.failure(GooglePhotosOAuthError.invalidCallback)) }
+                    }
+                }
+                authSession.presentationContextProvider = self
+                authSession.prefersEphemeralWebBrowserSession = false
+                session = authSession
+                guard authSession.start() else {
+                    finishAuthorization(.failure(GooglePhotosOAuthError.authorizationFailed))
+                    return
+                }
+                timeoutTask = Task { [weak self] in
+                    do { try await Task.sleep(for: .seconds(180)) } catch { return }
+                    self?.finishAuthorization(.failure(GooglePhotosImportFlowError.selectionTimedOut))
                 }
             }
-            session.presentationContextProvider = self
-            session.prefersEphemeralWebBrowserSession = false
-            self.session = session
-            guard session.start() else {
-                self.session = nil
-                continuation.resume(throwing: GooglePhotosOAuthError.authorizationFailed)
-                return
+        } onCancel: {
+            Task { @MainActor [weak self] in
+                self?.finishAuthorization(.failure(CancellationError()))
             }
         }
-        session = nil
+        try Task.checkCancellation()
 
         guard let callback = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
               callback.queryItems?.first(where: { $0.name == "state" })?.value == state else {
@@ -88,6 +101,17 @@ final class GooglePhotosOAuthAuthorizer: NSObject, ASWebAuthenticationPresentati
         }
         return try await tokenClientFactory(configuration)
             .exchangeAuthorizationCode(code, codeVerifier: verifier)
+    }
+
+    private func finishAuthorization(_ result: Result<URL, Error>) {
+        guard let continuation = pendingCallback else { return }
+        pendingCallback = nil
+        timeoutTask?.cancel()
+        timeoutTask = nil
+        let activeSession = session
+        session = nil
+        activeSession?.cancel()
+        continuation.resume(with: result)
     }
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {

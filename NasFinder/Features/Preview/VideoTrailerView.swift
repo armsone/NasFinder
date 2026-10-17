@@ -1,4 +1,5 @@
 import AVFoundation
+import HanAIApple
 import ImageIO
 import OSLog
 import SwiftUI
@@ -125,9 +126,28 @@ private struct TrailerSettingsPresentation: Identifiable {
     let draft: TrailerSettingsDraft
 }
 
+/// A bounded-memory thumbnail decode off the main actor: never the full-resolution
+/// original, which a plain `UIImage(contentsOfFile:)` on a large photo would block the
+/// main actor decoding.
+func trailerThumbnailImage(at url: URL, maxPixelSize: CGFloat) async -> UIImage? {
+    await Task.detached(priority: .userInitiated) {
+        let sourceOptions = [kCGImageSourceShouldCache: false] as CFDictionary
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, sourceOptions) else { return nil }
+        let thumbnailOptions = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+            kCGImageSourceShouldCacheImmediately: true
+        ] as CFDictionary
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else { return nil }
+        return UIImage(cgImage: cgImage)
+    }.value
+}
+
 /// Nominal duration assigned to still images so the batch planner's duration-weighted
-/// math has a sensible value; a photo scene itself is always half the video clip length,
-/// and this value never limits which clip lengths can be chosen.
+/// math has a sensible value; a photo scene itself always lasts its own randomized
+/// fraction (35%-75%) of the video clip length, and this value never limits which
+/// clip lengths can be chosen.
 private let trailerImageNominalDuration = 4.0
 
 struct VideoTrailerView: View {
@@ -166,6 +186,10 @@ struct VideoTrailerView: View {
     }
 
     var body: some View {
+        mediaContent.modifier(PreserveMediaNavigation())
+    }
+
+    private var mediaContent: some View {
         NavigationStack {
             ZStack {
                 if let output = model.outputURL {
@@ -228,7 +252,7 @@ struct VideoTrailerView: View {
                             : "기기에서 분석합니다. 원본은 변경하지 않습니다.")
                             .font(.ui(.caption)).foregroundStyle(.secondary)
                     }
-                    .padding(.all, MacUIScale.defaultPadding).navigationTitle(mode == .mediaMusic ? "음악 입히기" : "예고편 보기")
+                    .padding(.all, MacUIScale.defaultPadding).navigationTitle(mode == .mediaMusic ? "뮤직비디오" : "예고편 보기")
                     .navigationBarTitleDisplayMode(.inline)
                     #if targetEnvironment(macCatalyst)
                     // The in-window editor below brings its own title bar.
@@ -364,9 +388,22 @@ struct VideoTrailerView: View {
     private func suspendSession() {
         let session = model
         session.pinMusic(draft?.music)
-        TrailerDraftStore.shared.suspend(TrailerDraftEntry(id: sessionID, mode: mode, items: items, service: service,
+        var entry = TrailerDraftEntry(id: sessionID, mode: mode, items: items, service: service,
             session: TrailerSuspendedSession(model: session, draft: draft, showedSettings: showingSettings),
-            discard: { session.stop() }))
+            discard: { session.stop() })
+        // This run's own staged copy only, so the management screen's thumbnail never
+        // reaches the original remote file; a finished video's own first frame stands
+        // in for it once no staged source is left to draw from.
+        entry.thumbnailURL = model.sources.first?.url ?? model.outputURL
+        entry.thumbnailIsImage = model.sources.first?.isImage ?? false
+        // The actually made video's own length once there is one (its scenes, not their
+        // nominal source durations); otherwise the still-nominal sum stands in as a
+        // planned-length estimate before anything has been generated.
+        let generatedLength = model.scenes.reduce(0) { $0 + $1.length }
+        entry.totalDuration = model.outputURL != nil && generatedLength > 0
+            ? generatedLength : model.sources.reduce(0) { $0 + $1.duration }
+        entry.suspendedAt = Date()
+        TrailerDraftStore.shared.suspend(entry)
     }
 
     private func suspendAndDismiss() {
@@ -397,7 +434,7 @@ struct VideoTrailerView: View {
             let recommended = staged.reduce(0) { $0 + $1.plan.recommendedTotal }
             // The length the recommendation really comes to, as the editor's starting total.
             let total = mode == .mediaMusic ? 0 : VideoTrailerBatchPlan.proposal(sources: staged, total: recommended,
-                clipLength: clipLength).reduce(0) { $0 + $1.length }
+                clipLength: clipLength, repeatToFill: false).reduce(0) { $0 + $1.length }
             return TrailerSettingsDraft(sources: staged, total: total, clipLength: clipLength,
                                         aspectRatio: model.aspectRatio, music: model.music)
         }
@@ -523,7 +560,6 @@ private struct VideoTrailerSettings: View {
     @State private var sourceImages: [Int: UIImage] = [:]
     @State private var revealedSourceID: Int?
 
-    private var hasImages: Bool { sources.contains(where: \.isImage) }
     // Recomputed from the actual retained sources on every access, so removing the last
     // video, a decode-skip exclusion, retry or reopen all flip this immediately instead
     // of freezing whatever the initial items looked like.
@@ -571,11 +607,11 @@ private struct VideoTrailerSettings: View {
     private var actualTotal: Double { proposal.reduce(0) { $0 + $1.length } }
     private var sceneSummary: String {
         if mode == .mediaMusic { return "\(proposal.count)장면 · 원본 그대로" }
-        if photoOnly { return "\(proposal.count)장면 · 1초씩" }
+        if photoOnly { return "\(proposal.count)장면" }
         return "\(proposal.count)장면 · \(clipLength.formatted(.number.precision(.fractionLength(0...1))))초씩"
     }
     private var originalSummary: String {
-        if mode == .mediaMusic { return "영상은 처음부터 끝까지, 사진은 1초씩 순서대로 이어 붙여요" }
+        if mode == .mediaMusic { return "선택한 순서대로 이어 붙여요" }
         return "원본 \(trailerDurationTitle(originalTotal)) 중 \(percent.formatted(.number.precision(.fractionLength(1))))%"
     }
     private var musicSummary: String {
@@ -638,7 +674,9 @@ private struct VideoTrailerSettings: View {
                             Spacer()
                             Text(sceneSummary).font(.ui(.subheadline)).foregroundStyle(.secondary)
                         }
-                        Text(originalSummary).font(.ui(.caption)).foregroundStyle(.secondary)
+                        if !photoOnly && (mode == .mediaMusic || actualTotal <= originalTotal + 0.000001) {
+                            Text(originalSummary).font(.ui(.caption)).foregroundStyle(.secondary)
+                        }
                     }
                     Divider()
                     if mode == .trailer {
@@ -650,54 +688,34 @@ private struct VideoTrailerSettings: View {
                                     setManualTotal(value)
                                     showingDuration = false
                                 }
-                                .disabled(value > originalTotal)
-                                .opacity(value > originalTotal ? 0.35 : 1)
                             }
                         }
                         otherLengthButton(value: trailerDurationTitle(total), expanded: showingDuration) { showingDuration.toggle() }
-                        if showingDuration, originalTotal > 1 {
-                            // A length fitted to the music can be longer than the originals.
-                            Slider(value: Binding(get: { min(max(1, total), originalTotal) },
-                                                  set: { if abs($0 - total) >= 0.01 { setManualTotal($0) } }),
-                                   in: 1...originalTotal, step: 1)
-                                .accessibilityLabel("예고편 총길이")
-                                .accessibilityValue(trailerDurationTitle(total))
+                        if showingDuration {
+                            TrailerTotalDurationSlider(value: Binding(
+                                get: { min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, total.isFinite ? total : 1)) },
+                                set: { if abs($0 - total) >= 0.01 { setManualTotal($0) } }))
+                                .frame(minHeight: ui(30))
                         }
                     }
                     VStack(alignment: .leading, spacing: ui(4)) {
                         Text("한 장면은 얼마나 볼까요?").font(.ui(.subheadline).weight(.semibold))
-                        if photoOnly {
-                            // A photo-only trailer has no video clip length to choose: every
-                            // choice above would be irrelevant, so this shows a single
-                            // read-only line for the fixed 1-second-per-photo rule instead.
-                            Text("사진 한 장면 · 1초")
-                                .font(.ui(.caption)).foregroundStyle(.secondary).frame(minHeight: ui(30))
-                                .accessibilityElement(children: .combine)
-                        } else {
-                            HStack(spacing: ui(6)) {
-                                ForEach([1.0, 1.5, 2, 4, 6].filter { $0 <= maximumClipLength }, id: \.self) { value in
-                                    TrailerChoiceButton(title: trailerSceneLengthTitle(value), selected: abs(clipLength - value) < 0.01) {
-                                        clipLength = value
-                                        showingClipLength = false
-                                    }
+                        // A photo-only trailer still uses this length as the basis each
+                        // photo's own randomized scene length is a fraction of, so the
+                        // picker stays available instead of showing a fixed value.
+                        HStack(spacing: ui(6)) {
+                            ForEach([1.0, 1.5, 2, 4, 6].filter { $0 <= maximumClipLength }, id: \.self) { value in
+                                TrailerChoiceButton(title: trailerSceneLengthTitle(value), selected: abs(clipLength - value) < 0.01) {
+                                    clipLength = value
+                                    showingClipLength = false
                                 }
                             }
-                            otherLengthButton(value: trailerSceneLengthTitle(clipLength), expanded: showingClipLength) { showingClipLength.toggle() }
-                            if showingClipLength, maximumClipLength > 1 {
-                                Slider(value: $clipLength, in: 1...maximumClipLength, step: 1)
-                                    .accessibilityLabel("공통 장면 길이")
-                                    .accessibilityValue("\(Int(clipLength))초")
-                            }
-                            if hasImages {
-                                HStack {
-                                    Text("사진 한 장면")
-                                    Spacer()
-                                    Text("\(trailerSceneLengthTitle(VideoTrailerBatchPlan.imageClipLength(for: clipLength, photoOnly: false))) · 영상 장면의 절반")
-                                        .foregroundStyle(.secondary).monospacedDigit()
-                                }
-                                .font(.ui(.caption)).frame(minHeight: ui(30))
-                                .accessibilityElement(children: .combine)
-                            }
+                        }
+                        otherLengthButton(value: trailerSceneLengthTitle(clipLength), expanded: showingClipLength) { showingClipLength.toggle() }
+                        if showingClipLength, maximumClipLength > 1 {
+                            Slider(value: $clipLength, in: 1...maximumClipLength, step: 1)
+                                .accessibilityLabel("공통 장면 길이")
+                                .accessibilityValue("\(Int(clipLength))초")
                         }
                     }
                     }
@@ -852,7 +870,9 @@ private struct VideoTrailerSettings: View {
                     if mode == .trailer {
                         Button("자동 추천으로 되돌리기") {
                             clipLength = VideoTrailerModel.recommendedLength(sources)
-                            total = sources.reduce(0) { $0 + $1.plan.recommendedTotal }
+                            total = VideoTrailerBatchPlan.proposal(sources: sources,
+                                total: sources.reduce(0) { $0 + $1.plan.recommendedTotal },
+                                clipLength: clipLength, repeatToFill: false).reduce(0) { $0 + $1.length }
                             syncTotalToFit(music)
                             showingDuration = false
                             showingClipLength = false
@@ -913,7 +933,7 @@ private struct VideoTrailerSettings: View {
         }
     }
 
-    private var settingsTitle: String { mode == .mediaMusic ? "음악 입히기" : "예고편 조절" }
+    private var settingsTitle: String { mode == .mediaMusic ? "뮤직비디오" : "예고편 조절" }
 
     private func musicPolicyTitle(_ policy: TrailerMusicPolicy) -> String {
         guard policy == .fitMusic, let music, music.policy == .fitMusic else { return policy.title }
@@ -946,7 +966,7 @@ private struct VideoTrailerSettings: View {
     /// neither automatic policy applies any more. Only these controls call this, so a
     /// length that changes for any other reason never clears the chosen policy.
     private func setManualTotal(_ value: Double) {
-        total = value
+        total = value.isFinite ? min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, value)) : 1
         guard var selection = music, selection.policy != .single else { return }
         selection.policy = .single
         selection.fitCount = 1
@@ -1159,7 +1179,7 @@ private struct TrailerSourceFramesKey: PreferenceKey {
     }
 }
 
-/// Shows fractional scene lengths like "1.5초" or a half-length photo's "0.75초"
+/// Shows fractional scene lengths like "1.5초" or a randomized photo scene's "2.3초"
 /// instead of the truncated "1초" that an `Int` conversion would produce.
 private func trailerSceneLengthTitle(_ seconds: Double) -> String {
     "\(seconds.formatted(.number.precision(.fractionLength(0...2))))초"
@@ -1326,10 +1346,26 @@ private struct TrailerSourceThumbnail: View {
         .task(id: source.id) {
             guard image == nil else { return }
             if source.isImage {
-                if let loaded = UIImage(contentsOfFile: source.url.path), !Task.isCancelled { image = loaded }
+                if let loaded = await trailerThumbnailImage(at: source.url, maxPixelSize: 240), !Task.isCancelled { image = loaded }
                 return
             }
-            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: source.url))
+            let asset = AVURLAsset(url: source.url)
+            if #available(iOS 17, macOS 14, macCatalyst 17, *) {
+                do {
+                    let cgImage = try await RepresentativeVideoFrame.extract(
+                        asset: asset, anchor: source.plan.analysis.peakTime,
+                        appliesPreferredTrackTransform: true, maximumSize: CGSize(width: 240, height: 240))
+                    if !Task.isCancelled { image = UIImage(cgImage: cgImage) }
+                    return
+                } catch is CancellationError {
+                    // A cancelled helper request ends here; it never falls back to the
+                    // plain generator below.
+                    return
+                } catch {
+                    // Any other failure falls back to the existing single-frame path.
+                }
+            }
+            let generator = AVAssetImageGenerator(asset: asset)
             generator.appliesPreferredTrackTransform = true
             generator.maximumSize = CGSize(width: 240, height: 240)
             do {
@@ -1392,6 +1428,9 @@ private final class VideoTrailerModel: ObservableObject {
     /// Ids that failed decode validation in this workspace; a regeneration keeps the
     /// user's remaining selection sparse instead of staging and probing them again.
     private var skippedSourceIDs: Set<Int> = []
+    /// Set once every staged photo's own quality/similarity scene duration has been
+    /// measured, so a regenerate or reopen never re-decodes photos already scored.
+    private var photoDurationsAnalyzed = false
     /// Stable identity for this model in the log so cancel/cleanup/release lines can be
     /// matched with the run they belong to without naming any file.
     private let identity = String(UUID().uuidString.prefix(8))
@@ -1399,6 +1438,51 @@ private final class VideoTrailerModel: ObservableObject {
         subsystem: Bundle.main.bundleIdentifier ?? "com.armsone.nasfinder",
         category: "video-trailer"
     )
+
+    /// Measures every staged photo once (bounded-memory, on-device, no network) and sets
+    /// each one's own `imageDurationRatio` from its quality rank among this batch's photos
+    /// and how closely it resembles a better-ranked one. A photo that fails to decode here
+    /// (already validated when staged, so this is never expected) keeps a neutral middle
+    /// ratio rather than a fabricated score.
+    private func applyPhotoDurationRatios() async throws {
+        let imageSources = sources.filter(\.isImage)
+        guard !imageSources.isEmpty else { return }
+        let snapshot = imageSources.map { (id: $0.id, url: $0.url) }
+        try Task.checkCancellation()
+        // The measurement itself (quality/fingerprint decode plus the optional DINO
+        // similarity AND-gate) never touches the main actor: only the finished ratio
+        // dictionary comes back here, and only this one commit ever applies it.
+        let handle = Task.detached(priority: .userInitiated) { () throws -> [Int: Double] in
+            var measurements: [(id: Int, measurement: VideoTrailerPhotoQuality.Measurement?)] = []
+            for item in snapshot {
+                try Task.checkCancellation()
+                measurements.append((item.id, await VideoTrailerPhotoQuality.measure(fileAt: item.url)))
+            }
+            try Task.checkCancellation()
+            var dinoEmbeddings: [Int: [Float]]?
+            if #available(iOS 17, macOS 14, macCatalyst 17, *) {
+                dinoEmbeddings = try await VideoTrailerPhotoSimilarityGate.embeddings(for: snapshot)
+            }
+            try Task.checkCancellation()
+            return VideoTrailerPhotoQuality.durationRatios(for: measurements, dinoEmbeddings: dinoEmbeddings)
+        }
+        let ratios = try await withTaskCancellationHandler {
+            try await handle.value
+        } onCancel: {
+            handle.cancel()
+        }
+        try Task.checkCancellation()
+        // Commit only if the staged photo batch is still exactly what was measured; a
+        // removal, retry restage or reorder-by-identity change in the meantime discards
+        // this result rather than applying it to sources it no longer matches.
+        let currentImageSources = sources.filter(\.isImage)
+        let currentMap = Dictionary(uniqueKeysWithValues: currentImageSources.map { ($0.id, $0.url) })
+        let snapshotMap = Dictionary(uniqueKeysWithValues: snapshot)
+        guard currentMap == snapshotMap else { return }
+        for index in sources.indices {
+            if let ratio = ratios[sources[index].id] { sources[index].imageDurationRatio = ratio }
+        }
+    }
 
     static func imageCaptureDate(at url: URL) -> Date? {
         guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
@@ -1544,6 +1628,7 @@ private final class VideoTrailerModel: ObservableObject {
                clipLength: Double? = nil, aspectRatio: OutputAspectRatio? = nil,
                music: TrailerMusicSelection? = nil) {
         guard !isBusy, !items.isEmpty else { return }
+        let total = total.map { $0.isFinite ? min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, $0)) : 1 }
         self.mode = mode
         isAwaitingSettings = false
         if let sourceOrder {
@@ -1662,6 +1747,12 @@ private final class VideoTrailerModel: ObservableObject {
                     }
                 }
                 guard !sources.isEmpty else { throw TrailerError.noUsableSources }
+                if mode == .trailer, !photoDurationsAnalyzed, sources.contains(where: \.isImage) {
+                    stage = "photo-quality"
+                    status = "사진을 준비하는 중…"
+                    try await applyPhotoDurationRatios()
+                }
+                photoDurationsAnalyzed = true
                 isStaged = true
                 stage = "plan"
                 if let sourceOrder {
@@ -1801,6 +1892,7 @@ private final class VideoTrailerModel: ObservableObject {
                     let sourceByID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
                     cursor = .zero
                     var clipURLs: [URL] = []
+                    var imageClipCache: [String: URL] = [:]
                     var originalSound: [TrailerMusicDucking.Clip] = []
                     var instructions: [AVMutableVideoCompositionInstruction] = []
                     var renderSize = aspectRatio?.renderSize
@@ -1823,14 +1915,21 @@ private final class VideoTrailerModel: ObservableObject {
                             // transform below upscales to the full render size, which is the only
                             // part of the export that actually makes photo scenes faster to encode.
                             let photoRenderSize = Self.photoRenderSize(for: renderSize)
-                            let clipURL = directory.appendingPathComponent("image-clip-\(segment.id)-\(UUID().uuidString)")
-                                .appendingPathExtension("mov")
-                            try await Task.detached(priority: .userInitiated) {
-                                try VideoTrailerImageClip.render(imageURL: source.url, duration: segment.length,
-                                    renderSize: photoRenderSize, outputURL: clipURL, seed: segment.id ^ generationSeed)
-                            }.value
-                            clipURLs.append(clipURL)
-                            attemptFiles.append(clipURL)
+                            let cacheKey = "\(source.id):\(Int64((segment.length * 600).rounded())):\(Int(photoRenderSize.width))x\(Int(photoRenderSize.height))"
+                            let clipURL: URL
+                            if let cached = imageClipCache[cacheKey] {
+                                clipURL = cached
+                            } else {
+                                clipURL = directory.appendingPathComponent("image-clip-\(segment.id)-\(UUID().uuidString)")
+                                    .appendingPathExtension("mov")
+                                try await Task.detached(priority: .userInitiated) {
+                                    try VideoTrailerImageClip.render(imageURL: source.url, duration: segment.length,
+                                        renderSize: photoRenderSize, outputURL: clipURL, seed: segment.id ^ generationSeed)
+                                }.value
+                                clipURLs.append(clipURL)
+                                attemptFiles.append(clipURL)
+                                imageClipCache[cacheKey] = clipURL
+                            }
                             try Task.checkCancellation()
                             asset = AVURLAsset(url: clipURL)
                             guard let imageVideo = try await asset.loadTracks(withMediaType: .video).first else { throw TrailerError.exportFailed }
@@ -2205,5 +2304,141 @@ private final class VideoTrailerModel: ObservableObject {
         skippedSourceIDs = []
         if let directory { try? FileManager.default.removeItem(at: directory) }
         directory = nil
+    }
+}
+
+/// 하나의 표준 슬라이더에서 드래그 속도만 연속적으로 반영한다. 별도 미세조절 모드는 없다.
+private struct TrailerTotalDurationSlider: UIViewRepresentable {
+    @Binding var value: Double
+    @Environment(\.isEnabled) private var isEnabled
+    func makeCoordinator() -> Coordinator { Coordinator(value: $value) }
+    func makeUIView(context: Context) -> TrailerVelocityDurationSlider {
+        let slider = TrailerVelocityDurationSlider()
+        slider.minimumValue = 1
+        slider.maximumValue = Float(VideoTrailerBatchPlan.maximumRequestedDuration)
+        slider.isContinuous = true
+        slider.accessibilityLabel = "예고편 총길이"
+        slider.addTarget(context.coordinator, action: #selector(Coordinator.changed(_:)), for: .valueChanged)
+        return slider
+    }
+    func updateUIView(_ slider: TrailerVelocityDurationSlider, context: Context) {
+        context.coordinator.value = $value
+        slider.isEnabled = isEnabled
+        slider.tintColor = UIColor(SkyBreezeTheme.accent)
+        if !slider.isUserAdjusting { slider.setValue(Float(value.rounded()), animated: false) }
+        slider.accessibilityValue = trailerDurationTitle(value)
+    }
+    @MainActor final class Coordinator: NSObject {
+        var value: Binding<Double>
+        init(value: Binding<Double>) { self.value = value }
+        @objc func changed(_ slider: TrailerVelocityDurationSlider) {
+            let seconds = Double(slider.value.rounded())
+            slider.accessibilityValue = trailerDurationTitle(seconds)
+            value.wrappedValue = seconds
+        }
+    }
+}
+
+private final class TrailerVelocityDurationSlider: UISlider {
+    private(set) var isUserAdjusting = false
+    private var accumulatedValue = 1.0
+    private var lastX: CGFloat = 0
+    private var lastTimestamp: TimeInterval = 0
+    private var smoothedSpeed: Double?
+
+    override var canBecomeFirstResponder: Bool { true }
+    override var keyCommands: [UIKeyCommand]? {
+        [UIKeyCommand(input: UIKeyCommand.inputLeftArrow, modifierFlags: [], action: #selector(decreaseOneSecond)),
+         UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(decreaseOneSecond)),
+         UIKeyCommand(input: UIKeyCommand.inputRightArrow, modifierFlags: [], action: #selector(increaseOneSecond)),
+         UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(increaseOneSecond))]
+    }
+    override func beginTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
+        guard isEnabled else { return false }
+        let point = touch.location(in: self)
+        let track = trackRect(forBounds: bounds)
+        let thumb = thumbRect(forBounds: bounds, trackRect: track, value: value)
+        let initial = Double(value)
+        let hitThumb = thumb.insetBy(dx: -8, dy: -8).contains(point)
+        _ = super.beginTracking(touch, with: event)
+        isUserAdjusting = true
+        becomeFirstResponder()
+        if hitThumb {
+            accumulatedValue = initial
+        } else {
+            let limits = travelLimits()
+            let fraction = min(1, max(0, Double((point.x - limits.lower) / limits.width)))
+            let ordered = effectiveUserInterfaceLayoutDirection == .rightToLeft ? 1 - fraction : fraction
+            accumulatedValue = Double(minimumValue) + ordered * Double(maximumValue - minimumValue)
+        }
+        lastX = point.x
+        lastTimestamp = touch.timestamp
+        smoothedSpeed = nil
+        isHighlighted = true
+        publishAccumulatedValue(force: !hitThumb)
+        return true
+    }
+    override func continueTracking(_ touch: UITouch, with event: UIEvent?) -> Bool {
+        guard isUserAdjusting else { return false }
+        let x = touch.location(in: self).x
+        let delta = Double(x - lastX)
+        let elapsed = max(1.0 / 240, touch.timestamp - lastTimestamp)
+        let speed = abs(delta) / elapsed
+        let filtered = smoothedSpeed.map { $0 * 0.7 + speed * 0.3 } ?? speed
+        smoothedSpeed = filtered
+        let normalized = min(1, max(0, (filtered - 80) / 520))
+        let smoothstep = normalized * normalized * (3 - 2 * normalized)
+        let gain = 0.05 + 0.95 * smoothstep
+        let direction = effectiveUserInterfaceLayoutDirection == .rightToLeft ? -1.0 : 1.0
+        accumulatedValue += direction * delta / Double(travelLimits().width)
+            * Double(maximumValue - minimumValue) * gain
+        accumulatedValue = min(Double(maximumValue), max(Double(minimumValue), accumulatedValue))
+        lastX = x
+        lastTimestamp = touch.timestamp
+        publishAccumulatedValue()
+        return true
+    }
+    override func endTracking(_ touch: UITouch?, with event: UIEvent?) {
+        let finalValue = value
+        super.endTracking(touch, with: event)
+        setValue(finalValue, animated: false)
+        sendActions(for: .valueChanged)
+        finishTracking()
+    }
+    override func cancelTracking(with event: UIEvent?) {
+        let finalValue = value
+        super.cancelTracking(with: event)
+        setValue(finalValue, animated: false)
+        sendActions(for: .valueChanged)
+        finishTracking()
+    }
+    override func accessibilityIncrement() { adjustByOneSecond(1) }
+    override func accessibilityDecrement() { adjustByOneSecond(-1) }
+    @objc private func increaseOneSecond() { adjustByOneSecond(1) }
+    @objc private func decreaseOneSecond() { adjustByOneSecond(-1) }
+    private func adjustByOneSecond(_ delta: Float) {
+        guard isEnabled else { return }
+        setValue(min(maximumValue, max(minimumValue, value.rounded() + delta)), animated: false)
+        accumulatedValue = Double(value)
+        accessibilityValue = trailerDurationTitle(Double(value))
+        sendActions(for: .valueChanged)
+    }
+    private func publishAccumulatedValue(force: Bool = false) {
+        let seconds = Float(accumulatedValue.rounded())
+        if force || abs(value - seconds) >= 0.5 {
+            setValue(seconds, animated: false)
+            sendActions(for: .valueChanged)
+        } else { setValue(seconds, animated: false) }
+    }
+    private func finishTracking() {
+        isUserAdjusting = false
+        isHighlighted = false
+        smoothedSpeed = nil
+    }
+    private func travelLimits() -> (lower: CGFloat, width: CGFloat) {
+        let track = trackRect(forBounds: bounds)
+        let minimum = thumbRect(forBounds: bounds, trackRect: track, value: minimumValue).midX
+        let maximum = thumbRect(forBounds: bounds, trackRect: track, value: maximumValue).midX
+        return (min(minimum, maximum), max(1, abs(maximum - minimum)))
     }
 }

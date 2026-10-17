@@ -520,7 +520,7 @@ struct AddConnectionView: View {
         defer { isSaving = false }
         do {
             let credential = try await oauthAuthorizer.authorize(provider: provider)
-            let connection = RemoteConnection(
+            var connection = RemoteConnection(
                 id: editingConnection?.id ?? UUID(),
                 name: name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? kind.title : name,
                 kind: kind,
@@ -536,6 +536,9 @@ struct AddConnectionView: View {
                 credential: RemoteCredential(password: "", cloudCredential: .oauth(credential))
             )
             try await service.testConnection()
+            if kind == .dropbox {
+                connection.username = (try? await service.dropboxAccountDisplayName()) ?? ""
+            }
             if editingConnection == nil {
                 try await store.add(connection, oauthCredential: credential)
             } else {

@@ -301,6 +301,12 @@ struct GitHubDirectUpdateReleaseProvider: DirectUpdateReleaseProviding {
             guard !release.draft, !release.prerelease, release.tagName.hasPrefix("mac-v") else {
                 return nil
             }
+            let version = String(release.tagName.dropFirst("mac-v".count))
+            let order = Self.compare(version, currentVersion)
+            guard order == .orderedDescending || (
+                order == .orderedSame
+                    && Self.compare(metadataFields(release.body)["Build-Number"] ?? "0", currentBuild) == .orderedDescending
+            ) else { return nil }
             return try Self.validatedRelease(release)
         }
         return candidates

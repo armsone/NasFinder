@@ -77,6 +77,29 @@ final class ConnectionStore: ObservableObject {
         persist()
     }
 
+    /// 이전 버전의 서비스 이름 placeholder를 실제 계정 표시로 보완한다.
+    /// 실패한 연결·원본 파일·인증 정보는 삭제하거나 초기화하지 않는다.
+    func refreshDropboxAccountMetadata() async {
+        let candidates = connections.filter {
+            $0.kind == .dropbox && ($0.username.isEmpty || $0.username.caseInsensitiveCompare("Dropbox") == .orderedSame)
+        }
+        for connection in candidates {
+            do {
+                let originalCredential = try credential(for: connection)
+                let service = CloudDriveFileService(connection: connection, credential: originalCredential)
+                // 표시 정보 보완은 인증 정보를 쓰지 않고 조회를 시작한 동일한 연결에만 적용한다.
+                let account = try await service.dropboxAccountDisplayName(persistRefreshedCredential: false)
+                guard let index = connections.firstIndex(where: { $0.id == connection.id }),
+                      connections[index] == connection,
+                      try credential(for: connections[index]) == originalCredential else { continue }
+                connections[index].username = account
+                persist()
+            } catch {
+                // 행에서 '계정 정보 확인 필요'로 표시하며 명시적 재연결은 사용자에게 맡긴다.
+            }
+        }
+    }
+
     var preferredConnection: RemoteConnection? {
         if let preferredConnectionID,
            let connection = connections.first(where: { $0.id == preferredConnectionID }) {

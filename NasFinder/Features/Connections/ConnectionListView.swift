@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import SwiftUI
 import UIKit
@@ -73,12 +74,22 @@ struct ConnectionListView: View {
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.system.rawValue
 
+    @AppStorage("googlePhotos.networkHidden.v1") private var googlePhotosHidden = false
+    @AppStorage("googlePhotos.networkName.v1") private var googlePhotosName = "Google 포토"
+    @StateObject private var googlePhotosConnection = GooglePhotosConnectionSettingsModel(dependencies: .live())
+    @State private var isChoosingNetwork = false
+    @State private var isEditingGooglePhotos = false
+    @State private var googlePhotosEditedName = ""
+    @State private var isDeletingGooglePhotos = false
+    @State private var isReconnectingGooglePhotos = false
+    @State private var forceGooglePhotosAuthorization = false
     @State private var isAddingConnection: Bool
     @State private var connectionPendingDeletion: RemoteConnection?
     @State private var editingConnection: RemoteConnection?
     @State private var browserDestination: BrowserDestination?
     @State private var selectedFavorite: FavoriteItem?
     @State private var isImportingFromFiles = false
+    @State private var isImportingFromGooglePhotos = false
     @State private var didAttemptAutomaticOpen = false
     @State private var deviceStorage = DeviceStorageSnapshot.current()
     @State private var navigationIdentity = UUID()
@@ -173,8 +184,17 @@ struct ConnectionListView: View {
                         "파일을 선택하지 못했습니다: \(error.localizedDescription)"
                 }
             }
+            .navigationDestination(isPresented: $isImportingFromGooglePhotos) {
+                GooglePhotosImportFlowView(inboxStore: inboxStore, forceAuthorization: forceGooglePhotosAuthorization)
+            }
+            .onChange(of: isImportingFromGooglePhotos) { _, presented in
+                if !presented {
+                    googlePhotosConnection.refreshConnectionState()
+                    forceGooglePhotosAuthorization = false
+                }
+            }
             .fileDialogConfirmationLabel("가져오기")
-            .fileDialogMessage("나의 iPhone 또는 iCloud Drive에서 파일을 선택하세요.")
+            .fileDialogMessage("이 기기 또는 iCloud Drive에서 파일을 선택하세요.")
             .alert("파일 가져오기 오류", isPresented: inboxErrorBinding) {
                 Button("확인", role: .cancel) {
                     inboxStore.errorMessage = nil
@@ -215,9 +235,58 @@ struct ConnectionListView: View {
                         ?? ""
                 )
             }
+            .confirmationDialog("네트워크 추가", isPresented: $isChoosingNetwork, titleVisibility: .visible) {
+                Button(googlePhotosHidden ? "Google 포토" : "Google 포토 열기 · 이미 추가됨") {
+                    googlePhotosHidden = false
+                    forceGooglePhotosAuthorization = false
+                    isImportingFromGooglePhotos = true
+                }
+                Button("NAS·서버·클라우드 드라이브") { isAddingConnection = true }
+                Button("취소", role: .cancel) {}
+            }
+            .alert("Google 포토 연결 수정", isPresented: $isEditingGooglePhotos) {
+                TextField("표시 이름", text: $googlePhotosEditedName)
+                Button("취소", role: .cancel) {}
+                Button("저장") {
+                    let value = googlePhotosEditedName.trimmingCharacters(in: .whitespacesAndNewlines)
+                    googlePhotosName = value.isEmpty ? "Google 포토" : value
+                }
+            } message: {
+                Text("이 기기에 표시할 이름을 바꿉니다. 저장된 로그인은 유지됩니다.")
+            }
+            .confirmationDialog("Google 포토에 다시 연결할까요?", isPresented: $isReconnectingGooglePhotos, titleVisibility: .visible) {
+                Button("다시 연결") {
+                    forceGooglePhotosAuthorization = true
+                    isImportingFromGooglePhotos = true
+                }
+                Button("취소", role: .cancel) {}
+            } message: {
+                Text("Google 인증을 다시 진행합니다. 완료하기 전까지 기존 연결 정보는 유지됩니다.")
+            }
+            .confirmationDialog("Google 포토 연결을 삭제할까요?", isPresented: $isDeletingGooglePhotos, titleVisibility: .visible) {
+                Button("연결 삭제", role: .destructive) {
+                    Task {
+                        await googlePhotosConnection.disconnect()
+                        if !googlePhotosConnection.isConnected { googlePhotosHidden = true }
+                    }
+                }
+                Button("취소", role: .cancel) {}
+            } message: {
+                Text("이 기기의 Google 포토 앱 연결과 목록의 항목을 제거합니다. 폰하드·Google 포토 원본·Google Drive 연결은 유지됩니다. 웹 로그인은 유지되어 재추가할 때 사용할 수 있습니다.")
+            }
+            .alert("Google 포토", isPresented: Binding(
+                get: { googlePhotosConnection.resultMessage != nil },
+                set: { if !$0 { googlePhotosConnection.resultMessage = nil } }
+            )) {
+                Button("확인", role: .cancel) { googlePhotosConnection.resultMessage = nil }
+            } message: {
+                Text(googlePhotosConnection.resultMessage ?? "")
+            }
             .task {
+                googlePhotosConnection.refreshConnectionState()
                 deviceStorage = DeviceStorageSnapshot.current()
                 openPreferredConnectionIfNeeded()
+                await store.refreshDropboxAccountMetadata()
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -233,32 +302,24 @@ struct ConnectionListView: View {
 
     @ViewBuilder
     private var dashboardSections: some View {
-        myFilesSection
         networkSection
-        storageSection
+        myFilesSection
+        deviceStorageSection
+        videoEditingSection
         settingsSection
     }
 
     private var networkSection: some View {
         Section {
-            // The storage on this device comes first, as one of the places files live.
-            PhoneHardEntryLink(summary: inboxSummary)
+            VStack(alignment: .leading, spacing: ui(4)) {
+                Text("즐겨찾기")
+                    .font(.ui(.caption).weight(.semibold))
+                    .foregroundStyle(.secondary)
 
-            NavigationLink {
-                LocalPhotoLibraryView()
-            } label: {
-                HStack(spacing: ui(7)) {
-                    ThemedSymbol(
-                        systemName: "photo.on.rectangle.angled",
-                        size: ui(32),
-                        symbolSize: ui(17)
-                    )
-                    Text("내 사진·영상")
+                FavoriteShelfView { favorite in
+                    selectedFavorite = favorite
                 }
-                .font(.ui(.subheadline))
-                .foregroundStyle(.secondary)
             }
-            .accessibilityHint("NAS 연결 없이 iPhone의 사진과 영상을 선택해 미리 보고 예고편을 만듭니다.")
 
             if !store.connections.isEmpty {
                 ForEach(store.connections) { connection in
@@ -281,6 +342,10 @@ struct ConnectionListView: View {
                 }
             }
 
+            if !googlePhotosHidden {
+                googlePhotosNetworkRow
+            }
+
             NavigationLink {
                 WebBrowserView()
             } label: {
@@ -290,7 +355,7 @@ struct ConnectionListView: View {
             .navigationLinkIndicatorVisibility(.hidden)
 
             Button {
-                isAddingConnection = true
+                isChoosingNetwork = true
             } label: {
                 HStack(spacing: ui(7)) {
                     ThemedSymbol(systemName: "plus", size: ui(32), symbolSize: ui(17))
@@ -315,11 +380,91 @@ struct ConnectionListView: View {
         .listSectionSpacing(.custom(10))
     }
 
+    private var googlePhotosNetworkRow: some View {
+        HStack(spacing: ui(4)) {
+            Button {
+                forceGooglePhotosAuthorization = false
+                isImportingFromGooglePhotos = true
+            } label: {
+                HStack(spacing: ui(13)) {
+                    ThemedSymbol(systemName: "photo.on.rectangle.angled", size: ui(32), symbolSize: ui(17))
+                        .foregroundStyle(ConnectionKind.googleDrive.dashboardTint)
+                        .frame(width: ui(32), height: ui(32))
+                        .accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: ui(4)) {
+                        HStack(spacing: ui(6)) {
+                            Text(googlePhotosName)
+                                .font(.ui(.subheadline).weight(.medium))
+                                .foregroundStyle(.primary)
+                                .lineLimit(2)
+                            if googlePhotosName != "Google 포토" {
+                                Text("Google 포토")
+                                    .font(.ui(.caption2).weight(.semibold))
+                                    .foregroundStyle(ConnectionKind.googleDrive.dashboardTint)
+                                    .padding(.horizontal, ui(6))
+                                    .padding(.vertical, ui(2))
+                                    .background(ConnectionKind.googleDrive.dashboardTint.opacity(0.1), in: Capsule())
+                            }
+                        }
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.vertical, ui(2))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("Google 포토에서 사진과 영상을 선택합니다.")
+            Menu {
+                if !googlePhotosConnection.isConnected {
+                    Button("연결 추가", systemImage: "plus") {
+                        forceGooglePhotosAuthorization = false
+                        isImportingFromGooglePhotos = true
+                    }
+                }
+                Button("연결 수정", systemImage: "pencil") {
+                    googlePhotosEditedName = googlePhotosName
+                    isEditingGooglePhotos = true
+                }
+                if googlePhotosConnection.isConnected {
+                    Button("다시 연결", systemImage: "arrow.triangle.2.circlepath") {
+                        isReconnectingGooglePhotos = true
+                    }
+                }
+                Button("연결 삭제", systemImage: "trash", role: .destructive) {
+                    isDeletingGooglePhotos = true
+                }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.ui(.body).weight(.semibold))
+                    .frame(width: ui(44), height: ui(54))
+                    .contentShape(Rectangle())
+            }
+            .disabled(googlePhotosConnection.isDisconnecting)
+            .accessibilityLabel("\(googlePhotosName) 연결 메뉴")
+        }
+    }
+
     private var myFilesSection: some View {
         Section {
-            FavoriteShelfView { favorite in
-                selectedFavorite = favorite
+            // The storage on this device comes first, as one of the places files live.
+            PhoneHardEntryLink(summary: inboxSummary)
+
+            NavigationLink {
+                LocalPhotoLibraryView()
+            } label: {
+                HStack(spacing: ui(7)) {
+                    ThemedSymbol(
+                        systemName: "photo.on.rectangle.angled",
+                        size: ui(32),
+                        symbolSize: ui(17)
+                    )
+                    Text("내 사진·영상")
+                }
+                .font(.ui(.subheadline))
+                .foregroundStyle(.secondary)
             }
+            .accessibilityHint("NAS 연결 없이 이 기기의 사진과 영상을 선택해 미리 보고 예고편을 만듭니다.")
 
             NavigationLink {
                 PhotoTransferView()
@@ -330,16 +475,13 @@ struct ConnectionListView: View {
                         size: ui(32),
                         symbolSize: ui(17)
                     )
-                    Text("Live Photos & Motion Photos")
+                    Text("기기 간 사진 전송")
                 }
                 .font(.ui(.subheadline))
                 .foregroundStyle(.secondary)
             }
-            .accessibilityHint("사진과 영상을 함께 보내는 화면을 엽니다.")
+            .accessibilityHint("Live Photos와 Motion Photos를 함께 보내는 화면을 엽니다.")
 
-            ThumbnailCacheSettingsLink()
-
-            SuperThumbnailLink()
         } header: {
             sectionHeader("내 파일", systemImage: "folder")
         }
@@ -347,7 +489,7 @@ struct ConnectionListView: View {
         .foregroundStyle(.secondary)
     }
 
-    private var storageSection: some View {
+    private var deviceStorageSection: some View {
         Section {
             Button {
                 isImportingFromFiles = true
@@ -359,7 +501,7 @@ struct ConnectionListView: View {
                         .accessibilityHidden(true)
 
                     VStack(alignment: .leading, spacing: ui(3)) {
-                        Text("iPhone 저장공간")
+                        Text("이 기기 저장공간")
                             .foregroundStyle(.primary)
                         Text(deviceStorageSummary)
                             .font(.ui(.caption))
@@ -379,7 +521,7 @@ struct ConnectionListView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .accessibilityHint("파일 앱에서 나의 iPhone 또는 iCloud Drive의 파일을 선택합니다.")
+            .accessibilityHint("파일 앱에서 이 기기 또는 iCloud Drive의 파일을 선택합니다.")
 
             if deviceStorage.hasCapacity {
                 ProgressView(value: deviceStorage.usedFraction) {
@@ -391,11 +533,41 @@ struct ConnectionListView: View {
                     )
                 }
             }
-        } header: {
-            sectionHeader("저장공간", systemImage: "internaldrive")
         }
         .font(.ui(.subheadline))
         .foregroundStyle(.secondary)
+    }
+
+    private var videoEditingSection: some View {
+        Section {
+            TrailerDraftManagerEntryLink()
+
+            NavigationLink {
+                LocalPhotoLibraryView(initialMode: .trailer)
+            } label: {
+                HStack(spacing: ui(7)) {
+                    ThemedSymbol(systemName: "film", size: ui(32), symbolSize: ui(17))
+                    Text("예고편 만들기")
+                }
+                .font(.ui(.subheadline))
+                .foregroundStyle(.secondary)
+            }
+            .accessibilityHint("사진과 영상을 선택해 예고편을 만듭니다.")
+
+            NavigationLink {
+                LocalPhotoLibraryView(initialMode: .mediaMusic)
+            } label: {
+                HStack(spacing: ui(7)) {
+                    ThemedSymbol(systemName: "music.note", size: ui(32), symbolSize: ui(17))
+                    Text("뮤직비디오")
+                }
+                .font(.ui(.subheadline))
+                .foregroundStyle(.secondary)
+            }
+            .accessibilityHint("사진과 영상을 선택해 음악을 입힙니다.")
+        } header: {
+            sectionHeader("영상 편집", systemImage: "film")
+        }
     }
 
     private var settingsSection: some View {
@@ -465,7 +637,14 @@ struct ConnectionListView: View {
     /// Every sheet, pushed route and media surface returns to the dashboard
     /// after the app comes back from the background. Pending inbox routing is
     /// transient too; the imported file stays stored, but is not auto-opened.
+    ///
+    /// The Google Photos import sheet is intentionally excluded: its picker and
+    /// OAuth steps are shown in-app (SFSafariViewController / ASWebAuthenticationSession),
+    /// so a background/foreground cycle during those steps is part of the normal
+    /// flow, not a "user left NasFinder" signal, and must not cancel an in-progress
+    /// selection or import.
     private func resetToDashboardAfterForegroundReturn() {
+        guard !isImportingFromGooglePhotos else { return }
         isAddingConnection = false
         editingConnection = nil
         connectionPendingDeletion = nil
@@ -940,17 +1119,19 @@ private struct WebHardNetworkLocationRow: View {
 }
 
 /// The dashboard's PhoneHard entry, listed with the network connections as the storage on
-/// this device. A tap opens it in the same browser those open in. While a trailer or
-/// music editor is waiting, a long press on the entry reopens that editor as it was left,
-/// or asks which one when there are several.
+/// this device. A tap opens it in the same browser those open in. A long press on the
+/// entry always opens the manager of suspended trailer/music editors, showing an empty
+/// state when there are none to resume.
 private struct PhoneHardEntryLink: View {
     let summary: String?
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @ObservedObject private var draftStore = TrailerDraftStore.shared
     @State private var resumingDraft: TrailerDraftEntry?
-    @State private var isChoosingDraft = false
-
-    private var hasDrafts: Bool { !draftStore.entries.isEmpty }
+    @State private var showingDraftManager = false
+    /// Set while the manager sheet is still closing, so the full-screen editor it asked
+    /// for is only ever presented once that sheet is fully gone (avoids a presentation
+    /// race between the two on iOS/iPad/Mac).
+    @State private var pendingResumeID: UUID?
 
     var body: some View {
         Button {
@@ -960,38 +1141,37 @@ private struct PhoneHardEntryLink: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        // Over the row's content only, and only while an editor is waiting, so the tap
-        // that opens PhoneHard and the long press are told apart by one gesture, as in
-        // the file browser. The cover below stays attached either way: the editor takes
-        // its entry out of the store as soon as it is showing.
+        // Over the row's content, always present, so the tap that opens PhoneHard and the
+        // long press that opens the draft manager are told apart by one gesture, as in the
+        // file browser. This also makes a pointer's long hold on Mac Catalyst reliable,
+        // since the gesture is attached unconditionally rather than appearing mid-hold.
         .overlay {
-            if hasDrafts {
-                Color.clear.contentShape(Rectangle()).gesture(
-                    LongPressGesture(minimumDuration: 0.5)
-                        .exclusively(before: TapGesture())
-                        .onEnded { result in
-                            switch result {
-                            case .first:
-                                resumeDraft()
-                            case .second:
-                                inboxStore.shouldPresentInbox = true
-                            }
+            Color.clear.contentShape(Rectangle()).gesture(
+                LongPressGesture(minimumDuration: 0.5)
+                    .exclusively(before: TapGesture())
+                    .onEnded { result in
+                        switch result {
+                        case .first:
+                            openDraftManager()
+                        case .second:
+                            inboxStore.shouldPresentInbox = true
                         }
-                )
-            }
+                    }
+            )
         }
         .accessibilityActions {
-            if hasDrafts {
-                Button("보관한 편집 이어서 하기") { resumeDraft() }
-            }
+            Button("보관한 편집 보기") { openDraftManager() }
         }
-        .alert("이어서 할 편집", isPresented: $isChoosingDraft) {
-            ForEach(draftStore.entries) { entry in
-                Button(entry.title) { resumingDraft = entry }
+        .sheet(isPresented: $showingDraftManager, onDismiss: {
+            // Only now, with the manager sheet fully gone, is the chosen editor shown.
+            guard let id = pendingResumeID else { return }
+            pendingResumeID = nil
+            resumingDraft = draftStore.entries.first { $0.id == id }
+        }) {
+            TrailerDraftManagerView { entry in
+                pendingResumeID = entry.id
+                showingDraftManager = false
             }
-            Button("취소", role: .cancel) { }
-        } message: {
-            Text("보관해 둔 편집을 골라 주세요. 고르지 않은 편집도 그대로 남습니다.")
         }
         .fullScreenCover(item: $resumingDraft) { entry in
             VideoTrailerView(items: entry.items, service: entry.service, mode: entry.mode, resuming: entry)
@@ -999,13 +1179,171 @@ private struct PhoneHardEntryLink: View {
         }
     }
 
-    private func resumeDraft() {
-        // One editor at a time: nothing is presented over an editor already showing.
-        guard resumingDraft == nil, !isChoosingDraft else { return }
-        if draftStore.entries.count == 1 {
-            resumingDraft = draftStore.entries[0]
-        } else if draftStore.entries.count > 1 {
-            isChoosingDraft = true
+    private func openDraftManager() {
+        // One editor/manager at a time: nothing is presented over either already showing.
+        guard resumingDraft == nil, !showingDraftManager else { return }
+        showingDraftManager = true
+    }
+}
+
+/// The "영상 편집" section's explicit entry to the same suspended trailer/music editor
+/// manager the PhoneHard entry's long press opens, so it does not depend on discovering
+/// that gesture.
+private struct TrailerDraftManagerEntryLink: View {
+    @EnvironmentObject private var inboxStore: SharedInboxStore
+    @ObservedObject private var draftStore = TrailerDraftStore.shared
+    @State private var resumingDraft: TrailerDraftEntry?
+    @State private var showingDraftManager = false
+    @State private var pendingResumeID: UUID?
+
+    var body: some View {
+        Button {
+            showingDraftManager = true
+        } label: {
+            HStack(spacing: ui(7)) {
+                ThemedSymbol(systemName: "film.stack", size: ui(32), symbolSize: ui(17))
+                Text("편집 중인 예고편")
+                Spacer(minLength: ui(8))
+                Text("\(draftStore.entries.count)개")
+                    .font(.ui(.caption))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.ui(.subheadline))
+        .foregroundStyle(.secondary)
+        .accessibilityHint("보관한 예고편/음악 편집을 이어서 하거나 지웁니다.")
+        .sheet(isPresented: $showingDraftManager, onDismiss: {
+            guard let id = pendingResumeID else { return }
+            pendingResumeID = nil
+            resumingDraft = draftStore.entries.first { $0.id == id }
+        }) {
+            TrailerDraftManagerView { entry in
+                pendingResumeID = entry.id
+                showingDraftManager = false
+            }
+        }
+        .fullScreenCover(item: $resumingDraft) { entry in
+            VideoTrailerView(items: entry.items, service: entry.service, mode: entry.mode, resuming: entry)
+                .environmentObject(inboxStore)
+        }
+    }
+}
+
+/// The scrollable screen a long press on the PhoneHard entry opens, listing every
+/// suspended trailer/music editor kept in `TrailerDraftStore`, however many there are.
+/// Nothing here is capped or evicted automatically; each entry stays until the user
+/// explicitly resumes and finishes it, or deletes it themselves.
+private struct TrailerDraftManagerView: View {
+    let onResume: (TrailerDraftEntry) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject private var draftStore = TrailerDraftStore.shared
+    @State private var confirmingDeleteID: UUID?
+
+    var body: some View {
+        NavigationStack {
+            Group {
+                if draftStore.entries.isEmpty {
+                    VStack(spacing: ui(8)) {
+                        Image(systemName: "film.stack").font(.system(size: ui(32))).foregroundStyle(.secondary)
+                        Text("편집 중인 예고편이 없습니다").foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else {
+                    List {
+                        ForEach(draftStore.entries) { entry in
+                            TrailerDraftRow(entry: entry, onResume: { onResume(entry) },
+                                onDelete: { confirmingDeleteID = entry.id })
+                        }
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .navigationTitle("보관한 편집")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("닫기") { dismiss() }
+                }
+            }
+            // Per-entry confirmation only: nothing here ever deletes more than the one
+            // entry the user picked, and only that entry's own staged copies/output.
+            .alert("이 편집을 지울까요?", isPresented: Binding(
+                get: { confirmingDeleteID != nil },
+                set: { if !$0 { confirmingDeleteID = nil } })) {
+                Button("지우기", role: .destructive) {
+                    if let id = confirmingDeleteID { draftStore.discard(id) }
+                    confirmingDeleteID = nil
+                }
+                Button("취소", role: .cancel) { confirmingDeleteID = nil }
+            } message: {
+                Text("이 편집의 임시 파일만 지워집니다. 원본 사진·영상은 지워지지 않습니다.")
+            }
+        }
+    }
+}
+
+/// One suspended editor's row: thumbnail, title, mode, video duration, item count and
+/// when it was last left, with the re-edit/resume and delete actions right on it.
+private struct TrailerDraftRow: View {
+    let entry: TrailerDraftEntry
+    let onResume: () -> Void
+    let onDelete: () -> Void
+    @State private var thumbnail: UIImage?
+
+    private var modeTitle: String { entry.mode == .mediaMusic ? "뮤직비디오" : "예고편" }
+
+    private var lastEditedTitle: String {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: entry.suspendedAt, relativeTo: Date())
+    }
+
+    var body: some View {
+        HStack(spacing: ui(10)) {
+            Color(uiColor: .tertiarySystemFill)
+                .frame(width: ui(56), height: ui(56))
+                .clipShape(RoundedRectangle(cornerRadius: ui(8), style: .continuous))
+                .overlay {
+                    if let thumbnail {
+                        Image(uiImage: thumbnail).resizable().scaledToFill()
+                            .frame(width: ui(56), height: ui(56)).clipped()
+                    } else {
+                        Image(systemName: "film").foregroundStyle(.secondary)
+                    }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: ui(8), style: .continuous))
+
+            VStack(alignment: .leading, spacing: ui(3)) {
+                Text(entry.title).font(.ui(.subheadline).weight(.medium)).lineLimit(1)
+                Text("\(modeTitle) · \(entry.items.count)개 · \(videoTrailerTime(entry.totalDuration))")
+                    .font(.ui(.caption)).foregroundStyle(.secondary)
+                Text("마지막 편집 \(lastEditedTitle)").font(.ui(.caption2)).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: ui(4))
+            Button("이어서 하기", action: onResume)
+                .buttonStyle(.bordered).controlSize(.small)
+            Button(role: .destructive, action: onDelete) {
+                Image(systemName: "trash")
+            }
+            .buttonStyle(.bordered).controlSize(.small)
+        }
+        .padding(.vertical, ui(4))
+        .accessibilityElement(children: .combine)
+        .accessibilityAction(named: "이어서 하기", onResume)
+        .accessibilityAction(named: "지우기", onDelete)
+        .task(id: entry.id) {
+            guard thumbnail == nil, let url = entry.thumbnailURL else { return }
+            if entry.thumbnailIsImage {
+                if let loaded = await trailerThumbnailImage(at: url, maxPixelSize: 160), !Task.isCancelled { thumbnail = loaded }
+                return
+            }
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            generator.appliesPreferredTrackTransform = true
+            generator.maximumSize = CGSize(width: 160, height: 160)
+            do {
+                let frame = try await generator.image(at: .zero)
+                if !Task.isCancelled { thumbnail = UIImage(cgImage: frame.image) }
+            } catch { }
         }
     }
 }
@@ -1068,7 +1406,7 @@ private struct StorageOverviewCard: View {
             if deviceStorage.hasCapacity {
                 VStack(alignment: .leading, spacing: ui(7)) {
                     HStack {
-                        Text("iPhone 저장공간 사용량")
+                        Text("이 기기 저장공간 사용량")
                         Spacer()
                         Text(deviceStorage.usedFraction, format: .percent.precision(.fractionLength(0)))
                             .monospacedDigit()
@@ -1078,7 +1416,7 @@ private struct StorageOverviewCard: View {
 
                     ProgressView(value: deviceStorage.usedFraction)
                         .tint(.blue)
-                        .accessibilityLabel("iPhone 저장공간 사용량")
+                        .accessibilityLabel("이 기기 저장공간 사용량")
                         .accessibilityValue(
                             Text(
                                 deviceStorage.usedFraction,
@@ -1232,6 +1570,12 @@ private struct NetworkLocationCard: View {
     let requestEditing: () -> Void
     let requestDeletion: () -> Void
 
+    private var dropboxAccountSubtitle: String {
+        let account = connection.username.trimmingCharacters(in: .whitespacesAndNewlines)
+        return account.isEmpty || account.caseInsensitiveCompare("Dropbox") == .orderedSame
+            ? "계정 정보 확인 필요" : account
+    }
+
     var body: some View {
         HStack(spacing: ui(4)) {
             Button(action: requestOpening) {
@@ -1260,18 +1604,20 @@ private struct NetworkLocationCard: View {
                                     .accessibilityLabel("기본 위치")
                             }
 
-                            Text(connection.kind.dashboardLabel)
-                                .font(.ui(.caption2).weight(.semibold))
-                                .foregroundStyle(connection.kind.dashboardTint)
-                                .padding(.horizontal, ui(6))
-                                .padding(.vertical, ui(2))
-                                .background(
-                                    connection.kind.dashboardTint.opacity(0.1),
-                                    in: Capsule()
-                                )
+                            if connection.name.caseInsensitiveCompare(connection.kind.dashboardLabel) != .orderedSame {
+                                Text(connection.kind.dashboardLabel)
+                                    .font(.ui(.caption2).weight(.semibold))
+                                    .foregroundStyle(connection.kind.dashboardTint)
+                                    .padding(.horizontal, ui(6))
+                                    .padding(.vertical, ui(2))
+                                    .background(
+                                        connection.kind.dashboardTint.opacity(0.1),
+                                        in: Capsule()
+                                    )
+                            }
                         }
 
-                        Text(connection.host)
+                        Text(connection.kind == .dropbox ? dropboxAccountSubtitle : connection.host)
                             .font(.ui(.caption2))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
@@ -1286,7 +1632,7 @@ private struct NetworkLocationCard: View {
             .buttonStyle(.plain)
             .accessibilityElement(children: .combine)
             .accessibilityLabel("\(connection.name), \(connection.kind.title)")
-            .accessibilityValue(connection.host)
+            .accessibilityValue(connection.kind == .dropbox ? dropboxAccountSubtitle : connection.host)
             .accessibilityHint("파일 목록을 엽니다.")
 
             Menu {

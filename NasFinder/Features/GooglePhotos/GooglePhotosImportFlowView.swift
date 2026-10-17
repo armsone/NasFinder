@@ -1,16 +1,41 @@
 import SwiftUI
 
-/// 폰하드 화면에서 시트로 표시되는 Google 포토 가져오기 흐름 컨테이너.
+@MainActor
+private final class GooglePhotosImportedMedia: ObservableObject {
+    @Published var records: [SharedInboxRecord] = []
+    @Published var pickerURL: URL?
+    @Published var isPickerPresented = false
+}
+
+/// Google 포토 가져오기와 선택을 앱 탐색 경로의 페이지로 표시한다.
 /// 사전 고지 → 인증/세션 준비 → 선택 대기 → 가져오기 진행 → 결과 순으로 단계를 보여준다.
 struct GooglePhotosImportFlowView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var controller: GooglePhotosImportFlowController
+    @StateObject private var importedMedia: GooglePhotosImportedMedia
+    @State private var trailerSelection: VideoTrailerSelection?
+    @AppStorage("googlePhotosDisclosureAccepted.v1") private var disclosureAccepted = false
 
-    init(inboxStore: SharedInboxStore) {
+    init(inboxStore: SharedInboxStore, forceAuthorization: Bool = false) {
+        let importedMedia = GooglePhotosImportedMedia()
+        _importedMedia = StateObject(wrappedValue: importedMedia)
         _controller = StateObject(
             wrappedValue: GooglePhotosImportFlowController(
-                dependencies: .live(inboxStore: inboxStore)
+                dependencies: .live(
+                    inboxStore: inboxStore,
+                    onImported: { importedMedia.records.append($0) },
+                    openPicker: { url in
+                        guard !importedMedia.isPickerPresented else { return false }
+                        importedMedia.pickerURL = url
+                        importedMedia.isPickerPresented = true
+                        return true
+                    },
+                    closePicker: {
+                        importedMedia.isPickerPresented = false
+                    }
+                ),
+                forceAuthorization: forceAuthorization
             )
         )
     }
@@ -18,25 +43,47 @@ struct GooglePhotosImportFlowView: View {
     /// 테스트·프리뷰용 주입 생성자.
     init(controller: @autoclosure @escaping () -> GooglePhotosImportFlowController) {
         _controller = StateObject(wrappedValue: controller())
+        _importedMedia = StateObject(wrappedValue: GooglePhotosImportedMedia())
     }
 
     var body: some View {
-        NavigationStack {
-            content
+        mediaContent.modifier(PreserveMediaNavigation())
+    }
+
+    private var mediaContent: some View {
+        ZStack {
+            if importedMedia.isPickerPresented, let url = importedMedia.pickerURL {
+                GooglePhotosPickerPage(url: url)
+            } else {
+                content
+            }
+        }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(SkyBreezeBackground())
                 .navigationTitle("Google 포토")
                 .navigationBarTitleDisplayMode(.inline)
-        }
         .onAppear {
             controller.setScenePollingAllowed(scenePhase == .active)
-            controller.presentDisclosure()
+            if controller.phase == .idle { beginImport() }
         }
         .onDisappear {
-            controller.cancel()
+            if trailerSelection == nil {
+                controller.cancel()
+            }
         }
         .onChange(of: scenePhase) { _, phase in
             controller.setScenePollingAllowed(phase == .active)
+        }
+        .fullScreenCover(item: $trailerSelection) { selection in
+            VideoTrailerView(items: selection.items, service: LocalInboxFileService(records: importedMedia.records), mode: selection.mode)
+        }
+    }
+
+    private func beginImport() {
+        controller.presentDisclosure()
+        if disclosureAccepted || (try? GooglePhotosKeychainCredentialStore().load()) != nil {
+            disclosureAccepted = true
+            controller.confirmDisclosure()
         }
     }
 
@@ -45,7 +92,10 @@ struct GooglePhotosImportFlowView: View {
         switch controller.phase {
         case .idle, .disclosure:
             GooglePhotosDisclosureView(
-                onContinue: { controller.confirmDisclosure() },
+                onContinue: {
+                    disclosureAccepted = true
+                    controller.confirmDisclosure()
+                },
                 onCancel: {
                     controller.declineDisclosure()
                     dismiss()
@@ -63,7 +113,7 @@ struct GooglePhotosImportFlowView: View {
             statusView(
                 systemImage: "photo.on.rectangle.angled",
                 title: "Google 포토에서 선택해 주세요",
-                detail: "가져올 항목(최대 \(GooglePhotosImportFlowController.maxSelectionCount)개)을 선택한 뒤 NasFinder로 돌아오면 자동으로 가져옵니다."
+                detail: "앱 안의 선택 화면에서 항목(최대 \(GooglePhotosImportFlowController.maxSelectionCount)개)을 고르고 완료하면 자동으로 가져옵니다."
             )
 
         case let .importing(completed, total):
@@ -113,8 +163,13 @@ struct GooglePhotosImportFlowView: View {
             ProgressView()
                 .padding(.top, ui(2))
 
+            if case .waitingForSelection = controller.phase {
+                Button("선택 화면 다시 열기") { controller.reopenPicker() }
+                    .buttonStyle(.borderedProminent)
+            }
             Button("취소") {
                 controller.cancel()
+                dismiss()
             }
             .buttonStyle(.bordered)
             .padding(.top, ui(10))
@@ -152,7 +207,7 @@ struct GooglePhotosImportFlowView: View {
                 .multilineTextAlignment(.center)
 
             Button("다시 시도") {
-                controller.presentDisclosure()
+                beginImport()
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
@@ -186,6 +241,15 @@ struct GooglePhotosImportFlowView: View {
                 .multilineTextAlignment(.center)
                 .monospacedDigit()
 
+            if case .finished = controller.phase, !importedMedia.records.isEmpty {
+                Button("예고편 만들기", systemImage: "film") {
+                    let items = importedMedia.records.map { LocalInboxFileService.remoteItem(for: $0) }
+                        .filter(\.isTrailerEligible)
+                    guard !items.isEmpty else { return }
+                    trailerSelection = VideoTrailerSelection(items: items)
+                }
+                .buttonStyle(.borderedProminent)
+            }
             Button("완료") {
                 dismiss()
             }
