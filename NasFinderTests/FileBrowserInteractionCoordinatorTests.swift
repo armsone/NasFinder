@@ -44,8 +44,8 @@ final class FileBrowserInteractionCoordinatorTests: XCTestCase {
         XCTAssertNil(coordinator.panel)
         XCTAssertEqual(executionCount, 0)
 
-        coordinator.panelDidDisappear()
-        coordinator.panelDidDisappear()
+        coordinator.panelDidDisappear(.browser, presentationID: UUID())
+        coordinator.panelDidDisappear(.browser, presentationID: UUID())
 
         XCTAssertEqual(executionCount, 1)
     }
@@ -59,7 +59,7 @@ final class FileBrowserInteractionCoordinatorTests: XCTestCase {
             didExecute = true
         }
         coordinator.dismissPanel()
-        coordinator.panelDidDisappear()
+        coordinator.panelDidDisappear(.browser, presentationID: UUID())
 
         XCTAssertFalse(didExecute)
     }
