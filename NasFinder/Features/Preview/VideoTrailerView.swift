@@ -153,7 +153,11 @@ private let trailerImageNominalDuration = 4.0
 struct VideoTrailerView: View {
     let items: [RemoteFileItem]
     let service: any RemoteFileService
-    var mode = VideoTrailerMode.trailer
+    /// The mode this editor is in right now: it starts as the caller's (or the saved draft's)
+    /// and the top selector of the editor changes it without leaving the editor.
+    @State private var mode: VideoTrailerMode
+    /// The mode the video currently shown was made in, for the name it is saved under.
+    @State private var outputMode: VideoTrailerMode?
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @StateObject private var model: VideoTrailerModel
@@ -167,16 +171,18 @@ struct VideoTrailerView: View {
     @State private var showingReplacePrompt = false
     @State private var showingStalePrompt = false
     @State private var resumeNotice: String?
+    private let keepsSelectionOrder: Bool
     private let isResumed: Bool
     private let reopensSettings: Bool
     private var showingSettings: Bool { presentedSettings != nil }
 
     /// With `resuming` the editor continues that suspended session instead of starting one.
     init(items: [RemoteFileItem], service: any RemoteFileService, mode: VideoTrailerMode = .trailer,
-         resuming entry: TrailerDraftEntry? = nil) {
+         keepsSelectionOrder: Bool = false, resuming entry: TrailerDraftEntry? = nil) {
         self.items = items
+        self.keepsSelectionOrder = keepsSelectionOrder
         self.service = service
-        self.mode = mode
+        _mode = State(initialValue: mode)
         let suspended = entry?.session as? TrailerSuspendedSession
         isResumed = suspended != nil
         reopensSettings = suspended?.showedSettings ?? false
@@ -240,7 +246,7 @@ struct VideoTrailerView: View {
                         // closed before the first video or the last attempt failed.
                         if !model.isBusy, !model.sources.isEmpty {
                             if model.error == nil { Text(model.status).foregroundStyle(.secondary) }
-                            Button(mode == .mediaMusic ? "음악 고르기" : "예고편 조절") { openSettings() }
+                            Button("영상 편집") { openSettings() }
                                 .buttonStyle(.borderedProminent)
                         }
                         if model.skippedCount > 0 {
@@ -252,7 +258,7 @@ struct VideoTrailerView: View {
                             : "기기에서 분석합니다. 원본은 변경하지 않습니다.")
                             .font(.ui(.caption)).foregroundStyle(.secondary)
                     }
-                    .padding(.all, MacUIScale.defaultPadding).navigationTitle(mode == .mediaMusic ? "뮤직비디오" : "예고편 보기")
+                    .padding(.all, MacUIScale.defaultPadding).navigationTitle("영상 편집")
                     .navigationBarTitleDisplayMode(.inline)
                     #if targetEnvironment(macCatalyst)
                     // The in-window editor below brings its own title bar.
@@ -339,7 +345,7 @@ struct VideoTrailerView: View {
         guard !Task.isCancelled, !didBegin else { return }
         didBegin = true
         guard isResumed else {
-            if model.sources.isEmpty { model.start(items: items, service: service, mode: mode) }
+            if model.sources.isEmpty { model.start(items: items, service: service, mode: mode, keepsInputOrder: keepsSelectionOrder) }
             return
         }
         // Work that was never cancelled is still running and shows its own progress.
@@ -362,7 +368,7 @@ struct VideoTrailerView: View {
     private func continueResume() {
         if !model.isStaged {
             // Left while the sources were still coming in: only the missing ones are fetched.
-            model.start(items: items, service: service, mode: mode)
+            model.start(items: items, service: service, mode: mode, keepsInputOrder: keepsSelectionOrder)
         } else if reopensSettings || model.outputURL == nil {
             openSettings()
         }
@@ -455,6 +461,7 @@ struct VideoTrailerView: View {
     private func apply(_ draft: TrailerSettingsDraft) {
         guard !draft.sources.isEmpty else { return }
         presentedSettings = nil
+        outputMode = mode
         model.start(items: items, service: service, mode: mode, generate: true, sourceOrder: draft.sources.map(\.id),
                     total: draft.total, clipLength: draft.clipLength, aspectRatio: draft.aspectRatio, music: draft.music)
     }
@@ -467,13 +474,42 @@ struct VideoTrailerView: View {
             draft = requested
             apply(requested)
         } else {
-            model.start(items: items, service: service, mode: mode)
+            model.start(items: items, service: service, mode: mode, keepsInputOrder: keepsSelectionOrder)
+        }
+    }
+
+    /// Switches the editor between 예고편 and 뮤직비디오 in place. The sources, their order,
+    /// the music and its options stay in the draft; only the plan rules change. Going to
+    /// 예고편 first runs the real highlight analysis for sources that were never analysed
+    /// (a session opened as 뮤직비디오); nothing is exported until the user applies.
+    private func changeMode(_ next: VideoTrailerMode) {
+        guard next != mode, !model.isBusy else { return }
+        guard next == .trailer else {
+            mode = next
+            model.useMode(next)
+            return
+        }
+        model.analyzeHighlights { analyzed in
+            guard !exitHandled, mode != .trailer else { return }
+            mode = .trailer
+            guard var current = draft else { return }
+            if analyzed || current.total <= 0 {
+                current.clipLength = model.recommendedClipLength
+                current.total = VideoTrailerBatchPlan.proposal(sources: current.sources,
+                    total: current.sources.reduce(0) { $0 + $1.plan.recommendedTotal },
+                    clipLength: current.clipLength, repeatToFill: false).reduce(0) { $0 + $1.length }
+                if let music = current.music, music.policy == .fitMusic { current.total = music.fittedDuration }
+            }
+            let byID = Dictionary(uniqueKeysWithValues: model.sources.map { ($0.id, $0) })
+            current.sources = current.sources.compactMap { byID[$0.id] }
+            draft = current
         }
     }
 
     private func settingsContent(_ presentation: TrailerSettingsPresentation) -> some View {
         TrailerSettingsHost(mode: mode, draft: $draft, opening: presentation.draft,
-            skippedCount: model.skippedCount, onClose: { presentedSettings = nil },
+            skippedCount: model.skippedCount, isBusy: model.isBusy, status: model.status,
+            onModeChange: changeMode, onClose: { presentedSettings = nil },
             onDiscard: discardAndDismiss, apply: apply)
             .id(presentation.id)
     }
@@ -482,7 +518,7 @@ struct VideoTrailerView: View {
         HStack(spacing: ui(8)) {
             Button {
                 model.save(to: inboxStore, filename: items.count == 1 ? items[0].name : "모음-\(items.count)개영상",
-                           suffix: mode == .mediaMusic ? "음악" : "예고편")
+                           suffix: (outputMode ?? mode) == .mediaMusic ? "음악" : "예고편")
             } label: {
                 SharedPlayerCircleLabel(systemImage: model.isSaved ? "checkmark.circle" : "square.and.arrow.down")
             }
@@ -491,7 +527,7 @@ struct VideoTrailerView: View {
             Button { openSettings() } label: {
                 SharedPlayerCircleLabel(systemImage: "slider.horizontal.3")
             }
-            .accessibilityLabel("예고편 조절").disabled(model.isBusy)
+            .accessibilityLabel("영상 편집").disabled(model.isBusy)
         }
     }
 }
@@ -520,6 +556,9 @@ private struct TrailerSettingsHost: View {
     @Binding var draft: TrailerSettingsDraft?
     let opening: TrailerSettingsDraft
     let skippedCount: Int
+    let isBusy: Bool
+    let status: String
+    let onModeChange: (VideoTrailerMode) -> Void
     let onClose: () -> Void
     let onDiscard: () -> Void
     let apply: (TrailerSettingsDraft) -> Void
@@ -530,7 +569,7 @@ private struct TrailerSettingsHost: View {
             clipLength: binding.clipLength, skippedCount: skippedCount,
             aspectRatio: binding.aspectRatio, music: binding.music,
             showingDuration: binding.showingDuration, showingClipLength: binding.showingClipLength,
-            onClose: onClose, onDiscard: onDiscard, regenerate: { apply(draft ?? opening) })
+            isBusy: isBusy, status: status, onModeChange: onModeChange, onClose: onClose, onDiscard: onDiscard, regenerate: { apply(draft ?? opening) })
     }
 }
 
@@ -546,6 +585,9 @@ private struct VideoTrailerSettings: View {
     @Binding var music: TrailerMusicSelection?
     @Binding var showingDuration: Bool
     @Binding var showingClipLength: Bool
+    let isBusy: Bool
+    let status: String
+    let onModeChange: (VideoTrailerMode) -> Void
     let onClose: () -> Void
     let onDiscard: () -> Void
     let regenerate: () -> Void
@@ -587,6 +629,37 @@ private struct VideoTrailerSettings: View {
         guard let music, music.duration > 0 else { return 0 }
         return max(1, Int((baseTotal / music.duration - 0.000001).rounded(.up)))
     }
+    private func sourceFrameReporter(id: Int) -> some View {
+        GeometryReader { geometry in
+            let frame: CGRect = geometry.frame(in: .named("trailerOrder"))
+            Color.clear.preference(key: TrailerSourceFramesKey.self, value: [id: frame])
+        }
+    }
+
+    private var createBar: some View {
+        let blocked: Bool = proposal.isEmpty || (mode == .mediaMusic && music == nil)
+        return Button(action: regenerate) {
+            Text(createTitle).frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.borderedProminent).controlSize(.large)
+        .disabled(blocked || isBusy)
+        .padding(.horizontal, MacUIScale.defaultPadding).padding(.vertical, ui(8)).background(.bar)
+    }
+
+    private var autoDuckToggle: some View {
+        Toggle("배경음악 자동 조절", isOn: Binding<Bool>(
+            get: { self.music?.autoDuck ?? true },
+            set: { self.music?.autoDuck = $0 }))
+            .font(.ui(.subheadline))
+    }
+
+    private var autoDuckCaption: some View {
+        let on: Bool = music?.autoDuck ?? true
+        let text: String = on ? "원본 소리가 나는 곳에서는 음악이 작아지고, 조용한 곳과 사진에서는 커져요"
+                              : "음악을 항상 같은 보통 크기로 틀어요"
+        return Text(text).font(.ui(.caption)).foregroundStyle(.secondary)
+    }
+
     private var musicHint: String? {
         guard let music else { return nil }
         guard !baseProposal.isEmpty else { return nil }
@@ -631,42 +704,119 @@ private struct VideoTrailerSettings: View {
     private var maximumClipLength: Double { min(30, sources.filter { !$0.isImage }.map(\.duration).max() ?? 30) }
     private var excludedCount: Int { sources.filter { source in !baseProposal.contains { $0.sourceID == source.id } }.count }
 
+    private var musicSection: some View {
+    VStack(alignment: .leading, spacing: ui(4)) {
+        HStack {
+            Text("음악").font(.ui(.subheadline).weight(.semibold))
+            Spacer()
+            Text(musicSummary)
+                .font(.ui(.caption)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+        }
+        HStack(spacing: ui(5)) {
+            TrailerChoiceButton(title: music == nil ? "음악 고르기" : "음악 바꾸기", selected: false) {
+                showingMusicPicker = true
+            }
+            if music != nil {
+                TrailerChoiceButton(title: "음악 없음", selected: false) { music = nil }
+            }
+        }
+        if let music {
+            HStack(spacing: ui(5)) {
+                ForEach(TrailerMusicPolicy.selectable) { policy in
+                    TrailerChoiceButton(title: musicPolicyTitle(policy), selected: music.policy == policy) {
+                        chooseMusicPolicy(policy)
+                    }
+                }
+            }
+            autoDuckToggle
+            if let musicHint {
+                Text(musicHint).font(.ui(.caption)).foregroundStyle(proposal.isEmpty ? Color.red : Color.secondary)
+            }
+            autoDuckCaption
+        } else if mode == .mediaMusic {
+            Text("음악을 골라야 영상을 만들 수 있어요").font(.ui(.caption)).foregroundStyle(.secondary)
+        }
+    }
+    }
+
+    @ViewBuilder
+    private func sourceCell(index: Int, source: VideoTrailerSource) -> some View {
+                    TrailerSourceThumbnail(source: source, number: index + 1, image: thumbnailImage(for: source.id),
+                        isRevealed: revealedSourceID == source.id,
+                        onTap: { revealedSourceID = revealedSourceID == source.id ? nil : source.id },
+                        onRemove: {
+                            revealedSourceID = nil
+                            sources.removeAll { $0.id == source.id }
+                        })
+                        .background { sourceFrameReporter(id: source.id) }
+                        .opacity(draggedSourceID == source.id ? 0.25 : 1)
+                        // Mac Catalyst routes trackpad two-finger scroll through the same
+                        // touch-emulation path as a click-drag; a zero-distance DragGesture
+                        // here would claim that touch before the ScrollView's own pan
+                        // recognizer sees it, leaving the whole sheet unscrollable. Mac
+                        // instead gets the system pointer drag below, which only starts on
+                        // an actual press-drag and never intercepts a hover/scroll.
+                        // iPhone has no per-thumbnail SwiftUI gesture at all for the same
+                        // reason: the grid's single `TrailerReorderHold` recognizer below
+                        // owns the one second hold, so a short swipe stays the ScrollView's.
+                        #if targetEnvironment(macCatalyst)
+                        .onDrag {
+                            draggedSourceID = source.id
+                            return NSItemProvider(object: String(source.id) as NSString)
+                        }
+                        .onDrop(of: [.text], delegate: TrailerSourceDropDelegate(
+                            target: source, sources: $sources,
+                            draggedSourceID: $draggedSourceID, reduceMotion: reduceMotion))
+                        #endif
+                        .accessibilityAction(named: "앞으로 이동") { if index > 0 { sources.swapAt(index, index - 1) } }
+                        .accessibilityAction(named: "뒤로 이동") { if index + 1 < sources.count { sources.swapAt(index, index + 1) } }
+    }
+
+    private var aspectSection: some View {
+    VStack(alignment: .leading, spacing: ui(4)) {
+        HStack {
+            Text("화면 모양").font(.ui(.subheadline).weight(.semibold))
+            Spacer()
+            Text(aspectRatio?.title ?? "첫 영상 비율").font(.ui(.caption)).foregroundStyle(.secondary)
+        }
+        HStack(spacing: ui(4)) {
+            Button { aspectRatio = nil } label: {
+                Text("원본").font(.ui(.caption2).weight(.semibold))
+                    .frame(width: ui(32), height: ui(32))
+                    .background(aspectRatio == nil ? Color.accentColor.opacity(0.14) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: ui(8)))
+                    .overlay { RoundedRectangle(cornerRadius: ui(8)).stroke(aspectRatio == nil ? Color.accentColor : Color.secondary.opacity(0.72), lineWidth: aspectRatio == nil ? 2 : 1) }
+                    .frame(maxWidth: .infinity, minHeight: ui(44))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("첫 영상 화면 비율")
+            .accessibilityAddTraits(aspectRatio == nil ? .isSelected : [])
+            ForEach(OutputAspectRatio.allCases) { ratio in
+                Button { aspectRatio = ratio } label: {
+                    TrailerAspectRatioIcon(ratio: ratio, isSelected: aspectRatio == ratio)
+                        .frame(maxWidth: .infinity, minHeight: ui(44))
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(ratio.title)
+                .accessibilityAddTraits(aspectRatio == ratio ? .isSelected : [])
+            }
+        }
+    }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: ui(14)) {
-                    VStack(alignment: .leading, spacing: ui(4)) {
-                        HStack {
-                            Text("음악").font(.ui(.subheadline).weight(.semibold))
-                            Spacer()
-                            Text(musicSummary)
-                                .font(.ui(.caption)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                        }
-                        HStack(spacing: ui(5)) {
-                            TrailerChoiceButton(title: music == nil ? "음악 고르기" : "음악 바꾸기", selected: false) {
-                                showingMusicPicker = true
-                            }
-                            if music != nil {
-                                TrailerChoiceButton(title: "음악 없음", selected: false) { music = nil }
-                            }
-                        }
-                        if let music {
-                            HStack(spacing: ui(5)) {
-                                ForEach(TrailerMusicPolicy.selectable) { policy in
-                                    TrailerChoiceButton(title: musicPolicyTitle(policy), selected: music.policy == policy) {
-                                        chooseMusicPolicy(policy)
-                                    }
-                                }
-                            }
-                            if let musicHint {
-                                Text(musicHint).font(.ui(.caption)).foregroundStyle(proposal.isEmpty ? Color.red : Color.secondary)
-                            }
-                            Text("원본 소리가 나는 곳에서는 음악이 작아지고, 조용한 곳과 사진에서는 커져요")
-                                .font(.ui(.caption)).foregroundStyle(.secondary)
-                        } else if mode == .mediaMusic {
-                            Text("음악을 골라야 영상을 만들 수 있어요").font(.ui(.caption)).foregroundStyle(.secondary)
-                        }
+                    Picker("제작 방식", selection: Binding(get: { mode }, set: onModeChange)) {
+                        Text("예고편").tag(VideoTrailerMode.trailer)
+                        Text("뮤직비디오").tag(VideoTrailerMode.mediaMusic)
                     }
+                    .pickerStyle(.segmented).disabled(isBusy)
+                    if isBusy {
+                        Text(status).font(.ui(.caption)).foregroundStyle(.secondary)
+                    }
+                    musicSection
                     Divider()
                     VStack(alignment: .leading, spacing: ui(4)) {
                         HStack(alignment: .firstTextBaseline) {
@@ -719,35 +869,7 @@ private struct VideoTrailerSettings: View {
                         }
                     }
                     }
-                    VStack(alignment: .leading, spacing: ui(4)) {
-                        HStack {
-                            Text("화면 모양").font(.ui(.subheadline).weight(.semibold))
-                            Spacer()
-                            Text(aspectRatio?.title ?? "첫 영상 비율").font(.ui(.caption)).foregroundStyle(.secondary)
-                        }
-                        HStack(spacing: ui(4)) {
-                            Button { aspectRatio = nil } label: {
-                                Text("원본").font(.ui(.caption2).weight(.semibold))
-                                    .frame(width: ui(32), height: ui(32))
-                                    .background(aspectRatio == nil ? Color.accentColor.opacity(0.14) : Color.clear,
-                                                in: RoundedRectangle(cornerRadius: ui(8)))
-                                    .overlay { RoundedRectangle(cornerRadius: ui(8)).stroke(aspectRatio == nil ? Color.accentColor : Color.secondary.opacity(0.72), lineWidth: aspectRatio == nil ? 2 : 1) }
-                                    .frame(maxWidth: .infinity, minHeight: ui(44))
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("첫 영상 화면 비율")
-                            .accessibilityAddTraits(aspectRatio == nil ? .isSelected : [])
-                            ForEach(OutputAspectRatio.allCases) { ratio in
-                                Button { aspectRatio = ratio } label: {
-                                    TrailerAspectRatioIcon(ratio: ratio, isSelected: aspectRatio == ratio)
-                                        .frame(maxWidth: .infinity, minHeight: ui(44))
-                                }
-                                .buttonStyle(.plain)
-                                .accessibilityLabel(ratio.title)
-                                .accessibilityAddTraits(aspectRatio == ratio ? .isSelected : [])
-                            }
-                        }
-                    }
+                    aspectSection
                     if sources.count > 1 {
                         VStack(alignment: .leading, spacing: ui(6)) {
                             HStack {
@@ -787,40 +909,7 @@ private struct VideoTrailerSettings: View {
                             #endif
                             LazyVGrid(columns: trailerOrderColumns, spacing: ui(8)) {
                                 ForEach(Array(sources.enumerated()), id: \.element.id) { index, source in
-                                    TrailerSourceThumbnail(source: source, number: index + 1, image: thumbnailImage(for: source.id),
-                                        isRevealed: revealedSourceID == source.id,
-                                        onTap: { revealedSourceID = revealedSourceID == source.id ? nil : source.id },
-                                        onRemove: {
-                                            revealedSourceID = nil
-                                            sources.removeAll { $0.id == source.id }
-                                        })
-                                        .background {
-                                            GeometryReader { geometry in
-                                                Color.clear.preference(key: TrailerSourceFramesKey.self,
-                                                    value: [source.id: geometry.frame(in: .named("trailerOrder"))])
-                                            }
-                                        }
-                                        .opacity(draggedSourceID == source.id ? 0.25 : 1)
-                                        // Mac Catalyst routes trackpad two-finger scroll through the same
-                                        // touch-emulation path as a click-drag; a zero-distance DragGesture
-                                        // here would claim that touch before the ScrollView's own pan
-                                        // recognizer sees it, leaving the whole sheet unscrollable. Mac
-                                        // instead gets the system pointer drag below, which only starts on
-                                        // an actual press-drag and never intercepts a hover/scroll.
-                                        // iPhone has no per-thumbnail SwiftUI gesture at all for the same
-                                        // reason: the grid's single `TrailerReorderHold` recognizer below
-                                        // owns the one second hold, so a short swipe stays the ScrollView's.
-                                        #if targetEnvironment(macCatalyst)
-                                        .onDrag {
-                                            draggedSourceID = source.id
-                                            return NSItemProvider(object: String(source.id) as NSString)
-                                        }
-                                        .onDrop(of: [.text], delegate: TrailerSourceDropDelegate(
-                                            target: source, sources: $sources,
-                                            draggedSourceID: $draggedSourceID, reduceMotion: reduceMotion))
-                                        #endif
-                                        .accessibilityAction(named: "앞으로 이동") { if index > 0 { sources.swapAt(index, index - 1) } }
-                                        .accessibilityAction(named: "뒤로 이동") { if index + 1 < sources.count { sources.swapAt(index, index + 1) } }
+                                    sourceCell(index: index, source: source)
                                 }
                             }
                             #if !targetEnvironment(macCatalyst)
@@ -893,14 +982,7 @@ private struct VideoTrailerSettings: View {
             // Few sources leave the page shorter than the sheet; it still has to move
             // under a swipe that starts on a thumbnail.
             .scrollBounceBehavior(.always, axes: .vertical)
-            .safeAreaInset(edge: .bottom) {
-                Button(action: regenerate) {
-                    Text(createTitle).frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent).controlSize(.large)
-                .disabled(proposal.isEmpty || (mode == .mediaMusic && music == nil))
-                .padding(.horizontal, MacUIScale.defaultPadding).padding(.vertical, ui(8)).background(.bar)
-            }
+            .safeAreaInset(edge: .bottom) { createBar }
             #if targetEnvironment(macCatalyst)
             // This editor is an overlay inside the outer stack (see VideoTrailerView above),
             // and Catalyst draws no navigation bar for a stack nested that way, whatever its
@@ -921,7 +1003,9 @@ private struct VideoTrailerSettings: View {
                 // Only an actual pick arrives here, and every pick, the music already in
                 // use included, starts on "음악 반복" with the count back at 1. Closing the
                 // picker or reopening a suspended editor changes nothing.
-                music = picked
+                var next = picked
+                next?.autoDuck = music?.autoDuck ?? true
+                music = next
             }
             .environmentObject(inboxStore)
         }
@@ -933,7 +1017,7 @@ private struct VideoTrailerSettings: View {
         }
     }
 
-    private var settingsTitle: String { mode == .mediaMusic ? "뮤직비디오" : "예고편 조절" }
+    private var settingsTitle: String { "영상 편집" }
 
     private func musicPolicyTitle(_ policy: TrailerMusicPolicy) -> String {
         guard policy == .fitMusic, let music, music.policy == .fitMusic else { return policy.title }
@@ -1431,6 +1515,9 @@ private final class VideoTrailerModel: ObservableObject {
     /// Set once every staged photo's own quality/similarity scene duration has been
     /// measured, so a regenerate or reopen never re-decodes photos already scored.
     private var photoDurationsAnalyzed = false
+    /// Staged videos whose highlight analysis really ran. A session opened as 뮤직비디오
+    /// stages without it, so returning to 예고편 analyses the rest first.
+    private var highlightAnalyzedIDs: Set<Int> = []
     /// Stable identity for this model in the log so cancel/cleanup/release lines can be
     /// matched with the run they belong to without naming any file.
     private let identity = String(UUID().uuidString.prefix(8))
@@ -1621,12 +1708,62 @@ private final class VideoTrailerModel: ObservableObject {
         if let directory { try? FileManager.default.removeItem(at: directory) }
     }
 
+    /// The plan rules the next generation uses; nothing staged or exported changes.
+    func useMode(_ next: VideoTrailerMode) {
+        guard !isBusy else { return }
+        mode = next
+    }
+
+    /// Runs the real highlight analysis (video sound peaks, photo scene lengths) for staged
+    /// sources that have none yet, then reports whether it had anything to do. Cancelled by
+    /// `stop`/`suspend` like any other work, and `done` is not called then.
+    func analyzeHighlights(done: @escaping (Bool) -> Void) {
+        guard !isBusy else { return }
+        let pending = sources.filter { !$0.isImage && !highlightAnalyzedIDs.contains($0.id) }
+        let needsPhotos = !photoDurationsAnalyzed && sources.contains(where: \.isImage)
+        guard !pending.isEmpty || needsPhotos else { mode = .trailer; done(false); return }
+        isBusy = true
+        error = nil
+        task = Task {
+            defer { isBusy = false; isSuspending = false; task = nil }
+            do {
+                for (position, source) in pending.enumerated() {
+                    status = "\(position + 1)/\(pending.count) · \(source.name) · 한양이 장면을 고르는 중…"
+                    let buckets = max(192, min(2048, Int(min(1024, source.duration) * 2)))
+                    let analysis = try await AudioAnalysisService.analyze(url: source.url, bucketCount: buckets)
+                    try Task.checkCancellation()
+                    if let index = sources.firstIndex(where: { $0.id == source.id }) {
+                        sources[index] = VideoTrailerSource(id: source.id, name: source.name, url: source.url,
+                            plan: VideoTrailerPlan(analysis: analysis, duration: source.duration),
+                            isImage: false, contentTypeIdentifier: source.contentTypeIdentifier,
+                            captureDate: source.captureDate, imageDurationRatio: source.imageDurationRatio)
+                    }
+                    highlightAnalyzedIDs.insert(source.id)
+                }
+                if needsPhotos {
+                    status = "사진을 준비하는 중…"
+                    try await applyPhotoDurationRatios()
+                    photoDurationsAnalyzed = true
+                }
+                try Task.checkCancellation()
+                status = "영상 편집에서 만들기를 누르면 예고편을 만듭니다."
+                mode = .trailer
+                done(true)
+            } catch is CancellationError {
+                if !isSuspending { cleanup(reason: "cancelled during analysis") }
+            } catch {
+                Self.logger.error("trailer highlight analysis failed: \(trailerErrorChain(error), privacy: .public)")
+                self.error = "한양이 장면을 고르지 못했습니다. 다시 시도해 주세요."
+            }
+        }
+    }
+
     /// Without `generate` this only stages what is not staged yet and stops before any
     /// clip is joined; the video itself is made only on the user's explicit request.
     func start(items: [RemoteFileItem], service: any RemoteFileService, mode: VideoTrailerMode = .trailer,
                generate: Bool = false, sourceOrder: [Int]? = nil, total: Double? = nil,
                clipLength: Double? = nil, aspectRatio: OutputAspectRatio? = nil,
-               music: TrailerMusicSelection? = nil) {
+               music: TrailerMusicSelection? = nil, keepsInputOrder: Bool = false) {
         guard !isBusy, !items.isEmpty else { return }
         let total = total.map { $0.isFinite ? min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, $0)) : 1 }
         self.mode = mode
@@ -1730,6 +1867,7 @@ private final class VideoTrailerModel: ObservableObject {
                             let buckets = max(192, min(2048, Int(min(1024, duration) * 2)))
                             analysis = try await AudioAnalysisService.analyze(url: staged, bucketCount: buckets)
                             try Task.checkCancellation()
+                            highlightAnalyzedIDs.insert(index)
                         }
                         let captureDate = (try? await asset.load(.creationDate))?.dateValue ?? item.modifiedAt
                         sources.append(VideoTrailerSource(id: index, name: item.name, url: staged,
@@ -1752,7 +1890,7 @@ private final class VideoTrailerModel: ObservableObject {
                     status = "사진을 준비하는 중…"
                     try await applyPhotoDurationRatios()
                 }
-                photoDurationsAnalyzed = true
+                if mode == .trailer { photoDurationsAnalyzed = true }
                 isStaged = true
                 stage = "plan"
                 if let sourceOrder {
@@ -1766,6 +1904,9 @@ private final class VideoTrailerModel: ObservableObject {
                         throw TrailerError.exportFailed
                     }
                     sources = ordered
+                } else if keepsInputOrder {
+                    // Source ids are the caller's item indices: keep the selection order.
+                    sources.sort { $0.id < $1.id }
                 } else {
                     // Default source order is chronological, oldest capture first.
                     sources = VideoTrailerSourceOrder.chronological(sources)
@@ -2010,8 +2151,9 @@ private final class VideoTrailerModel: ObservableObject {
                         // One set of parameters, for the music track alone: the original
                         // sound's track has none and is mixed at its normal level.
                         let parameters = AVMutableAudioMixInputParameters(track: musicTrack)
-                        let audible = TrailerMusicDucking.audibleIntervals(clips: originalSound)
-                        for ramp in TrailerMusicDucking.ramps(audible: audible, total: musicCursor.seconds) {
+                        let ramps = TrailerMusicDucking.ramps(clips: originalSound, total: musicCursor.seconds,
+                                                              enabled: music?.autoDuck ?? true)
+                        for ramp in ramps {
                             // Shared boundaries convert to the same time, so ramps never overlap.
                             let rampStart = CMTime(seconds: ramp.start, preferredTimescale: 600)
                             let rampEnd = CMTime(seconds: ramp.end, preferredTimescale: 600)
@@ -2019,11 +2161,14 @@ private final class VideoTrailerModel: ObservableObject {
                             parameters.setVolumeRamp(fromStartVolume: ramp.from, toEndVolume: ramp.to,
                                 timeRange: CMTimeRange(start: rampStart, end: rampEnd))
                         }
+                        if music?.autoDuck == false {
+                            parameters.setVolume(TrailerMusicDucking.loudVolume, at: .zero)
+                        }
                         let mix = AVMutableAudioMix()
                         mix.inputParameters = [parameters]
                         audioMix = mix
-                        layout += " music \(pieces) ducked \(audible.count)"
-                        diagnostic.music?.ducked = audible.count
+                        layout += " music \(pieces) ducked \(ramps.count)"
+                        diagnostic.music?.ducked = ramps.count
                         stage = "compose"
                     }
                     let videoComposition = AVMutableVideoComposition()
@@ -2275,6 +2420,8 @@ private final class VideoTrailerModel: ObservableObject {
         for source in sources { try? FileManager.default.removeItem(at: source.url) }
         sources = []
         activityBySourceID = [:]
+        highlightAnalyzedIDs = []
+        photoDurationsAnalyzed = false
         skippedSourceIDs = []
         skippedCount = 0
         isStaged = false

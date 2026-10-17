@@ -1,0 +1,50 @@
+{
+  "Apple 구현·빌드·설치": {
+    "claude-sonnet-5-5": {
+      "inputTokens": 20,
+      "outputTokens": 5604,
+      "cacheReadInputTokens": 178750,
+      "cacheCreationInputTokens": 18795,
+      "webSearchRequests": 0,
+      "costUSD": 0.149135,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 146,
+      "canonicalModel": "claude-sonnet-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "Android 구현": {
+    "claude-sonnet-5-5": {
+      "inputTokens": 16,
+      "outputTokens": 4722,
+      "cacheReadInputTokens": 104444,
+      "cacheCreationInputTokens": 12270,
+      "webSearchRequests": 0,
+      "costUSD": 0.10677639999999998,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 95,
+      "canonicalModel": "claude-sonnet-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  },
+  "Android 빌드·설치": {
+    "claude-sonnet-5-5": {
+      "inputTokens": 26,
+      "outputTokens": 4209,
+      "cacheReadInputTokens": 166585,
+      "cacheCreationInputTokens": 15879,
+      "webSearchRequests": 0,
+      "costUSD": 0.1223165,
+      "contextWindow": 1000000,
+      "maxOutputTokens": 128000,
+      "thinkingTokens": 131,
+      "canonicalModel": "claude-sonnet-5-5",
+      "provider": "firstParty",
+      "costBasis": "list"
+    }
+  }
+}

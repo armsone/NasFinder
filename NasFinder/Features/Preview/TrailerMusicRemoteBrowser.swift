@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// Fetches one remote music file at a time for the music picker, either to audition it
@@ -37,6 +38,9 @@ final class TrailerMusicRemoteLoader: ObservableObject {
     @Published private(set) var selection: TrailerMusicSelection?
     @Published var failure: String?
 
+    /// The trailer picker needs a 1 second to 1 hour track; plain playback does not.
+    var enforcesTrailerLimits = true
+
     private let sessionDirectory = FileManager.default.temporaryDirectory
         .appendingPathComponent("NasFinderTrailerMusic", isDirectory: true)
         .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -53,7 +57,7 @@ final class TrailerMusicRemoteLoader: ObservableObject {
 
     var isImporting: Bool { active?.phase == .importing }
 
-    func attach(audition: TrailerMusicAuditionPlayer, inboxStore: SharedInboxStore) {
+    func attach(audition: TrailerMusicAuditionPlayer, inboxStore: SharedInboxStore? = nil) {
         self.audition = audition
         self.inboxStore = inboxStore
     }
@@ -161,16 +165,31 @@ final class TrailerMusicRemoteLoader: ObservableObject {
             throw error
         }
         await DownloadCache.shared.release(item)
+        var playable = copy
         do {
             guard active?.operationID == operationID else { throw CancellationError() }
             active?.phase = .checking
-            let duration = try await TrailerMusic.usableDuration(of: copy)
+            // MPEG audio inside a WAVE wrapper is unwrapped into this session's own copy.
+            if let unwrapped = await Task.detached(priority: .userInitiated, operation: {
+                WAVEMPEGUnwrapper.unwrappedCopy(of: copy)
+            }).value {
+                try? FileManager.default.removeItem(at: copy)
+                playable = unwrapped
+            }
+            try Task.checkCancellation()
+            let duration: Double
+            if enforcesTrailerLimits {
+                duration = try await TrailerMusic.usableDuration(of: playable)
+            } else {
+                // Plain playback: the player itself decides whether the file opens.
+                duration = (try? await TrailerMusic.measuredDuration(of: playable)) ?? 0
+            }
             guard active?.operationID == operationID else { throw CancellationError() }
-            copies[item.id] = copy
+            copies[item.id] = playable
             durations[item.id] = duration
-            return (copy, duration)
+            return (playable, duration)
         } catch {
-            try? FileManager.default.removeItem(at: copy)
+            try? FileManager.default.removeItem(at: playable)
             throw error
         }
     }
@@ -553,5 +572,195 @@ struct TrailerMusicDownloadBanner: View {
         let completed = ByteCountFormatter.string(fromByteCount: active.completedByteCount, countStyle: .file)
         guard let total = active.totalByteCount, total > 0 else { return completed }
         return "\(completed) / \(ByteCountFormatter.string(fromByteCount: total, countStyle: .file))"
+    }
+}
+
+/// Plays one music file at a time from a file list, without leaving it. Remote files are
+/// fetched through the music picker's loader (the saved connection's own service and a
+/// private temporary copy); files already on the device play from where they are.
+@MainActor
+final class InlineMusicPlayback: ObservableObject {
+    enum State: Equatable {
+        case idle, loading(Double?), playing(Double), paused(Double), unusable
+    }
+
+    private let player = TrailerMusicAuditionPlayer()
+    private let loader = TrailerMusicRemoteLoader()
+    private var observers: [AnyCancellable] = []
+    /// Lengths learned from playback, kept for as long as this list lives.
+    @Published private var playedDurations: [String: Double] = [:]
+
+    init() {
+        loader.enforcesTrailerLimits = false
+        loader.attach(audition: player)
+        observers = [
+            player.objectWillChange.sink { [weak self] in self?.objectWillChange.send() },
+            loader.objectWillChange.sink { [weak self] in self?.objectWillChange.send() },
+            player.$duration.sink { [weak self] seconds in
+                guard let self, seconds > 0, let id = self.player.playingID else { return }
+                self.playedDurations[id] = seconds
+            }
+        ]
+    }
+
+    /// Why the last attempt did not play, until dismissed.
+    var failure: String? {
+        get { player.failure ?? loader.failure }
+        set { player.failure = newValue; loader.failure = newValue }
+    }
+
+    func state(for id: String) -> State {
+        if player.playingID == id {
+            return player.isPaused ? .paused(player.progress) : .playing(player.progress)
+        }
+        if let active = loader.active, active.item.id == id { return .loading(active.fractionCompleted) }
+        return loader.unusable[id] == nil ? .idle : .unusable
+    }
+
+    /// Seconds played so far by the track that is playing or paused.
+    func elapsed(for id: String) -> Double? {
+        player.playingID == id ? player.elapsed : nil
+    }
+
+    /// The track's length once playback has measured it; nil while unknown.
+    func knownDuration(for id: String) -> Double? {
+        let seconds = playedDurations[id] ?? loader.durations[id]
+        return seconds.flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    func toggle(_ item: RemoteFileItem, using service: any RemoteFileService) {
+        if player.playingID == item.id { return player.pauseOrResume() }
+        let wasLoading = loader.active?.item.id == item.id
+        loader.cancel()
+        // A second tap on the file being fetched gives up on it.
+        guard !wasLoading else { return }
+        player.stop()
+        loader.request(item, purpose: .audition, using: service)
+    }
+
+    func toggle(id: String, localURL: URL) {
+        if player.playingID == id { return player.pauseOrResume() }
+        loader.cancel()
+        player.toggle(id: id, url: localURL)
+    }
+
+    /// Stops playback and any transfer and drops the temporary copies.
+    func stop() {
+        loader.reset()
+    }
+}
+
+/// "size · total" while idle and "elapsed / total" for the selected track, m:ss or
+/// h:mm:ss. Draws nothing for a length that is still unknown.
+struct InlineMusicTimeText: View {
+    @ObservedObject var playback: InlineMusicPlayback
+    let id: String
+    /// A length already known elsewhere (a PhoneHard file read by its own cache).
+    var fallbackTotal: Double?
+    /// A PhoneHard item whose length its own cheap reader may supply while idle.
+    var localItem: RemoteFileItem?
+
+    var body: some View {
+        let total = playback.knownDuration(for: id) ?? fallbackTotal
+        switch playback.state(for: id) {
+        case .playing, .paused:
+            let elapsed = Self.format(playback.elapsed(for: id) ?? 0)
+            let text = total.map { "\(elapsed) / \(Self.format($0))" } ?? elapsed
+            Text("· \(text)")
+                .monospacedDigit()
+                .lineLimit(1)
+                .accessibilityLabel("재생 \(text)")
+        default:
+            if let total {
+                Text("· \(Self.format(total))")
+                    .monospacedDigit()
+                    .lineLimit(1)
+                    .accessibilityLabel("재생 시간 \(Self.format(total))")
+            } else if let localItem {
+                LocalInboxDurationLabel(item: localItem)
+            }
+        }
+    }
+
+    static func format(_ seconds: Double) -> String {
+        let total = max(0, Int(seconds.rounded(.down)))
+        return total >= 3_600
+            ? String(format: "%d:%02d:%02d", total / 3_600, total / 60 % 60, total % 60)
+            : String(format: "%d:%02d", total / 60, total % 60)
+    }
+}
+
+/// The play button over a music file's thumbnail: a play symbol, then a ring showing
+/// the playing position with a pause symbol (play while paused). It takes its own tap
+/// ahead of the row's, so the file is not opened.
+struct InlineMusicThumbnailControl: View {
+    @ObservedObject var playback: InlineMusicPlayback
+    let id: String
+    let name: String
+    let action: () -> Void
+
+    var body: some View {
+        let state = playback.state(for: id)
+        ZStack {
+            Circle().fill(.black.opacity(0.5)).padding(ui(8))
+            switch state {
+            case .loading(let fraction):
+                if let fraction {
+                    ring(fraction)
+                } else {
+                    ProgressView().tint(.white)
+                }
+            case .playing(let progress), .paused(let progress):
+                ring(progress)
+            case .idle, .unusable:
+                EmptyView()
+            }
+            Image(systemName: symbol(for: state))
+                .font(.system(size: ui(15), weight: .bold))
+                .foregroundStyle(.white)
+        }
+        .contentShape(Rectangle())
+        .highPriorityGesture(TapGesture().onEnded { action() })
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityLabel(label(for: state))
+        .accessibilityValue(value(for: state))
+        .accessibilityAction(.default, action)
+    }
+
+    private func ring(_ fraction: Double) -> some View {
+        ZStack {
+            Circle().stroke(.white.opacity(0.3), lineWidth: ui(2.5))
+            Circle().trim(from: 0, to: max(0.01, fraction))
+                .stroke(.white, style: StrokeStyle(lineWidth: ui(2.5), lineCap: .round))
+                .rotationEffect(.degrees(-90))
+        }
+        .padding(ui(5))
+    }
+
+    private func symbol(for state: InlineMusicPlayback.State) -> String {
+        switch state {
+        case .playing: "pause.fill"
+        case .loading: "xmark"
+        case .unusable: "exclamationmark.triangle.fill"
+        case .idle, .paused: "play.fill"
+        }
+    }
+
+    private func label(for state: InlineMusicPlayback.State) -> String {
+        switch state {
+        case .playing: "\(name) 일시정지"
+        case .loading: "\(name) 불러오기 취소"
+        case .unusable: "\(name) 재생할 수 없음"
+        case .idle, .paused: "\(name) 재생"
+        }
+    }
+
+    private func value(for state: InlineMusicPlayback.State) -> String {
+        switch state {
+        case .playing(let progress), .paused(let progress): "\(Int(progress * 100))%"
+        case .loading(let fraction): fraction.map { "불러오는 중 \(Int($0 * 100))%" } ?? "불러오는 중"
+        case .idle, .unusable: ""
+        }
     }
 }

@@ -43,6 +43,80 @@ counterpart_inventory:
     - "No current phone/tablet/foldable/Google TV screenshot catalog was captured."
 
 capabilities:
+  - id: editing.unified_media_selector
+    purpose: "홈 영상 만들기에서 하나의 '영상 만들기' 선택기로 기기·파일·폰하드·즐겨찾기·NAS/네트워크·Google 포토 미디어를 한 바스켓에 모아 영상편집으로 보낸다."
+    source_refs: ["NasFinder/Features/PhotoLibrary/LocalPhotoLibraryView.swift", "NasFinder/Features/Browser/FileBrowserView.swift", "NasFinder/Features/GooglePhotos/GooglePhotosImportFlowView.swift", "NasFinder/Features/Preview/VideoTrailerView.swift"]
+    entry_points: ["홈 영상만들기 -> 우상단 + 메뉴"]
+    inputs: ["사진·영상(시스템 선택기)", "파일", "폰하드", "즐겨찾기(저장된 미디어 파일·폴더, 기존 즐겨찾기 저장소 재사용)", "NAS·네트워크 저장 연결 전체", "Google 포토"]
+    normal_result: "각 출처에서 고른 항목만 안전한 사본 또는 기존 로컬 파일의 읽기 전용 참조로 같은 바스켓 끝에 추가되고, 출처가 섞여도 순서가 편집기와 내보내기까지 유지된다. 최종 푸터는 폰하드 복사와 단일 영상편집이며 편집 화면 상단 '제작 방식'에서 예고편/뮤직비디오를 고른다."
+    states: [empty, populated, importing, cancelled, partial_failure, error]
+    algorithms_and_thresholds: ["식별: 제공자+연결+항목 경로, 로컬 PHAsset/파일 식별자", "교차 제공자 해시·다운로드 중복 제거 없음", "취소·출처 전환 시 기존 선택과 순서 유지", "선택 브라우저(폰하드·NAS·네트워크·즐겨찾기 폴더, 하위 폴더 포함)는 상단 보기 메뉴로 자세히·썸네일·포스터를 제공하고 기본은 썸네일이며 선택 전용 설정으로 저장되어 일반 브라우저 보기 설정을 바꾸지 않음; 선택 브라우저 뒤로가기는 현재 폴더만 닫고 대시보드로 가지 않으며 바스켓 유지; Apple 선택 브라우저 폴더 이동은 대시보드 NavigationStack push 대신 출처 페이지가 가진 폴더 경로(MediaSelectionBrowser)로 처리하고 루트·하위 폴더 모두 인라인 헤더(뒤로·제목·보기 메뉴)", "즐겨찾기 폴더는 해당 폴더에서 기존 미디어 선택 브라우저를 열고 파일은 기존 미디어 반환 경로로 그 항목만 추가; 사진·영상이 아닌 항목은 비활성+안내, 연결이 없거나 이동·삭제된 항목은 실패를 알리고 성공으로 표시하지 않음; 즐겨찾기가 없으면 안내 문구; 웹 주소 북마크는 대상 아님; 같은 출처 식별(연결+경로) 중복만 건너뜀", "예고편은 하이라이트 분석으로 줄이고 뮤직비디오는 선택 원본 전체를 순서대로"]
+    data_contracts: ["새 저장 형식·마이그레이션 없음"]
+    permissions_privacy_security: ["새 권한·인증 범위 없음", "원본 삭제·이동·수정 없음"]
+    implementations:
+      ios: {status: implemented_source_only, source_refs: ["LocalPhotoLibraryView.swift", "LocalPhotoLibrarySourcePages.swift", "FileBrowserView.swift", "FileBrowserContainerView.swift", "FavoriteViews.swift", "GooglePhotosImportFlowView.swift", "VideoTrailerView.swift"], tests: [], evidence: ["2.15.2 선택 브라우저 보기 메뉴·출처 페이지 소유 폴더 내비게이션 소스·빌드·설치(실제 짧은 뒤로 UI 미확인); 2026-10-17-media-source-view-modes-apple.md", "2.15.0 소스페이지·공유 트레이 소스만(실제 UI 미확인); 2026-10-17-apple-source-pages-2.15.0.md", "2.14.2 소스·빌드·설치와 Mac 실제 +즐겨찾기 폴더 진입/복귀; 2026-10-17-media-workflow-finish.md"]}
+      android: {status: implemented_source_only, source_refs: ["NasFinderApp.kt", "NasFinderViewModel.kt", "LocalPhotoLibraryScreen.kt", "VideoTrailerScreen.kt"], tests: [], evidence: ["2.14.3 Android 소스페이지: 사진·달력·폰하드·즐겨찾기·NAS·파일·Google 포토를 영상 만들기 안 가로 스와이프 탭 페이지로 제공(+ 메뉴 제거), 하단 공유 바스켓 썸네일 트레이(항목별 제거, 선택 순서=복사/편집 순서), 폰하드는 실제 등록 폴더 탐색, 즐겨찾기 썸네일; 소스·빌드·설치만, 실제 UI 미확인; .parity/source-picker-pages-2.14.3.md"]}
+    platform_adaptations:
+      - "Apple 2.15.0: + 메뉴 제거. 영상 만들기 부모 화면 안에 사진/달력/폰하드/즐겨찾기/NAS·네트워크/파일/Google 포토 가로 탭과 스와이프 페이지, 하단 공유 썸네일 트레이(순서=복사/편집 순서, 항목별 X 44pt, 개수, 폰하드 복사, 영상 편집). 출처 전환·폴더 이동·취소·미리보기/편집 닫기에도 선택과 임시 사본 유지(출처 전환만으로 사본 삭제 안 함). 파일 페이지는 앱이 접근 가능한 폰하드/사용자가 고른 폴더(보안 범위 북마크)를 탐색하며 iOS 전체 파일시스템 열거는 불가, 다른 Files 제공자는 시스템 fileImporter 보조 버튼. Google 포토는 기존 인증·세션·WKWebView 최상위 피커를 부모 안에 삽입하고 페이지 전환으로 세션을 취소하지 않으며(부모 이탈 시에만 취소), 안드로이드의 인라인 격자와 달리 Google 웹 화면 그대로(OS/제공자 차이, iframe 불가)."
+      - "Apple 2.14.2: 우상단 + 출처 메뉴 유지. 이번 2.14.3 요청은 Android에 한정."
+      - "Android 2.14.3: 사진/달력/폰하드/즐겨찾기/NAS·네트워크/파일/Google 포토를 가로 페이지·탭으로 전환. 공통 하단 썸네일 바구니에서 X 제거, 표시/복사/편집 입력 순서 동일."
+      - "Android 폰하드는 가져오기 매니페스트가 아닌 실제 등록 디렉터리·하위 폴더를 탐색. 즐겨찾기는 기존 썸네일 로더 재사용."
+      - "파일/Google 페이지의 명시 버튼만 기존 시스템 선택기를 열며, 취소/결과는 바구니 유지. 외부 DocumentsUI의 닫기 버튼은 앱이 삽입하지 못하며 Android 뒤로가기로 복귀."
+      - "외부 선택기 중 재생성 시 화면 경로 복원 보강. Google 첫 화면 이동의 실제 원인은 미확정이며 사용자 재확인 대기."
+      - "Android 2.15.0(가능하다면): Google 포토 페이지는 공식 Jetpack 임베디드 포토 피커(androidx.photopicker:photopicker-compose:1.0.0-alpha02, API 34+ 및 SDK extension 15 이상)를 앱 헤더·탭과 공통 바스켓 사이에 인라인 표시하고, 연속 선택/해제가 같은 바스켓 순서에 반영된다. 미지원 기기·세션 오류에서만 명시 버튼으로 기존 시스템 선택기를 연다."
+      - "Android 2.15.0: 파일 페이지는 기존 사진·영상 권한 범위의 MediaStore 폴더별 썸네일 격자(상위 폴더 이동 포함)를 인라인으로 제공하고 선택은 같은 바스켓에 추가된다. 다른 저장소는 보조 버튼의 기존 SAF 선택기. 새 권한 없음."
+    dependencies: ["기존 연결", "기존 Google 포토 가져오기", "기존 영상편집"]
+
+  - id: browser.active_music_download_identity
+    purpose: "현재 곡의 주소와 제목을 묶어 내려받고, 닫거나 받은 음악 안내를 새 곡으로 혼동하지 않게 한다."
+    source_refs: ["NasFinder/Features/Browser/WebBrowserView.swift", "NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/WebBrowserScreen.kt"]
+    entry_points: ["브라우저 음악 다운로드 안내"]
+    preconditions: ["현재 페이지에서 지원되는 HTTP(S) 음악 주소가 발견됨"]
+    inputs: ["곡 전환", "음악 다운로드", "목록에서 곡 선택", "알림 닫기", "다운로드 취소", "페이지 이동·새로고침"]
+    normal_result: "재생 중 곡을 우선 표시하고, 선택 시점의 URL·제목으로 내려받아 제목과 오디오 확장자로 저장한다. 닫은 곡은 단순 재검사나 일시정지·재생으로 즉시 다시 나타나지 않으며 다른 곡은 새로 인식한다."
+    states: [not_detected, detected, playing, dismissed, downloading, cancelled, failed, completed, page_changed]
+    algorithms_and_thresholds: ["DOM 후보 교체, 최신 응답 후보는 DOM이 없을 때만 사용", "페이지 세대·스캔 순서로 오래된 결과 제외", "주소의 곡 식별 쿼리와 후보 제목 보존", "선택 시점의 URL·제목 스냅샷", "브리지 scan/nav 허용값 및 네이티브 빈도 제한", "음악 파일명 금지문자·제어문자·UTF-8 길이 제한"]
+    data_contracts: ["내부 후보: URL·자기 제목·재생 상태", "서명 쿼리는 표시·파일명·보고에 노출하지 않음", "저장 형식 마이그레이션 없음"]
+    producer_consumer_routes: ["페이지 음악 이벤트 -> 제한된 재검색 신호 -> 현재 WebView 스캔 -> 후보 스냅샷 -> 기존 다운로드 -> 폰하드 저장 선택"]
+    persistence_relaunch: "곡 알림 닫기는 현재 페이지 세션 상태이며 새 탐색·새로고침에서 초기화한다. 기존 브라우저·다운로드 저장 동작은 유지한다."
+    permissions_privacy_security: ["브리지는 scan/nav 재검색 신호만 수신하며 URL 다운로드·파일·쿠키·명령 인터페이스를 노출하지 않음", "기존 HTTP(S) URL 검증·referer·쿠키·리다이렉트 정책 유지", "새 권한·인증 범위 없음"]
+    background_lifecycle: "현재 WebView와 페이지 세대가 유효할 때만 결과 반영; 해제 시 신호 핸들러·작업 정리"
+    gestures_accessibility: ["음악 안내 닫기 버튼과 접근성 이름", "기존 다운로드 진행·취소와 저장 위치 선택 유지"]
+    supported_devices_layouts: ["iPhone", "iPad", "Mac", "Android phone", "Android tablet", "Google TV navigation considered"]
+    visual_reference: "각 플랫폼의 기존 브라우저 UI; 정밀 대응 화면 비교 미확인"
+    platform_adaptations: {ios: ["WKWebView와 메인 프레임 제한 약참조 메시지 핸들러"], mac: ["기존 Catalyst 브라우저 컨트롤"], android: ["WebView 재검색 전용 신호와 생명주기 해제"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: implemented_source_only, source_refs: ["WebBrowserView.swift"], tests: [], evidence: ["2026-10-17-browser-music-fix.md", "2026-10-17-media-workflow-finish.md; 실제 이용 사이트의 A/B 교체 다운로드 미확인"]}
+      android: {status: implemented_source_only, source_refs: ["WebBrowserScreen.kt"], tests: [], evidence: ["NasFinder-Android/.parity/browser-music-fix-2.14.1.md", "2026-10-17-media-workflow-finish.md; 실제 이용 사이트 미확인"]}
+    dependencies: ["기존 브라우저", "기존 다운로드·폰하드", "기존 파일명 정책"]
+    parity_row_ids: [browser.music.active_track.selection, browser.music.notice.dismiss, browser.music.filename.content]
+
+  - id: dashboard.four_area_navigation
+    purpose: "네트워크, 내 파일, 영상 편집, 설정을 순서대로 분리하고 기존 기능과 저장 데이터를 보존한다."
+    source_refs: ["NasFinder/Features/Connections/ConnectionListView.swift", "NasFinder/Features/Settings/AppSettingsView.swift", "NasFinder/Features/PhotoLibrary/LocalPhotoLibraryView.swift", "NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/NasFinderApp.kt"]
+    entry_points: ["메인 대시보드"]
+    preconditions: ["기존 연결·즐겨찾기·폰하드 데이터는 선택적으로 존재"]
+    inputs: ["메뉴 탭", "폰하드 롱터치", "영상 만들기 선택(미디어 선택 후 편집 화면 상단에서 예고편/뮤직비디오 전환)", "보관한 편집 열기"]
+    normal_result: "네트워크의 즐겨찾기·연결·Google 포토·브라우저, 내 파일의 폰하드·내 사진·영상·기기 간 전송·저장공간, 영상 편집의 단일 영상 만들기와 보관한 편집, 기존 설정에 접근한다. 영상 만들기는 미디어 선택으로 바로 이동하며, 최종 영상 편집의 제작 방식 옵션에서 예고편과 뮤직비디오를 전환한다. 선택 원본·순서·BGM을 유지하고 예고편 복귀 시 필요한 하이라이트 분석을 수행한다."
+    states: [empty, populated, navigation, cancelled, error]
+    algorithms_and_thresholds: ["섹션 순서 고정", "기존 무제한 편집 목록과 0개 안내 유지", "기존 사진·달력·파일 및 Google 포토 선택 경로 유지"]
+    data_contracts: ["2.8.0", "기존 연결·즐겨찾기·미디어 저장 형식 변경 없음"]
+    producer_consumer_routes: ["대시보드 -> 기존 기능 목적지 -> 기존 복귀 경로"]
+    persistence_relaunch: "기존 저장 동작 유지; 메모리 편집 목록의 영구 저장을 새로 보장하지 않는다."
+    permissions_privacy_security: ["새 권한·계정·인증 범위 추가 없음", "원본 사진·영상 수정 없음"]
+    background_lifecycle: "기존 foreground 복귀 규칙 유지"
+    gestures_accessibility: ["폰하드 롱터치와 명시적 편집 메뉴 병존", "읽을 수 있는 메뉴 이름·터치 영역 유지"]
+    supported_devices_layouts: ["iPhone", "iPad", "Mac", "Android phone", "Android foldable/tablet", "Google TV navigation considered"]
+    visual_reference: "병기 스타일 기존 토큰·컴포넌트; 기기별 실제 화면 증거는 후속 보고에 구분"
+    platform_adaptations: {ios: ["기존 SwiftUI navigation/sheet"], mac: ["실제 창 폭과 기존 Mac 배율"], android: ["기존 Compose navigation/back"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: implemented_source_only, source_refs: ["ConnectionListView.swift", "AppSettingsView.swift"], tests: [], evidence: ["최종 소스 보완 완료; 기기별 설치 근거는 2026-10-16-dashboard-menu.md 참조"]}
+      android: {status: implemented_source_only, source_refs: ["NasFinderApp.kt"], tests: [], evidence: ["최종 소스 보완 완료; 기기별 설치 근거는 2026-10-16-dashboard-menu.md 참조"]}
+    dependencies: ["기존 연결", "기존 즐겨찾기", "기존 미디어 선택", "기존 편집 목록"]
+    parity_row_ids: [dashboard.network.favorites, dashboard.home.section_order, dashboard.editing.entry_routes, dashboard.settings.cache_routes]
+
   - id: release.direct_update_download
     purpose: "직접 배포 대상에서 새 버전을 확인하고, 사용자가 선택한 자동 또는 수동 방식으로 검증된 설치 파일만 준비한다."
     source_refs: ["MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/UpdateController.swift", "MacSuperThumbnail/Sources/NasFinderSuperThumbnailMac/AppMain.swift", "NasFinder-Android/app/src/main/java/com/armsone/nasfinder/update/GitHubAppUpdateService.kt"]
@@ -1019,6 +1093,74 @@ capabilities:
       android: {status: missing, source_refs: [], tests: [], evidence: ["latest source inventory found no ACTION_VIEW filter or handler"]}
     dependencies: [preview.common_viewer]
     parity_row_ids: [external-action-view]
+
+  - id: media.local_library_sources
+    purpose: "내 사진·영상 진입 시 허용된 기기 보관함을 최신순으로 바로 표시하고 사진·달력의 동일 선택을 기존 미리보기·편집 경로로 연결한다. 파일은 별도 추가 동작으로 제공한다."
+    source_refs: ["NasFinder/Features/PhotoLibrary/LocalPhotoLibraryView.swift", "NasFinder/Features/PhotoLibrary/LocalPhotoLibraryCalendarView.swift", "NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/LocalPhotoLibraryScreen.kt"]
+    entry_points: ["Dashboard > 내 사진·영상"]
+    preconditions: ["기기 보관함은 사용자가 허용한 사진/영상 범위만 조회", "거부 시 시스템 선택창으로 추가 가능", "Google 포토 선택 경로는 기존 제공자 방식 유지"]
+    inputs: ["사진 최신순 기기 보관함", "월/날짜/항목 선택", "파일에서 추가", "권한이 없거나 클라우드 자료 추가 시 시스템 선택창"]
+    normal_result: "진입 시 별도 가져오기 안내나 선택창을 먼저 거치지 않고 기기 사진/영상이 보인다. 사진·달력 전환과 선택 취소는 기존 선택을 지우지 않으며 두 화면에 동일 선택 상태를 표시한다. 선택 목록은 중복 없이 미리보기·폰하드 복사·예고편·뮤직비디오에 공통 전달된다."
+    states: [empty, populated, loading, partial_failure, permission_limited, permission_denied, cancelled]
+    algorithms_and_thresholds: ["월 단위 촬영일 조회 및 날짜별 개수", "영상 길이와 파일명 표시", "달력 다중 날짜·연월 선택·전날/오늘 이동·공휴일·열 수 조절", "체크 해제해도 현재 날짜 썸네일은 유지하고 재선택 가능", "폰하드 복사 대상은 기존 폴더 탐색 또는 새 폴더 생성 후 확정", "날짜를 확인할 수 없으면 날짜 정보 없음", "안정적인 식별자 중복 방지 및 선택 순서 보존", "HanClip 원본 기준 사진 날짜 섹션·1/3/5/8열·사진/Live 또는 모션/영상 필터·영상 분초 이상/이하·촬영/추가일 정렬", "가로 시작 드래그 범위 선택/해제와 가장자리 자동 스크롤", "원본 fit 카드 미리보기·확대·영상 재생/시크/반복", "Android 모션은 제공자 힌트 또는 실제 컨테이너 메타데이터와 내장 영상 범위 검증으로 식별"]
+    data_contracts: ["Apple RemoteFileItem plus owned temporary URL", "Android ordered Uri list", "달력 데이터는 접근 허용된 PhotoKit/MediaStore 항목"]
+    producer_consumer_routes: ["세 선택 경로 -> 공통 선택 목록 -> 기존 preview/trailer/music/copy API"]
+    persistence_relaunch: "사진·달력 전환과 선택창 취소, 미리보기/제작 화면 복귀 시 선택을 유지한다. 새 영구 보관 기능은 추가하지 않는다."
+    permissions_privacy_security: ["기기 보관함 진입 시 필요한 공식 사진 접근 요청", "일부 사진 및 사진/영상 개별 권한 지원", "원본은 읽기 전용", "선택은 참조만 보관하고 제작/미리보기/복사 동작에서 필요한 임시 파일 준비", "파일 보안 범위는 임시 복사 동안만 사용", "선택으로 업로드하지 않음"]
+    background_lifecycle: "권한을 다시 확인하고 오래된 월 조회 결과를 무시한다. 임시 복사본은 소비자 사용 중 삭제하지 않는다."
+    gestures_accessibility: ["사진·달력 및 파일에서 추가", "월 이동과 날짜/미디어 선택", "선택 상태와 개수 접근성", "썸네일 전체 tap 선택/해제, longpress 직접 미리보기", "체크 표시는 입력 없는 indicator이며 체크 위에서도 동일 제스처", "사진 가로 시작 드래그 범위 선택 유지", "복사 위치 선택 취소 시 복사하지 않고 기존 선택 유지"]
+    supported_devices_layouts: ["iPhone/iPad/Mac", "Android phone/tablet/foldable/TV native input adaptations"]
+    visual_reference: "최근 보관함 그리드와 사진·달력 전환; 파일은 별도 추가 버튼. 저장공간은 Android처럼 내 파일 다음의 독립 카드. 하단 동일 크기 한 줄 폰하드 복사·예고편 제작·뮤직비디오; 사진 그리드/미리보기는 iPhone HanClip 원본 기능을 기준으로 플랫폼 적응"
+    platform_adaptations:
+      ios: ["PhotoKit 최신순·달력 공유 선택 + PhotosPicker fallback + 시스템 파일 추가"]
+      android: ["MediaStore 최신순·달력 공유 선택 + 기존 PickMultipleVisualMedia Google Photos 클라우드 지원 유지 + OpenMultipleDocuments 파일 추가"]
+    intentional_differences: ["Android 클라우드 전용 사진 전체는 MediaStore 달력에서 조회할 수 없고 사진 시스템 선택을 사용한다."]
+    implementations:
+      ios: {status: source_build_install_verified_runtime_partial, source_refs: ["NasFinder/Features/PhotoLibrary"], tests: [], evidence: ["2026-10-16 iPhone/Mac 2.10.1: recent1 plus calendar previous-day4 selection maintained; 5-photo 9-second trailer rendered and played", "Final iPhone/Mac 2.11.1/build202610170006 installed and launched; whole-cell tap toggle and longpress over selection indicator observed; iPhone shared selection and unchecked visible thumbnails/reselect observed; photo and calendar 70percent preview cards observed; Mac date sections/common actions observed"]}
+      android: {status: source_build_install_verified_runtime_partial, source_refs: ["LocalPhotoLibraryScreen.kt", "LocalPhotoLibraryGrid.kt", "LocalMediaPreviewCard.kt", "LocalMotionPhotoReader.kt"], tests: [], evidence: ["2026-10-16 Trifold 2.10.2: recent1 plus calendar previous-day2 selection maintained; 3-photo 7-second trailer rendered and played", "Trifold 2.11.1/code412600/build202610170006 installed and launched; whole-cell tap toggle and longpress over selection indicator observed; unsupported SPECIAL_FORMAT provider column repaired via actual capability detection; date grid and final actions observed; Samsung HEIC motion badges and embedded video playback/replay observed on real device; dedicated motion icon replaces text badge"]}
+    dependencies: [inbox.phonehard_library]
+    parity_row_ids: [media_sources.empty.navigation, media_sources.selection.preservation]
+
+  - id: media.motion_auto_representation
+    purpose: "선택한 모션·라이브 포토의 대표 사진·내장 영상·좋은 영상 프레임 중 하나를 자동으로 골라 편집에 전달한다. 선택 UI를 추가하지 않는다."
+    entry_points: ["내 사진·영상 > 예고편 제작", "내 사진·영상 > 뮤직비디오"]
+    source_refs: ["NasFinder/Features/PhotoLibrary/LivePhotoEditingSelection.swift", "NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/TrailerMotionSelection.kt", "NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/LocalMotionPhotoReader.kt"]
+    normal_result: "소재마다 한 표현만 사용하며 기존 선택 수·식별자·순서를 보존한다. 폰하드 복사는 원본을 그대로 사용한다. 실패하면 대표 사진을 사용한다."
+    states: [analysing, representative_fallback, peak_frame, usable_motion, consistent_motion, cancelled, partial_failure]
+    algorithms_and_thresholds: ["5프레임 10/30/50/70/90퍼센트, 분석 최대256px", "기술품질 0.65 sharpness + 0.35 exposure", "16x16 잔차 및 전체 변화와 해상도 비율로 보수적 선택", "영상 0.8~8초, 최소4프레임", "프레임 개선0.08 이상·상대해상도0.20 이상", "영상 평균품질>=대표사진-0.035·노출>=0.35·선명도>=max(0.008,대표사진*0.6)", "잔차0.008~0.10·전체변화<=0.16·최대변화<=0.25·잔차/전체변화>=0.25"]
+    data_contracts: ["편집 결과 실제 MIME·확장자·영상 길이와 소비자 형식 일치", "선택 프레임 JPEG 또는 검증된 paired video", "대표 사진은 파생 결과 검증 성공까지 보존"]
+    permissions_privacy_security: ["원본 읽기 전용", "외부 분석/사진 업로드 없음", "PHAsset 또는 기존 URI 권한만 사용", "취소 시 이번 호출 소유 임시 파일만 정리", "파일 범위/길이/overflow 검증"]
+    platform_adaptations:
+      ios: ["PhotoKit Live Photo paired video", "Vision 얼굴 품질 급락 프레임 추가 veto, 얼굴 미검출은 중립"]
+      android: ["Samsung SEF/mpv2 및 HEIC/AVIF mpvd·JPEG XMP 내장 영상 식별", "모션 전용 아이콘과 기존 미리보기 재생 유지"]
+    implementations:
+      ios: {status: source_build_install_verified_runtime_partial, evidence: ["Final iOS/Mac 2.11.1/202610170006 builds and installation verified; safety corrections included; automatic choice branches not all exercised on Apple"]}
+      android: {status: source_build_install_verified_runtime_partial, evidence: ["2.11.0/code412599 real3 motions -> 2 videos + 1 representative still in same order; final velocity slider included in 2.11.1/code412600 installed candidate"]}
+
+  - id: trailer.manual_duration_loop
+    purpose: "원본 길이에 제한받지 않고 수동 총길이를 최대2시간으로 설정해 반복 재생으로 채운다."
+    entry_points: ["예고편 설정 > 얼마나 길게 볼까요 > 다른 길이"]
+    normal_result: "기존 가로 바로1~7200초를 설정한다. 부족하면 같은 장면 순서를 반복하고 마지막 장면만 잘라 정확히 목표를 채운다. 숫자 입력·시분초 휠은 사용하지 않는다."
+    algorithms_and_thresholds: ["수동 요청값1~7200초", "같은 바의 이동 속도 EMA 0.7/0.3, 80pt 또는 dp/s 이하 gain0.05·600이상1 smoothstep·1초반올림", "기본30/60/120/180/300초 프리셋 원본 제한 없음", "기존 사진 품질 가중 길이 유지", "반복 사진 렌더·전처리 파일 재사용", "기존 음악 길이에 맞추기 정책 보존"]
+    permissions_privacy_security: ["파일을 반복 복제하지 않음", "원본 변경 없음"]
+    implementations:
+      ios: {status: source_build_install_verified_runtime_partial, evidence: ["manual duration plan repeats to exact600Hz ticks and trims last scene; final velocity-sensitive horizontal slider built and installed as2.11.1; physical feel and full2hour export unverified"]}
+      android: {status: source_build_install_verified_runtime_partial, evidence: ["real original about7seconds -> 600seconds/10minute plan shown; final velocity-sensitive horizontal slider built and installed as2.11.1; physical feel and full2hour export unverified"]}
+
+  - id: connections.cloud_dashboard_management
+    purpose: "Google 포토를 네트워크 위치 행으로 표시하고 대시보드에서 추가·수정·삭제하며 Dropbox 연결 계정을 식별한다."
+    entry_points: ["대시보드 > 네트워크 > Google 포토 > 점 세 개", "대시보드 > 네트워크 추가", "Dropbox 네트워크 행"]
+    normal_result: "네트워크 행의 테마·제목·부제·메뉴를 재사용한다. Google 포토 관리 항목은 설정에 중복하지 않는다. 삭제는 확인 후 앱 연결/위치만 제거하고 원본 미디어와 폰하드·선택 목록을 보존한다. 재추가할 수 있다."
+    data_contracts: ["Google 포토 표시이름과 위치 노출 여부는 기기에 저장", "Dropbox 계정 이메일은 표시용이며 기존 연결 UUID를 변경하지 않음", "기존 Dropbox 계정정보를 기존 account_info.read 권한으로 조회하고 새 연결에도 반영"]
+    states: [visible, hidden, editing, deletion_confirmation, account_identified, account_information_unavailable]
+    permissions_privacy_security: ["새 권한 요청 없음", "전체 웹 쿠키/다른 서비스 인증 삭제 금지", "계정정보 조회 실패로 연결 삭제/인증 교체 금지", "원본 클라우드 파일 변경 없음"]
+    platform_adaptations:
+      ios: ["기존 Google Photos Picker OAuth와 영구 웹 세션 유지", "연결 삭제는 기존 Google 포토 전용 인증 해제 기능 재사용"]
+      android: ["기존 시스템 사진 선택창의 Google 포토 제공자 유지", "위치 삭제는 앱의 행만 숨기며 시스템 Google 계정은 유지"]
+    intentional_differences: ["Android 시스템 사진 선택창의 계정 로그인·해제는 OS/제공자 소유이며 앱 위치 설정과 구분한다."]
+    implementations:
+      ios: {status: source_build_install_verified_runtime_partial, source_refs: ["NasFinder/Features/Connections/ConnectionListView.swift", "NasFinder/Features/GooglePhotos/GooglePhotosSettingsSection.swift", "NasFinder/Core/Services/CloudDriveFileService.swift"], evidence: ["2026-10-16 iPhone/Mac 2.9.3 installed and launched; ellipsis menu observed; iPhone Dropbox account email observed; real credential deletion not exercised"]}
+      android: {status: source_build_install_verified_runtime_partial, source_refs: ["NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/NasFinderApp.kt", "NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/NasFinderViewModel.kt"], evidence: ["2026-10-16 Trifold 2.9.1/code412592 installed and launched; Google network menu and edit/cancel observed; no Dropbox connection fixture on device"]}
 
 known_unknowns:
   - id: UNKNOWN-RUNTIME-NAS-MATRIX

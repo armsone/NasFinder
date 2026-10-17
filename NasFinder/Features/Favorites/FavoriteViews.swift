@@ -993,3 +993,82 @@ struct FavoriteDestinationView: View {
         return RemoteFileServiceFactory.make(connection: connection, credential: credential)
     }
 }
+
+/// 영상 만들기 + 메뉴의 즐겨찾기 선택 화면. 저장된 사진·영상 파일과 폴더만 고를 수 있고,
+/// 폴더는 기존 미디어 선택 브라우저로 열며 파일은 같은 반환 경로로 그 항목만 넘긴다.
+struct MediaFavoritePickerView: View {
+    @EnvironmentObject private var connectionStore: ConnectionStore
+    @EnvironmentObject private var favoriteStore: FavoriteStore
+    @State private var errorMessage: String?
+    /// 연 폴더 즐겨찾기는 push하지 않고 이 화면이 가진다. 뒤로가 상위 영상 만들기 화면을 닫지 않게 한다.
+    @State private var openedFolder: FavoriteItem?
+    let onPickMedia: ([RemoteFileItem], any RemoteFileService) -> Void
+
+    var body: some View {
+        Group {
+            if let openedFolder, let connection = connection(for: openedFolder), let service = service(for: connection) {
+                MediaSelectionBrowser(connection: connection, rootPath: openedFolder.path, rootTitle: openedFolder.name,
+                                      service: service, onExitRoot: { self.openedFolder = nil }, onPickMedia: onPickMedia)
+                    .id(openedFolder.id)
+            } else if favoriteStore.items.isEmpty {
+                ContentUnavailableView(
+                    "즐겨찾기가 없습니다",
+                    systemImage: "star",
+                    description: Text("파일 목록에서 사진·영상이나 폴더를 즐겨찾기에 추가하면 여기에 나타납니다.")
+                )
+            } else {
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: ui(84), maximum: ui(110)), spacing: ui(10), alignment: .top)],
+                              alignment: .center, spacing: ui(12)) {
+                        ForEach(favoriteStore.items) { favorite in row(favorite) }
+                    }.padding(ui(12))
+                }
+            }
+        }
+        .navigationTitle("즐겨찾기")
+        .navigationBarTitleDisplayMode(.inline)
+        .alert("알림", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+            Button("확인", role: .cancel) { errorMessage = nil }
+        } message: { Text(errorMessage ?? "") }
+    }
+
+    @ViewBuilder private func row(_ favorite: FavoriteItem) -> some View {
+        let item = favorite.remoteItem
+        if item.isDirectory {
+            if let connection = connection(for: favorite), service(for: connection) != nil {
+                Button { openedFolder = favorite } label: {
+                    FavoriteCell(favorite: favorite, side: ui(76))
+                }.buttonStyle(.plain)
+            } else {
+                FavoriteCell(favorite: favorite, side: ui(76)).opacity(0.45)
+                    .accessibilityHint("연결을 찾을 수 없거나 로그인 정보가 없습니다")
+            }
+        } else if item.isTrailerEligible {
+            Button { pick(favorite) } label: {
+                FavoriteCell(favorite: favorite, side: ui(76))
+            }.buttonStyle(.plain)
+        } else {
+            FavoriteCell(favorite: favorite, side: ui(76)).opacity(0.45)
+                .accessibilityHint("사진·영상이 아니라 담을 수 없습니다")
+        }
+    }
+
+    private func pick(_ favorite: FavoriteItem) {
+        guard let connection = connection(for: favorite), let service = service(for: connection) else {
+            errorMessage = "\(favorite.name): 연결을 찾을 수 없거나 로그인 정보가 없어 가져올 수 없습니다. 연결을 확인해 주세요."
+            return
+        }
+        onPickMedia([favorite.remoteItem], service)
+    }
+
+    private func connection(for favorite: FavoriteItem) -> RemoteConnection? {
+        if favorite.connectionID == LocalInboxFileService.connectionID { return LocalInboxFileService.phoneHardConnection }
+        return connectionStore.connections.first { $0.id == favorite.connectionID }
+    }
+
+    private func service(for connection: RemoteConnection) -> (any RemoteFileService)? {
+        if connection.id == LocalInboxFileService.connectionID { return LocalInboxFileService() }
+        guard let credential = try? connectionStore.credential(for: connection) else { return nil }
+        return RemoteFileServiceFactory.make(connection: connection, credential: credential)
+    }
+}

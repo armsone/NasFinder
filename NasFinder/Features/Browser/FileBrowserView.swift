@@ -75,6 +75,14 @@ extension EnvironmentValues {
     }
 }
 
+/// 영상 만들기 출처 페이지가 임베드한 선택 브라우저의 폴더 이동. 경로는 출처 페이지가 가진다.
+struct MediaSelectionNavigation {
+    /// 폴더를 열거나 경로 막대의 상위 폴더로 이동한다.
+    let open: (_ path: String, _ title: String) -> Void
+    /// 한 단계 뒤로. 출처 페이지의 맨 처음 화면이면 nil이라 뒤로 버튼을 두지 않는다.
+    let goBack: (() -> Void)?
+}
+
 struct FileBrowserPathComponent: Identifiable, Equatable {
     let path: String
     let title: String
@@ -227,6 +235,8 @@ struct FileBrowserView: View {
     @EnvironmentObject private var favoriteStore: FavoriteStore
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @AppStorage("fileBrowserLayoutStyle") private var storedLayoutStyle = LayoutStyle.smallThumbnails.rawValue
+    /// 영상 만들기 선택 브라우저 전용 보기 설정. 일반 브라우저의 전역 보기 설정은 건드리지 않는다.
+    @AppStorage("mediaSelectionBrowserLayoutStyle") private var storedSelectionLayoutStyle = LayoutStyle.smallThumbnails.rawValue
     @AppStorage("fileBrowserSortField") private var storedSortField = FileBrowserSortField.name.rawValue
     @AppStorage("fileBrowserSortDirection") private var storedSortDirection = FileBrowserSortDirection.ascending.rawValue
     @AppStorage("fileBrowserNamePriority") private var storedNamePriority = FileBrowserNamePriority.numbersFirst.rawValue
@@ -240,6 +250,7 @@ struct FileBrowserView: View {
     @StateObject private var interactionCoordinator = FileBrowserInteractionCoordinator()
     @ObservedObject private var thumbnailActivity = RemoteThumbnailActivityTracker.shared
     @State private var previewItem: RemoteFileItem?
+    @State private var inlineMusic = InlineMusicPlayback()
     @State private var trailerSelection: VideoTrailerSelection?
     @State private var folderTrailerScopeChoice: RemoteFileItem?
     @State private var navigatedFolder: RemoteFileItem?
@@ -277,7 +288,8 @@ struct FileBrowserView: View {
         title: String,
         operationCoordinator: FileOperationCoordinator = FileOperationCoordinator(),
         trafficTracker: PageNetworkTrafficTracker? = nil,
-        returnToDashboardAction: ReturnToDashboardAction? = nil
+        returnToDashboardAction: ReturnToDashboardAction? = nil,
+        onPickMedia: (([RemoteFileItem], any RemoteFileService) -> Void)? = nil
     ) {
         let tracker = trafficTracker ?? PageNetworkTrafficTracker()
         let measuredService: any RemoteFileService
@@ -298,8 +310,22 @@ struct FileBrowserView: View {
         _operationCoordinator = StateObject(wrappedValue: operationCoordinator)
         self.title = title
         self.explicitReturnToDashboardAction = returnToDashboardAction
+        self.onPickMedia = onPickMedia
+        _isSelecting = State(initialValue: onPickMedia != nil)
     }
 
+    /// 영상만들기 선택기에서만 지정한다. 지정하면 사진·영상 파일만 골라 이 콜백으로 돌려주고
+    /// 폴더는 계속 열 수 있으며, 기존 브라우저 동작은 바뀌지 않는다.
+    private let onPickMedia: (([RemoteFileItem], any RemoteFileService) -> Void)?
+    /// 영상 만들기 출처 페이지에 임베드될 때만 지정한다. 폴더 이동·뒤로를 NavigationStack push/dismiss 대신
+    /// 출처 페이지가 가진 경로로 처리해서, 뒤로가 상위 영상 만들기 화면을 닫지 않는다.
+    private var selectionNavigation: MediaSelectionNavigation?
+    private var isEmbeddedSourceRoot: Bool { selectionNavigation != nil }
+    func embeddedAsSourcePage(_ navigation: MediaSelectionNavigation) -> FileBrowserView {
+        var copy = self
+        copy.selectionNavigation = navigation
+        return copy
+    }
     private let title: String
     private let explicitReturnToDashboardAction: ReturnToDashboardAction?
 
@@ -327,6 +353,10 @@ struct FileBrowserView: View {
     var body: some View {
         AnyView(
             VStack(spacing: 0) {
+                if let selectionNavigation, onPickMedia != nil {
+                    // 임베드된 출처 페이지는 내비게이션 바가 없어 뒤로·제목·보기 방식 메뉴를 여기에 둔다.
+                    selectionHeader(selectionNavigation)
+                }
                 if layoutStyle != .coverFlow {
                     currentPathBar
                     thumbnailProgressLine
@@ -350,7 +380,7 @@ struct FileBrowserView: View {
             )
             .modifier(
                 FileBrowserSearchModifier(
-                    isEnabled: true,
+                    isEnabled: !isEmbeddedSourceRoot,
                     text: $searchText,
                     isPresented: $isSearchPresented
                 )
@@ -367,7 +397,8 @@ struct FileBrowserView: View {
                 title: item.name,
                 operationCoordinator: operationCoordinator,
                 trafficTracker: trafficTracker,
-                returnToDashboardAction: dashboardAction
+                returnToDashboardAction: dashboardAction,
+                onPickMedia: onPickMedia
             )
         }
         .refreshable {
@@ -411,7 +442,7 @@ struct FileBrowserView: View {
             )
         }
         .onAppear {
-            if storedLayoutStyle == LayoutStyle.coverFlow.rawValue {
+            if onPickMedia == nil, storedLayoutStyle == LayoutStyle.coverFlow.rawValue {
                 storedLayoutStyle = LayoutStyle.largeThumbnails.rawValue
                 coverFlowEnteredFromPoster = false
             }
@@ -577,7 +608,16 @@ struct FileBrowserView: View {
                 }
             }
         }
+        .alert("음악을 재생할 수 없습니다", isPresented: Binding(
+            get: { inlineMusic.failure != nil },
+            set: { if !$0 { inlineMusic.failure = nil } }
+        )) {
+            Button("확인", role: .cancel) { inlineMusic.failure = nil }
+        } message: {
+            Text(inlineMusic.failure ?? "")
+        }
         .onDisappear {
+            inlineMusic.stop()
             shareCoordinator.cancelPreparation()
             cancelDownload()
             thumbnailPreheater.cancel()
@@ -610,7 +650,7 @@ struct FileBrowserView: View {
     private var browserToolbar: some ToolbarContent {
         ToolbarItem(placement: .topBarLeading) {
             Group {
-                if layoutStyle != .coverFlow {
+                if layoutStyle != .coverFlow, !isEmbeddedSourceRoot {
                     browserBackButton
                 }
             }
@@ -619,7 +659,7 @@ struct FileBrowserView: View {
 
         ToolbarItem(placement: .principal) {
             Group {
-                if layoutStyle != .coverFlow {
+                if layoutStyle != .coverFlow, !isEmbeddedSourceRoot {
                     Button {
                         isSearchPresented = true
                     } label: {
@@ -636,8 +676,10 @@ struct FileBrowserView: View {
 
         ToolbarItemGroup(placement: .topBarTrailing) {
             Group {
-                if layoutStyle != .coverFlow {
-                    if isSelecting {
+                if layoutStyle != .coverFlow, !isEmbeddedSourceRoot {
+                    if isSelecting && onPickMedia != nil {
+                        selectionLayoutMenu
+                    } else if isSelecting {
                         Button("완료") {
                             endSelection()
                         }
@@ -649,6 +691,60 @@ struct FileBrowserView: View {
             }
             .uiBarFont()
         }
+    }
+
+    /// 영상 만들기 선택 브라우저의 보기 메뉴: 자세히 · 썸네일 · 포스터.
+    private var selectionLayoutMenu: some View {
+        Menu {
+            ForEach(availableLayoutStyles) { style in
+                Button {
+                    storedSelectionLayoutStyle = style.rawValue
+                } label: {
+                    if layoutStyle == style {
+                        Label(selectionTitle(for: style), systemImage: "checkmark")
+                    } else {
+                        Text(selectionTitle(for: style))
+                    }
+                }
+            }
+        } label: {
+            Image(systemName: layoutStyle.systemImage)
+                .font(.system(size: ui(15), weight: .bold))
+                .foregroundStyle(SkyBreezeTheme.accent)
+                .frame(width: ui(32), height: ui(32))
+                .background(SkyBreezeTheme.accent.opacity(0.16), in: Circle())
+        }
+        .accessibilityLabel("보기 방식")
+    }
+
+    private func selectionHeader(_ navigation: MediaSelectionNavigation) -> some View {
+        HStack(spacing: ui(6)) {
+            if let goBack = navigation.goBack {
+                Button(action: goBack) {
+                    Image(systemName: "chevron.left")
+                        .font(.system(size: ui(17), weight: .semibold))
+                        .foregroundStyle(SkyBreezeTheme.accent)
+                        .frame(width: ui(32), height: ui(32))
+                        .background(SkyBreezeTheme.accent.opacity(0.12), in: Circle())
+                        .frame(width: 44, height: 44)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("이전 폴더")
+            }
+            Text(title)
+                .font(.ui(.headline))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: ui(8))
+            selectionLayoutMenu
+                .frame(minWidth: 44, minHeight: 44)
+        }
+        .padding(.horizontal, ui(8))
+    }
+
+    private func selectionTitle(for style: LayoutStyle) -> String {
+        style == .smallThumbnails ? "썸네일" : style.title
     }
 
     private var browserBackButton: some View {
@@ -891,7 +987,11 @@ struct FileBrowserView: View {
     }
 
     private var layoutStyle: LayoutStyle {
-        LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
+        if onPickMedia != nil {
+            let style = LayoutStyle(rawValue: storedSelectionLayoutStyle) ?? .smallThumbnails
+            return style == .coverFlow ? .smallThumbnails : style
+        }
+        return LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
     }
 
     private var availableLayoutStyles: [LayoutStyle] {
@@ -918,6 +1018,7 @@ struct FileBrowserView: View {
     }
 
     private func reconcileAutomaticCoverFlow() {
+        guard onPickMedia == nil else { return }
         guard Date.now >= suppressAutomaticCoverFlowUntil else { return }
         let shouldPresent = FileBrowserOverflowPresentationPolicy
             .shouldPresentPosterAsOverflow(
@@ -1289,12 +1390,10 @@ struct FileBrowserView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: ui(5)) {
                     if let parentPathComponent {
-                        NavigationLink {
-                            pathDestination(
-                                path: parentPathComponent.path,
-                                title: parentPathTitle(parentPathComponent)
-                            )
-                        } label: {
+                        pathLink(
+                            path: parentPathComponent.path,
+                            title: parentPathTitle(parentPathComponent)
+                        ) {
                             Image(systemName: "arrow.up")
                                 .font(.ui(.caption).weight(.bold))
                                 .foregroundStyle(SkyBreezeTheme.accent)
@@ -1313,12 +1412,10 @@ struct FileBrowserView: View {
                     Image(systemName: "externaldrive.fill")
                         .foregroundStyle(.tint)
 
-                    NavigationLink {
-                        pathDestination(
-                            path: viewModel.connection.normalizedRootPath,
-                            title: viewModel.connection.name
-                        )
-                    } label: {
+                    pathLink(
+                        path: viewModel.connection.normalizedRootPath,
+                        title: viewModel.connection.name
+                    ) {
                         Text(viewModel.connection.name)
                             .fontWeight(.semibold)
                             .lineLimit(1)
@@ -1336,9 +1433,7 @@ struct FileBrowserView: View {
                                 .font(.system(size: ui(8), weight: .bold))
                                 .foregroundStyle(.tertiary)
                         }
-                        NavigationLink {
-                            pathDestination(path: component.path, title: component.title)
-                        } label: {
+                        pathLink(path: component.path, title: component.title) {
                             Text(component.title)
                         }
                         .buttonStyle(.plain)
@@ -1383,6 +1478,28 @@ struct FileBrowserView: View {
         component.path == viewModel.connection.normalizedRootPath
             ? viewModel.connection.name
             : component.title
+    }
+
+    /// 경로 막대 이동. 영상 만들기 출처 페이지에서는 push 대신 출처 페이지의 폴더 경로를 바꾼다.
+    @ViewBuilder
+    private func pathLink<LinkLabel: View>(
+        path: String,
+        title: String,
+        @ViewBuilder label: () -> LinkLabel
+    ) -> some View {
+        if let selectionNavigation {
+            Button {
+                selectionNavigation.open(path, title)
+            } label: {
+                label()
+            }
+        } else {
+            NavigationLink {
+                pathDestination(path: path, title: title)
+            } label: {
+                label()
+            }
+        }
     }
 
     private func pathDestination(path: String, title: String) -> some View {
@@ -1543,8 +1660,9 @@ struct FileBrowserView: View {
             RemoteFileListRow(
                 item: item,
                 service: viewModel.service,
-                thumbnailReloadVersion: thumbnailReloadVersion
-            )
+                thumbnailReloadVersion: thumbnailReloadVersion,
+                playback: item.isAudio && !isSelecting ? inlineMusic : nil
+            ) { inlineMusic.toggle(item, using: viewModel.service) }
             .frame(maxWidth: .infinity, alignment: .leading)
 
             if isSelecting {
@@ -1578,6 +1696,14 @@ struct FileBrowserView: View {
     }
 
     private func activate(_ item: RemoteFileItem) {
+        if onPickMedia != nil {
+            if item.isDirectory {
+                if let selectionNavigation { selectionNavigation.open(item.path, item.name) }
+                else { navigatedFolder = item }
+            }
+            else if item.isTrailerEligible, !shareCoordinator.isPreparing { toggleSelection(for: item) }
+            return
+        }
         switch FileBrowserInteractionCoordinator.activation(
             for: item,
             isSelecting: isSelecting
@@ -1589,6 +1715,7 @@ struct FileBrowserView: View {
             navigatedFolder = item
         case .preview:
             guard canBeginUserPresentation else { return }
+            inlineMusic.stop()
             previewItem = item
         }
     }
@@ -1893,6 +2020,21 @@ struct FileBrowserView: View {
 
             Divider()
 
+            if let onPickMedia {
+                Button {
+                    let picked = selectedItems.filter { !$0.isDirectory && $0.isTrailerEligible }
+                    guard !picked.isEmpty else { return }
+                    onPickMedia(picked, viewModel.service)
+                    selectedItemIDs.removeAll()
+                } label: {
+                    Text("영상 만들기에 담기").frame(maxWidth: .infinity, minHeight: ui(32))
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(selectedItems.allSatisfy { $0.isDirectory || !$0.isTrailerEligible })
+                Text("폴더를 열어 사진·영상을 고르세요. 선택한 항목만 가져오며 원본은 바뀌지 않습니다.")
+                    .font(.ui(.caption2)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: ui(20)) {
                     if viewModel.service.capabilities.supports(.copy) {
@@ -1956,8 +2098,9 @@ struct FileBrowserView: View {
                 }
                 .frame(maxWidth: .infinity)
             }
+            }
 
-            if let note = selectionUnavailableNote {
+            if onPickMedia == nil, let note = selectionUnavailableNote {
                 Text(note)
                     .font(.ui(.caption2))
                     .foregroundStyle(.secondary)
@@ -2362,6 +2505,9 @@ private struct RemoteFileListRow: View {
     let item: RemoteFileItem
     let service: any RemoteFileService
     let thumbnailReloadVersion: Int
+    /// Set for a music file: its thumbnail then carries the inline play button.
+    var playback: InlineMusicPlayback?
+    var toggleMusic: () -> Void = {}
 
     var body: some View {
         HStack(spacing: ui(12)) {
@@ -2375,6 +2521,11 @@ private struct RemoteFileListRow: View {
                 reloadVersion: thumbnailReloadVersion
             )
                 .frame(width: thumbnailSide, height: thumbnailSide)
+                .overlay {
+                    if let playback {
+                        InlineMusicThumbnailControl(playback: playback, id: item.id, name: item.name, action: toggleMusic)
+                    }
+                }
                 .background(SkyBreezeTheme.thumbnailSurface, in: RoundedRectangle(cornerRadius: ui(9)))
                 .overlay {
                     RoundedRectangle(cornerRadius: ui(9))
@@ -2403,7 +2554,8 @@ private struct RemoteFileListRow: View {
                     item: item,
                     showsModifiedDate: true,
                     includesTime: true,
-                    compact: false
+                    compact: false,
+                    playback: playback
                 )
             }
         }
@@ -2423,6 +2575,8 @@ private struct RemoteFileMetadataView: View {
     let showsModifiedDate: Bool
     let includesTime: Bool
     let compact: Bool
+    /// Set for a music row: its time text follows the size.
+    var playback: InlineMusicPlayback?
 
     /// A PhoneHard video or music file shows its playing time right after its size; the
     /// file is on the device, so reading its length costs no transfer.
@@ -2449,6 +2603,16 @@ private struct RemoteFileMetadataView: View {
                         if showsPlayingTime {
                             LocalInboxDurationLabel(item: item)
                         }
+                    }
+                } else if let playback, item.isAudio {
+                    HStack(spacing: ui(5)) {
+                        Text(item.browserKindAndSizeLabel)
+                            .lineLimit(2)
+                        InlineMusicTimeText(
+                            playback: playback,
+                            id: item.id,
+                            localItem: showsPlayingTime ? item : nil
+                        )
                     }
                 } else if showsPlayingTime {
                     HStack(spacing: ui(7)) {

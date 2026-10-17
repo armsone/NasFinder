@@ -16,8 +16,24 @@ struct BrowserDownloadedFile: Identifiable, Equatable {
 /// address itself stays inside the web view's own download.
 struct BrowserMusicCandidate: Identifiable, Equatable {
     let url: URL
+    /// The song title that belongs to this very file (media session, element label or
+    /// link text), never one borrowed from another candidate.
+    var title: String?
+    var isPlaying = false
     var id: String { url.absoluteString }
+    /// Same exact file across rescans: the whole address including its query (which can
+    /// select the song, e.g. `/stream?id=A`), without the fragment. Never shown or logged.
+    var identity: String {
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url.absoluteString }
+        components.fragment = nil
+        components.user = nil
+        components.password = nil
+        components.scheme = components.scheme?.lowercased()
+        components.host = components.host?.lowercased()
+        return components.string ?? url.absoluteString
+    }
     var displayName: String {
+        if let title = BrowserURLPolicy.musicFilenameBase(title) { return title }
         let name = url.lastPathComponent.removingPercentEncoding ?? url.lastPathComponent
         return name.isEmpty || name == "/" ? (url.host ?? "음악") : name
     }
@@ -43,6 +59,30 @@ enum BrowserURLPolicy {
             .joined(separator: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return cleaned.isEmpty ? "download" : cleaned
+    }
+
+    /// A title that is safe to use as a file name: no control or forbidden characters,
+    /// no address or signed-query look-alikes, bounded length. `nil` when nothing usable.
+    static func musicFilenameBase(_ title: String?) -> String? {
+        guard var text = title?.precomposedStringWithCanonicalMapping else { return nil }
+        if text.contains("://") || (text.contains("=") && text.contains("&")) { return nil }
+        var forbidden = CharacterSet(charactersIn: "/\\:*?\"<>|")
+        forbidden.formUnion(.controlCharacters)
+        forbidden.formUnion(.illegalCharacters)
+        forbidden.formUnion(CharacterSet(charactersIn: "\u{200B}\u{200E}\u{200F}\u{202A}\u{202B}\u{202C}\u{202D}\u{202E}\u{2066}\u{2067}\u{2068}\u{2069}\u{FEFF}"))
+        text = text.unicodeScalars.map { forbidden.contains($0) ? " " : String($0) }.joined()
+        text = text.components(separatedBy: .whitespacesAndNewlines).filter { !$0.isEmpty }.joined(separator: " ")
+        var bounded = ""
+        for character in text.prefix(100) {
+            if bounded.utf8.count + String(character).utf8.count > 220 { break }
+            bounded.append(character)
+        }
+        text = bounded.trimmingCharacters(in: CharacterSet(charactersIn: ". ").union(.whitespaces))
+        if text.isEmpty { return nil }
+        // Long unbroken alphanumeric runs are tokens or ids, not song names.
+        if !text.contains(" "), text.count >= 32,
+           text.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_" || $0 == "-") }) { return nil }
+        return text
     }
 
     static func isAudio(filename: String, mimeType: String?) -> Bool {
@@ -158,6 +198,8 @@ struct WebBrowserView: View {
     @State private var musicDownloadTarget: BrowserMusicCandidate?
     @State private var musicDownloadTrigger = 0
     @State private var isChoosingMusicCandidate = false
+    @State private var dismissMusicTrigger = 0
+    @State private var isMusicNoticeHidden = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -179,6 +221,7 @@ struct WebBrowserView: View {
                     musicCandidates: $musicCandidates,
                     musicDownloadTarget: musicDownloadTarget,
                     musicDownloadTrigger: $musicDownloadTrigger,
+                    dismissMusicTrigger: $dismissMusicTrigger,
                     onDownloaded: {
                         if $0.isMusic {
                             saveMusicDownload($0)
@@ -211,13 +254,18 @@ struct WebBrowserView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Color(uiColor: .systemBackground))
         .overlay(alignment: .bottom) {
-            if !isDownloading, !musicCandidates.isEmpty || onMusicSaved != nil {
+            if !isDownloading, !isMusicNoticeHidden, !musicCandidates.isEmpty || onMusicSaved != nil {
                 musicDownloadBar
             }
         }
         .toolbar(.hidden, for: .navigationBar)
         .onChange(of: currentURLText) { _, newValue in
             addressText = newValue
+            isMusicNoticeHidden = false
+        }
+        .onChange(of: musicCandidates) { _, newValue in
+            // Dismissed songs are filtered out, so anything listed here is new.
+            if !newValue.isEmpty { isMusicNoticeHidden = false }
         }
         .confirmationDialog(
             "어디에 저장할까요?",
@@ -375,7 +423,7 @@ struct WebBrowserView: View {
                     .foregroundStyle(.secondary)
             } else {
                 Button("음악 다운로드") {
-                    if musicCandidates.count == 1 {
+                    if musicCandidates.count == 1 || musicCandidates[0].isPlaying {
                         requestMusicDownload(musicCandidates[0])
                     } else {
                         isChoosingMusicCandidate = true
@@ -388,6 +436,12 @@ struct WebBrowserView: View {
                         .foregroundStyle(.secondary)
                 }
             }
+            Button(action: closeMusicNotice) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("음악 알림 닫기")
         }
         .padding(.horizontal, ui(14))
         .padding(.vertical, ui(10))
@@ -403,6 +457,14 @@ struct WebBrowserView: View {
             }
             Button("취소", role: .cancel) {}
         }
+    }
+
+    /// Hides the notice and forgets the pending choice. A running download is untouched.
+    private func closeMusicNotice() {
+        isMusicNoticeHidden = true
+        isChoosingMusicCandidate = false
+        musicDownloadTarget = nil
+        dismissMusicTrigger += 1
     }
 
     private func requestMusicDownload(_ candidate: BrowserMusicCandidate) {
@@ -685,6 +747,7 @@ private struct NasFinderWebView: UIViewRepresentable {
     @Binding var musicCandidates: [BrowserMusicCandidate]
     let musicDownloadTarget: BrowserMusicCandidate?
     @Binding var musicDownloadTrigger: Int
+    @Binding var dismissMusicTrigger: Int
     let onDownloaded: (BrowserDownloadedFile) -> Void
     let onError: (String) -> Void
 
@@ -748,10 +811,36 @@ private struct NasFinderWebView: UIViewRepresentable {
         /// page itself, and the ones loaded into frames of the current page.
         private var pendingMainFrameMusicURL: URL?
         private var responseMusicURLs: [URL] = []
+        private var handledDismissMusicTrigger = 0
+        private weak var webView: WKWebView?
+        private var musicSignalTask: Task<Void, Never>?
+        private var musicSignalProxy: MusicSignalProxy?
+        /// Bumped on every committed navigation so late scan results of an old page are dropped.
+        private var pageGeneration = 0
+        private var scanSequence = 0
+        private var scannedMusic: [BrowserMusicCandidate] = []
+        private var dismissedMusicKeys = Set<String>()
+        private var lastPlayingKey: String?
+        private var lastMusicSignalAt: ContinuousClock.Instant?
+        /// The candidate and its own title, fixed when the download starts.
+        private var musicSnapshot: BrowserMusicCandidate?
 
         init(parent: NasFinderWebView) { self.parent = parent }
 
         func attach(to webView: WKWebView) {
+            self.webView = webView
+            // The page can only ask for a rescan through this handler; it carries no commands.
+            let proxy = MusicSignalProxy(coordinator: self)
+            musicSignalProxy = proxy
+            let controller = webView.configuration.userContentController
+            controller.removeScriptMessageHandler(forName: Self.musicSignalName)
+            controller.removeAllUserScripts()
+            controller.add(proxy, name: Self.musicSignalName)
+            controller.addUserScript(WKUserScript(
+                source: Self.musicSignalScript,
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            ))
             progressObservation = webView.observe(\.estimatedProgress, options: [.new]) {
                 [weak self] webView, _ in
                 Task { @MainActor in self?.parent.pageLoadProgress = webView.estimatedProgress }
@@ -763,6 +852,69 @@ private struct NasFinderWebView: UIViewRepresentable {
             progressObservation = nil
             musicScanTask?.cancel()
             musicScanTask = nil
+            musicSignalTask?.cancel()
+            musicSignalTask = nil
+            if let controller = webView?.configuration.userContentController {
+                controller.removeScriptMessageHandler(forName: Self.musicSignalName)
+                controller.removeAllUserScripts()
+            }
+            musicSignalProxy = nil
+        }
+
+        static let musicSignalName = "nasFinderMusicSignal"
+        private static let musicSignalScript = #"""
+        (() => {
+          if (window.__nasFinderMusicSignal) return;
+          window.__nasFinderMusicSignal = true;
+          const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nasFinderMusicSignal;
+          if (!handler) return;
+          let timer = 0, kind = 'scan';
+          const send = (next) => {
+            if (next === 'nav') kind = 'nav';
+            if (timer) return;
+            timer = setTimeout(() => { timer = 0; const message = kind; kind = 'scan'; try { handler.postMessage(message); } catch (_) {} }, 250);
+          };
+          ['play', 'playing', 'loadstart', 'emptied', 'loadedmetadata', 'durationchange'].forEach((name) => {
+            document.addEventListener(name, (event) => { if (event.target && event.target.tagName === 'AUDIO') send('scan'); }, true);
+          });
+          ['pushState', 'replaceState'].forEach((name) => {
+            const original = history[name];
+            history[name] = function () { const result = original.apply(this, arguments); send('nav'); return result; };
+          });
+          window.addEventListener('popstate', () => send('nav'));
+          window.addEventListener('hashchange', () => send('nav'));
+        })();
+        """#
+
+        /// Only a plain "scan"/"nav" string from the top frame of the current web view
+        /// is accepted, and it only schedules a rescan.
+        fileprivate func handleMusicSignal(_ message: WKScriptMessage) {
+            guard let webView, message.webView === webView, message.frameInfo.isMainFrame,
+                  let kind = message.body as? String, kind == "scan" || kind == "nav" else { return }
+            if kind == "nav" { responseMusicURLs.removeAll() }
+            // Untrusted pages can spam this handler: coalesce bursts before creating a task.
+            let now = ContinuousClock.now
+            if let last = lastMusicSignalAt, now - last < .milliseconds(250) { return }
+            lastMusicSignalAt = now
+            musicSignalTask?.cancel()
+            musicSignalTask = Task { [weak self, weak webView] in
+                for delay in [0.3, 1.5] {
+                    try? await Task.sleep(for: .seconds(delay))
+                    guard !Task.isCancelled, let self, let webView else { return }
+                    self.scanMusic(in: webView)
+                }
+            }
+        }
+
+        private func musicKey(_ candidate: BrowserMusicCandidate) -> String { candidate.identity }
+
+        /// Hides what is listed now (and keeps it hidden) until a new song or a new page.
+        private func dismissCurrentMusic() {
+            if lastPlayingKey == nil, let playing = parent.musicCandidates.first(where: { $0.isPlaying }) {
+                lastPlayingKey = musicKey(playing)
+            }
+            dismissedMusicKeys.formUnion(parent.musicCandidates.map(musicKey))
+            publishMusicCandidates()
         }
 
         func handleControls(in webView: WKWebView) {
@@ -787,6 +939,10 @@ private struct NasFinderWebView: UIViewRepresentable {
                 handledMusicDownloadTrigger = parent.musicDownloadTrigger
                 if let target = parent.musicDownloadTarget { startMusicDownload(target, in: webView) }
             }
+            if parent.dismissMusicTrigger != handledDismissMusicTrigger {
+                handledDismissMusicTrigger = parent.dismissMusicTrigger
+                DispatchQueue.main.async { [weak self] in self?.dismissCurrentMusic() }
+            }
         }
 
         /// Runs through the web view's own download, so the page's cookies, redirects
@@ -794,10 +950,13 @@ private struct NasFinderWebView: UIViewRepresentable {
         private func startMusicDownload(_ candidate: BrowserMusicCandidate, in webView: WKWebView) {
             guard activeDownload == nil, destinationURL == nil, !isMusicDownload else { return }
             var request = URLRequest(url: candidate.url)
+            // Only for this request: never serve an earlier track from the same endpoint.
+            request.cachePolicy = .reloadIgnoringLocalCacheData
             if let referer = BrowserURLPolicy.referer(from: webView.url, to: candidate.url) {
                 request.setValue(referer, forHTTPHeaderField: "Referer")
             }
             isMusicDownload = true
+            musicSnapshot = candidate
             beginDownload()
             webView.startDownload(using: request) { [weak self] download in
                 guard let self else { return }
@@ -822,42 +981,84 @@ private struct NasFinderWebView: UIViewRepresentable {
         }
 
         private func scanMusic(in webView: WKWebView) {
-            let script = """
+            let script = #"""
             (() => {
-              const out = [];
-              const add = (value) => { try { if (value) out.push(new URL(value, document.baseURI).href); } catch (_) {} };
-              const music = /\\.(mp3|m4a|m4b|aac|wav|flac|ogg|oga|opus|aiff?|caf|wma)([?#]|$)/i;
+              const found = new Map();
+              const clean = (value) => (typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, 160) : '');
+              const session = (navigator.mediaSession && navigator.mediaSession.metadata && clean(navigator.mediaSession.metadata.title)) || '';
+              const label = (item) => clean(item.getAttribute('title')) || clean(item.getAttribute('aria-label')) || clean(item.getAttribute('data-title'));
+              const add = (value, title, playing) => {
+                try {
+                  if (!value) return;
+                  const href = new URL(value, document.baseURI).href;
+                  const old = found.get(href);
+                  if (old) { old.p = old.p || playing; if (!old.t) old.t = title; return; }
+                  found.set(href, { u: href, t: title || '', p: playing });
+                } catch (_) {}
+              };
+              const music = /\.(mp3|m4a|m4b|aac|wav|flac|ogg|oga|opus|aiff?|caf|wma)([?#]|$)/i;
               document.querySelectorAll('audio').forEach((item) => {
-                add(item.currentSrc || item.src);
-                item.querySelectorAll('source').forEach((source) => add(source.src));
+                const playing = !item.paused && !item.ended;
+                const title = playing ? (session || label(item) || clean(document.title)) : label(item);
+                add(item.currentSrc || item.src, title, playing);
+                item.querySelectorAll('source').forEach((source) => add(source.src, title, playing));
               });
-              document.querySelectorAll('a[href]').forEach((item) => { if (music.test(item.href)) add(item.href); });
-              return out.slice(0, 200);
+              document.querySelectorAll('a[href]').forEach((item) => {
+                if (music.test(item.href)) add(item.href, label(item) || clean(item.textContent), false);
+              });
+              return Array.from(found.values()).slice(0, 200);
             })()
-            """
+            """#
             let page = webView.url
+            let generation = pageGeneration
+            scanSequence += 1
+            let sequence = scanSequence
             webView.evaluateJavaScript(script) { [weak self, weak webView] result, _ in
-                guard let self, let webView, webView.url == page else { return }
-                self.publishMusicCandidates(found: (result as? [String] ?? []).compactMap(URL.init(string:)))
+                guard let self, let webView, webView.url == page,
+                      generation == self.pageGeneration, sequence == self.scanSequence else { return }
+                let items = result as? [[String: Any]] ?? []
+                let found = items.compactMap { item -> BrowserMusicCandidate? in
+                    guard let text = item["u"] as? String, let url = URL(string: text) else { return nil }
+                    let title = (item["t"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                    return BrowserMusicCandidate(url: url, title: title, isPlaying: item["p"] as? Bool ?? false)
+                }
+                self.scannedMusic = found.filter { $0.isPlaying } + found.filter { !$0.isPlaying }
+                // A song that starts playing now is a new song, even if it was closed before.
+                let playing = self.scannedMusic.first { $0.isPlaying }.map(self.musicKey)
+                if let playing, playing != self.lastPlayingKey { self.dismissedMusicKeys.remove(playing) }
+                // Pause/emptied keeps the last known track so resuming it is not "new".
+                if let playing { self.lastPlayingKey = playing }
+                self.publishMusicCandidates()
             }
         }
 
         /// Only plain web addresses are offered; `blob:` and `data:` sources (streamed or
-        /// protected playback) are never turned into a download.
-        private func publishMusicCandidates(found: [URL]) {
+        /// protected playback) are never turned into a download. The latest audio response
+        /// is only a fallback when the page itself shows nothing.
+        private func publishMusicCandidates() {
             var seen = Set<String>()
-            let candidates = (responseMusicURLs + found).filter { url in
-                guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return false }
-                return seen.insert(url.absoluteString).inserted
-            }.prefix(30).map(BrowserMusicCandidate.init(url:))
+            var source = scannedMusic
+            if source.isEmpty, let latest = responseMusicURLs.last {
+                source = [BrowserMusicCandidate(url: latest)]
+            }
+            let candidates = source.filter { candidate in
+                guard ["http", "https"].contains(candidate.url.scheme?.lowercased() ?? ""),
+                      !dismissedMusicKeys.contains(musicKey(candidate)) else { return false }
+                return seen.insert(candidate.url.absoluteString).inserted
+            }.prefix(30).map { $0 }
             if parent.musicCandidates != candidates { parent.musicCandidates = candidates }
         }
 
         func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
             musicScanTask?.cancel()
+            musicSignalTask?.cancel()
+            pageGeneration += 1
             responseMusicURLs = pendingMainFrameMusicURL.map { [$0] } ?? []
             pendingMainFrameMusicURL = nil
-            publishMusicCandidates(found: [])
+            scannedMusic = []
+            dismissedMusicKeys.removeAll()
+            lastPlayingKey = nil
+            publishMusicCandidates()
         }
 
         func webView(
@@ -918,7 +1119,7 @@ private struct NasFinderWebView: UIViewRepresentable {
                     pendingMainFrameMusicURL = url
                 } else if !responseMusicURLs.contains(url) {
                     responseMusicURLs.append(url)
-                    publishMusicCandidates(found: parent.musicCandidates.map(\.url))
+                    publishMusicCandidates()
                 }
             }
             if !navigationResponse.canShowMIMEType || disposition?.contains("attachment") == true {
@@ -996,10 +1197,19 @@ private struct NasFinderWebView: UIViewRepresentable {
                 return
             }
             var filename = BrowserURLPolicy.safeFilename(suggestedFilename, response: response)
-            if isMusicDownload, (filename as NSString).pathExtension.isEmpty,
-               let mimeType = response.mimeType, mimeType.lowercased().hasPrefix("audio/"),
-               let fileExtension = UTType(mimeType: mimeType)?.preferredFilenameExtension {
-                filename += ".\(fileExtension)"
+            if isMusicDownload {
+                let serverExtension = (filename as NSString).pathExtension
+                let mimeExtension = response.mimeType.flatMap { type in
+                    type.lowercased().hasPrefix("audio/") ? UTType(mimeType: type)?.preferredFilenameExtension : nil
+                }
+                let recognized = BrowserURLPolicy.isAudio(filename: filename, mimeType: nil)
+                let fileExtension = recognized ? serverExtension : (mimeExtension ?? serverExtension)
+                // The song title captured with this candidate names the file; the server's
+                // file name is the fallback.
+                let serverStem = serverExtension.isEmpty ? filename : String(filename.dropLast(serverExtension.count + 1))
+                let base = BrowserURLPolicy.musicFilenameBase(musicSnapshot?.title)
+                    ?? BrowserURLPolicy.musicFilenameBase(serverStem) ?? "음악"
+                filename = fileExtension.isEmpty ? base : "\(base).\(fileExtension)"
             }
             let directory = FileManager.default.temporaryDirectory
                 .appendingPathComponent("NasFinder-WebDownloads", isDirectory: true)
@@ -1028,6 +1238,11 @@ private struct NasFinderWebView: UIViewRepresentable {
             }
             let filename = destinationURL.lastPathComponent
             let type = UTType(filenameExtension: destinationURL.pathExtension)?.identifier
+            if isMusicDownload, let snapshot = musicSnapshot {
+                // Consumed: do not keep offering the file that was just saved.
+                dismissedMusicKeys.insert(musicKey(snapshot))
+                publishMusicCandidates()
+            }
             parent.onDownloaded(
                 BrowserDownloadedFile(
                     temporaryURL: destinationURL,
@@ -1064,6 +1279,7 @@ private struct NasFinderWebView: UIViewRepresentable {
             destinationURL = nil
             activeDownload = nil
             isMusicDownload = false
+            musicSnapshot = nil
             downloadMIMEType = nil
         }
 
@@ -1094,5 +1310,16 @@ private struct NasFinderWebView: UIViewRepresentable {
             if let url = webView.url { parent.currentURLText = url.absoluteString }
             parent.canGoBack = webView.canGoBack
         }
+    }
+}
+
+/// Holds the coordinator weakly: the web view's content controller retains its handlers.
+@MainActor
+private final class MusicSignalProxy: NSObject, WKScriptMessageHandler {
+    weak var coordinator: NasFinderWebView.Coordinator?
+    init(coordinator: NasFinderWebView.Coordinator) { self.coordinator = coordinator }
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        coordinator?.handleMusicSignal(message)
     }
 }

@@ -6,12 +6,7 @@ import UniformTypeIdentifiers
 
 /// 사진과 달력은 같은 PHAsset 바스켓을 사용하며 실제 작업을 시작할 때만 원본을 복사한다.
 struct LocalPhotoLibraryView: View {
-    private enum BrowseMode: String, CaseIterable, Identifiable {
-        case photos = "사진"
-        case calendar = "달력"
-        var id: String { rawValue }
-    }
-    private enum EntryOrigin { case photoPicker, calendar, file }
+    private enum EntryOrigin { case photoPicker, calendar, file, network, phoneHard, googlePhotos }
     private struct Entry: Identifiable {
         let id: String
         let item: RemoteFileItem
@@ -22,13 +17,17 @@ struct LocalPhotoLibraryView: View {
         var duration: TimeInterval?
         var asset: PHAsset? = nil
         var pickerItem: PhotosPickerItem? = nil
+        /// 폰하드에 이미 저장된 파일은 읽기만 하며 바스켓이 지우지 않는다.
+        var ownsURL = true
     }
+    @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @Environment(\.scenePhase) private var scenePhase
     private let initialMode: VideoTrailerMode?
     init(initialMode: VideoTrailerMode? = nil) { self.initialMode = initialMode }
 
-    @State private var mode: BrowseMode = .photos
+    @Environment(\.dismiss) private var dismiss
+    @State private var sourcePage: MediaSourcePage = .photos
     @State private var libraryAssets: PHFetchResult<PHAsset>?
     @State private var authorizationStatus = LocalPhotoLibraryCalendarService.authorizationStatus
     @State private var isLoadingLibrary = false
@@ -64,6 +63,9 @@ struct LocalPhotoLibraryView: View {
     @State private var isFileImporting = false
     @State private var isCleanupPendingOnDeparture = false
     @State private var preparationTask: Task<Void, Never>?
+    /// Google 포토 페이지가 가져온 뒤 아직 바구니에 담지 못한 기록. 다른 준비 작업이 끝나면 이어서 담는다.
+    @State private var queuedGoogleRecords: [SharedInboxRecord] = []
+    @State private var googleLifecycle = EmbeddedGooglePhotosLifecycle()
 
     private let columns = [GridItem(.adaptive(minimum: ui(92), maximum: ui(120)), spacing: ui(8))]
     private var service: LocalPhotoLibraryFileService {
@@ -73,32 +75,28 @@ struct LocalPhotoLibraryView: View {
     private var selectedIdentifiers: Set<String> { Set(entries.map(\.id)) }
     private var navigationTitleText: String {
         switch initialMode {
-        case .trailer: "예고편 만들기"
         case .mediaMusic: "뮤직비디오"
+        case .trailer: "영상 만들기"
         case nil: "내 사진·영상"
         }
     }
     var body: some View { mediaContent.modifier(PreserveMediaNavigation()) }
     private var mediaContent: some View {
         VStack(spacing: 0) {
-            Picker("보기 방식", selection: $mode) {
-                ForEach(BrowseMode.allCases) { Text($0.rawValue).tag($0) }
-            }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, ui(12)).padding(.top, ui(8))
-            modeContent.disabled(isBusy)
-        }
-        .navigationTitle(navigationTitleText)
-        .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                Menu {
-                    Button("파일에서 추가", systemImage: "folder.badge.plus") { isFileImporterPresented = true }
-                    Button("시스템 사진 선택기", systemImage: "photo.badge.plus") { isPickerPresented = true }
-                } label: { Label("추가", systemImage: "plus") }
-                .disabled(isBusy).uiBarFont()
+            HStack(spacing: 0) {
+                Button { dismiss() } label: {
+                    Image(systemName: "chevron.left").font(.system(size: ui(17), weight: .semibold))
+                        .frame(width: 44, height: 44).contentShape(Rectangle())
+                }.accessibilityLabel("뒤로")
+                Text(navigationTitleText).font(.ui(.headline))
+                Spacer()
+            }.padding(.horizontal, ui(4))
+            MediaSourceTabBar(page: $sourcePage)
+            MediaSourcePager(page: $sourcePage) { page in
+                pageContent(page).disabled(isBusy)
             }
         }
+        .toolbar(.hidden, for: .navigationBar)
         .safeAreaInset(edge: .bottom) { bottomActionBar }
         .safeAreaInset(edge: .top) {
             if isLoadingSelection { progressBanner }
@@ -152,7 +150,8 @@ struct LocalPhotoLibraryView: View {
             }
         }
         .fullScreenCover(item: $trailerSelection) { selection in
-            VideoTrailerView(items: selection.items, service: editingService ?? service, mode: selection.mode)
+            VideoTrailerView(items: selection.items, service: editingService ?? service, mode: selection.mode,
+                             keepsSelectionOrder: selection.keepsSelectionOrder)
         }
         .fullScreenCover(item: $previewItem) { item in
             RemotePreviewView(item: item, sequentialItems: previewItems, service: previewService ?? service,
@@ -175,8 +174,8 @@ struct LocalPhotoLibraryView: View {
         .onChange(of: isFileImporterPresented) { _, showing in if !showing { runDeferredCleanupIfPending() } }
         .onDisappear(perform: cleanupTemporaryFiles)
     }
-    @ViewBuilder private var modeContent: some View {
-        switch mode {
+    @ViewBuilder private func pageContent(_ page: MediaSourcePage) -> some View {
+        switch page {
         case .photos: photoModeContent
         case .calendar:
             LocalPhotoLibraryCalendarView(selectedIdentifiers: selectedIdentifiers,
@@ -190,6 +189,29 @@ struct LocalPhotoLibraryView: View {
                 },
                 onPreview: { asset in nativePreviewAsset = asset },
                 onRequestPhotoMode: { isPickerPresented = true })
+        case .phoneHard:
+            NavigationStack {
+                MediaSelectionBrowser(connection: LocalInboxFileService.phoneHardConnection, rootPath: LocalInboxFileService.rootPath,
+                                      rootTitle: LocalInboxFileService.phoneHardConnection.name, service: LocalInboxFileService(),
+                                      onPickMedia: pickedFromBrowser)
+            }
+        case .favorites:
+            NavigationStack { MediaFavoritePickerView(onPickMedia: pickedFromBrowser) }
+        case .network:
+            MediaNetworkSourcePage(onPickMedia: pickedFromBrowser)
+        case .files:
+            MediaFilesSourcePage(selectedIDs: selectedIdentifiers, isActive: sourcePage == .files,
+                onToggle: { url in
+                    let key = "file:" + url.standardizedFileURL.path
+                    if let entry = entries.first(where: { $0.id == key }) { remove(entry) }
+                    else { Task { await importFileURLs([url]) } }
+                },
+                onOpenSystemImporter: { isFileImporterPresented = true })
+        case .google:
+            GooglePhotosImportFlowView(inboxStore: inboxStore, lifecycle: googleLifecycle, onImportedMedia: { records in
+                queuedGoogleRecords.append(contentsOf: records)
+                drainGoogleQueue()
+            })
         }
     }
     private var photoModeContent: some View {
@@ -200,14 +222,6 @@ struct LocalPhotoLibraryView: View {
                     Spacer()
                     Button("선택 변경") { presentLimitedLibraryPicker() }.font(.ui(.footnote))
                 }.padding(.horizontal, ui(12))
-            }
-            let extraEntries = entries.filter { $0.asset == nil }
-            if !extraEntries.isEmpty {
-                ScrollView(.horizontal) {
-                    HStack(spacing: ui(8)) {
-                        ForEach(extraEntries) { selectedEntryCell($0) }
-                    }.padding(.horizontal, ui(12))
-                }.frame(height: ui(108))
             }
             if authorizationStatus == .authorized || authorizationStatus == .limited {
                 if let libraryAssets, libraryAssets.count > 0 {
@@ -244,8 +258,16 @@ struct LocalPhotoLibraryView: View {
                 if !entries.isEmpty {
                     Button("미리보기", systemImage: "eye") {
                         startPreparation { await previewSelected() }
-                    }.font(.ui(.footnote)).disabled(isBusy)
+                    }.font(.ui(.footnote)).frame(minHeight: 44).disabled(isBusy)
                 }
+            }
+            if !entries.isEmpty {
+                MediaBasketTray(
+                    items: entries.map { MediaBasketTrayItem(id: $0.id, name: $0.item.name, isVideo: $0.isVideo,
+                                                             thumbnail: $0.thumbnail, asset: $0.asset) },
+                    isBusy: isBusy,
+                    onPreview: { id in startPreparation { await previewSelected(ids: [id]) } },
+                    onRemove: { id in if let entry = entries.first(where: { $0.id == id }) { remove(entry) } })
             }
             HStack(spacing: ui(8)) {
                 Button {
@@ -254,11 +276,8 @@ struct LocalPhotoLibraryView: View {
                     isChoosingPhoneHardDestination = true
                 } label: { Text("폰하드 복사").frame(maxWidth: .infinity, minHeight: ui(32)) }
                 Button {
-                    startPreparation { await beginTrailer(mode: .trailer) }
-                } label: { Text("예고편 제작").frame(maxWidth: .infinity, minHeight: ui(32)) }
-                Button {
-                    startPreparation { await beginTrailer(mode: .mediaMusic) }
-                } label: { Text("뮤직비디오").frame(maxWidth: .infinity, minHeight: ui(32)) }
+                    startPreparation { await beginTrailer(mode: initialMode ?? .trailer) }
+                } label: { Text("영상 편집").frame(maxWidth: .infinity, minHeight: ui(32)) }
             }
             .font(.ui(.subheadline).weight(.semibold))
             .buttonStyle(.borderedProminent)
@@ -281,30 +300,6 @@ struct LocalPhotoLibraryView: View {
             if let currentLoadingLabel { Text(currentLoadingLabel).font(.ui(.caption2)).foregroundStyle(.secondary) }
         }.padding(ui(10)).background(.bar)
     }
-    private func selectedEntryCell(_ entry: Entry) -> some View {
-        Button { remove(entry) } label: {
-            ZStack(alignment: .bottomTrailing) {
-                Group {
-                    if let thumbnail = entry.thumbnail { Image(uiImage: thumbnail).resizable().scaledToFill() }
-                    else { Rectangle().fill(.secondary.opacity(0.15)).overlay(Image(systemName: entry.isVideo ? "film" : "photo")) }
-                }.frame(width: ui(100), height: ui(100)).clipped()
-                Image(systemName: "checkmark.circle.fill").foregroundStyle(.white, Color.accentColor).padding(ui(4))
-                    .allowsHitTesting(false).accessibilityHidden(true)
-            }.clipShape(RoundedRectangle(cornerRadius: ui(10)))
-        }.buttonStyle(.plain)
-        .highPriorityGesture(
-            LongPressGesture(minimumDuration: 0.45, maximumDistance: 10)
-                .exclusively(before: TapGesture())
-                .onEnded { gesture in
-                    switch gesture {
-                    case .first: startPreparation { await previewSelected(ids: [entry.id]) }
-                    case .second: remove(entry)
-                    }
-                }
-        )
-        .accessibilityAction(named: "미리보기") { startPreparation { await previewSelected(ids: [entry.id]) } }
-        .accessibilityLabel(entry.item.name).accessibilityAddTraits(.isSelected)
-    }
     private func photoKey(for item: PhotosPickerItem) -> String {
         if let identifier = item.itemIdentifier { return identifier }
         if let remembered = rememberedIdentities[item] { return remembered }
@@ -317,7 +312,10 @@ struct LocalPhotoLibraryView: View {
         pickerSelection.removeAll { photoKey(for: $0) == entry.id }
         entries.removeAll { $0.id == entry.id }
         rememberedIdentities = rememberedIdentities.filter { $0.value != entry.id }
-        if let url = entry.url { try? FileManager.default.removeItem(at: url) }
+        discardOwnedFile(of: entry)
+    }
+    private func discardOwnedFile(of entry: Entry) {
+        if entry.ownsURL, let url = entry.url { try? FileManager.default.removeItem(at: url) }
     }
     private func applyPhotoGridSelection(_ identifiers: [String]) {
         guard !isBusy else { return }
@@ -373,9 +371,7 @@ struct LocalPhotoLibraryView: View {
         entries.removeAll { ids.contains($0.id) }
         pickerSelection.removeAll { ids.contains(photoKey(for: $0)) }
         rememberedIdentities = rememberedIdentities.filter { !ids.contains($0.value) }
-        for entry in removed {
-            if let url = entry.url { try? FileManager.default.removeItem(at: url) }
-        }
+        for entry in removed { discardOwnedFile(of: entry) }
     }
     private func toggleAsset(_ asset: PHAsset) {
         if let entry = entries.first(where: { $0.id == asset.localIdentifier }) { remove(entry) }
@@ -413,7 +409,17 @@ struct LocalPhotoLibraryView: View {
             await operation()
             preparationTask = nil
             runDeferredCleanupIfPending()
+            drainGoogleQueue()
         }
+    }
+    private func drainGoogleQueue() {
+        guard !queuedGoogleRecords.isEmpty, !isBusy, preparationTask == nil else { return }
+        let records = queuedGoogleRecords
+        queuedGoogleRecords = []
+        let items = records.map { LocalInboxFileService.remoteItem(for: $0) }.filter(\.isTrailerEligible)
+        guard !items.isEmpty else { return }
+        let service = LocalInboxFileService(records: records)
+        startPreparation { await importRemoteMedia(items, service: service, origin: .googlePhotos) }
     }
     private func prepare(_ selection: [Entry]) async -> [(Entry, URL)] {
         guard !isLoadingSelection else { return [] }
@@ -460,7 +466,7 @@ struct LocalPhotoLibraryView: View {
         let clips = prepared.map { $0.0.item }.filter(\.isTrailerEligible)
         guard !clips.isEmpty else { return }
         editingService = LocalPhotoLibraryFileService(entries: prepared.map { ($0.0.item, $0.1) })
-        trailerSelection = VideoTrailerSelection(items: clips, mode: mode)
+        trailerSelection = VideoTrailerSelection(items: clips, mode: mode, keepsSelectionOrder: true)
     }
 
     /// 편집 준비에서만 표현을 바꾸며 바스켓의 원래 Entry/URL과 원본 복사는 유지한다.
@@ -630,6 +636,71 @@ struct LocalPhotoLibraryView: View {
         }
     }
 
+    /// 브라우저에서 고른 항목만 앱 소유 사본으로 가져와 같은 바스켓 끝에 추가한다.
+    private func pickedFromBrowser(_ items: [RemoteFileItem], _ service: any RemoteFileService) {
+        let isPhoneHard = service is LocalInboxFileService
+        startPreparation { await importRemoteMedia(items, service: service, origin: isPhoneHard ? .phoneHard : .network) }
+    }
+
+    /// 선택한 항목만 내려받는다. 네트워크 항목은 앱 소유 임시 사본으로 두고, 폰하드에 이미 있는 파일은
+    /// 복사하지 않고 읽기만 한다. 취소·실패해도 이전 선택과 이미 추가한 항목은 유지한다.
+    private func importRemoteMedia(_ items: [RemoteFileItem], service: any RemoteFileService, origin: EntryOrigin) async {
+        guard !isLoadingSelection else { return }
+        let ownsCopies = origin == .network
+        isLoadingSelection = true
+        loadTotal = items.count
+        loadCompleted = 0
+        defer { isLoadingSelection = false; loadTotal = 0; loadCompleted = 0; currentLoadingLabel = nil }
+        var added = 0
+        var skipped = 0
+        var failedNames: [String] = []
+        for item in items {
+            if Task.isCancelled { break }
+            currentLoadingLabel = item.name
+            defer { loadCompleted += 1 }
+            var key = "remote:\(service.connection.id.uuidString):\(item.path)"
+            if ownsCopies, entries.contains(where: { $0.id == key }) { skipped += 1; continue }
+            do {
+                let downloaded = try await service.download(item)
+                var url = downloaded
+                if !ownsCopies {
+                    key = "local:" + downloaded.standardizedFileURL.path
+                    if entries.contains(where: { $0.id == key }) { skipped += 1; continue }
+                } else {
+                    let destination = LocalPhotoLibrarySelectionLoader.temporaryURL(
+                        fileExtension: URL(fileURLWithPath: item.name).pathExtension)
+                    try FileManager.default.copyItem(at: downloaded, to: destination)
+                    url = destination
+                }
+                if Task.isCancelled || entries.contains(where: { $0.id == key }) {
+                    if ownsCopies { try? FileManager.default.removeItem(at: url) }
+                    break
+                }
+                var duration: TimeInterval?
+                if item.isVideo {
+                    let seconds = try? await AVURLAsset(url: url).load(.duration).seconds
+                    if let seconds, seconds.isFinite, seconds > 0 { duration = seconds }
+                }
+                let entryItem = RemoteFileItem(connectionID: LocalPhotoLibraryFileService.connectionID, path: key,
+                    name: item.name, kind: .file, size: item.size, modifiedAt: item.modifiedAt,
+                    contentTypeIdentifier: item.contentTypeIdentifier)
+                var entry = Entry(id: key, item: entryItem, url: url, isVideo: item.isVideo, thumbnail: nil,
+                                  origin: origin, duration: duration)
+                entry.ownsURL = ownsCopies
+                entries.append(entry)
+                await loadThumbnail(for: key)
+                added += 1
+            } catch is CancellationError { break }
+            catch { failedNames.append(item.name) }
+        }
+        if !failedNames.isEmpty {
+            let names = failedNames.prefix(3).joined(separator: ", ")
+            errorMessage = "\(failedNames.count)개 항목을 가져오지 못했습니다: \(names). 기존 선택과 가져온 \(added)개는 유지됩니다."
+        } else if added > 0 {
+            showTemporaryImportSummary("\(added)개를 선택에 추가했습니다." + (skipped > 0 ? " 이미 있는 \(skipped)개는 건너뛰었습니다." : ""))
+        }
+    }
+
     private func showTemporaryImportSummary(_ text: String) {
         importSummaryText = text
         Task {
@@ -692,9 +763,8 @@ struct LocalPhotoLibraryView: View {
             return
         }
         isCleanupPendingOnDeparture = false
-        for entry in entries {
-            if let url = entry.url { try? FileManager.default.removeItem(at: url) }
-        }
+        googleLifecycle.cancel()
+        for entry in entries { discardOwnedFile(of: entry) }
         for url in previewTemporaryURLs { try? FileManager.default.removeItem(at: url) }
         previewTemporaryURLs = []
         editingService = nil

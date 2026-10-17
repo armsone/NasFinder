@@ -542,29 +542,7 @@ struct ConnectionListView: View {
         Section {
             TrailerDraftManagerEntryLink()
 
-            NavigationLink {
-                LocalPhotoLibraryView(initialMode: .trailer)
-            } label: {
-                HStack(spacing: ui(7)) {
-                    ThemedSymbol(systemName: "film", size: ui(32), symbolSize: ui(17))
-                    Text("예고편 만들기")
-                }
-                .font(.ui(.subheadline))
-                .foregroundStyle(.secondary)
-            }
-            .accessibilityHint("사진과 영상을 선택해 예고편을 만듭니다.")
-
-            NavigationLink {
-                LocalPhotoLibraryView(initialMode: .mediaMusic)
-            } label: {
-                HStack(spacing: ui(7)) {
-                    ThemedSymbol(systemName: "music.note", size: ui(32), symbolSize: ui(17))
-                    Text("뮤직비디오")
-                }
-                .font(.ui(.subheadline))
-                .foregroundStyle(.secondary)
-            }
-            .accessibilityHint("사진과 영상을 선택해 음악을 입힙니다.")
+            VideoCreateEntryLink()
         } header: {
             sectionHeader("영상 편집", systemImage: "film")
         }
@@ -1202,7 +1180,7 @@ private struct TrailerDraftManagerEntryLink: View {
         } label: {
             HStack(spacing: ui(7)) {
                 ThemedSymbol(systemName: "film.stack", size: ui(32), symbolSize: ui(17))
-                Text("편집 중인 예고편")
+                Text("보관한 편집")
                 Spacer(minLength: ui(8))
                 Text("\(draftStore.entries.count)개")
                     .font(.ui(.caption))
@@ -1211,7 +1189,7 @@ private struct TrailerDraftManagerEntryLink: View {
         }
         .font(.ui(.subheadline))
         .foregroundStyle(.secondary)
-        .accessibilityHint("보관한 예고편/음악 편집을 이어서 하거나 지웁니다.")
+        .accessibilityHint("보관한 편집을 이어서 하거나 지웁니다.")
         .sheet(isPresented: $showingDraftManager, onDismiss: {
             guard let id = pendingResumeID else { return }
             pendingResumeID = nil
@@ -1225,6 +1203,36 @@ private struct TrailerDraftManagerEntryLink: View {
         .fullScreenCover(item: $resumingDraft) { entry in
             VideoTrailerView(items: entry.items, service: entry.service, mode: entry.mode, resuming: entry)
                 .environmentObject(inboxStore)
+        }
+    }
+}
+
+/// The single "영상 만들기" entry: it opens the device photo library's media selection
+/// directly; trailer or music video is chosen inside the editor itself.
+private struct VideoCreateEntryLink: View {
+    @State private var showingLibrary = false
+
+    var body: some View {
+        Button {
+            showingLibrary = true
+        } label: {
+            HStack(spacing: ui(7)) {
+                ThemedSymbol(systemName: "film", size: ui(32), symbolSize: ui(17))
+                Text("영상 만들기")
+                Spacer(minLength: ui(8))
+                Image(systemName: "chevron.right")
+                    .font(.ui(.caption).weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .font(.ui(.subheadline))
+        .foregroundStyle(.secondary)
+        .accessibilityHint("+ 메뉴에서 기기·파일·폰하드·NAS·Google 포토의 사진과 영상을 골라 영상 편집으로 만듭니다.")
+        .navigationDestination(isPresented: $showingLibrary) {
+            LocalPhotoLibraryView(initialMode: .trailer)
         }
     }
 }
@@ -1245,7 +1253,7 @@ private struct TrailerDraftManagerView: View {
                 if draftStore.entries.isEmpty {
                     VStack(spacing: ui(8)) {
                         Image(systemName: "film.stack").font(.system(size: ui(32))).foregroundStyle(.secondary)
-                        Text("편집 중인 예고편이 없습니다").foregroundStyle(.secondary)
+                        Text("보관한 편집이 없습니다").foregroundStyle(.secondary)
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {

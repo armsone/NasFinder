@@ -1,0 +1,87 @@
+{
+  "started_at": "2026-10-16 20:14 KST",
+  "scope": "User-directed Google Photos import then calendar previous available date trailer tests on iPhone/Android/Mac; no source edits",
+  "test1": {
+    "iphone": {
+      "status": "blocked",
+      "observed": [
+        "Picker page opened in external Whale",
+        "Photo selection/search click did not change web UI; may include automation/browser limitation, not confirmed cause",
+        "App switcher showed waiting selection sheet",
+        "Returning to NasFinder discarded waiting sheet and reset to dashboard; source confirms reset sets import presentation false and view onDisappear cancels flow"
+      ],
+      "media_imported": 0,
+      "trailer_generated": false
+    },
+    "mac": {
+      "status": "blocked",
+      "observed": [
+        "Preparing Google account remained on screen over two minutes without login/picker UI in observed window",
+        "Cancel button did not leave preparing state",
+        "Escape dismissed sheet"
+      ],
+      "media_imported": 0,
+      "trailer_generated": false,
+      "cause": "unconfirmed authorization/preparation wait; cancellation lacks immediate UI completion"
+    },
+    "android": {
+      "status": "blocked",
+      "observed": [
+        "Continue immediately produced login-start failure asking for Google Drive client ID",
+        "Source requires dedicated Google Photos client ID or saved Google Drive client ID; no bundled fallback in this controller"
+      ],
+      "media_imported": 0,
+      "trailer_generated": false
+    }
+  },
+  "test2": {
+    "iphone": {
+      "status": "generated_and_playback_observed",
+      "latest_media_date": "2026-10-16",
+      "selected_previous_available_date": "2026-10-14",
+      "note": "2026-10-15 has no visible media; chose previous date with media",
+      "selected_count": 4,
+      "observed": [
+        "Calendar date displayed four photos",
+        "Add selected items marked them added but kept calendar visible with no trailer action",
+        "Switching to Photos tab revealed all four selections and trailer action",
+        "Tapped trailer create; on-device photo quality analysis running",
+        "Selected Photos tab shows four imported calendar assets and primary trailer button",
+        "Photo quality analysis completed and adjustment sheet recommended 7 seconds / four scenes",
+        "Confirmed 7-second create; rendering advanced to fourth photo",
+        "Rendering completed and fullscreen playback showed scene changes; explicit PhoneHard save was not verified"
+      ],
+      "recommended_duration_seconds": 7,
+      "trailer_generated": true,
+      "phonehard_save_verified": false
+    },
+    "mac": {
+      "status": "blocked_at_photo_access",
+      "trailer_generated": false,
+      "observed": [
+        "Calendar initially showed Access Allow explanation",
+        "Clicking Access Allow changed to Photo library access is disabled, without observed OS permission dialog",
+        "Only Select with Photos button offered; no direct settings recovery button"
+      ],
+      "cause": "PhotoKit access denial/restriction observed; underlying permission/signing cause not confirmed"
+    },
+    "android": {
+      "status": "generated_and_playback_observed",
+      "latest_media_date": "2026-10-16",
+      "selected_previous_date": "2026-10-15",
+      "selected_count": 2,
+      "recommended_duration_seconds": 4,
+      "trailer_generated": true,
+      "phonehard_save_verified": false,
+      "observed": [
+        "Calendar showed 5 assets on latest date and 2 on previous date",
+        "Selected both previous-date photos and added them to common basket",
+        "Trailer action appeared directly in calendar bottom bar",
+        "Confirmed 4-second create using keyboard navigation; fullscreen playback with moving image observed"
+      ],
+      "automation_note": "Native scrcpy mouse clicks were unreliable; used documented keyboard navigation. This is not classified as an app defect."
+    }
+  },
+  "user_design_constraint": "Google Photos selection must remain within app workflow; external app switching selection flow rejected by user. Preserve existing Android system photo picker.",
+  "finished_at": "2026-10-16 20:33 KST"
+}

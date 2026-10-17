@@ -95,6 +95,7 @@ struct ReceivedFilesView: View {
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.system.rawValue
     @State private var previewItem: RemoteFileItem?
+    @State private var inlineMusic = InlineMusicPlayback()
     @State private var trailerSelection: VideoTrailerSelection?
     /// `nil` is the PhoneHard root; otherwise a folder's `storedFilename`, including the
     /// physical Music folder, which now navigates through this same mechanism.
@@ -266,6 +267,15 @@ struct ReceivedFilesView: View {
 
     private var alertingContent: some View {
         measuredContent
+            .alert("음악을 재생할 수 없습니다", isPresented: Binding(
+                get: { inlineMusic.failure != nil },
+                set: { if !$0 { inlineMusic.failure = nil } }
+            )) {
+                Button("확인", role: .cancel) { inlineMusic.failure = nil }
+            } message: {
+                Text(inlineMusic.failure ?? "")
+            }
+            .onDisappear { inlineMusic.stop() }
             .alert("폰하드 오류", isPresented: errorBinding) {
                 Button("확인", role: .cancel) {
                     inboxStore.errorMessage = nil
@@ -923,7 +933,7 @@ struct ReceivedFilesView: View {
                     .foregroundStyle(.primary)
                     .lineLimit(2)
 
-                LocalInboxSizeLabel(record: record, item: item)
+                LocalInboxSizeLabel(record: record, item: item, playback: inlineMusic)
                     .font(.ui(.caption2))
                     .foregroundStyle(.secondary)
 
@@ -950,6 +960,7 @@ struct ReceivedFilesView: View {
                 if isSelecting {
                     toggleSelection(of: record)
                 } else {
+                    inlineMusic.stop()
                     previewItem = item
                 }
             } label: {
@@ -975,7 +986,7 @@ struct ReceivedFilesView: View {
                             .lineLimit(2)
 
                         HStack(spacing: ui(7)) {
-                            LocalInboxSizeLabel(record: record, item: item)
+                            LocalInboxSizeLabel(record: record, item: item, playback: inlineMusic)
                             Text(record.importedAt, format: .dateTime
                                 .year().month().day().hour().minute())
                         }
@@ -1253,7 +1264,14 @@ struct ReceivedFilesView: View {
         .frame(width: ui(size.width), height: ui(size.height))
         .background(.quaternary.opacity(0.55), in: shape)
         .clipShape(shape)
-        .accessibilityHidden(true)
+        .overlay {
+            if item.isAudio, !isSelecting, let url = try? SharedInbox.fileURL(for: record) {
+                InlineMusicThumbnailControl(playback: inlineMusic, id: item.id, name: record.originalFilename) {
+                    inlineMusic.toggle(id: item.id, localURL: url)
+                }
+            }
+        }
+        .accessibilityHidden(!(item.isAudio && !isSelecting))
     }
 
     @ViewBuilder
@@ -1314,6 +1332,7 @@ enum ReceivedFilesThumbnailPolicy {
 private struct LocalInboxSizeLabel: View {
     let record: SharedInboxRecord
     let item: RemoteFileItem
+    var playback: InlineMusicPlayback?
 
     @State private var loadedSeconds: Double?
 
@@ -1322,7 +1341,9 @@ private struct LocalInboxSizeLabel: View {
             ?? LocalInboxMediaDurationCache.shared.known(LocalInboxMediaDurationCache.key(for: item))
         HStack(spacing: ui(7)) {
             Text(ByteCountFormatter.string(fromByteCount: record.byteCount, countStyle: .file))
-            if let seconds {
+            if let playback, item.isAudio {
+                InlineMusicTimeText(playback: playback, id: item.id, fallbackTotal: seconds)
+            } else if let seconds {
                 Text(Self.playingTime(seconds))
                     .monospacedDigit()
                     .accessibilityLabel("재생 시간 \(Self.playingTime(seconds))")

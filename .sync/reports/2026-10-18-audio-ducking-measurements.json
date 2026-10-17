@@ -1,0 +1,212 @@
+{
+  "android-auto-on-levels": [
+    {
+      "start": 1,
+      "amplitude_dbfs": {
+        "440": -50.554,
+        "2200": -20.628
+      }
+    },
+    {
+      "start": 2,
+      "amplitude_dbfs": {
+        "440": -50.559,
+        "2200": -20.628
+      }
+    },
+    {
+      "start": 5,
+      "amplitude_dbfs": {
+        "440": -6.032,
+        "2200": -33.403
+      }
+    },
+    {
+      "start": 6,
+      "amplitude_dbfs": {
+        "440": -6.034,
+        "2200": -33.404
+      }
+    },
+    {
+      "start": 9,
+      "amplitude_dbfs": {
+        "440": -50.554,
+        "2200": -20.635
+      }
+    },
+    {
+      "start": 10,
+      "amplitude_dbfs": {
+        "440": -50.56,
+        "2200": -20.628
+      }
+    }
+  ],
+  "android-auto-off-levels": [
+    {
+      "start": 1,
+      "bgm_dbfs": -19.850731145313947
+    },
+    {
+      "start": 5,
+      "bgm_dbfs": -19.850060068375814
+    },
+    {
+      "start": 10,
+      "bgm_dbfs": -19.852367223582505
+    }
+  ],
+  "iphone-auto-on-levels": [
+    {
+      "start": 1,
+      "amplitude_dbfs": {
+        "440": -50.467,
+        "2200": -22.495
+      }
+    },
+    {
+      "start": 2,
+      "amplitude_dbfs": {
+        "440": -50.468,
+        "2200": -22.496
+      }
+    },
+    {
+      "start": 5,
+      "amplitude_dbfs": {
+        "440": -6.022,
+        "2200": -33.291
+      }
+    },
+    {
+      "start": 6,
+      "amplitude_dbfs": {
+        "440": -6.022,
+        "2200": -33.291
+      }
+    },
+    {
+      "start": 9,
+      "amplitude_dbfs": {
+        "440": -50.467,
+        "2200": -22.635
+      }
+    },
+    {
+      "start": 10,
+      "amplitude_dbfs": {
+        "440": -50.468,
+        "2200": -22.505
+      }
+    }
+  ],
+  "iphone-auto-off-levels": [
+    {
+      "start": 1,
+      "bgm_dbfs": -22.158292026221098
+    },
+    {
+      "start": 5,
+      "bgm_dbfs": -22.158042562270865
+    },
+    {
+      "start": 10,
+      "bgm_dbfs": -22.158194767503012
+    }
+  ],
+  "export-metadata": {
+    "android-auto-on": {
+      "programs": [],
+      "stream_groups": [],
+      "streams": [
+        {
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "duration": "12.020000"
+        },
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "duration": "12.000000"
+        }
+      ],
+      "format": {
+        "duration": "12.020000",
+        "size": "8418497"
+      },
+      "sha256": "849c57b0f47863ab2aeb94c838e0985716ee0ba225523fa7980782bc039c2b59",
+      "decode_exit": 0,
+      "decode_errors": ""
+    },
+    "android-auto-off": {
+      "programs": [],
+      "stream_groups": [],
+      "streams": [
+        {
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "duration": "12.020000"
+        },
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "duration": "12.000000"
+        }
+      ],
+      "format": {
+        "duration": "12.020000",
+        "size": "8436807"
+      },
+      "sha256": "bfebebf3992173c4130abb585db43443bced20124090f2cb2742f82b1fee1285",
+      "decode_exit": 0,
+      "decode_errors": ""
+    },
+    "iphone-auto-on": {
+      "programs": [],
+      "stream_groups": [],
+      "streams": [
+        {
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "duration": "11.998345"
+        },
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "duration": "12.000000"
+        }
+      ],
+      "format": {
+        "duration": "12.000000",
+        "size": "7908482"
+      },
+      "sha256": "06fea2cca2d60dffc767ec1f5e7d06571b8af7a22ff51d7c11f4f932447669b8",
+      "decode_exit": 0,
+      "decode_errors": ""
+    },
+    "iphone-auto-off": {
+      "programs": [],
+      "stream_groups": [],
+      "streams": [
+        {
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "duration": "12.000000"
+        },
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "duration": "12.000000"
+        }
+      ],
+      "format": {
+        "duration": "12.000000",
+        "size": "7908511"
+      },
+      "sha256": "68f11b25d4ee05a711a4b3dd1f864c4d72ee3f2c0d39642a5dde2b580bbc83e8",
+      "decode_exit": 0,
+      "decode_errors": ""
+    }
+  }
+}

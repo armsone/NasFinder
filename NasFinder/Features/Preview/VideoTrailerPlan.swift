@@ -72,6 +72,8 @@ struct VideoTrailerSelection: Identifiable {
     let id = UUID()
     let items: [RemoteFileItem]
     var mode = VideoTrailerMode.trailer
+    /// Keeps the caller's item order as the editor's initial source order (default: chronological).
+    var keepsSelectionOrder = false
 }
 
 struct VideoTrailerSource: Identifiable {
