@@ -36,6 +36,7 @@ struct LocalPhotoLibraryView: View {
     @State private var entries: [Entry] = []
     @State private var isPickerPresented = false
     @State private var isFileImporterPresented = false
+    @State private var pendingFileImportResult: Result<[URL], Error>?
     @State private var isLoadingSelection = false
     @State private var errorMessage: String?
     @State private var trailerSelection: VideoTrailerSelection?
@@ -107,8 +108,22 @@ struct LocalPhotoLibraryView: View {
         }
         .photosPicker(isPresented: $isPickerPresented, selection: $pickerSelection,
                       matching: .any(of: [.images, .videos]), photoLibrary: .shared())
+        #if targetEnvironment(macCatalyst)
         .fileImporter(isPresented: $isFileImporterPresented, allowedContentTypes: [.image, .movie], allowsMultipleSelection: true,
                       onCompletion: handleFileImportResult)
+        #else
+        .fullScreenCover(isPresented: $isFileImporterPresented, onDismiss: {
+            guard let result = pendingFileImportResult else { return }
+            pendingFileImportResult = nil
+            handleFileImportResult(result)
+        }) {
+            MediaDocumentPicker { result in
+                pendingFileImportResult = result
+                isFileImporterPresented = false
+            }
+            .ignoresSafeArea()
+        }
+        #endif
         .onChange(of: pickerSelection) { _, selected in addPickerItems(selected) }
         .task {
             isCleanupPendingOnDeparture = false
@@ -201,10 +216,16 @@ struct LocalPhotoLibraryView: View {
             MediaNetworkSourcePage(onPickMedia: pickedFromBrowser)
         case .files:
             MediaFilesSourcePage(selectedIDs: selectedIdentifiers, isActive: sourcePage == .files,
+                imported: entries.filter { $0.origin == .file }.map {
+                    MediaImportedFile(id: $0.id, name: $0.item.name, isVideo: $0.isVideo, thumbnail: $0.thumbnail)
+                },
                 onToggle: { url in
                     let key = "file:" + url.standardizedFileURL.path
                     if let entry = entries.first(where: { $0.id == key }) { remove(entry) }
                     else { Task { await importFileURLs([url]) } }
+                },
+                onRemoveImported: { id in
+                    if let entry = entries.first(where: { $0.id == id }) { remove(entry) }
                 },
                 onOpenSystemImporter: { isFileImporterPresented = true })
         case .google:

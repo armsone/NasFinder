@@ -218,6 +218,41 @@ private final class MediaFolderScope: ObservableObject {
     deinit { if didStart { url?.stopAccessingSecurityScopedResource() } }
 }
 
+/// iPhone에서 시스템 문서 선택기를 전체 화면으로 모달 표시한다. 임베드하지 않고 취소 시 빈 선택으로 끝낸다.
+struct MediaDocumentPicker: UIViewControllerRepresentable {
+    let onFinish: (Result<[URL], Error>) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(onFinish: onFinish) }
+
+    func makeUIViewController(context: Context) -> UIDocumentPickerViewController {
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.image, .movie], asCopy: false)
+        picker.allowsMultipleSelection = true
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ controller: UIDocumentPickerViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UIDocumentPickerDelegate {
+        let onFinish: (Result<[URL], Error>) -> Void
+        init(onFinish: @escaping (Result<[URL], Error>) -> Void) { self.onFinish = onFinish }
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            onFinish(.success(urls))
+        }
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            onFinish(.success([]))
+        }
+    }
+}
+
+/// 시스템 선택기로 이미 바스켓에 담은 파일(복사본의 썸네일 재사용). 파일 탭 안에서 바로 보이고 해제할 수 있다.
+struct MediaImportedFile: Identifiable {
+    let id: String
+    let name: String
+    let isVideo: Bool
+    let thumbnail: UIImage?
+}
+
 private struct MediaFolderEntry: Identifiable, Hashable {
     let url: URL
     let isDirectory: Bool
@@ -234,7 +269,9 @@ struct MediaFilesSourcePage: View {
     let selectedIDs: Set<String>
     var isActive = true
     var refreshToken = 0
+    var imported: [MediaImportedFile] = []
     let onToggle: (URL) -> Void
+    let onRemoveImported: (String) -> Void
     let onOpenSystemImporter: () -> Void
 
     @StateObject private var scope = MediaFolderScope()
@@ -248,17 +285,26 @@ struct MediaFilesSourcePage: View {
     @State private var loadTask: Task<Void, Never>?
     private let columns = [GridItem(.adaptive(minimum: ui(92), maximum: ui(120)), spacing: ui(8))]
     private var currentURL: URL? { trail.last ?? rootURL }
+    /// 폴더 목록에 이미 같은 파일 키로 보이는 항목은 중복 표시하지 않는다.
+    private var otherImported: [MediaImportedFile] {
+        let listed = Set(entries.filter { !$0.isDirectory }.map { "file:" + $0.url.standardizedFileURL.path })
+        return imported.filter { !listed.contains($0.id) }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             controls
             if rootURL == nil {
-                ContentUnavailableView {
-                    Label("폴더를 선택해 주세요", systemImage: "folder.badge.questionmark")
-                } description: {
-                    Text("Files에서 사진·영상이 있는 폴더를 한 번 선택하면 이 페이지에서 직접 탐색하고 기억합니다. iOS는 앱이 허용받은 폴더만 열 수 있습니다.")
-                } actions: {
-                    Button("폴더 선택") { isChoosingFolder = true }.buttonStyle(.borderedProminent)
+                if imported.isEmpty {
+                    ContentUnavailableView {
+                        Label("파일의 사진·영상", systemImage: "photo.on.rectangle")
+                    } description: {
+                        Text("사진·영상을 바로 추가하세요. 폴더 연결은 선택 사항입니다.")
+                    }
+                } else {
+                    ScrollView {
+                        LazyVGrid(columns: columns, spacing: ui(8)) { importedTiles(imported) }.padding(ui(8))
+                    }
                 }
             } else if isLoading {
                 ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -269,15 +315,20 @@ struct MediaFilesSourcePage: View {
                     Text(loadError)
                 } actions: {
                     Button("다시 시도") { reload() }.buttonStyle(.borderedProminent)
-                    Button("폴더 선택") { isChoosingFolder = true }
+                    Button("폴더 변경") { isChoosingFolder = true }
                 }
-            } else if entries.isEmpty {
+            } else if entries.isEmpty && otherImported.isEmpty {
                 ContentUnavailableView("이 폴더에 사진·영상이 없습니다", systemImage: "photo.on.rectangle")
             } else {
                 ScrollView {
                     LazyVGrid(columns: columns, spacing: ui(8)) {
                         ForEach(entries) { entry in tile(entry) }
                     }.padding(ui(8))
+                    if !otherImported.isEmpty {
+                        Text("선택한 다른 파일").font(.ui(.footnote)).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, ui(8))
+                        LazyVGrid(columns: columns, spacing: ui(8)) { importedTiles(otherImported) }.padding(ui(8))
+                    }
                 }
             }
         }
@@ -304,13 +355,12 @@ struct MediaFilesSourcePage: View {
     private var controls: some View {
         VStack(spacing: 0) {
             HStack(spacing: ui(8)) {
-                Button { isChoosingFolder = true } label: {
-                    Label(rootURL == nil ? "폴더 선택" : "폴더 변경", systemImage: "folder.badge.plus")
-                        .frame(minHeight: 44)
+                Button { onOpenSystemImporter() } label: {
+                    Label("사진·영상 추가", systemImage: "plus.circle.fill").frame(minHeight: 44)
                 }
                 Spacer()
-                Button { onOpenSystemImporter() } label: {
-                    Label("다른 Files 파일", systemImage: "doc.badge.plus").frame(minHeight: 44)
+                Button { isChoosingFolder = true } label: {
+                    Label(rootURL == nil ? "폴더 열기" : "폴더 변경", systemImage: "folder").frame(minHeight: 44)
                 }
             }
             .font(.ui(.footnote)).padding(.horizontal, ui(12))
@@ -341,6 +391,24 @@ struct MediaFilesSourcePage: View {
                 Text(title).lineLimit(1)
             }.font(.ui(.footnote)).padding(.horizontal, ui(8)).frame(minHeight: 44)
         }.buttonStyle(.plain)
+    }
+
+    @ViewBuilder private func importedTiles(_ files: [MediaImportedFile]) -> some View {
+        ForEach(files) { file in
+            Button { onRemoveImported(file.id) } label: {
+                ZStack(alignment: .bottomTrailing) {
+                    Group {
+                        if let thumbnail = file.thumbnail { Image(uiImage: thumbnail).resizable().scaledToFill() }
+                        else { Rectangle().fill(.secondary.opacity(0.15)).overlay(Image(systemName: file.isVideo ? "film" : "photo").foregroundStyle(.secondary)) }
+                    }
+                    .frame(maxWidth: .infinity).frame(height: ui(100)).clipped()
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(.white, Color.accentColor).padding(ui(4))
+                }.clipShape(RoundedRectangle(cornerRadius: ui(10)))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(file.name).accessibilityHint("선택 해제")
+            .accessibilityAddTraits(.isSelected)
+        }
     }
 
     @ViewBuilder private func tile(_ entry: MediaFolderEntry) -> some View {
@@ -399,7 +467,7 @@ struct MediaFilesSourcePage: View {
         var stale = false
         guard let url = try? URL(resolvingBookmarkData: data, options: resolveOptions, relativeTo: nil, bookmarkDataIsStale: &stale) else {
             UserDefaults.standard.removeObject(forKey: Self.bookmarkKey)
-            message = "저장된 폴더에 더 이상 접근할 수 없습니다. 폴더를 다시 선택해 주세요."
+            message = "저장된 폴더에 더 이상 접근할 수 없습니다. 필요하면 폴더를 다시 열어 주세요."
             return
         }
         scope.open(url)
