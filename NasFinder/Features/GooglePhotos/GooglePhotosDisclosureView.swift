@@ -6,8 +6,10 @@ struct GooglePhotosDisclosureView: View {
     let onCancel: () -> Void
 
     private static let privacyPolicyURL = URL(string: "https://nasfinder.com/privacy")!
+    var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: ui(22)) {
@@ -67,7 +69,7 @@ struct GooglePhotosDisclosureView: View {
 
             Text("가져오기를 시작하기 전에 NasFinder가 사진을 다루는 방식을 확인해 주세요.")
                 .font(.ui(.subheadline))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -86,7 +88,7 @@ struct GooglePhotosDisclosureView: View {
                     .font(.ui(.subheadline).weight(.semibold))
                 Text(detail)
                     .font(.ui(.footnote))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
@@ -98,7 +100,7 @@ struct GooglePhotosDisclosureView: View {
             Button("계속") {
                 onContinue()
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PorcelainProminentButtonStyle())
             .controlSize(.large)
             .frame(maxWidth: .infinity)
             .accessibilityHint("Google 계정 로그인 화면이 열립니다.")
@@ -107,7 +109,7 @@ struct GooglePhotosDisclosureView: View {
                 onCancel()
             }
             .font(.ui(.subheadline))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(PorcelainMetrics.secondary)
         }
         .padding(.horizontal, ui(22))
         .padding(.top, ui(12))

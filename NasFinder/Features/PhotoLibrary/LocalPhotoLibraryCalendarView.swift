@@ -39,8 +39,10 @@ struct LocalPhotoLibraryCalendarView: View {
     private let weekdays = ["일", "월", "화", "수", "목", "금", "토"]
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 0), count: 7)
     private let columnSteps = [8, 6, 4, 2, 1]
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         Group {
             switch authorizationStatus {
             case .authorized, .limited: calendarContent
@@ -75,7 +77,7 @@ struct LocalPhotoLibraryCalendarView: View {
                     authorizationStatus = status
                 }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PorcelainProminentButtonStyle())
             Button("사진으로 선택", action: onRequestPhotoMode)
         }
     }
@@ -95,7 +97,7 @@ struct LocalPhotoLibraryCalendarView: View {
                 UIApplication.shared.open(url)
             }
             Button("사진으로 선택", action: onRequestPhotoMode)
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PorcelainProminentButtonStyle())
         }
     }
 
@@ -103,16 +105,18 @@ struct LocalPhotoLibraryCalendarView: View {
         HStack {
             Text("일부 사진만 보입니다")
                 .font(.ui(.footnote))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
             Spacer()
             Button("선택 변경") {
                 presentLimitedLibraryPicker()
             }
             .font(.ui(.footnote))
+            .foregroundStyle(PorcelainMetrics.accent)
         }
         .padding(.horizontal, ui(12))
         .padding(.vertical, ui(6))
-        .background(.bar)
+        .background(PorcelainMetrics.sidebar)
+        .overlay(alignment: .bottom) { PorcelainMetrics.line.frame(height: 0.5) }
     }
 
     private var monthYearPicker: some View {
@@ -123,16 +127,18 @@ struct LocalPhotoLibraryCalendarView: View {
                         Text("\(year)년").tag(year)
                     }
                 }
-                .pickerStyle(.wheel)
+                .modifier(MonthYearWheelPickerStyle())
                 Picker("월", selection: $draftMonth) {
                     ForEach(1...12, id: \.self) { month in
                         Text("\(month)월").tag(month)
                     }
                 }
-                .pickerStyle(.wheel)
+                .modifier(MonthYearWheelPickerStyle())
             }
             .navigationTitle("년 월 이동")
             .navigationBarTitleDisplayMode(.inline)
+            .toolbarColorScheme(AppThemePreference.current.isDark ? .dark : .light, for: .navigationBar)
+            .tint(PorcelainMetrics.accent)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("취소") { showMonthYearPicker = false }
@@ -259,7 +265,7 @@ struct LocalPhotoLibraryCalendarView: View {
             VStack(spacing: 0) {
                 HStack(spacing: ui(2)) {
                     Text("\(calendar.component(.day, from: day))").font(.ui(.subheadline).weight(today ? .bold : .regular))
-                    if count > 0 { Text("\(count)").font(.ui(.caption2)).foregroundStyle(.secondary) }
+                    if count > 0 { Text("\(count)").font(.ui(.caption2)).foregroundStyle(PorcelainMetrics.secondary) }
                 }
                 if let holiday {
                     Text(holiday).font(.system(size: ui(8))).lineLimit(1).minimumScaleFactor(0.7)
@@ -269,10 +275,10 @@ struct LocalPhotoLibraryCalendarView: View {
             .frame(maxWidth: .infinity).frame(height: ui(38))
             .background {
                 RoundedRectangle(cornerRadius: ui(7))
-                    .fill(selected ? Color.accentColor.opacity(0.23) : count > 0 ? Color.secondary.opacity(0.08) : Color.clear)
+                    .fill(selected ? PorcelainMetrics.selected : count > 0 ? PorcelainMetrics.secondary.opacity(0.12) : Color.clear)
             }
             .overlay {
-                if today { RoundedRectangle(cornerRadius: ui(7)).stroke(Color.accentColor, lineWidth: ui(1.5)) }
+                if today { RoundedRectangle(cornerRadius: ui(7)).stroke(PorcelainMetrics.accent, lineWidth: ui(1.5)) }
             }
             .contentShape(Rectangle())
         }
@@ -534,4 +540,15 @@ private extension Calendar {
 private struct NasFinderCalendarScrollOffsetKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
+}
+
+/// iPhone·iPad와 iPad idiom Mac은 휠을 유지하고, Mac idiom에서는 네이티브 팝업 메뉴를 쓴다.
+private struct MonthYearWheelPickerStyle: ViewModifier {
+    func body(content: Content) -> some View {
+        if MacUIScale.usesMacIdiom {
+            content.pickerStyle(.menu)
+        } else {
+            content.pickerStyle(.wheel)
+        }
+    }
 }

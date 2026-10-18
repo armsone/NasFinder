@@ -3,11 +3,14 @@ import SwiftUI
 struct AppSettingsView: View {
     let connectionCount: Int
     @ObservedObject private var screenAwakeController = ScreenAwakeController.shared
+    @AppStorage(InterfaceIconStyle.storageKey) private var iconStyleRawValue = ""
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.system.rawValue
+        AppThemePreference.light.rawValue
     #if targetEnvironment(macCatalyst)
     @ObservedObject private var updateManager = MacDirectUpdateManager.shared
     #endif
+
+    private var themeRefresh = ThemeRefresh()
 
     private var selectedTheme: AppThemePreference {
         .resolved(selectedThemeRawValue)
@@ -21,26 +24,117 @@ struct AppSettingsView: View {
         #endif
     }
 
-    var body: some View {
-        List {
-            themePaletteSection
-            AppIconPickerSection(compact: true)
-            screenAwakeSection
-            filesAppIntegrationSection
-            storageMaintenanceSection
-            #if targetEnvironment(macCatalyst)
-            macUpdateSection
-            #endif
-            openSourceSection
-            creatorSection
+    private enum Pane: String, CaseIterable, Identifiable {
+        case appearance = "화면·테마"
+        case storage = "저장공간·연동"
+        case update = "업데이트"
+        case info = "앱 정보"
+        var id: String { rawValue }
+        var icon: String {
+            switch self {
+            case .appearance: return "paintpalette"
+            case .storage: return "photo.stack"
+            case .update: return "arrow.down.circle"
+            case .info: return "info.circle"
+            }
         }
-        .frame(maxWidth: isRunningOnMac ? ui(1_360) : nil)
-        .environment(\.defaultMinListRowHeight, ui(isRunningOnMac ? 72 : 44))
-        .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
+    }
+
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var selectedPane: Pane = .appearance
+
+    private var panes: [Pane] {
+        #if targetEnvironment(macCatalyst)
+        Pane.allCases
+        #else
+        Pane.allCases.filter { $0 != .update }
+        #endif
+    }
+
+    /// 실제 사용 가능한 너비로 판단한다. 좁은 Mac 창이나 분할 화면에서는 단일 목록으로 돌아간다.
+    private func isWide(width: CGFloat) -> Bool {
+        (isRunningOnMac || horizontalSizeClass == .regular) && width >= ui(560)
+    }
+
+    var body: some View {
+        let _ = themeRefresh.theme
+        let palette = selectedTheme.palette
+        GeometryReader { proxy in
+            if isWide(width: proxy.size.width) {
+                HStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        ForEach(panes) { pane in
+                            Button {
+                                selectedPane = pane
+                            } label: {
+                                Label(pane.rawValue, systemImage: pane.icon)
+                                    .font(PorcelainTypeface.font(size: 14, weight: .medium))
+                                    .foregroundStyle(selectedPane == pane ? palette.onAccent : palette.text)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 8)
+                                            .fill(selectedPane == pane ? palette.solidAction : Color.clear)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .padding(12)
+                    .frame(width: ui(220))
+                    .background(palette.surface)
+                    Rectangle().fill(palette.border).frame(width: 1)
+                    settingsList(palette: palette, only: selectedPane)
+                        .frame(maxWidth: ui(800))
+                        .frame(maxWidth: .infinity)
+                }
+            } else {
+                settingsList(palette: palette, only: nil)
+            }
+        }
         .background(SkyBreezeBackground())
         .navigationTitle("설정")
         .navigationBarTitleDisplayMode(.inline)
+        .toolbarColorScheme(selectedTheme.isDark ? .dark : .light, for: .navigationBar)
+        .tint(palette.accent)
+    }
+
+    private func settingsList(palette: AppThemePalette, only pane: Pane?) -> some View {
+        List {
+            if pane == nil || pane == .appearance {
+                themePaletteSection
+                    .listRowBackground(palette.surface)
+                interfaceIconStyleSection
+                    .listRowBackground(palette.surface)
+                AppIconPickerSection(compact: true)
+                    .listRowBackground(palette.surface)
+                screenAwakeSection
+                    .listRowBackground(palette.surface)
+            }
+            if pane == nil || pane == .storage {
+                filesAppIntegrationSection
+                    .listRowBackground(palette.surface)
+                storageMaintenanceSection
+                    .listRowBackground(palette.surface)
+            }
+            #if targetEnvironment(macCatalyst)
+            if pane == nil || pane == .update {
+                macUpdateSection
+                    .listRowBackground(palette.surface)
+            }
+            #endif
+            if pane == nil || pane == .info {
+                openSourceSection
+                    .listRowBackground(palette.surface)
+                creatorSection
+                    .listRowBackground(palette.surface)
+            }
+        }
+        .environment(\.defaultMinListRowHeight, MacUIScale.minListRowHeight)
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
     }
 
     #if targetEnvironment(macCatalyst)
@@ -178,19 +272,78 @@ struct AppSettingsView: View {
                     }
                 }
             }
-            .frame(height: ui(328))
+            .frame(height: ui(216))
             .listRowInsets(
                 EdgeInsets(top: ui(10), leading: ui(12), bottom: ui(10), trailing: ui(12))
             )
 
             SettingsPanelDescription(
-                selectedTheme == .system
-                    ? "iPhone의 라이트·다크 모드에 맞춰 자동으로 바뀝니다."
-                    : "선택한 테마는 앱을 다시 열어도 유지됩니다."
+                "모든 테마는 같은 배치와 글꼴을 쓰고 색만 바뀝니다. 아이콘 스타일과 앱 아이콘은 그대로 유지됩니다."
             )
 
         } header: {
-            SettingsSectionHeader(title: "테마", systemImage: "paintpalette")
+            SettingsSectionHeader(title: "병기스타일 테마", systemImage: "paintpalette")
+        }
+    }
+
+    private var interfaceIconStyleSection: some View {
+        let current = InterfaceIconStyle.resolved(iconStyleRawValue, theme: selectedTheme)
+        return Section {
+            // 승인 보드 06: 스타일마다 한 행(선택 표시 · 이름 · 설명 · 샘플 아이콘). 6개 테마 공통.
+            ForEach(InterfaceIconStyle.allCases) { style in
+                interfaceIconStyleRow(style, isSelected: current == style)
+            }
+
+            SettingsPanelDescription(
+                "화면 테마·앱 아이콘과 따로 저장됩니다. 사진·영상·폴더 썸네일은 항상 실제 이미지를 보여 줍니다."
+            )
+        } header: {
+            SettingsSectionHeader(title: "아이콘 스타일", systemImage: "square.grid.2x2")
+        }
+    }
+
+    private func interfaceIconStyleRow(_ style: InterfaceIconStyle, isSelected: Bool) -> some View {
+        Button {
+            iconStyleRawValue = style.rawValue
+        } label: {
+            HStack(alignment: .center, spacing: 12) {
+                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                    .font(.title3)
+                    .foregroundStyle(isSelected ? PorcelainMetrics.accent : Color.secondary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(style.title)
+                        .porcelainFont(.tile)
+                        .foregroundStyle(PorcelainMetrics.graphite)
+                    Text(Self.interfaceIconStyleDescription(style))
+                        .porcelainFont(.body)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 8)
+                HStack(spacing: 8) {
+                    ForEach([ThemeIconID.nas, .photos, .settings], id: \.self) { id in
+                        ThemeIcon(id, style: style)
+                            .frame(width: 30, height: 30)
+                    }
+                }
+                .accessibilityHidden(true)
+            }
+            .frame(minHeight: 48)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(style.title) 아이콘")
+        .accessibilityValue(isSelected ? "선택됨" : "선택 안 됨")
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private static func interfaceIconStyleDescription(_ style: InterfaceIconStyle) -> String {
+        switch style {
+        case .simple: "간결한 선으로 구성된 라인 스타일"
+        case .solid: "명확하고 단단한 면의 플랫 스타일"
+        case .dimension: "부드러운 입체감의 모던 스타일"
+        case .realistic: "실제 질감을 표현한 현실적인 스타일"
         }
     }
 
@@ -203,8 +356,7 @@ struct AppSettingsView: View {
         } label: {
             VStack(alignment: .leading, spacing: ui(7)) {
                 HStack {
-                    Image(systemName: theme.systemImage)
-                        .font(.ui(.caption).weight(.medium))
+                    ByungkiThemeGlyph(theme: theme, size: ui(18), tintColor: themePreviewForeground(theme))
                     Spacer(minLength: 0)
                     if isSelected {
                         Image(systemName: "checkmark.circle.fill")
@@ -216,7 +368,7 @@ struct AppSettingsView: View {
                 Spacer(minLength: 0)
 
                 Text(theme.title)
-                    .font(.ui(.caption).weight(.semibold))
+                    .font(.ui(.caption).weight(.medium))
                     .foregroundStyle(themePreviewForeground(theme))
                     .lineLimit(1)
                     .minimumScaleFactor(0.68)
@@ -247,10 +399,7 @@ struct AppSettingsView: View {
     }
 
     private func themePreviewForeground(_ theme: AppThemePreference) -> Color {
-        switch theme {
-        case .night, .digitalRain, .workbench: .white
-        default: Color(red: 0.10, green: 0.15, blue: 0.16)
-        }
+        theme.palette.text
     }
 
     private var filesAppIntegrationSection: some View {
@@ -325,82 +474,22 @@ struct AppSettingsView: View {
 
 }
 
+/// 테마 카드 미리보기: 그 테마의 바탕·표면·채운 단추 색만 보여 준다(장식 없음).
 private struct ThemePreviewBackground: View {
     let theme: AppThemePreference
 
     var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                gradient
-                if theme == .digitalRain {
-                    CodeRainDecoration(size: geometry.size)
-                        .opacity(0.92)
-                } else if theme == .workbench {
-                    WorkbenchDecoration(size: geometry.size)
-                } else if theme == .skeuomorphism {
-                    Circle()
-                        .stroke(.white.opacity(0.75), lineWidth: 7)
-                        .shadow(color: .black.opacity(0.24), radius: 2, x: 1, y: 2)
-                        .padding(ui(18))
-                }
-            }
+        let palette = theme.palette
+        ZStack(alignment: .bottomTrailing) {
+            palette.background
+            RoundedRectangle(cornerRadius: ui(6), style: .continuous)
+                .fill(palette.solidAction)
+                .frame(width: ui(28), height: ui(14))
+                .padding(ui(9))
         }
-    }
-
-    private var gradient: LinearGradient {
-        switch theme {
-        case .system:
-            LinearGradient(
-                colors: [.white.opacity(0.96), .black.opacity(0.18)],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .day:
-            LinearGradient(
-                colors: [Color(red: 0.72, green: 0.91, blue: 1), .white],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .night:
-            LinearGradient(
-                colors: [Color(red: 0.06, green: 0.15, blue: 0.21), .black],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .digitalRain:
-            LinearGradient(
-                colors: [Color(red: 0.005, green: 0.05, blue: 0.045), .black],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .windyMeadow:
-            LinearGradient(
-                colors: [
-                    Color(red: 0.28, green: 0.76, blue: 0.96),
-                    Color(red: 0.73, green: 0.84, blue: 0.38),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        case .workbench:
-            LinearGradient(
-                colors: [
-                    Color(red: 0.08, green: 0.12, blue: 0.18),
-                    Color(red: 0.025, green: 0.04, blue: 0.065),
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        case .skeuomorphism:
-            LinearGradient(
-                colors: [
-                    Color(red: 0.78, green: 0.78, blue: 0.76),
-                    Color(red: 0.98, green: 0.975, blue: 0.96),
-                    .white,
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
+        .overlay {
+            RoundedRectangle(cornerRadius: ui(12))
+                .stroke(palette.border, lineWidth: 0.5)
         }
     }
 }
@@ -408,18 +497,20 @@ private struct ThemePreviewBackground: View {
 private struct SettingsIntegrationStep: View {
     let number: Int
     let text: String
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         HStack(alignment: .top, spacing: ui(10)) {
             Text(number, format: .number)
                 .font(.ui(.caption2).weight(.bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(PorcelainMetrics.onAccent)
                 .frame(width: ui(22), height: ui(22))
-                .background(SkyBreezeTheme.accent, in: Circle())
+                .background(PorcelainMetrics.solidAction, in: Circle())
 
             Text(text)
-                .font(.ui(.subheadline))
-                .foregroundStyle(.primary)
+                .porcelainFont(.tile, weight: .regular)
+                .foregroundStyle(PorcelainMetrics.graphite)
         }
         .accessibilityElement(children: .combine)
     }

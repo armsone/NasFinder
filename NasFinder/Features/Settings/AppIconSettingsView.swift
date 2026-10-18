@@ -99,17 +99,10 @@ struct AppIconSettingsView: View {
 struct AppIconPickerSection: View {
     var compact = false
 
-    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.system.rawValue
-
     @State private var selectedIcon = AppIconChoice.blueNAS
     @State private var isChangingIcon = false
     @State private var pendingIcon: AppIconChoice?
     @State private var errorMessage: String?
-
-    private var isEnamelTheme: Bool {
-        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
-    }
 
     private var showsIconPicker: Bool {
         AppIconAvailabilityPolicy.showsIconPicker(
@@ -193,7 +186,7 @@ struct AppIconPickerSection: View {
                                 }
                             }
                             .buttonStyle(.plain)
-                            .disabled(isChangingIcon || selectedIcon == icon || isEnamelTheme)
+                            .disabled(isChangingIcon || selectedIcon == icon)
                             .frame(maxWidth: .infinity)
                             .contentShape(Rectangle())
                             .accessibilityLabel("\(icon.title) 아이콘")
@@ -202,11 +195,7 @@ struct AppIconPickerSection: View {
                     }
 
                     Divider()
-                    SettingsPanelDescription(
-                        isEnamelTheme
-                            ? "BK Style에서는 같은 이름의 앱 아이콘을 사용합니다."
-                            : "선택한 아이콘은 홈 화면과 앱 보관함에 적용됩니다."
-                    )
+                    SettingsPanelDescription("선택한 아이콘은 홈 화면과 앱 보관함에 적용됩니다.")
                 }
                 .padding(.vertical, ui(6))
                 .listRowInsets(EdgeInsets(top: ui(10), leading: ui(12), bottom: ui(10), trailing: ui(12)))
@@ -215,9 +204,7 @@ struct AppIconPickerSection: View {
             }
         }
         .task {
-            selectedIcon = isEnamelTheme
-                ? .enamelNAS
-                : AppIconChoice.current(alternateIconName: UIApplication.shared.alternateIconName)
+            selectedIcon = AppIconChoice.current(alternateIconName: UIApplication.shared.alternateIconName)
         }
         .alert("아이콘을 변경할 수 없습니다", isPresented: errorBinding) {
             Button("확인", role: .cancel) {
@@ -270,36 +257,34 @@ struct AppIconPickerSection: View {
 struct SettingsSectionHeader: View {
     let title: String
     let systemImage: String
-    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.system.rawValue
-
-    private var selectedTheme: AppThemePreference {
-        .resolved(selectedThemeRawValue)
-    }
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
-        HStack(spacing: ui(selectedTheme == .skeuomorphism ? 7 : 3)) {
+        let _ = themeRefresh.theme
+        HStack(spacing: ui(3)) {
             ThemedSymbol(systemName: systemImage)
             Text(title)
             Spacer(minLength: 0)
         }
-        .font(.ui(.footnote).weight(.medium))
-        .foregroundStyle(.secondary)
+        .porcelainFont(.tile, weight: .medium)
+        .foregroundStyle(PorcelainMetrics.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
 struct SettingsPanelDescription: View {
     let text: String
+    private var themeRefresh = ThemeRefresh()
 
     init(_ text: String) {
         self.text = text
     }
 
     var body: some View {
+        let _ = themeRefresh.theme
         Text(text)
-            .font(.ui(.caption2))
-            .foregroundStyle(.secondary)
+            .porcelainFont(.body, weight: .regular)
+            .foregroundStyle(PorcelainMetrics.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

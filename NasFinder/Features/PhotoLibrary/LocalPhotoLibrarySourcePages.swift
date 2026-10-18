@@ -19,20 +19,22 @@ enum MediaSourcePage: String, CaseIterable, Identifiable {
 /// 상단 가로 탭. 터치 영역은 44pt 이상이며 선택된 탭이 보이도록 스크롤한다.
 struct MediaSourceTabBar: View {
     @Binding var page: MediaSourcePage
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: ui(4)) {
                     ForEach(MediaSourcePage.allCases) { item in
                         Button { page = item } label: {
                             Text(item.rawValue)
-                                .font(.ui(.subheadline).weight(page == item ? .bold : .regular))
-                                .foregroundStyle(page == item ? SkyBreezeTheme.accent : Color.primary)
+                                .font(.ui(.subheadline).weight(page == item ? .semibold : .regular))
+                                .foregroundStyle(page == item ? PorcelainMetrics.accent : PorcelainMetrics.secondary)
                                 .padding(.horizontal, ui(12))
                                 .frame(minHeight: 44)
                                 .overlay(alignment: .bottom) {
-                                    if page == item { Capsule().fill(SkyBreezeTheme.accent).frame(height: 3) }
+                                    if page == item { Capsule().fill(PorcelainMetrics.accent).frame(height: 3) }
                                 }
                                 .contentShape(Rectangle())
                         }
@@ -44,7 +46,8 @@ struct MediaSourceTabBar: View {
             }
             .onChange(of: page) { _, value in withAnimation { proxy.scrollTo(value, anchor: .center) } }
         }
-        .background(.bar)
+        .background(PorcelainMetrics.paper)
+        .overlay(alignment: .bottom) { PorcelainMetrics.line.frame(height: 0.5) }
     }
 }
 
@@ -87,8 +90,10 @@ struct MediaNetworkSourcePage: View {
     let onPickMedia: ([RemoteFileItem], any RemoteFileService) -> Void
     /// 연 연결은 push하지 않고 이 페이지가 가진다. 뒤로가 상위 영상 만들기 화면을 닫지 않게 한다.
     @State private var openedConnection: RemoteConnection?
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         NavigationStack {
             Group {
                 if let openedConnection {
@@ -130,8 +135,10 @@ struct MediaBasketTray: View {
     let isBusy: Bool
     let onPreview: (String) -> Void
     let onRemove: (String) -> Void
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: ui(8)) {
                 ForEach(items) { item in
@@ -174,7 +181,7 @@ private struct MediaBasketThumb: View {
                 Image(uiImage: image).resizable().scaledToFill()
             } else {
                 Rectangle().fill(.secondary.opacity(0.15))
-                    .overlay(Image(systemName: item.isVideo ? "film" : "photo").foregroundStyle(.secondary))
+                    .overlay(Image(systemName: item.isVideo ? "film" : "photo").foregroundStyle(PorcelainMetrics.secondary))
             }
             if item.isVideo {
                 Image(systemName: "play.fill").font(.system(size: ui(10))).foregroundStyle(.white)
@@ -291,7 +298,10 @@ struct MediaFilesSourcePage: View {
         return imported.filter { !listed.contains($0.id) }
     }
 
+    private var themeRefresh = ThemeRefresh()
+
     var body: some View {
+        let _ = themeRefresh.theme
         VStack(spacing: 0) {
             controls
             if rootURL == nil {
@@ -314,7 +324,7 @@ struct MediaFilesSourcePage: View {
                 } description: {
                     Text(loadError)
                 } actions: {
-                    Button("다시 시도") { reload() }.buttonStyle(.borderedProminent)
+                    Button("다시 시도") { reload() }.buttonStyle(PorcelainProminentButtonStyle())
                     Button("폴더 변경") { isChoosingFolder = true }
                 }
             } else if entries.isEmpty && otherImported.isEmpty {
@@ -325,7 +335,7 @@ struct MediaFilesSourcePage: View {
                         ForEach(entries) { entry in tile(entry) }
                     }.padding(ui(8))
                     if !otherImported.isEmpty {
-                        Text("선택한 다른 파일").font(.ui(.footnote)).foregroundStyle(.secondary)
+                        Text("선택한 다른 파일").font(.ui(.footnote)).foregroundStyle(PorcelainMetrics.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, ui(8))
                         LazyVGrid(columns: columns, spacing: ui(8)) { importedTiles(otherImported) }.padding(ui(8))
                     }
@@ -369,7 +379,7 @@ struct MediaFilesSourcePage: View {
                     HStack(spacing: ui(2)) {
                         crumb(rootURL.lastPathComponent, systemImage: "house") { go(to: 0) }
                         ForEach(Array(trail.enumerated()), id: \.offset) { index, url in
-                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right").font(.caption2).foregroundStyle(PorcelainMetrics.secondary)
                             crumb(url.lastPathComponent, systemImage: nil) { go(to: index + 1) }
                         }
                     }.padding(.horizontal, ui(12))
@@ -399,7 +409,7 @@ struct MediaFilesSourcePage: View {
                 ZStack(alignment: .bottomTrailing) {
                     Group {
                         if let thumbnail = file.thumbnail { Image(uiImage: thumbnail).resizable().scaledToFill() }
-                        else { Rectangle().fill(.secondary.opacity(0.15)).overlay(Image(systemName: file.isVideo ? "film" : "photo").foregroundStyle(.secondary)) }
+                        else { Rectangle().fill(.secondary.opacity(0.15)).overlay(Image(systemName: file.isVideo ? "film" : "photo").foregroundStyle(PorcelainMetrics.secondary)) }
                     }
                     .frame(maxWidth: .infinity).frame(height: ui(100)).clipped()
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(.white, Color.accentColor).padding(ui(4))
@@ -538,7 +548,7 @@ private struct MediaFolderThumb: View {
     var body: some View {
         Group {
             if let image { Image(uiImage: image).resizable().scaledToFill() }
-            else { Rectangle().fill(.secondary.opacity(0.15)).overlay(Image(systemName: isVideo ? "film" : "photo").foregroundStyle(.secondary)) }
+            else { Rectangle().fill(.secondary.opacity(0.15)).overlay(Image(systemName: isVideo ? "film" : "photo").foregroundStyle(PorcelainMetrics.secondary)) }
         }
         .frame(maxWidth: .infinity)
         .task(id: url) {

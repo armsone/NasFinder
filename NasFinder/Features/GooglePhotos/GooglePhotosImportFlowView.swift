@@ -66,7 +66,10 @@ struct GooglePhotosImportFlowView: View {
         lifecycle = nil
     }
 
+    private var themeRefresh = ThemeRefresh()
+
     var body: some View {
+        let _ = themeRefresh.theme
         mediaContent.modifier(PreserveMediaNavigation())
     }
 
@@ -187,7 +190,7 @@ struct GooglePhotosImportFlowView: View {
 
             Text(detail)
                 .font(.ui(.subheadline))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .multilineTextAlignment(.center)
                 .monospacedDigit()
 
@@ -196,7 +199,7 @@ struct GooglePhotosImportFlowView: View {
 
             if case .waitingForSelection = controller.phase {
                 Button("선택 화면 다시 열기") { controller.reopenPicker() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PorcelainProminentButtonStyle())
             }
             Button("취소") {
                 controller.cancel()
@@ -234,13 +237,13 @@ struct GooglePhotosImportFlowView: View {
 
             Text(message)
                 .font(.ui(.subheadline))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .multilineTextAlignment(.center)
 
             Button("다시 시도") {
                 beginImport()
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PorcelainProminentButtonStyle())
             .controlSize(.large)
             .padding(.top, ui(10))
 
@@ -248,7 +251,7 @@ struct GooglePhotosImportFlowView: View {
                 if !isEmbedded { dismiss() }
             }
             .font(.ui(.subheadline))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(PorcelainMetrics.secondary)
         }
         .padding(ui(24))
         .frame(maxWidth: ui(480))
@@ -268,7 +271,7 @@ struct GooglePhotosImportFlowView: View {
 
             Text(detail)
                 .font(.ui(.subheadline))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .multilineTextAlignment(.center)
                 .monospacedDigit()
 
@@ -279,7 +282,7 @@ struct GooglePhotosImportFlowView: View {
                 Button("영상 만들기에 담기", systemImage: "film") {
                     onImportedMedia(importedMedia.records)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PorcelainProminentButtonStyle())
             } else if onImportedMedia == nil, case .finished = controller.phase, !importedMedia.records.isEmpty {
                 Button("영상 편집", systemImage: "film") {
                     let items = importedMedia.records.map { LocalInboxFileService.remoteItem(for: $0) }
@@ -287,12 +290,12 @@ struct GooglePhotosImportFlowView: View {
                     guard !items.isEmpty else { return }
                     trailerSelection = VideoTrailerSelection(items: items)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PorcelainProminentButtonStyle())
             }
             Button(isEmbedded ? "더 선택하기" : "완료") {
                 if isEmbedded { beginImport() } else { dismiss() }
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PorcelainProminentButtonStyle())
             .controlSize(.large)
             .padding(.top, ui(10))
         }

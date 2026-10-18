@@ -1,14 +1,19 @@
 import SwiftUI
 import UIKit
 
+/// 사용자가 고르는 정확히 6개 테마. 모든 테마가 같은 배치·같은 Pretendard 글자·같은 썸네일 크기를 쓰고
+/// 의미 색(AppThemePalette)만 바뀐다. 예전 원시 저장값(system/day/porcelain 등)은 저장값을 고치지 않고
+/// 읽을 때만 라이트로 해석한다.
+/// 사용자가 고르는 정확히 6개 테마 (병기스타일 테마).
+/// 순서: light(밝은), medium(중간), dark(어두운), jarvis(자비스), friday(프라이데이), ultron(울트론).
+/// 예전 저장값 night는 dark, bkstyle은 medium으로 읽으며, 저장값을 다시 쓰지 않는다.
 enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
-    case system
-    case day
-    case night
-    case digitalRain
-    case windyMeadow
-    case workbench
-    case skeuomorphism
+    case light
+    case bkstyle = "medium"
+    case night = "dark"
+    case jarvis
+    case friday
+    case ultron
 
     static let storageKey = "app.theme.preference.v1"
 
@@ -16,55 +21,59 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
 
     var title: String {
         switch self {
-        case .system: "자동"
-        case .day: "낮"
-        case .night: "밤"
-        case .digitalRain: "Vibe Coder"
-        case .windyMeadow: "Windy Meadow"
-        case .workbench: "Workbench"
-        case .skeuomorphism: "BK Style"
+        case .light: "밝은"
+        case .bkstyle: "중간"
+        case .night: "어두운"
+        case .jarvis: "자비스"
+        case .friday: "프라이데이"
+        case .ultron: "울트론"
         }
     }
 
     var shortDescription: String {
         switch self {
-        case .system: "iPhone 설정"
-        case .day: "맑고 밝게"
-        case .night: "차분하고 어둡게"
-        case .digitalRain: "Black · Mint"
-        case .windyMeadow: "Sky · Meadow"
-        case .workbench: "Slate · Syntax"
-        case .skeuomorphism: "White Enamel · Chrome"
+        case .light: "밝은 바탕 · 올리브 녹색 강조"
+        case .bkstyle: "중간 바탕 · 깊은 올리브 강조"
+        case .night: "어두운 바탕 · 연두 강조"
+        case .jarvis: "어두운 청록 · 시안 강조"
+        case .friday: "밝은 호박색 바탕 · 오렌지 강조"
+        case .ultron: "어두운 그래파이트 · 코랄 강조"
         }
     }
 
     var systemImage: String {
         switch self {
-        case .system: "circle.lefthalf.filled"
-        case .day: "sun.max.fill"
-        case .night: "moon.stars.fill"
-        case .digitalRain: "terminal.fill"
-        case .windyMeadow: "wind"
-        case .workbench: "chevron.left.forwardslash.chevron.right"
-        case .skeuomorphism: "dial.medium"
+        case .light: "sun.max"
+        case .bkstyle: "circle.righthalf.filled"
+        case .night: "moon"
+        case .jarvis: "circle.dashed"
+        case .friday: "hexagon"
+        case .ultron: "shield"
         }
     }
 
     var preferredColorScheme: ColorScheme? {
+        isDark ? .dark : .light
+    }
+
+    var isDark: Bool {
         switch self {
-        case .system: nil
-        case .day, .windyMeadow, .skeuomorphism: .light
-        case .night, .digitalRain, .workbench: .dark
+        case .light, .bkstyle, .friday: false
+        case .night, .jarvis, .ultron: true
         }
     }
 
+    /// 6개 표준 값 매핑. 예전 'night'는 dark, 'bkstyle'은 medium으로 읽고, 그 밖의 값은 light로 읽는다.
     static func resolved(_ rawValue: String?) -> Self {
-        rawValue.flatMap(Self.init(rawValue:)) ?? .system
+        guard let rawValue else { return .light }
+        if rawValue == "night" { return .night }
+        if rawValue == "bkstyle" { return .bkstyle }
+        return Self(rawValue: rawValue) ?? .light
     }
 
     var next: Self {
         let themes = Self.allCases
-        guard let currentIndex = themes.firstIndex(of: self) else { return .system }
+        guard let currentIndex = themes.firstIndex(of: self) else { return .light }
         let nextIndex = themes.index(after: currentIndex)
         return nextIndex == themes.endIndex ? themes[themes.startIndex] : themes[nextIndex]
     }
@@ -72,21 +81,112 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
     static var current: Self {
         resolved(UserDefaults.standard.string(forKey: storageKey))
     }
-}
 
-/// “파란 하늘 · 흰 구름 · 시원한 바람”을 iOS 기본 구성요소 위에
-/// 얹는 가벼운 시각 테마. 기능 화면의 대비를 해치지 않도록 배경과
-/// 포인트 컬러에만 적용한다.
-enum SkyBreezeTheme {
-    static var accent: Color {
-        switch AppThemePreference.current {
-        case .digitalRain: Color(red: 0.18, green: 0.91, blue: 0.72)
-        case .windyMeadow: Color(red: 0.05, green: 0.55, blue: 0.76)
-        case .workbench: Color(red: 0.36, green: 0.78, blue: 1.00)
-        case .skeuomorphism: Color(red: 0.894, green: 0.118, blue: 0.145)
-        default: Color(uiColor: .systemBlue)
+    var palette: AppThemePalette {
+        switch self {
+        case .light:
+            AppThemePalette(
+                background: 0xF5F4F0, surface: 0xFFFFFF, elevated: 0xFBFAF7, border: 0xE2DFD5,
+                text: 0x1F211C, secondary: 0x4A4C44, accent: 0x5C6B3C, selected: 0xE8EBDB,
+                danger: 0x9C3B2A, pressed: 0xECEBE4, onAccent: 0xFFFFFF, solidAction: 0x5C6B3C
+            )
+        case .bkstyle:
+            // medium (중간)
+            AppThemePalette(
+                background: 0xD9D3C7, surface: 0xECE8DF, elevated: 0xE6E1D6, border: 0xBDB6A7,
+                text: 0x1F211C, secondary: 0x3A3A34, accent: 0x46532C, selected: 0xCDD0B8,
+                danger: 0x8A2F1F, pressed: 0xCFC8BA, onAccent: 0xFFFFFF, solidAction: 0x46532C
+            )
+        case .night:
+            // dark (어두운)
+            AppThemePalette(
+                background: 0x1C1C1A, surface: 0x262622, elevated: 0x242422, border: 0x35342E,
+                text: 0xE9E7DF, secondary: 0xC2BFB3, accent: 0x93B163, selected: 0x2A3022,
+                danger: 0xE08674, pressed: 0x2E2E29, onAccent: 0x14180D, solidAction: 0x93B163
+            )
+        case .jarvis:
+            AppThemePalette(
+                background: 0x0C1420, surface: 0x162337, elevated: 0x121C2B, border: 0x20324A,
+                text: 0xE3EDF7, secondary: 0xB3C4D6, accent: 0x4CC2E6, selected: 0x12324A,
+                danger: 0xF28B82, pressed: 0x1C2D44, onAccent: 0x04202B, solidAction: 0x4CC2E6
+            )
+        case .friday:
+            AppThemePalette(
+                background: 0xF7EFE3, surface: 0xFFFDF8, elevated: 0xFFFAF1, border: 0xE8D8C0,
+                text: 0x2A1F16, secondary: 0x55422F, accent: 0x9A4A12, selected: 0xF6DFC0,
+                danger: 0xA3204A, pressed: 0xF0E2CC, onAccent: 0xFFFFFF, solidAction: 0x9A4A12
+            )
+        case .ultron:
+            AppThemePalette(
+                background: 0x121316, surface: 0x202328, elevated: 0x1A1C20, border: 0x2B2E34,
+                text: 0xE6E7EA, secondary: 0xB8BBC2, accent: 0xF2566A, selected: 0x3A1A20,
+                danger: 0xFF9A9A, pressed: 0x272A30, onAccent: 0x1A0508, solidAction: 0xF2566A
+            )
         }
     }
+}
+
+/// 공유 홈 시각 명세 §4의 의미 색(불투명 sRGB). 양 플랫폼이 같은 값을 쓴다.
+struct AppThemePalette: Sendable {
+    let backgroundHex, surfaceHex, elevatedHex, borderHex, textHex, secondaryHex: Int
+    let accentHex, selectedHex, dangerHex, pressedHex, onAccentHex, solidActionHex: Int
+
+    init(
+        background: Int, surface: Int, elevated: Int, border: Int, text: Int, secondary: Int,
+        accent: Int, selected: Int, danger: Int, pressed: Int, onAccent: Int, solidAction: Int? = nil
+    ) {
+        backgroundHex = background; surfaceHex = surface; elevatedHex = elevated
+        borderHex = border; textHex = text; secondaryHex = secondary
+        accentHex = accent; selectedHex = selected; dangerHex = danger
+        pressedHex = pressed; onAccentHex = onAccent
+        solidActionHex = solidAction ?? accent
+    }
+
+    var background: Color { Self.color(backgroundHex) }
+    var surface: Color { Self.color(surfaceHex) }
+    var elevated: Color { Self.color(elevatedHex) }
+    var border: Color { Self.color(borderHex) }
+    var text: Color { Self.color(textHex) }
+    var secondary: Color { Self.color(secondaryHex) }
+    /// 브랜드 `Finder`·선택 표식 등 장식 강조색.
+    var accent: Color { Self.color(accentHex) }
+    var selected: Color { Self.color(selectedHex) }
+    var danger: Color { Self.color(dangerHex) }
+    var pressed: Color { Self.color(pressedHex) }
+    /// solidAction 위의 글자·글리프 색.
+    var onAccent: Color { Self.color(onAccentHex) }
+    /// 채운 CTA 바탕. 병기스타일만 accent와 다르다(#C93629).
+    var solidAction: Color { Self.color(solidActionHex) }
+    var textUIColor: UIColor { Self.uiColor(textHex) }
+
+    static func uiColor(_ hex: Int) -> UIColor {
+        UIColor(
+            red: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: 1
+        )
+    }
+
+    private static func color(_ hex: Int) -> Color {
+        Color(
+            .sRGB,
+            red: Double((hex >> 16) & 0xFF) / 255,
+            green: Double((hex >> 8) & 0xFF) / 255,
+            blue: Double(hex & 0xFF) / 255,
+            opacity: 1
+        )
+    }
+}
+
+/// 예전 이름을 유지한 공용 색 접근점. 이제 모든 값은 현재 테마의 의미 색에서 온다.
+enum SkyBreezeTheme {
+    private static var palette: AppThemePalette { AppThemePreference.current.palette }
+
+    /// 앱 전체 tint와 채운 단추 바탕(solidAction).
+    static var accent: Color { palette.solidAction }
+    /// `accent`(solidAction)로 채운 면 위의 글자·글리프 색.
+    static var onAccent: Color { palette.onAccent }
 
     static let nasBlue = adaptiveColor(
         light: (0.00, 0.48, 1.00),
@@ -101,132 +201,19 @@ enum SkyBreezeTheme {
         dark: (1.00, 0.62, 0.04)
     )
 
-    static var folderBlue: Color {
-        switch AppThemePreference.current {
-        case .digitalRain: Color(red: 0.23, green: 0.84, blue: 0.69)
-        case .windyMeadow: Color(red: 0.04, green: 0.48, blue: 0.68)
-        case .workbench: Color(red: 0.36, green: 0.78, blue: 1.00)
-        case .skeuomorphism: Color(red: 0.22, green: 0.25, blue: 0.27)
-        default:
-            adaptiveColor(
-                light: (0.08, 0.47, 0.70),
-                dark: (0.36, 0.73, 0.94)
-            )
-        }
-    }
-
-    static var primaryText: Color {
-        switch AppThemePreference.current {
-        case .digitalRain: Color(red: 0.90, green: 0.98, blue: 0.95)
-        case .workbench: Color(red: 0.92, green: 0.95, blue: 0.98)
-        case .skeuomorphism: Color(red: 0.08, green: 0.09, blue: 0.10)
-        default: Color(uiColor: .label)
-        }
-    }
-
-    static var secondaryText: Color {
-        switch AppThemePreference.current {
-        case .digitalRain: Color(red: 0.60, green: 0.75, blue: 0.70)
-        case .workbench: Color(red: 0.61, green: 0.69, blue: 0.76)
-        case .skeuomorphism: Color(red: 0.34, green: 0.36, blue: 0.38)
-        default: Color(uiColor: .secondaryLabel)
-        }
-    }
-
-    static var thumbnailSurface: Color {
-        switch AppThemePreference.current {
-        case .digitalRain: Color(red: 0.035, green: 0.105, blue: 0.095)
-        case .windyMeadow: Color(red: 0.985, green: 0.975, blue: 0.91)
-        case .workbench: Color(red: 0.075, green: 0.105, blue: 0.145)
-        case .skeuomorphism: Color(red: 0.985, green: 0.982, blue: 0.972)
-        default:
-            Color(
-                uiColor: UIColor { traits in
-                    traits.userInterfaceStyle == .dark
-                        ? UIColor(red: 0.075, green: 0.11, blue: 0.14, alpha: 1)
-                        : UIColor(white: 1.0, alpha: 0.88)
-                }
-            )
-        }
-    }
-
-    static var thumbnailBorder: Color {
-        switch AppThemePreference.current {
-        case .digitalRain: Color(red: 0.10, green: 0.32, blue: 0.27)
-        case .windyMeadow: Color(red: 0.62, green: 0.73, blue: 0.40)
-        case .workbench: Color(red: 0.20, green: 0.29, blue: 0.37)
-        case .skeuomorphism: Color(red: 0.58, green: 0.60, blue: 0.61)
-        default:
-            adaptiveColor(
-                light: (0.75, 0.89, 0.95),
-                dark: (0.18, 0.28, 0.34)
-            )
-        }
-    }
-
-    static var contentBackground: Color {
-        switch AppThemePreference.current {
-        case .digitalRain: Color(red: 0.012, green: 0.045, blue: 0.042)
-        case .windyMeadow: Color(red: 0.93, green: 0.96, blue: 0.82)
-        case .workbench: Color(red: 0.035, green: 0.055, blue: 0.08)
-        case .skeuomorphism: Color(red: 0.925, green: 0.918, blue: 0.902)
-        default:
-            adaptiveColor(
-                light: (0.955, 0.985, 0.995),
-                dark: (0.035, 0.075, 0.11)
-            )
-        }
-    }
+    static var folderBlue: Color { palette.text }
+    static var primaryText: Color { palette.text }
+    static var secondaryText: Color { palette.secondary }
+    static var thumbnailSurface: Color { palette.surface }
+    static var thumbnailBorder: Color { palette.border }
+    static var contentBackground: Color { palette.background }
 
     static func skyGradient(
         for colorScheme: ColorScheme,
         theme: AppThemePreference = .current
     ) -> LinearGradient {
-        let colors: [Color]
-        switch theme {
-        case .digitalRain:
-            colors = [
-                Color(red: 0.005, green: 0.035, blue: 0.032),
-                Color(red: 0.018, green: 0.09, blue: 0.075),
-                Color(red: 0.01, green: 0.045, blue: 0.042),
-            ]
-        case .windyMeadow:
-            colors = [
-                Color(red: 0.23, green: 0.74, blue: 0.95),
-                Color(red: 0.72, green: 0.90, blue: 0.88),
-                Color(red: 0.89, green: 0.94, blue: 0.70),
-            ]
-        case .workbench:
-            colors = [
-                Color(red: 0.07, green: 0.10, blue: 0.15),
-                Color(red: 0.035, green: 0.055, blue: 0.08),
-                Color(red: 0.055, green: 0.12, blue: 0.18),
-            ]
-        case .skeuomorphism:
-            colors = [
-                Color(red: 0.86, green: 0.85, blue: 0.83),
-                Color(red: 0.97, green: 0.965, blue: 0.95),
-                .white,
-            ]
-        case .night:
-            colors = [
-                Color(red: 0.035, green: 0.12, blue: 0.19),
-                Color(red: 0.055, green: 0.09, blue: 0.13),
-            ]
-        case .system where colorScheme == .dark:
-            colors = [
-                Color(red: 0.035, green: 0.12, blue: 0.19),
-                Color(red: 0.055, green: 0.09, blue: 0.13),
-            ]
-        default:
-            colors = [
-                Color(red: 0.59, green: 0.85, blue: 1.00),
-                Color(red: 0.86, green: 0.95, blue: 1.00),
-                .white,
-            ]
-        }
-        return LinearGradient(
-            colors: colors,
+        LinearGradient(
+            colors: [theme.palette.background],
             startPoint: .topLeading,
             endPoint: .bottomTrailing
         )
@@ -345,20 +332,8 @@ enum ThemeServicePalette {
         let base = baseStyle(forServiceIdentifier: identifier)
             ?? fallbackStyle(forServiceIdentifier: identifier, theme: theme)
 
-        switch theme {
-        case .night:
-            return base.blended(toward: (1, 1, 1), amount: 0.08)
-        case .digitalRain:
-            return base.blended(toward: (0.74, 1, 0.90), amount: 0.06)
-        case .windyMeadow:
-            return base.blended(toward: (0, 0, 0), amount: 0.04)
-        case .workbench:
-            return base.blended(toward: (0.72, 0.86, 1.0), amount: 0.05)
-        case .skeuomorphism:
-            return base.blended(toward: (0.28, 0.28, 0.28), amount: 0.10)
-        case .system, .day:
-            return base
-        }
+        // 어두운 4테마는 서비스 고유색을 조금 밝혀 어두운 바탕에서 구분되게 한다.
+        return theme.isDark ? base.blended(toward: (1, 1, 1), amount: 0.08) : base
     }
 
     static func color(
@@ -395,40 +370,10 @@ enum ThemeServicePalette {
     private static func fallbackStyles(
         for theme: AppThemePreference
     ) -> [ThemeServiceStyle] {
-        switch theme {
-        case .digitalRain:
-            [
-                ThemeServiceStyle(hex: 0x52FFC2),
-                ThemeServiceStyle(hex: 0x14B8A3),
-                ThemeServiceStyle(hex: 0x38D1EB),
-                ThemeServiceStyle(hex: 0x8AF2B3),
-            ]
-        case .windyMeadow:
-            [
-                ThemeServiceStyle(hex: 0x1F9EDB),
-                ThemeServiceStyle(hex: 0x61AD38),
-                ThemeServiceStyle(hex: 0xF5B847),
-                ThemeServiceStyle(hex: 0x8561B3),
-            ]
-        case .workbench:
-            [
-                ThemeServiceStyle(hex: 0x5CC8FF),
-                ThemeServiceStyle(hex: 0x65D6AD),
-                ThemeServiceStyle(hex: 0xF4C76B),
-                ThemeServiceStyle(hex: 0xC792EA),
-            ]
-        case .skeuomorphism:
-            [
-                ThemeServiceStyle(hex: 0xE41E25),
-                ThemeServiceStyle(hex: 0x6F7478),
-                ThemeServiceStyle(hex: 0xB7BBC0),
-                ThemeServiceStyle(hex: 0x34383B),
-            ]
-        case .night:
-            [0x0A84FF, 0x30D158, 0xFF9F0A, 0xBF5AF2].map(ThemeServiceStyle.init(hex:))
-        case .system, .day:
-            [0x007AFF, 0x34C759, 0xFF9500, 0x5856D6].map(ThemeServiceStyle.init(hex:))
-        }
+        // 알 수 없는 서비스는 현재 테마의 의미 색(강조·글자·보조·선)에서 고른다.
+        let palette = theme.palette
+        return [palette.accentHex, palette.textHex, palette.secondaryHex, palette.borderHex]
+            .map(ThemeServiceStyle.init(hex:))
     }
 
     private static func fallbackStyle(
@@ -510,47 +455,31 @@ struct ThemedSymbol: View {
     var symbolSize: CGFloat? = nil
     var showsStatus = false
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.system.rawValue
+        AppThemePreference.light.rawValue
+    @AppStorage(InterfaceIconStyle.storageKey) private var iconStyleRawValue = ""
 
-    private var isSkeuomorphic: Bool {
-        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+    private var packIcon: ThemeIconID? {
+        guard InterfaceIconStyle.resolved(
+            iconStyleRawValue,
+            theme: AppThemePreference.resolved(selectedThemeRawValue)
+        ) != nil else { return nil }
+        return ThemeIconID(systemName: systemName)
     }
 
     var body: some View {
-        if isSkeuomorphic {
-            Image(systemName: systemName)
-                .font(.system(size: symbolSize ?? size * 0.52, weight: .semibold))
-                .foregroundStyle(Color(red: 0.16, green: 0.17, blue: 0.18))
+        if let id = packIcon,
+           let style = InterfaceIconStyle.resolved(
+               iconStyleRawValue,
+               theme: AppThemePreference.resolved(selectedThemeRawValue)
+           ) {
+            ThemeIcon(id, style: style, fallbackSystemName: systemName)
+                .frame(width: symbolSize ?? size * 0.62, height: symbolSize ?? size * 0.62)
                 .frame(width: size, height: size)
-                .background {
-                    Circle()
-                        .fill(
-                            LinearGradient(
-                                colors: [.white, Color(red: 0.82, green: 0.82, blue: 0.80)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
-                        )
-                        .shadow(color: .white.opacity(0.90), radius: max(1, size * 0.04), x: -1, y: -1)
-                        .shadow(color: .black.opacity(0.24), radius: max(2, size * 0.08), x: 1, y: max(2, size * 0.06))
-                }
-                .overlay {
-                    Circle()
-                        .stroke(
-                            LinearGradient(
-                                colors: [.white, Color(red: 0.36, green: 0.38, blue: 0.40)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            ),
-                            lineWidth: max(1.5, size * 0.04)
-                        )
-                }
                 .overlay(alignment: .bottomTrailing) {
                     if showsStatus {
                         Circle()
-                            .fill(Color(red: 0.894, green: 0.118, blue: 0.145))
+                            .fill(SkyBreezeTheme.accent)
                             .frame(width: max(4, size * 0.16), height: max(4, size * 0.16))
-                            .overlay(Circle().stroke(.white.opacity(0.85), lineWidth: 0.5))
                     }
                 }
         } else {
@@ -643,9 +572,8 @@ struct PhoneHardMark: View {
 
 struct SkyBreezeBackground: View {
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.system.rawValue
+        AppThemePreference.light.rawValue
 
     private var selectedTheme: AppThemePreference {
         .resolved(selectedThemeRawValue)
@@ -653,73 +581,316 @@ struct SkyBreezeBackground: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ZStack(alignment: .top) {
-                SkyBreezeTheme.skyGradient(for: colorScheme, theme: selectedTheme)
-
-                if !reduceTransparency {
-                    themeDecoration(in: geometry.size)
-                }
-            }
-            .frame(width: geometry.size.width, height: geometry.size.height)
+            // 6개 테마 모두 장식 없이 테마 바탕색만 깐다.
+            SkyBreezeTheme.skyGradient(for: colorScheme, theme: selectedTheme)
+                .frame(width: geometry.size.width, height: geometry.size.height)
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)
     }
+}
+
+// MARK: - 병기스타일 테마 6종 네이티브 24×24 벡터 글리프 및 공통 상호작용 부품
+
+/// 24×24 SVG 뷰박스 기준의 정확한 기하 구조를 네이티브 SwiftUI Shape/Canvas로 렌더링.
+/// stroke 1.7 round, tint = currentColor (테마 accent 또는 호출부 전경색).
+struct ByungkiThemeGlyph: View {
+    let theme: AppThemePreference
+    var size: CGFloat = 24
+    var tintColor: Color? = nil
+
+    var body: some View {
+        let drawColor = tintColor ?? theme.palette.accent
+        Canvas { context, canvasSize in
+            let scale = canvasSize.width / 24.0
+            context.scaleBy(x: scale, y: scale)
+
+            let strokeStyle = StrokeStyle(
+                lineWidth: 1.7,
+                lineCap: .round,
+                lineJoin: .round
+            )
+
+            switch theme {
+            case .light:
+                // circle cx=12 cy=12 r=3.8
+                let circlePath = Path(ellipseIn: CGRect(x: 12 - 3.8, y: 12 - 3.8, width: 7.6, height: 7.6))
+                context.stroke(circlePath, with: .color(drawColor), style: strokeStyle)
+
+                // rays: M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4L18 18M6 18l1.6-1.6M16.4 7.6L18 6
+                var rays = Path()
+                rays.move(to: CGPoint(x: 12, y: 3.5)); rays.addLine(to: CGPoint(x: 12, y: 5.7))
+                rays.move(to: CGPoint(x: 12, y: 18.3)); rays.addLine(to: CGPoint(x: 12, y: 20.5))
+                rays.move(to: CGPoint(x: 3.5, y: 12)); rays.addLine(to: CGPoint(x: 5.7, y: 12))
+                rays.move(to: CGPoint(x: 18.3, y: 12)); rays.addLine(to: CGPoint(x: 20.5, y: 12))
+                rays.move(to: CGPoint(x: 6, y: 6)); rays.addLine(to: CGPoint(x: 7.6, y: 7.6))
+                rays.move(to: CGPoint(x: 16.4, y: 16.4)); rays.addLine(to: CGPoint(x: 18, y: 18))
+                rays.move(to: CGPoint(x: 6, y: 18)); rays.addLine(to: CGPoint(x: 7.6, y: 16.4))
+                rays.move(to: CGPoint(x: 16.4, y: 7.6)); rays.addLine(to: CGPoint(x: 18, y: 6))
+                context.stroke(rays, with: .color(drawColor), style: strokeStyle)
+
+            case .bkstyle:
+                // medium (중간)
+                // circle cx=12 cy=12 r=8
+                let circlePath = Path(ellipseIn: CGRect(x: 4, y: 4, width: 16, height: 16))
+                context.stroke(circlePath, with: .color(drawColor), style: strokeStyle)
+
+                // path d="M12 4a8 8 0 0 0 0 16z" fill=currentColor (우측 반원)
+                var halfPath = Path()
+                halfPath.move(to: CGPoint(x: 12, y: 4))
+                halfPath.addArc(
+                    center: CGPoint(x: 12, y: 12),
+                    radius: 8,
+                    startAngle: .degrees(-90),
+                    endAngle: .degrees(90),
+                    clockwise: false
+                )
+                halfPath.closeSubpath()
+                context.fill(halfPath, with: .color(drawColor))
+
+            case .night:
+                // dark (어두운)
+                // path d="M19.5 14.6A8 8 0 0 1 9.4 4.5a8 8 0 1 0 10.1 10.1z"
+                var moon = Path()
+                moon.move(to: CGPoint(x: 19.500, y: 14.600))
+                moon.addCurve(to: CGPoint(x: 11.342, y: 12.658), control1: CGPoint(x: 16.632, y: 15.544), control2: CGPoint(x: 13.477, y: 14.793))
+                moon.addCurve(to: CGPoint(x: 9.400, y: 4.500), control1: CGPoint(x: 9.207, y: 10.523), control2: CGPoint(x: 8.456, y: 7.368))
+                moon.addCurve(to: CGPoint(x: 3.946, y: 12.945), control1: CGPoint(x: 5.819, y: 5.678), control2: CGPoint(x: 3.547, y: 9.197))
+                moon.addCurve(to: CGPoint(x: 11.055, y: 20.054), control1: CGPoint(x: 4.345, y: 16.694), control2: CGPoint(x: 7.306, y: 19.655))
+                moon.addCurve(to: CGPoint(x: 19.500, y: 14.600), control1: CGPoint(x: 14.803, y: 20.453), control2: CGPoint(x: 18.322, y: 18.181))
+                moon.closeSubpath()
+                context.stroke(moon, with: .color(drawColor), style: strokeStyle)
+
+            case .jarvis:
+                // circle cx=12 cy=12 r=9 stroke-dasharray="15.4 3.45" transform="rotate(-80 12 12)"
+                var jarvisContext = context
+                jarvisContext.translateBy(x: 12, y: 12)
+                jarvisContext.rotate(by: .degrees(-80))
+                jarvisContext.translateBy(x: -12, y: -12)
+
+                let outerCircle = Path(ellipseIn: CGRect(x: 3, y: 3, width: 18, height: 18))
+                let dashedStroke = StrokeStyle(
+                    lineWidth: 1.7,
+                    lineCap: .round,
+                    lineJoin: .round,
+                    dash: [15.4, 3.45]
+                )
+                jarvisContext.stroke(outerCircle, with: .color(drawColor), style: dashedStroke)
+
+                // circle cx=12 cy=12 r=5 stroke-width=1.4
+                let midCircle = Path(ellipseIn: CGRect(x: 7, y: 7, width: 10, height: 10))
+                let midStroke = StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round)
+                context.stroke(midCircle, with: .color(drawColor), style: midStroke)
+
+                // circle cx=12 cy=12 r=1.7 fill=currentColor stroke=none
+                let centerDot = Path(ellipseIn: CGRect(x: 12 - 1.7, y: 12 - 1.7, width: 3.4, height: 3.4))
+                context.fill(centerDot, with: .color(drawColor))
+
+            case .friday:
+                // path d="M12 3l7.8 4.5v9L12 21l-7.8-4.5v-9z"
+                var hex = Path()
+                hex.move(to: CGPoint(x: 12, y: 3))
+                hex.addLine(to: CGPoint(x: 19.8, y: 7.5))
+                hex.addLine(to: CGPoint(x: 19.8, y: 16.5))
+                hex.addLine(to: CGPoint(x: 12, y: 21))
+                hex.addLine(to: CGPoint(x: 4.2, y: 16.5))
+                hex.addLine(to: CGPoint(x: 4.2, y: 7.5))
+                hex.closeSubpath()
+                context.stroke(hex, with: .color(drawColor), style: strokeStyle)
+
+                // circle cx=12 cy=12 r=3 fill=currentColor stroke=none
+                let centerCircle = Path(ellipseIn: CGRect(x: 9, y: 9, width: 6, height: 6))
+                context.fill(centerCircle, with: .color(drawColor))
+
+                // path d="M12 9V6.5M12 17.5V15M9 12H6.5M17.5 12H15" stroke-width=1.4
+                var cross = Path()
+                cross.move(to: CGPoint(x: 12, y: 9)); cross.addLine(to: CGPoint(x: 12, y: 6.5))
+                cross.move(to: CGPoint(x: 12, y: 17.5)); cross.addLine(to: CGPoint(x: 12, y: 15))
+                cross.move(to: CGPoint(x: 9, y: 12)); cross.addLine(to: CGPoint(x: 6.5, y: 12))
+                cross.move(to: CGPoint(x: 17.5, y: 12)); cross.addLine(to: CGPoint(x: 15, y: 12))
+                let crossStroke = StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round)
+                context.stroke(cross, with: .color(drawColor), style: crossStroke)
+
+            case .ultron:
+                // path d="M6 4h12l2.5 5v6l-4 5h-9l-4-5V9z"
+                var mask = Path()
+                mask.move(to: CGPoint(x: 6, y: 4))
+                mask.addLine(to: CGPoint(x: 18, y: 4))
+                mask.addLine(to: CGPoint(x: 20.5, y: 9))
+                mask.addLine(to: CGPoint(x: 20.5, y: 15))
+                mask.addLine(to: CGPoint(x: 16.5, y: 20))
+                mask.addLine(to: CGPoint(x: 7.5, y: 20))
+                mask.addLine(to: CGPoint(x: 3.5, y: 15))
+                mask.addLine(to: CGPoint(x: 3.5, y: 9))
+                mask.closeSubpath()
+                context.stroke(mask, with: .color(drawColor), style: strokeStyle)
+
+                // path d="M7.4 10.4l3.6 1.3-.3 1.4-3.3-.9zM16.6 10.4L13 11.7l.3 1.4 3.3-.9z" fill=currentColor stroke=none
+                var eyes = Path()
+                eyes.move(to: CGPoint(x: 7.4, y: 10.4))
+                eyes.addLine(to: CGPoint(x: 11.0, y: 11.7))
+                eyes.addLine(to: CGPoint(x: 10.7, y: 13.1))
+                eyes.addLine(to: CGPoint(x: 7.4, y: 12.2))
+                eyes.closeSubpath()
+
+                eyes.move(to: CGPoint(x: 16.6, y: 10.4))
+                eyes.addLine(to: CGPoint(x: 13.0, y: 11.7))
+                eyes.addLine(to: CGPoint(x: 13.3, y: 13.1))
+                eyes.addLine(to: CGPoint(x: 16.6, y: 12.2))
+                eyes.closeSubpath()
+                context.fill(eyes, with: .color(drawColor))
+
+                // path d="M9.5 16.5h5" stroke-width=1.4
+                var mouth = Path()
+                mouth.move(to: CGPoint(x: 9.5, y: 16.5))
+                mouth.addLine(to: CGPoint(x: 14.5, y: 16.5))
+                let mouthStroke = StrokeStyle(lineWidth: 1.4, lineCap: .round, lineJoin: .round)
+                context.stroke(mouth, with: .color(drawColor), style: mouthStroke)
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+/// 우클릭 메뉴는 Mac에서만 붙인다. iOS의 contextMenu는 롱프레스에도 반응해 홀드 목록과 겹치기 때문이다.
+private struct ThemeRightClickMenu<MenuItems: View>: ViewModifier {
+    let isEnabled: Bool
+    @ViewBuilder let menuItems: () -> MenuItems
 
     @ViewBuilder
-    private func themeDecoration(in size: CGSize) -> some View {
-        switch selectedTheme {
-        case .digitalRain:
-            CodeRainDecoration(size: size)
-                .opacity(0.78)
-        case .windyMeadow:
-            Ellipse()
-                .fill(Color(red: 0.43, green: 0.68, blue: 0.20).opacity(0.18))
-                .frame(width: size.width * 1.35, height: size.height * 0.46)
-                .offset(x: -size.width * 0.18, y: size.height * 0.58)
-            Image(systemName: "wind")
-                .font(
-                    .system(
-                        size: max(min(size.width * 0.20, 86), 1),
-                        weight: .ultraLight
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.contextMenu { menuItems() }
+        } else {
+            content
+        }
+    }
+}
+
+/// 병기스타일 테마 전환 공통 컨트롤 (짧게 탭: 다음 테마 순환, 500ms 롱프레스: 6종 선택 메뉴 열기).
+struct ByungkiThemeControlButton: View {
+    @Binding var selectedThemeRawValue: String
+    var isBadgeStyle: Bool = false
+    var isRunningOnMac: Bool = false
+
+    @State private var showingThemeSheet: Bool = false
+    /// 500ms 홀드가 인식되면 true. 이어지는 버튼 release 탭 1회를 소비한다.
+    @State private var holdConsumedTap: Bool = false
+
+    private var currentTheme: AppThemePreference {
+        .resolved(selectedThemeRawValue)
+    }
+
+    private var nextTheme: AppThemePreference {
+        currentTheme.next
+    }
+
+    private var accessibilityLabelText: String {
+        "병기스타일 테마: \(currentTheme.title) (누르면 \(nextTheme.title), 길게 누르면 목록)"
+    }
+
+    var body: some View {
+        Button {
+            if holdConsumedTap {
+                holdConsumedTap = false
+                return
+            }
+            withAnimation(.easeInOut(duration: 0.20)) {
+                selectedThemeRawValue = nextTheme.rawValue
+            }
+        } label: {
+            if isBadgeStyle {
+                ByungkiThemeGlyph(theme: currentTheme, size: ui(isRunningOnMac ? 15 : 12))
+                    .frame(
+                        width: ui(isRunningOnMac ? 51 : 38),
+                        height: ui(isRunningOnMac ? 24 : 18)
                     )
-                )
-                .foregroundStyle(.white.opacity(0.18))
-                .offset(x: size.width * 0.24, y: 112)
-        case .workbench:
-            WorkbenchDecoration(size: size)
-                .opacity(0.78)
-        case .skeuomorphism:
-            Circle()
-                .stroke(
-                    LinearGradient(
-                        colors: [.white.opacity(0.95), .black.opacity(0.18)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    ),
-                    lineWidth: max(size.width * 0.025, 8)
-                )
-                .frame(width: size.width * 0.72, height: size.width * 0.72)
-                .offset(x: size.width * 0.32, y: 38)
-                .opacity(0.32)
-        default:
-            Image(systemName: "cloud.fill")
-                .font(.system(size: max(min(size.width * 0.42, 190), 1)))
-                .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.045 : 0.28))
-                .offset(x: size.width * 0.28, y: 34)
-            Image(systemName: "cloud.fill")
-                .font(.system(size: max(min(size.width * 0.24, 110), 1)))
-                .foregroundStyle(.white.opacity(colorScheme == .dark ? 0.03 : 0.17))
-                .offset(x: -size.width * 0.34, y: 122)
-            Image(systemName: "wind")
-                .font(
-                    .system(
-                        size: max(min(size.width * 0.20, 86), 1),
-                        weight: .ultraLight
-                    )
-                )
-                .foregroundStyle(SkyBreezeTheme.accent.opacity(0.07))
-                .offset(x: size.width * 0.24, y: 210)
+                    .background {
+                        Capsule().fill(currentTheme.palette.background)
+                    }
+                    .overlay {
+                        Capsule().stroke(currentTheme.palette.border, lineWidth: 1)
+                    }
+                    .shadow(color: .black.opacity(0.12), radius: 1.5, y: 1)
+            } else {
+                ByungkiThemeGlyph(theme: currentTheme, size: 20)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+        }
+        .buttonStyle(.plain)
+        .simultaneousGesture(
+            LongPressGesture(minimumDuration: 0.5, maximumDistance: 10)
+                .onEnded { _ in
+                    holdConsumedTap = true
+                    showingThemeSheet = true
+                }
+        )
+        .onChange(of: showingThemeSheet) { _, showing in
+            // 목록이 닫히면(선택/취소/바깥 탭) 소비되지 못한 홀드 플래그를 비워 키보드/AX 활성화를 막지 않게 한다.
+            if !showing { holdConsumedTap = false }
+        }
+        .modifier(ThemeRightClickMenu(isEnabled: isRunningOnMac) {
+            themeContextMenuContent
+        })
+        .popover(isPresented: $showingThemeSheet) {
+            themePopoverContent
+                .presentationCompactAdaptation(.popover)
+        }
+        .accessibilityLabel(accessibilityLabelText)
+        .accessibilityHint("두 번 탭하면 \(nextTheme.title) 테마로 바뀝니다. 길게 누르면 6종 선택 목록이 열립니다.")
+    }
+
+    /// 버튼에 anchor된 작은 목록. 6종 모두 실제 테마 글리프 + 이름 + 현재 선택 체크를 그린다.
+    /// 행 선택은 해당 테마만 설정하고 목록을 닫는다(순환 없음). 바깥 탭/취소로 닫혀도 onChange가 홀드 플래그를 비운다.
+    private var themePopoverContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(AppThemePreference.allCases) { theme in
+                Button {
+                    withAnimation(.easeInOut(duration: 0.20)) {
+                        selectedThemeRawValue = theme.rawValue
+                    }
+                    showingThemeSheet = false
+                } label: {
+                    HStack(spacing: 10) {
+                        ByungkiThemeGlyph(theme: theme, size: 22, tintColor: theme == currentTheme ? theme.palette.accent : .primary)
+                        Text(theme.title)
+                            .font(.body)
+                            .foregroundStyle(.primary)
+                        Spacer(minLength: 12)
+                        Image(systemName: "checkmark")
+                            .font(.footnote.weight(.semibold))
+                            .foregroundStyle(theme.palette.accent)
+                            .opacity(theme == currentTheme ? 1 : 0)
+                    }
+                    .padding(.horizontal, 14)
+                    .frame(minHeight: 44)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(theme.title)
+                .accessibilityAddTraits(theme == currentTheme ? .isSelected : [])
+            }
+        }
+        .padding(.vertical, 6)
+        .frame(minWidth: 210)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("병기스타일 테마")
+    }
+
+    @ViewBuilder
+    private var themeContextMenuContent: some View {
+        Text("병기스타일 테마")
+        Divider()
+        ForEach(AppThemePreference.allCases) { theme in
+            Button {
+                withAnimation(.easeInOut(duration: 0.20)) {
+                    selectedThemeRawValue = theme.rawValue
+                }
+            } label: {
+                Label("\(theme.title)\(theme == currentTheme ? " ✓" : "")", systemImage: theme.systemImage)
+            }
         }
     }
 }

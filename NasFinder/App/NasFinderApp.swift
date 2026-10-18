@@ -12,7 +12,7 @@ struct NasFinderApp: App {
     @StateObject private var webHardServerController = WebHardServerController()
     @StateObject private var foregroundReturnReset = ForegroundReturnResetCoordinator.shared
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.system.rawValue
+        AppThemePreference.light.rawValue
     @AppStorage("appIconBeforeEnamel.v1") private var appIconBeforeEnamelRawValue =
         AppIconChoice.blueNAS.rawValue
     @State private var themeIconError: String?
@@ -22,6 +22,7 @@ struct NasFinderApp: App {
     }
 
     init() {
+        PorcelainActivation.applyOnce()
         MacUIScale.applyBarAppearance()
     }
 
@@ -48,10 +49,19 @@ struct NasFinderApp: App {
                     .font(.ui(.body))
                     .environment(\.defaultMinListRowHeight, MacUIScale.minListRowHeight)
                     .environment(\.dynamicTypeSize, MacUIScale.dynamicTypeSize)
-                    .controlSize(.large)
+                    .controlSize(.regular)
+                    .onAppear {
+                        MacUIScale.applyWindowSizeRestrictions()
+                        MacUIScale.applyWindowInterfaceStyle(isDark: selectedTheme.isDark)
+                    }
+                    .onChange(of: selectedThemeRawValue) { _, _ in
+                        MacUIScale.applyWindowInterfaceStyle(isDark: selectedTheme.isDark)
+                    }
             }
         } else {
+            // 글꼴을 따로 주지 않은 앱 글자도 Mac과 같은 공통 본문 글꼴(Pretendard)을 쓴다.
             configuredRootView
+                .font(.ui(.body))
         }
     }
 
@@ -66,6 +76,7 @@ struct NasFinderApp: App {
                 .preferredColorScheme(selectedTheme.preferredColorScheme)
                 .onChange(of: selectedThemeRawValue, initial: true) { oldRawValue, newRawValue in
                     synchronizeAppIcon(from: oldRawValue, to: newRawValue)
+                    MacUIScale.applyNavigationBarTheme(.resolved(newRawValue))
                 }
                 .alert("아이콘을 변경할 수 없습니다", isPresented: themeIconErrorBinding) {
                     Button("확인", role: .cancel) { themeIconError = nil }

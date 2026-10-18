@@ -7,6 +7,7 @@ struct InboxUploadDestinationView: View {
     @EnvironmentObject private var connectionStore: ConnectionStore
 
     @StateObject private var operationCoordinator = FileOperationCoordinator()
+    private var themeRefresh = ThemeRefresh()
 
     let sources: [LocalUploadSource]
     let onUploadCompleted: (() -> Void)?
@@ -20,6 +21,7 @@ struct InboxUploadDestinationView: View {
     }
 
     var body: some View {
+        let _ = themeRefresh.theme
         NavigationStack {
             Group {
                 if connectionStore.connections.isEmpty {
@@ -41,6 +43,7 @@ struct InboxUploadDestinationView: View {
                             connectionRow(connection)
                         }
                         .disabled(operationCoordinator.isWorking)
+                        .listRowBackground(PorcelainMetrics.card)
                     }
                     .listStyle(.insetGrouped)
                     .scrollContentBackground(.hidden)
@@ -82,7 +85,7 @@ struct InboxUploadDestinationView: View {
                     .font(.ui(.headline))
                 Text(connection.endpointDescription)
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .lineLimit(1)
                 Label(connection.normalizedRootPath, systemImage: "folder")
                     .font(.ui(.caption2))
@@ -154,6 +157,7 @@ private struct InboxUploadConnectionView: View {
 
 private struct InboxUploadFolderView: View {
     @StateObject private var viewModel: FileBrowserViewModel
+    private var themeRefresh = ThemeRefresh()
 
     private let connection: RemoteConnection
     private let service: any RemoteFileService
@@ -185,6 +189,7 @@ private struct InboxUploadFolderView: View {
     }
 
     var body: some View {
+        let _ = themeRefresh.theme
         Group {
             if viewModel.isLoading && viewModel.items.isEmpty {
                 ProgressView("폴더를 불러오는 중…")
@@ -198,7 +203,7 @@ private struct InboxUploadFolderView: View {
                     Button("다시 시도") {
                         Task { await viewModel.load() }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PorcelainProminentButtonStyle())
                     .disabled(operationCoordinator.isBusy)
                 }
             } else if folders.isEmpty {
@@ -226,7 +231,7 @@ private struct InboxUploadFolderView: View {
                                 if let modifiedAt = folder.modifiedAt {
                                     Text(modifiedAt, format: .dateTime.year().month().day())
                                         .font(.ui(.caption))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(PorcelainMetrics.secondary)
                                 }
                             }
                         } icon: {
@@ -235,6 +240,7 @@ private struct InboxUploadFolderView: View {
                         }
                     }
                     .disabled(operationCoordinator.isBusy)
+                    .listRowBackground(PorcelainMetrics.card)
                 }
                 .listStyle(.plain)
                 .refreshable {
@@ -296,7 +302,7 @@ private struct InboxUploadFolderView: View {
                 Label(uploadButtonTitle, systemImage: "arrow.up.doc.fill")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PorcelainProminentButtonStyle())
             .disabled(sources.isEmpty || operationCoordinator.isBusy)
         }
         .padding(.horizontal, ui(16))

@@ -94,6 +94,34 @@ private struct TrailerFailureDiagnostic: Encodable {
 /// What the editor currently shows. Owned by `VideoTrailerView`, not the sheet, so it is
 /// still exactly as the user left it after a failed attempt, after the music browser and
 /// when the editor is opened again.
+/// The prepared plan the settings panel shows, computed once for both the panel and the
+/// suspended-draft length so the two can never drift apart.
+private enum TrailerPreparedPlan {
+    static func base(mode: VideoTrailerMode, sources: [VideoTrailerSource], total: Double,
+                     clipLength: Double) -> [VideoTrailerScene] {
+        mode == .mediaMusic ? VideoTrailerBatchPlan.wholeMedia(sources: sources)
+            : VideoTrailerBatchPlan.selection(sources: sources, total: total, clipLength: clipLength)
+    }
+
+    /// Empty when the chosen music cannot be matched within the repeat limit.
+    static func scenes(mode: VideoTrailerMode, sources: [VideoTrailerSource], total: Double,
+                       clipLength: Double, music: TrailerMusicSelection?) -> [VideoTrailerScene] {
+        let base = base(mode: mode, sources: sources, total: total, clipLength: clipLength)
+        guard let music else { return base }
+        switch music.policy {
+        case .fitMusic:
+            return VideoTrailerBatchPlan.fitted(base, to: music.fittedDuration) ?? []
+        case .loopMusic:
+            guard music.duration > 0 else { return 0 <= TrailerMusic.maximumRepeats ? base : [] }
+            let baseTotal = base.reduce(0) { $0 + $1.length }
+            let repeats = max(1, Int((baseTotal / music.duration - 0.000001).rounded(.up)))
+            return repeats <= TrailerMusic.maximumRepeats ? base : []
+        case .single:
+            return base
+        }
+    }
+}
+
 private struct TrailerSettingsDraft {
     var sources: [VideoTrailerSource]
     var total: Double
@@ -191,104 +219,37 @@ struct VideoTrailerView: View {
         _sessionID = State(initialValue: entry?.id ?? UUID())
     }
 
+    @AppStorage(AppThemePreference.storageKey) private var themeRawValue = AppThemePreference.light.rawValue
+
     var body: some View {
+        let _ = themeRawValue
         mediaContent.modifier(PreserveMediaNavigation())
     }
 
     private var mediaContent: some View {
         NavigationStack {
-            ZStack {
-                if let output = model.outputURL {
-                    let previewService = TrailerOutputFileService(url: output)
-                    RemotePreviewView(item: previewService.item, sequentialItems: [previewService.item],
-                        service: previewService, accessoryControls: AnyView(trailerControls),
-                        onClose: requestExit,
-                        playbackSuspended: showingSettings || model.isBusy)
-                        .id(output)
-                    if model.isBusy || model.error != nil {
-                        VStack {
-                            Spacer()
-                            VStack(spacing: ui(8)) {
-                                if model.isBusy {
-                                    if let progress = model.exportProgress {
-                                        TrailerExportProgress(progress: progress).tint(.white)
-                                    } else if let joinProgress = model.joinProgress {
-                                        TrailerJoinProgressBar(completed: joinProgress.completed, total: joinProgress.total).tint(.white)
-                                    } else {
-                                        ProgressView().tint(.white)
-                                    }
-                                }
-                                Text(model.error ?? model.status).font(.ui(.footnote))
-                            }
-                            .foregroundStyle(.white)
-                            .padding(ui(12)).background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: ui(12)))
-                        }
-                        .padding(.bottom, ui(150))
-                    }
-                } else {
-                    VStack(spacing: ui(16)) {
-                        Spacer()
-                        if model.isBusy {
-                            if let progress = model.exportProgress {
-                                TrailerExportProgress(progress: progress)
-                            } else if let joinProgress = model.joinProgress {
-                                TrailerJoinProgressBar(completed: joinProgress.completed, total: joinProgress.total)
-                            } else {
-                                ProgressView()
-                            }
-                            Text(model.status).foregroundStyle(.secondary)
-                        }
-                        if let error = model.error {
-                            Text(error).font(.ui(.footnote)).foregroundStyle(.red)
-                            Button("다시 시도") { retry() }.disabled(model.isBusy)
-                        }
-                        // Staged and idle: the editor is always one tap away, whether it was
-                        // closed before the first video or the last attempt failed.
-                        if !model.isBusy, !model.sources.isEmpty {
-                            if model.error == nil { Text(model.status).foregroundStyle(.secondary) }
-                            Button("영상 편집") { openSettings() }
-                                .buttonStyle(.borderedProminent)
-                        }
-                        if model.skippedCount > 0 {
-                            Text(trailerSkippedTitle(model.skippedCount))
-                                .font(.ui(.caption2)).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text(mode == .mediaMusic ? "기기에서 만듭니다. 원본은 변경하지 않습니다."
-                            : "기기에서 분석합니다. 원본은 변경하지 않습니다.")
-                            .font(.ui(.caption)).foregroundStyle(.secondary)
-                    }
-                    .padding(.all, MacUIScale.defaultPadding).navigationTitle("영상 편집")
-                    .navigationBarTitleDisplayMode(.inline)
-                    #if targetEnvironment(macCatalyst)
-                    // The in-window editor below brings its own title bar.
-                    .toolbar(showingSettings ? .hidden : .visible, for: .navigationBar)
-                    #endif
-                    .toolbar {
-                        ToolbarItem(placement: .cancellationAction) {
-                            Group {
-                                Button("취소") { requestExit() }
-                            }
-                            .uiBarFont()
-                        }
-                    }
-                }
-                #if targetEnvironment(macCatalyst)
-                // The Mac app window is almost always wider/taller than a fixed sheet, and
-                // resizing that window should resize this adjustment UI with it; a `.sheet`
-                // on Catalyst is a cramped fixed-size modal that ignores the window's own
-                // size entirely, so settings render as an in-window overlay instead.
-                if let presentedSettings {
-                    // Only the backdrop runs under the window's title bar; the editor's own
-                    // bar, summary, options and create button keep the window safe area.
-                    settingsContent(presentedSettings)
-                        .background(.regularMaterial, ignoresSafeAreaEdges: .all)
-                }
-                #endif
-            }
-            #if !targetEnvironment(macCatalyst)
-            .sheet(item: $presentedSettings) { settingsContent($0) }
-            #endif
+            TrailerSettingsHost(
+                mode: mode,
+                draft: $draft,
+                opening: currentDraft(),
+                skippedCount: model.skippedCount,
+                isBusy: model.isBusy,
+                status: model.status,
+                exportProgress: model.exportProgress,
+                joinProgress: model.joinProgress,
+                outputURL: model.outputURL,
+                error: model.error,
+                onModeChange: changeMode,
+                onClose: requestExit,
+                onDiscard: discardAndDismiss,
+                onSave: {
+                    model.save(to: inboxStore, filename: items.count == 1 ? items[0].name : "모음-\(items.count)개영상",
+                               suffix: (outputMode ?? mode) == .mediaMusic ? "음악" : "예고편")
+                },
+                isSaved: model.isSaved,
+                apply: apply
+            )
+            .background(PorcelainMetrics.paper)
             .task { await begin() }
             // Both modes go straight to the editor once the sources are in, before any
             // clip is joined, any photo scene is encoded or anything is exported.
@@ -402,12 +363,18 @@ struct VideoTrailerView: View {
         // in for it once no staged source is left to draw from.
         entry.thumbnailURL = model.sources.first?.url ?? model.outputURL
         entry.thumbnailIsImage = model.sources.first?.isImage ?? false
-        // The actually made video's own length once there is one (its scenes, not their
-        // nominal source durations); otherwise the still-nominal sum stands in as a
-        // planned-length estimate before anything has been generated.
-        let generatedLength = model.scenes.reduce(0) { $0 + $1.length }
-        entry.totalDuration = model.outputURL != nil && generatedLength > 0
-            ? generatedLength : model.sources.reduce(0) { $0 + $1.duration }
+        // The length the settings panel itself shows for the current prepared settings
+        // (same plan computation, music fit/repeat policy included), with or without an
+        // output file; a computed zero is shown as zero. Only with no prepared sources
+        // does the nominal source sum stand in as an estimate.
+        let prepared = currentDraft()
+        if prepared.sources.isEmpty {
+            entry.totalDuration = model.sources.reduce(0) { $0 + $1.duration }
+        } else {
+            entry.totalDuration = TrailerPreparedPlan.scenes(
+                mode: mode, sources: prepared.sources, total: prepared.total,
+                clipLength: prepared.clipLength, music: prepared.music).reduce(0) { $0 + $1.length }
+        }
         entry.suspendedAt = Date()
         TrailerDraftStore.shared.suspend(entry)
     }
@@ -503,11 +470,20 @@ struct VideoTrailerView: View {
     }
 
     private func settingsContent(_ presentation: TrailerSettingsPresentation) -> some View {
-        TrailerSettingsHost(mode: mode, draft: $draft, opening: presentation.draft,
+        TrailerSettingsHost(
+            mode: mode, draft: $draft, opening: presentation.draft,
             skippedCount: model.skippedCount, isBusy: model.isBusy, status: model.status,
+            exportProgress: model.exportProgress, joinProgress: model.joinProgress,
+            outputURL: model.outputURL, error: model.error,
             onModeChange: changeMode, onClose: { presentedSettings = nil },
-            onDiscard: discardAndDismiss, apply: apply)
-            .id(presentation.id)
+            onDiscard: discardAndDismiss,
+            onSave: {
+                model.save(to: inboxStore, filename: items.count == 1 ? items[0].name : "모음-\(items.count)개영상",
+                           suffix: (outputMode ?? mode) == .mediaMusic ? "음악" : "예고편")
+            },
+            isSaved: model.isSaved, apply: apply
+        )
+        .id(presentation.id)
     }
 
     private var trailerControls: some View {
@@ -545,6 +521,148 @@ private struct TrailerOutputFileService: RemoteFileService {
     func testConnection() async throws { _ = try await download(item) }
 }
 
+/// A video's real displayed size (natural size with its preferred transform applied), nil
+/// without a video track. Loads only the track metadata, never frames.
+private func trailerOrientedVideoSize(url: URL) async throws -> CGSize? {
+    let asset = AVURLAsset(url: url)
+    guard let track = try await asset.loadTracks(withMediaType: .video).first else { return nil }
+    let naturalSize = try await track.load(.naturalSize)
+    let transform = try await track.load(.preferredTransform)
+    let oriented = CGRect(origin: .zero, size: naturalSize).applying(transform)
+    return CGSize(width: abs(oriented.width), height: abs(oriented.height))
+}
+
+/// 대형 프리뷰: 완성 영상이 있으면 RemotePreviewView로 재생하고, 준비 중일 때는 첫 선택 미디어의 실제 커버를 화면 비율에 맞춰 크게 보여준다.
+private struct TrailerWorkspacePreview: View {
+    let outputURL: URL?
+    let firstSource: VideoTrailerSource?
+    /// The first video in the current order: 원본 follows its orientation-correct ratio.
+    let firstVideo: VideoTrailerSource?
+    let aspectRatio: OutputAspectRatio?
+    let isBusy: Bool
+    let status: String
+    let error: String?
+    let exportProgress: Double?
+    let joinProgress: (completed: Int, total: Int)?
+    let accessoryControls: AnyView?
+    let onClose: () -> Void
+
+    @State private var previewImage: UIImage?
+    @State private var firstVideoSize: (id: Int, size: CGSize)?
+
+    /// Same sizing rule as the export: a chosen ratio's real size, otherwise 원본 = the first
+    /// video's own ratio (photos only: the first photo's), 16:9 only until that is known.
+    private var aspectSize: CGSize {
+        if let aspectRatio { return aspectRatio.renderSize }
+        if let firstVideo {
+            if let loaded = firstVideoSize, loaded.id == firstVideo.id { return OutputAspectRatio.renderSize(for: loaded.size) }
+        } else if let firstSource, firstSource.isImage, let previewImage {
+            return OutputAspectRatio.renderSize(for: previewImage.size)
+        }
+        return CGSize(width: 16, height: 9)
+    }
+
+    var body: some View {
+        ZStack {
+            if let outputURL {
+                let previewService = TrailerOutputFileService(url: outputURL)
+                RemotePreviewView(
+                    item: previewService.item,
+                    sequentialItems: [previewService.item],
+                    service: previewService,
+                    accessoryControls: accessoryControls,
+                    onClose: onClose,
+                    playbackSuspended: isBusy
+                )
+                .id(outputURL)
+            } else if let firstSource {
+                Color.black
+                    .aspectRatio(aspectSize.width / aspectSize.height, contentMode: .fit)
+                    .overlay {
+                        if let previewImage {
+                            Image(uiImage: previewImage)
+                                .resizable()
+                                .scaledToFit()
+                        } else {
+                            Image(systemName: firstSource.isImage ? "photo" : "film")
+                                .font(.system(size: ui(36)))
+                                .foregroundStyle(.white.opacity(0.6))
+                        }
+                    }
+                    .overlay(alignment: .bottomLeading) {
+                        Text(firstSource.name)
+                            .font(.ui(.caption2).weight(.medium))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                            .padding(.horizontal, ui(6))
+                            .padding(.vertical, ui(3))
+                            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: ui(4)))
+                            .padding(ui(8))
+                    }
+                    .task(id: "\(firstVideo?.id ?? -1)-\(aspectRatio == nil)") {
+                        // Reads only the track's size and transform, once per first video; the
+                        // task is cancelled with the view or when the first video changes.
+                        guard aspectRatio == nil, let firstVideo else { return }
+                        if let size = try? await trailerOrientedVideoSize(url: firstVideo.url), !Task.isCancelled {
+                            firstVideoSize = (firstVideo.id, size)
+                        }
+                    }
+                    .task(id: firstSource.id) {
+                        guard previewImage == nil else { return }
+                        if firstSource.isImage {
+                            if let loaded = await trailerThumbnailImage(at: firstSource.url, maxPixelSize: 1024), !Task.isCancelled {
+                                previewImage = loaded
+                            }
+                        } else {
+                            let asset = AVURLAsset(url: firstSource.url)
+                            let generator = AVAssetImageGenerator(asset: asset)
+                            generator.appliesPreferredTrackTransform = true
+                            generator.maximumSize = CGSize(width: 1024, height: 1024)
+                            let time = CMTime(seconds: firstSource.plan.analysis.peakTime, preferredTimescale: 600)
+                            if let frame = try? await generator.image(at: time), !Task.isCancelled {
+                                previewImage = UIImage(cgImage: frame.image)
+                            }
+                        }
+                    }
+            } else {
+                Color(uiColor: .tertiarySystemFill)
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                    .overlay {
+                        VStack(spacing: ui(8)) {
+                            ProgressView()
+                            Text(status.isEmpty ? "미디어를 불러오는 중…" : status)
+                                .font(.ui(.footnote))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+            }
+
+            if isBusy || error != nil {
+                Color.black.opacity(0.65)
+                VStack(spacing: ui(8)) {
+                    if isBusy {
+                        if let progress = exportProgress {
+                            TrailerExportProgress(progress: progress).tint(.white)
+                        } else if let joinProgress = joinProgress {
+                            TrailerJoinProgressBar(completed: joinProgress.completed, total: joinProgress.total).tint(.white)
+                        } else {
+                            ProgressView().tint(.white)
+                        }
+                    }
+                    Text(error ?? status)
+                        .font(.ui(.footnote))
+                        .foregroundStyle(error != nil ? .red : .white)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, ui(16))
+                }
+                .padding(ui(12))
+                .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: ui(12)))
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: ui(12), style: .continuous))
+    }
+}
+
 /// The editor bound to the caller's draft. It arrives with the draft it opened on, so its
 /// first frame already has content even before the caller's own state reaches this view.
 private struct TrailerSettingsHost: View {
@@ -554,19 +672,44 @@ private struct TrailerSettingsHost: View {
     let skippedCount: Int
     let isBusy: Bool
     let status: String
+    let exportProgress: Double?
+    let joinProgress: (completed: Int, total: Int)?
+    let outputURL: URL?
+    let error: String?
     let onModeChange: (VideoTrailerMode) -> Void
     let onClose: () -> Void
     let onDiscard: () -> Void
+    let onSave: (() -> Void)?
+    let isSaved: Bool
     let apply: (TrailerSettingsDraft) -> Void
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         let binding = Binding(get: { draft ?? opening }, set: { draft = $0 })
-        VideoTrailerSettings(mode: mode, sources: binding.sources, total: binding.total,
+        VideoTrailerSettings(
+            mode: mode, sources: binding.sources, total: binding.total,
             clipLength: binding.clipLength, skippedCount: skippedCount,
             aspectRatio: binding.aspectRatio, music: binding.music,
             showingDuration: binding.showingDuration, showingClipLength: binding.showingClipLength,
-            isBusy: isBusy, status: status, onModeChange: onModeChange, onClose: onClose, onDiscard: onDiscard, regenerate: { apply(draft ?? opening) })
+            isBusy: isBusy, status: status,
+            exportProgress: exportProgress, joinProgress: joinProgress,
+            outputURL: outputURL, error: error,
+            onModeChange: onModeChange, onClose: onClose, onDiscard: onDiscard,
+            onSave: onSave, isSaved: isSaved,
+            regenerate: { apply(draft ?? opening) }
+        )
+        .scrollContentBackground(isPorcelain ? .hidden : .automatic)
+        .background(isPorcelain ? PorcelainMetrics.paper : Color.clear)
     }
+
+    @AppStorage(AppThemePreference.storageKey) private var themeRawValue = AppThemePreference.light.rawValue
+    /// 6개 테마 공통 바탕.
+    private var isPorcelain: Bool { true }
+}
+
+private enum TrailerOrderChoice {
+    case added, chronological, name, random
 }
 
 private struct VideoTrailerSettings: View {
@@ -583,9 +726,15 @@ private struct VideoTrailerSettings: View {
     @Binding var showingClipLength: Bool
     let isBusy: Bool
     let status: String
+    let exportProgress: Double?
+    let joinProgress: (completed: Int, total: Int)?
+    let outputURL: URL?
+    let error: String?
     let onModeChange: (VideoTrailerMode) -> Void
     let onClose: () -> Void
     let onDiscard: () -> Void
+    let onSave: (() -> Void)?
+    let isSaved: Bool
     let regenerate: () -> Void
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @State private var showingMusicPicker = false
@@ -597,6 +746,7 @@ private struct VideoTrailerSettings: View {
     @State private var sourceFrames: [Int: CGRect] = [:]
     @State private var sourceImages: [Int: UIImage] = [:]
     @State private var revealedSourceID: Int?
+    @State private var appliedOrder: (choice: TrailerOrderChoice, ids: [Int])?
 
     // Recomputed from the actual retained sources on every access, so removing the last
     // video, a decode-skip exclusion, retry or reopen all flip this immediately instead
@@ -605,21 +755,12 @@ private struct VideoTrailerSettings: View {
     private var originalTotal: Double { sources.reduce(0) { $0 + $1.duration } }
     /// The plan without music: unchanged trailer rules, or every source whole.
     private var baseProposal: [VideoTrailerScene] {
-        mode == .mediaMusic ? VideoTrailerBatchPlan.wholeMedia(sources: sources)
-            : VideoTrailerBatchPlan.selection(sources: sources, total: total, clipLength: clipLength)
+        TrailerPreparedPlan.base(mode: mode, sources: sources, total: total, clipLength: clipLength)
     }
     private var baseTotal: Double { baseProposal.reduce(0) { $0 + $1.length } }
     /// Empty when the chosen music cannot be matched within the repeat limit.
     private var proposal: [VideoTrailerScene] {
-        guard let music else { return baseProposal }
-        switch music.policy {
-        case .fitMusic:
-            return VideoTrailerBatchPlan.fitted(baseProposal, to: music.fittedDuration) ?? []
-        case .loopMusic:
-            return musicRepeatCount <= TrailerMusic.maximumRepeats ? baseProposal : []
-        case .single:
-            return baseProposal
-        }
+        TrailerPreparedPlan.scenes(mode: mode, sources: sources, total: total, clipLength: clipLength, music: music)
     }
     private var musicRepeatCount: Int {
         guard let music, music.duration > 0 else { return 0 }
@@ -637,7 +778,7 @@ private struct VideoTrailerSettings: View {
         return Button(action: regenerate) {
             Text(createTitle).frame(maxWidth: .infinity)
         }
-        .buttonStyle(.borderedProminent).controlSize(.large)
+        .buttonStyle(PorcelainProminentButtonStyle()).controlSize(.large)
         .disabled(blocked || isBusy)
         .padding(.horizontal, MacUIScale.defaultPadding).padding(.vertical, ui(8)).background(.bar)
     }
@@ -691,6 +832,10 @@ private struct VideoTrailerSettings: View {
         return "\(music.name) · \(videoTrailerTime(music.duration)) × \(music.fitCount) = \(videoTrailerTime(music.fittedDuration))"
     }
     private var createTitle: String {
+        if isBusy { return "영상을 만드는 중…" }
+        if outputURL != nil {
+            return mode == .mediaMusic ? "새 설정으로 영상 만들기" : "\(trailerDurationTitle(actualTotal)) 예고편 다시 만들기"
+        }
         guard mode == .mediaMusic else { return "\(trailerDurationTitle(actualTotal)) 예고편 만들기" }
         return music == nil ? "음악을 골라 주세요" : "\(trailerDurationTitle(actualTotal)) 영상 만들기"
     }
@@ -773,230 +918,45 @@ private struct VideoTrailerSettings: View {
         HStack {
             Text("화면 모양").font(.ui(.subheadline).weight(.semibold))
             Spacer()
-            Text(aspectRatio?.title ?? "첫 영상 비율").font(.ui(.caption)).foregroundStyle(.secondary)
+            Text(aspectRatio?.title ?? "원본").font(.ui(.caption)).foregroundStyle(.secondary)
         }
-        HStack(spacing: ui(4)) {
+        // Six equal 44pt square tiles in the order 원본/1:1/3:4/4:3/9:16/16:9 on a single row (never wraps);
+        // the ratio text sits below each tile, and the row scrolls horizontally only when the width is too narrow.
+        ScrollView(.horizontal, showsIndicators: false) {
+        HStack(alignment: .top, spacing: ui(8)) {
             Button { aspectRatio = nil } label: {
-                Text("원본").font(.ui(.caption2).weight(.semibold))
-                    .frame(width: ui(32), height: ui(32))
-                    .background(aspectRatio == nil ? Color.accentColor.opacity(0.14) : Color.clear,
-                                in: RoundedRectangle(cornerRadius: ui(8)))
-                    .overlay { RoundedRectangle(cornerRadius: ui(8)).stroke(aspectRatio == nil ? Color.accentColor : Color.secondary.opacity(0.72), lineWidth: aspectRatio == nil ? 2 : 1) }
-                    .frame(maxWidth: .infinity, minHeight: ui(44))
+                TrailerAspectRatioIcon(ratio: nil, isSelected: aspectRatio == nil, label: "원본")
             }
             .buttonStyle(.plain)
-            .accessibilityLabel("첫 영상 화면 비율")
+            .accessibilityLabel("원본, 첫 영상 화면 비율")
             .accessibilityAddTraits(aspectRatio == nil ? .isSelected : [])
             ForEach(OutputAspectRatio.allCases) { ratio in
                 Button { aspectRatio = ratio } label: {
-                    TrailerAspectRatioIcon(ratio: ratio, isSelected: aspectRatio == ratio)
-                        .frame(maxWidth: .infinity, minHeight: ui(44))
+                    TrailerAspectRatioIcon(ratio: ratio, isSelected: aspectRatio == ratio, label: ratio.rawValue)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(ratio.title)
                 .accessibilityAddTraits(aspectRatio == ratio ? .isSelected : [])
             }
         }
+        }
     }
     }
 
+    private var themeRefresh = ThemeRefresh()
+
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(alignment: .leading, spacing: ui(14)) {
-                    Picker("제작 방식", selection: Binding(get: { mode }, set: onModeChange)) {
-                        Text("예고편").tag(VideoTrailerMode.trailer)
-                        Text("뮤직비디오").tag(VideoTrailerMode.mediaMusic)
-                    }
-                    .pickerStyle(.segmented).disabled(isBusy)
-                    if isBusy {
-                        Text(status).font(.ui(.caption)).foregroundStyle(.secondary)
-                    }
-                    musicSection
-                    Divider()
-                    VStack(alignment: .leading, spacing: ui(4)) {
-                        HStack(alignment: .firstTextBaseline) {
-                            Text(trailerDurationTitle(actualTotal)).font(.ui(.title2).weight(.semibold)).monospacedDigit()
-                            Spacer()
-                            Text(sceneSummary).font(.ui(.subheadline)).foregroundStyle(.secondary)
-                        }
-                        if !photoOnly && (mode == .mediaMusic || actualTotal <= originalTotal + 0.000001) {
-                            Text(originalSummary).font(.ui(.caption)).foregroundStyle(.secondary)
-                        }
-                    }
-                    Divider()
-                    if mode == .trailer {
-                    VStack(alignment: .leading, spacing: ui(4)) {
-                        Text("얼마나 길게 볼까요?").font(.ui(.subheadline).weight(.semibold))
-                        HStack(spacing: ui(5)) {
-                            ForEach([30.0, 60, 120, 180, 300], id: \.self) { value in
-                                TrailerChoiceButton(title: trailerDurationTitle(value), selected: abs(total - value) < 0.01) {
-                                    setManualTotal(value)
-                                    showingDuration = false
-                                }
-                            }
-                        }
-                        otherLengthButton(value: trailerDurationTitle(total), expanded: showingDuration) { showingDuration.toggle() }
-                        if showingDuration {
-                            TrailerTotalDurationSlider(value: Binding(
-                                get: { min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, total.isFinite ? total : 1)) },
-                                set: { if abs($0 - total) >= 0.01 { setManualTotal($0) } }))
-                                .frame(minHeight: ui(30))
-                        }
-                    }
-                    VStack(alignment: .leading, spacing: ui(4)) {
-                        Text("한 장면은 얼마나 볼까요?").font(.ui(.subheadline).weight(.semibold))
-                        // A photo-only trailer still uses this length as the basis each
-                        // photo's own randomized scene length is a fraction of, so the
-                        // picker stays available instead of showing a fixed value.
-                        HStack(spacing: ui(6)) {
-                            ForEach([1.0, 1.5, 2, 4, 6].filter { $0 <= maximumClipLength }, id: \.self) { value in
-                                TrailerChoiceButton(title: trailerSceneLengthTitle(value), selected: abs(clipLength - value) < 0.01) {
-                                    clipLength = value
-                                    showingClipLength = false
-                                }
-                            }
-                        }
-                        otherLengthButton(value: trailerSceneLengthTitle(clipLength), expanded: showingClipLength) { showingClipLength.toggle() }
-                        if showingClipLength, maximumClipLength > 1 {
-                            Slider(value: $clipLength, in: 1...maximumClipLength, step: 1)
-                                .accessibilityLabel("공통 장면 길이")
-                                .accessibilityValue("\(Int(clipLength))초")
-                        }
-                    }
-                    }
-                    aspectSection
-                    if sources.count > 1 {
-                        VStack(alignment: .leading, spacing: ui(6)) {
-                            HStack {
-                                Text("영상 순서").font(.ui(.subheadline).weight(.semibold))
-                                Spacer()
-                                Text("1초간 누른 뒤 옮기세요").font(.ui(.caption)).foregroundStyle(.secondary)
-                            }
-                            HStack(spacing: ui(5)) {
-                                TrailerChoiceButton(title: "랜덤", selected: false) {
-                                    revealedSourceID = nil
-                                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.12)) {
-                                        sources = VideoTrailerSourceOrder.randomized(sources)
-                                    }
-                                }
-                                TrailerChoiceButton(title: "시간순", selected: false) {
-                                    revealedSourceID = nil
-                                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.12)) {
-                                        sources = VideoTrailerSourceOrder.chronological(sources)
-                                    }
-                                }
-                                TrailerChoiceButton(title: "가나다순", selected: false) {
-                                    revealedSourceID = nil
-                                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.12)) {
-                                        sources = VideoTrailerSourceOrder.byName(sources)
-                                    }
-                                }
-                            }
-                            // Mac always lays the order out in 6 columns and iPhone/iPad (touch)
-                            // always in 4, regardless of the sheet/window's current width; a
-                            // `.flexible()` item (not a fixed width) still lets each thumbnail's
-                            // own square aspect ratio size itself from the available space, so a
-                            // small phone's row never clips.
-                            #if targetEnvironment(macCatalyst)
-                            let trailerOrderColumns = Array(repeating: GridItem(.flexible(), spacing: ui(8)), count: 6)
-                            #else
-                            let trailerOrderColumns = Array(repeating: GridItem(.flexible(), spacing: ui(8)), count: 4)
-                            #endif
-                            LazyVGrid(columns: trailerOrderColumns, spacing: ui(8)) {
-                                ForEach(Array(sources.enumerated()), id: \.element.id) { index, source in
-                                    sourceCell(index: index, source: source)
-                                }
-                            }
-                            #if !targetEnvironment(macCatalyst)
-                            // Sized to the grid itself, so the recognizer's touch points are
-                            // already in the same "trailerOrder" space as `sourceFrames`.
-                            .background {
-                                TrailerReorderHold(
-                                    canBegin: { location in
-                                        draggedSourceID == nil && sourceFrames.values.contains { $0.contains(location) }
-                                    },
-                                    onBegan: beginReorder, onChanged: moveReorder,
-                                    onEnded: { draggedSourceID = nil })
-                            }
-                            .overlay(alignment: .topLeading) {
-                                if let id = draggedSourceID, let source = sources.first(where: { $0.id == id }), let frame = sourceFrames[id] {
-                                    TrailerSourceThumbnail(source: source, number: (sources.firstIndex(where: { $0.id == id }) ?? 0) + 1,
-                                        image: thumbnailImage(for: id), isRevealed: false, onTap: {}, onRemove: {})
-                                        .frame(width: frame.width, height: frame.height).clipped()
-                                        .shadow(radius: 6)
-                                        .position(x: dragLocation.x - dragAnchor.width, y: dragLocation.y - dragAnchor.height)
-                                        .allowsHitTesting(false)
-                                }
-                            }
-                            #endif
-                            .coordinateSpace(name: "trailerOrder")
-                            .onPreferenceChange(TrailerSourceFramesKey.self) { sourceFrames = $0 }
-                            #if targetEnvironment(macCatalyst)
-                            .onDrop(of: [.text], delegate: TrailerSourceGridDropDelegate(draggedSourceID: $draggedSourceID))
-                            #endif
-                        }
-                    }
-                    if sources.isEmpty {
-                        Text("모든 영상이 제거되어 예고편을 만들 수 없습니다. 영상을 다시 추가해 주세요.")
-                            .font(.ui(.caption)).foregroundStyle(.red)
-                    }
-                    if mode == .trailer, music?.policy != .fitMusic, abs(total - baseTotal) >= 0.5 {
-                        Text("선택한 \(trailerDurationTitle(total))에 가장 가까운 길이로 맞췄어요")
-                            .font(.ui(.caption)).foregroundStyle(.secondary)
-                    }
-                    if skippedCount > 0 {
-                        Text(trailerSkippedTitle(skippedCount)).font(.ui(.caption)).foregroundStyle(.secondary)
-                    }
-                    if excludedCount > 0 {
-                        Text("\(excludedCount)개 영상은 담기지 않아요. 총길이를 늘리거나 장면 길이를 줄여보세요.")
-                            .font(.ui(.caption)).foregroundStyle(.secondary)
-                    }
-                    if mode == .trailer {
-                        Button("자동 추천으로 되돌리기") {
-                            clipLength = VideoTrailerModel.recommendedLength(sources)
-                            total = VideoTrailerBatchPlan.recommendedTotal(sources: sources, clipLength: clipLength)
-                            syncTotalToFit(music)
-                            showingDuration = false
-                            showingClipLength = false
-                        }
-                        .font(.ui(.caption)).frame(minHeight: ui(30))
-                    }
-                    Button("이 편집 버리기", role: .destructive) { confirmingDiscard = true }
-                        .font(.ui(.caption)).frame(minHeight: ui(30))
-                }
-                .padding(ui(16))
-                #if targetEnvironment(macCatalyst)
-                .frame(maxWidth: ui(960))
-                #else
-                .frame(maxWidth: ui(600))
-                #endif
-                .frame(maxWidth: .infinity)
+        let _ = themeRefresh.theme
+        GeometryReader { geometry in
+            let isWide = geometry.size.width >= 640
+            if isWide {
+                wideLayout(width: geometry.size.width)
+            } else {
+                narrowLayout
             }
-            // Few sources leave the page shorter than the sheet; it still has to move
-            // under a swipe that starts on a thumbnail.
-            .scrollBounceBehavior(.always, axes: .vertical)
-            .safeAreaInset(edge: .bottom) { createBar }
-            #if targetEnvironment(macCatalyst)
-            // This editor is an overlay inside the outer stack (see VideoTrailerView above),
-            // and Catalyst draws no navigation bar for a stack nested that way, whatever its
-            // visibility is set to. The title and close button are this view's own header
-            // instead, inset below the window's top safe area, and the bar stays hidden so
-            // there is never a second title.
-            .safeAreaInset(edge: .top, spacing: 0) { macHeader }
-            .toolbar(.hidden, for: .navigationBar)
-            #else
-            .navigationTitle(settingsTitle).navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기", action: onClose).uiBarFont() } }
-            #endif
         }
-        // Presented on top of this editor, so its draft, the session's temporary files and
-        // the playing preview underneath are all still here when the picker closes.
-        .sheet(isPresented: $showingMusicPicker) {
+        .fullScreenCover(isPresented: $showingMusicPicker) {
             TrailerMusicPickerView(currentID: music?.recordID) { picked in
-                // Only an actual pick arrives here, and every pick, the music already in
-                // use included, starts on "음악 반복" with the count back at 1. Closing the
-                // picker or reopening a suspended editor changes nothing.
                 var next = picked
                 next?.autoDuck = music?.autoDuck ?? true
                 music = next
@@ -1008,6 +968,240 @@ private struct VideoTrailerSettings: View {
             Button("취소", role: .cancel) { }
         } message: {
             Text("이 편집을 위해 받아 둔 사본과 폰하드에 저장하지 않은 완성 영상이 지워집니다. 원본과 폰하드에 저장한 파일은 그대로입니다.")
+        }
+        .navigationTitle(settingsTitle)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("닫기", action: onClose).uiBarFont()
+            }
+            if let onSave {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: onSave) {
+                        Image(systemName: isSaved ? "checkmark.circle" : "square.and.arrow.down")
+                    }
+                    .disabled(isBusy || isSaved || outputURL == nil)
+                    .accessibilityLabel(isSaved ? "폰하드에 저장됨" : "폰하드에 저장")
+                }
+            }
+        }
+    }
+
+    private func wideLayout(width: CGFloat) -> some View {
+        HStack(alignment: .top, spacing: ui(16)) {
+            VStack(alignment: .leading, spacing: ui(12)) {
+                previewSection
+                    .frame(maxHeight: ui(380))
+                orderSection
+            }
+            .frame(width: max(ui(320), (width - ui(48)) * 0.54))
+
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: ui(12)) {
+                        optionsSection
+                    }
+                    .padding(.vertical, ui(8))
+                }
+                .scrollBounceBehavior(.always, axes: .vertical)
+
+                createBar
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(ui(16))
+    }
+
+    private var narrowLayout: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: ui(14)) {
+                previewSection
+                    .frame(maxHeight: ui(260))
+                orderSection
+                Divider()
+                optionsSection
+            }
+            .padding(ui(16))
+        }
+        .scrollBounceBehavior(.always, axes: .vertical)
+        .safeAreaInset(edge: .bottom) { createBar }
+    }
+
+    private var previewSection: some View {
+        TrailerWorkspacePreview(
+            outputURL: outputURL,
+            firstSource: sources.first,
+            firstVideo: sources.first { !$0.isImage },
+            aspectRatio: aspectRatio,
+            isBusy: isBusy,
+            status: status,
+            error: error,
+            exportProgress: exportProgress,
+            joinProgress: joinProgress,
+            accessoryControls: AnyView(trailerControlsView),
+            onClose: onClose
+        )
+    }
+
+    private var trailerControlsView: some View {
+        HStack(spacing: ui(8)) {
+            if let onSave {
+                Button(action: onSave) {
+                    SharedPlayerCircleLabel(systemImage: isSaved ? "checkmark.circle" : "square.and.arrow.down")
+                }
+                .accessibilityLabel(isSaved ? "폰하드에 저장됨" : "폰하드에 저장")
+                .disabled(isBusy || isSaved)
+            }
+        }
+    }
+
+    /// Highlighted only while the list still is exactly what that choice produced (or, for
+    /// 추가순, still is the immutable input order), so a manual drag clears it.
+    private func isOrderSelected(_ choice: TrailerOrderChoice) -> Bool {
+        let ids = sources.map(\.id)
+        if choice == .added, appliedOrder == nil { return ids == ids.sorted() }
+        return appliedOrder?.choice == choice && appliedOrder?.ids == ids
+    }
+
+    private func orderButton(_ title: String, _ choice: TrailerOrderChoice,
+                             _ arrange: @escaping ([VideoTrailerSource]) -> [VideoTrailerSource]) -> some View {
+        TrailerChoiceButton(title: title, selected: isOrderSelected(choice), height: 28) {
+            revealedSourceID = nil
+            let next = arrange(sources)
+            withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.12)) { sources = next }
+            appliedOrder = (choice, next.map(\.id))
+        }
+        .frame(maxWidth: .infinity, minHeight: ui(28))
+    }
+
+    private var orderSection: some View {
+        VStack(alignment: .leading, spacing: ui(6)) {
+            HStack(spacing: ui(6)) {
+                Text("영상 순서 (\(sources.count))")
+                    .font(.ui(.subheadline).weight(.semibold))
+                Spacer()
+            }
+
+            if sources.count > 1 {
+                HStack(spacing: ui(4)) {
+                    orderButton("추가순", .added) { $0.sorted { $0.id < $1.id } }
+                    orderButton("시간순", .chronological) { VideoTrailerSourceOrder.chronological($0) }
+                    orderButton("가나다순", .name) { VideoTrailerSourceOrder.byName($0) }
+                    // Shuffled once, here, on the explicit tap; never again on a redraw.
+                    orderButton("랜덤", .random) { VideoTrailerSourceOrder.randomized($0) }
+                }
+            }
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: ui(8)) {
+                    ForEach(Array(sources.enumerated()), id: \.element.id) { index, source in
+                        sourceCell(index: index, source: source)
+                            .frame(width: ui(64), height: ui(64))
+                    }
+                }
+                .padding(.vertical, ui(2))
+            }
+        }
+    }
+
+    private var optionsSection: some View {
+        VStack(alignment: .leading, spacing: ui(12)) {
+            Picker("제작 방식", selection: Binding(get: { mode }, set: onModeChange)) {
+                Text("예고편").tag(VideoTrailerMode.trailer)
+                Text("뮤직비디오").tag(VideoTrailerMode.mediaMusic)
+            }
+            .pickerStyle(.segmented)
+            .disabled(isBusy)
+
+            musicSection
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: ui(3)) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(trailerDurationTitle(actualTotal)).font(.ui(.title2).weight(.semibold)).monospacedDigit()
+                    Spacer()
+                    Text(sceneSummary).font(.ui(.subheadline)).foregroundStyle(.secondary)
+                }
+                if !photoOnly && (mode == .mediaMusic || actualTotal <= originalTotal + 0.000001) {
+                    Text(originalSummary).font(.ui(.caption)).foregroundStyle(.secondary)
+                }
+            }
+
+            if mode == .trailer {
+                Divider()
+                VStack(alignment: .leading, spacing: ui(4)) {
+                    Text("얼마나 길게 볼까요?").font(.ui(.subheadline).weight(.semibold))
+                    HStack(spacing: ui(5)) {
+                        ForEach([30.0, 60, 120, 180, 300], id: \.self) { value in
+                            TrailerChoiceButton(title: trailerDurationTitle(value), selected: abs(total - value) < 0.01, height: 32) {
+                                setManualTotal(value)
+                                showingDuration = false
+                            }
+                        }
+                    }
+                    otherLengthButton(value: trailerDurationTitle(total), expanded: showingDuration) { showingDuration.toggle() }
+                    if showingDuration {
+                        TrailerTotalDurationSlider(value: Binding(
+                            get: { min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, total.isFinite ? total : 1)) },
+                            set: { if abs($0 - total) >= 0.01 { setManualTotal($0) } }))
+                            .frame(minHeight: ui(30))
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: ui(4)) {
+                    Text("한 장면은 얼마나 볼까요?").font(.ui(.subheadline).weight(.semibold))
+                    HStack(spacing: ui(5)) {
+                        ForEach([1.0, 1.5, 2, 4, 6].filter { $0 <= maximumClipLength }, id: \.self) { value in
+                            TrailerChoiceButton(title: trailerSceneLengthTitle(value), selected: abs(clipLength - value) < 0.01, height: 32) {
+                                clipLength = value
+                                showingClipLength = false
+                            }
+                        }
+                    }
+                    otherLengthButton(value: trailerSceneLengthTitle(clipLength), expanded: showingClipLength) { showingClipLength.toggle() }
+                    if showingClipLength, maximumClipLength > 1 {
+                        Slider(value: $clipLength, in: 1...maximumClipLength, step: 1)
+                            .accessibilityLabel("공통 장면 길이")
+                            .accessibilityValue("\(Int(clipLength))초")
+                    }
+                }
+            }
+
+            Divider()
+
+            aspectSection
+
+            if sources.isEmpty {
+                Text("모든 영상이 제거되어 예고편을 만들 수 없습니다. 영상을 다시 추가해 주세요.")
+                    .font(.ui(.caption)).foregroundStyle(.red)
+            }
+            if mode == .trailer, music?.policy != .fitMusic, abs(total - baseTotal) >= 0.5 {
+                Text("선택한 \(trailerDurationTitle(total))에 가장 가까운 길이로 맞췄어요")
+                    .font(.ui(.caption)).foregroundStyle(.secondary)
+            }
+            if skippedCount > 0 {
+                Text(trailerSkippedTitle(skippedCount)).font(.ui(.caption)).foregroundStyle(.secondary)
+            }
+            if excludedCount > 0 {
+                Text("\(excludedCount)개 영상은 담기지 않아요. 총길이를 늘리거나 장면 길이를 줄여보세요.")
+                    .font(.ui(.caption)).foregroundStyle(.secondary)
+            }
+            HStack {
+                if mode == .trailer {
+                    Button("자동 추천으로 되돌리기") {
+                        clipLength = VideoTrailerModel.recommendedLength(sources)
+                        total = VideoTrailerBatchPlan.recommendedTotal(sources: sources, clipLength: clipLength)
+                        syncTotalToFit(music)
+                        showingDuration = false
+                        showingClipLength = false
+                    }
+                    .font(.ui(.caption)).frame(minHeight: ui(30))
+                }
+                Spacer()
+                Button("이 편집 버리기", role: .destructive) { confirmingDiscard = true }
+                    .font(.ui(.caption)).frame(minHeight: ui(30))
+            }
         }
     }
 
@@ -1308,6 +1502,7 @@ private func trailerDurationTitle(_ seconds: Double) -> String {
 private struct TrailerChoiceButton: View {
     let title: String
     let selected: Bool
+    var height: CGFloat = 44
     let action: () -> Void
     var body: some View {
         Button(action: action) {
@@ -1316,10 +1511,10 @@ private struct TrailerChoiceButton: View {
                 if selected { Image(systemName: "checkmark").font(.ui(.caption2)) }
             }
             .font(.ui(.footnote).weight(.medium))
-            .frame(maxWidth: .infinity, minHeight: ui(44))
+            .frame(maxWidth: .infinity, minHeight: ui(height))
             .background(selected ? Color.accentColor.opacity(0.12) : Color(uiColor: .tertiarySystemFill),
-                        in: RoundedRectangle(cornerRadius: ui(10)))
-            .overlay { RoundedRectangle(cornerRadius: ui(10)).stroke(selected ? Color.accentColor : Color.clear, lineWidth: 1) }
+                        in: RoundedRectangle(cornerRadius: ui(8)))
+            .overlay { RoundedRectangle(cornerRadius: ui(8)).stroke(selected ? Color.accentColor : Color.clear, lineWidth: 1) }
         }
         .buttonStyle(.plain)
         .foregroundStyle(selected ? Color.accentColor : Color.primary)
@@ -1328,25 +1523,37 @@ private struct TrailerChoiceButton: View {
 }
 
 // Shape proportions, 32pt frame and selected outline imported from HanClip's AspectRatioIcon.
+/// `ratio == nil` is 원본: a dashed 4:3 frame stands for "whatever the first video is".
 private struct TrailerAspectRatioIcon: View {
-    let ratio: OutputAspectRatio
+    let ratio: OutputAspectRatio?
     let isSelected: Bool
+    let label: String
     private var rectangleSize: CGSize {
-        let aspect = ratio.renderSize.width / ratio.renderSize.height
-        return aspect >= 1 ? CGSize(width: ui(24), height: ui(24) / aspect) : CGSize(width: ui(24) * aspect, height: ui(24))
+        let size = ratio?.renderSize ?? CGSize(width: 4, height: 3)
+        let aspect = size.width / size.height
+        return aspect >= 1 ? CGSize(width: ui(30), height: ui(30) / aspect) : CGSize(width: ui(30) * aspect, height: ui(30))
     }
     var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: ui(8)).fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
-            RoundedRectangle(cornerRadius: ui(2))
-                .stroke(isSelected ? Color.accentColor : Color.secondary, lineWidth: 2)
-                .frame(width: rectangleSize.width, height: rectangleSize.height)
+        VStack(spacing: ui(4)) {
+            ZStack {
+                RoundedRectangle(cornerRadius: ui(10)).fill(isSelected ? Color.accentColor.opacity(0.14) : Color.clear)
+                RoundedRectangle(cornerRadius: ui(3))
+                    .stroke(isSelected ? Color.accentColor : Color.secondary, style: StrokeStyle(lineWidth: 2, dash: ratio == nil ? [ui(4), ui(3)] : []))
+                    .frame(width: rectangleSize.width, height: rectangleSize.height)
+            }
+            .frame(width: ui(44), height: ui(44))
+            .overlay {
+                RoundedRectangle(cornerRadius: ui(10))
+                    .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.72), lineWidth: isSelected ? 2 : 1)
+            }
+            Text(label)
+                .font(.ui(.caption).weight(isSelected ? .semibold : .regular))
+                .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
-        .frame(width: ui(32), height: ui(32))
-        .overlay {
-            RoundedRectangle(cornerRadius: ui(8))
-                .stroke(isSelected ? Color.accentColor : Color.secondary.opacity(0.72), lineWidth: isSelected ? 2 : 1)
-        }
+        .frame(minWidth: ui(48), minHeight: ui(44))
+        .contentShape(Rectangle())
     }
 }
 
@@ -1896,12 +2103,10 @@ private final class VideoTrailerModel: ObservableObject {
                         throw TrailerError.exportFailed
                     }
                     sources = ordered
-                } else if keepsInputOrder {
-                    // Source ids are the caller's item indices: keep the selection order.
-                    sources.sort { $0.id < $1.id }
                 } else {
-                    // Default source order is chronological, oldest capture first.
-                    sources = VideoTrailerSourceOrder.chronological(sources)
+                    // Source ids are the caller's item indices: a new edit starts in the added
+                    // (selection) order; 시간순/가나다순/랜덤 are explicit choices in the editor.
+                    sources.sort { $0.id < $1.id }
                 }
                 if !generate || (mode == .mediaMusic && music == nil) {
                     status = mode == .mediaMusic ? "음악을 고르면 영상을 만듭니다."
@@ -2028,6 +2233,13 @@ private final class VideoTrailerModel: ObservableObject {
                     var originalSound: [TrailerMusicDucking.Clip] = []
                     var instructions: [AVMutableVideoCompositionInstruction] = []
                     var renderSize = aspectRatio?.renderSize
+                    // 원본 = the first video of the current order (orientation-correct), even when
+                    // a photo comes first; only a photo-only selection falls back to the first photo.
+                    if renderSize == nil,
+                       let firstVideo = selected.lazy.compactMap({ sourceByID[$0.sourceID] }).first(where: { !$0.isImage }) {
+                        guard let size = try await trailerOrientedVideoSize(url: firstVideo.url) else { throw MediaError.videoTrackUnavailable }
+                        renderSize = OutputAspectRatio.renderSize(for: size)
+                    }
                     for (segmentIndex, segment) in selected.enumerated() {
                         try Task.checkCancellation()
                         guard let source = sourceByID[segment.sourceID] else { throw TrailerError.exportFailed }
@@ -2452,6 +2664,8 @@ private struct TrailerTotalDurationSlider: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(value: $value) }
     func makeUIView(context: Context) -> TrailerVelocityDurationSlider {
         let slider = TrailerVelocityDurationSlider()
+        // 속도 추적과 tintColor를 쓰므로 Mac idiom에서도 iPad 슬라이더 동작을 유지한다.
+        slider.preferredBehavioralStyle = .pad
         slider.minimumValue = 1
         slider.maximumValue = Float(VideoTrailerBatchPlan.maximumRequestedDuration)
         slider.isContinuous = true

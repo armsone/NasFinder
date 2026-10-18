@@ -272,7 +272,7 @@ struct RemotePreviewView: View {
                     Button("다시 시도") {
                         Task { await viewModel.retryCurrentItem() }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PorcelainProminentButtonStyle())
 
                 }
                 .foregroundStyle(.white)
@@ -566,7 +566,7 @@ struct RemotePreviewView: View {
 
             VStack(spacing: ui(2)) {
                 Text(viewModel.currentItem.name)
-                    .font(.ui(.headline))
+                    .font(.ui(.body))
                     .lineLimit(1)
                     .minimumScaleFactor(0.7)
                     .multilineTextAlignment(.center)

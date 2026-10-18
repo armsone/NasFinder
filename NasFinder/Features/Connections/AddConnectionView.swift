@@ -42,9 +42,11 @@ struct AddConnectionView: View {
         }
     }
 
+    private var themeRefresh = ThemeRefresh()
+
     var body: some View {
-        NavigationStack {
-            connectionForm
+        let _ = themeRefresh.theme
+        connectionForm
             .tint(selectedServiceColor)
             .scrollContentBackground(.hidden)
             .background(SkyBreezeBackground())
@@ -131,18 +133,23 @@ struct AddConnectionView: View {
             } message: { pending in
                 Text("\(pending.errorDescription ?? "서버 키를 확인해 주세요.")\n\n\(pending.fingerprint)")
             }
-        }
     }
 
     private var connectionForm: some View {
-        Form {
+        let palette = AppThemePreference.current.palette
+        return Form {
             connectionKindSection
+                .listRowBackground(palette.surface)
             if kind.isOAuthCloud {
                 cloudAccountSection
+                    .listRowBackground(palette.surface)
             } else {
                 serverSection
+                    .listRowBackground(palette.surface)
                 passwordSection
+                    .listRowBackground(palette.surface)
                 connectionTestSection
+                    .listRowBackground(palette.surface)
             }
         }
     }
@@ -165,7 +172,7 @@ struct AddConnectionView: View {
 
             Text(kind.subtitle)
                 .font(.ui(.footnote))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
 
             if kind == .webDAV {
                 Picker("클라우드 서비스", selection: $webDAVPreset) {
@@ -208,7 +215,7 @@ struct AddConnectionView: View {
         Section {
             Text("필수 항목을 입력하면 연결할 수 있습니다.")
                 .font(.ui(.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
             TextField("표시 이름 · 필수 (예: 우리집 NAS)", text: $name)
             TextField("서버 주소 · 필수 (예: nas.example.com)", text: $host)
                 .textInputAutocapitalization(.never)
@@ -229,11 +236,11 @@ struct AddConnectionView: View {
             if parsedServerAddress?.explicitPort != nil {
                 Text("서버 주소에 포트가 포함되어 있어 해당 포트를 사용합니다.")
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             } else if kind == .synology {
                 Text("DSM 기본 포트: HTTPS 5001 · HTTP 5000. SFTP 포트 22와는 다릅니다.")
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             }
 
             if kind == .synology,
@@ -252,7 +259,7 @@ struct AddConnectionView: View {
                 if parsedServerAddress?.inferredTLS != nil {
                     Text("주소의 http:// 또는 https:// 표시에 맞춰 보안 연결 설정을 사용합니다.")
                         .font(.ui(.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                 }
             }
 

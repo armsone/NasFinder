@@ -41,19 +41,26 @@ struct PhotoTransferView: View {
         PhotoTransferSelectionSummary(kinds: classifiedItems.map(\.kind))
     }
 
+    private var themeRefresh = ThemeRefresh()
+
     var body: some View {
-        List {
+        let palette = themeRefresh.theme.palette
+        return List {
             roleSection
+                .listRowBackground(palette.surface)
             if isSendingFlowSelected {
                 selectionSection
+                    .listRowBackground(palette.surface)
                 if !classifiedItems.isEmpty {
                     itemListSection
+                        .listRowBackground(palette.surface)
                 }
                 pairingSection
+                    .listRowBackground(palette.surface)
             }
         }
         .frame(maxWidth: isRunningOnMac ? ui(907) : nil)
-        .environment(\.defaultMinListRowHeight, ui(isRunningOnMac ? 72 : 44))
+        .environment(\.defaultMinListRowHeight, MacUIScale.minListRowHeight)
         .listStyle(.insetGrouped)
         .scrollContentBackground(.hidden)
         .background(SkyBreezeBackground())
@@ -62,7 +69,7 @@ struct PhotoTransferView: View {
         .onChange(of: selectedItems) { _, items in
             classify(items)
         }
-        .sheet(item: $pairingRole) { role in
+        .navigationDestination(item: $pairingRole) { role in
             switch role {
             case .receiver:
                 PhotoTransferReceiverSheet(session: receiverSession)
@@ -163,7 +170,7 @@ struct PhotoTransferView: View {
                                 if item.previewLoaded {
                                     Image(systemName: item.kind.systemImage)
                                         .font(.ui(.title2))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(PorcelainMetrics.secondary)
                                 } else {
                                     ProgressView()
                                 }
@@ -288,7 +295,7 @@ struct PhotoTransferView: View {
             Spacer(minLength: 0)
         }
         .font(.ui(.footnote).weight(.medium))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(PorcelainMetrics.secondary)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }

@@ -4,10 +4,10 @@ import UIKit
 struct SuperThumbnailMark: View {
     var compact = false
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.system.rawValue
+        AppThemePreference.light.rawValue
 
     private var isEnamel: Bool {
-        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+        false // 예전 에나멜 장식은 6개 테마에 없다.
     }
 
     var body: some View {
@@ -58,8 +58,10 @@ struct SuperThumbnailMark: View {
 
 struct SuperThumbnailLink: View {
     @State private var statistics = SuperThumbnailStatistics.empty
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         NavigationLink {
             SuperThumbnailView()
         } label: {
@@ -67,11 +69,11 @@ struct SuperThumbnailLink: View {
                 SuperThumbnailMark(compact: true)
                 Text("Super Thumbnail")
                     .font(.ui(.subheadline))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                 Spacer()
                 Text(formatted(statistics.cacheBytes))
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             }
         }
         .task { statistics = await SuperThumbnailCache.shared.statistics() }
@@ -151,8 +153,10 @@ struct SuperThumbnailView: View {
     @AppStorage("superThumbnail.nasVaultEnabled.v1") private var nasVaultEnabled = true
     @AppStorage("superThumbnail.nasVaultTiming.v1")
     private var nasVaultTimingRaw = SuperThumbnailVaultTiming.now.rawValue
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         ScrollView {
             VStack(spacing: ui(16)) {
                 setupPanel
@@ -174,7 +178,7 @@ struct SuperThumbnailView: View {
                 Group {
                     Text("Super Thumbnail")
                         .uiBarFont(.subheadline, weight: .medium)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                 }
                 .uiBarFont()
             }
@@ -347,7 +351,7 @@ struct SuperThumbnailView: View {
                 .frame(width: ui(40), height: ui(40))
             Text("선택한 폴더의 영상과 사진 썸네일을 미리 만듭니다.")
                 .font(.system(size: ui(15)))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .lineSpacing(ui(2))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -368,7 +372,7 @@ struct SuperThumbnailView: View {
             )
         }
         .font(.ui(.caption2))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(PorcelainMetrics.secondary)
         .padding(.horizontal, ui(4))
     }
 
@@ -386,7 +390,7 @@ struct SuperThumbnailView: View {
                 HStack(spacing: ui(12)) {
                     Text("보관 시점")
                         .font(.ui(.subheadline))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                     Spacer()
                     Menu {
                         Button("폴더별 완료 즉시") {
@@ -405,7 +409,7 @@ struct SuperThumbnailView: View {
             }
             Text(vaultOptionDescription)
                 .font(.ui(.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
         }
         .padding(ui(16))
     }
@@ -437,19 +441,19 @@ struct SuperThumbnailView: View {
                             .foregroundStyle(primaryInk)
                         Text(selection?.path ?? "NAS 폴더를 선택하세요")
                             .font(.ui(.caption2))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                             .lineLimit(1)
                     }
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.ui(.caption).bold())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                 }
                 .padding(ui(16))
                 .frame(minHeight: ui(72))
                 Text("하위 폴더 포함 · 완료된 항목은 다시 만들지 않음")
                     .font(.ui(.caption2))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .padding(.leading, ui(4))
                     .padding(.horizontal, ui(16))
                     .padding(.bottom, ui(12))
@@ -465,7 +469,7 @@ struct SuperThumbnailView: View {
         VStack(alignment: .leading, spacing: ui(10)) {
             Text("최근 작업")
                 .font(.ui(.caption2))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
             List {
                 ForEach(Array(historySelections.enumerated()), id: \.element.id) {
                     index, previous in
@@ -512,7 +516,7 @@ struct SuperThumbnailView: View {
             HStack(spacing: ui(11)) {
                 Image(systemName: index == 0 ? "clock.fill" : "clock")
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .frame(width: ui(24), height: ui(24))
                     .background(
                         Color.secondary.opacity(0.08),
@@ -525,7 +529,7 @@ struct SuperThumbnailView: View {
                         .lineLimit(1)
                     Text(previous.path)
                         .font(.ui(.caption2))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                         .lineLimit(1)
                 }
                 Spacer(minLength: ui(8))
@@ -552,7 +556,7 @@ struct SuperThumbnailView: View {
             Image(systemName: canStart ? "checkmark.circle.fill" : "clock")
                 .foregroundStyle(canStart ? Color.green : Color.secondary)
             Text(requirementSummary)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
         }
         .font(.system(size: ui(13)))
         .frame(maxWidth: .infinity, alignment: .center)
@@ -570,8 +574,7 @@ struct SuperThumbnailView: View {
             .frame(maxWidth: .infinity)
             .frame(height: ui(54))
         }
-        .buttonStyle(.borderedProminent)
-        .buttonBorderShape(.roundedRectangle(radius: 14))
+        .buttonStyle(PorcelainProminentButtonStyle(cornerRadius: 14))
         .font(.ui(.body).weight(.medium))
         .disabled(!canStart || isPreparing)
         .overlay {
@@ -592,7 +595,7 @@ struct SuperThumbnailView: View {
                 .frame(maxWidth: .infinity)
         }
         .font(.ui(.footnote))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(PorcelainMetrics.secondary)
         .buttonStyle(.bordered)
         .controlSize(.small)
         .disabled(statistics.fileCount == 0 && statistics.lifetimeNetworkBytes == 0)
@@ -1004,8 +1007,10 @@ private struct SuperThumbnailReportView: View {
     @State private var isStageDetailExpanded = false
     @State private var isVaultDetailExpanded = false
     @State private var isFailureDetailExpanded = false
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         ScrollView {
             VStack(alignment: .leading, spacing: ui(16)) {
                 HStack(spacing: ui(10)) {
@@ -1015,11 +1020,11 @@ private struct SuperThumbnailReportView: View {
                             .font(.ui(.headline).weight(.medium))
                         Label(selection.title, systemImage: "folder.fill")
                             .font(.ui(.caption))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                             .lineLimit(1)
                         Text(selection.path)
                             .font(.ui(.caption2))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
@@ -1082,8 +1087,7 @@ private struct SuperThumbnailReportView: View {
                         .frame(maxWidth: .infinity)
                         .frame(height: ui(54))
                 }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.roundedRectangle(radius: 14))
+                .buttonStyle(PorcelainProminentButtonStyle(cornerRadius: 14))
             }
             selectFolderButton
         }
@@ -1117,10 +1121,10 @@ private struct SuperThumbnailReportView: View {
                     + lastVerifiedText
             )
             .font(.system(size: ui(13)))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(PorcelainMetrics.secondary)
             Text("이어하기 순서 · 실패한 썸네일 → 업로드 대기 → 신규·변경 → 전체 확인")
                 .font(.ui(.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(ui(16))
@@ -1137,7 +1141,7 @@ private struct SuperThumbnailReportView: View {
             HStack(alignment: .firstTextBaseline) {
                 Text("총계")
                     .font(.ui(.subheadline))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                 Spacer()
                 Text("\(report.totalCount)개")
                     .font(.ui(.title3).monospacedDigit())
@@ -1149,7 +1153,7 @@ private struct SuperThumbnailReportView: View {
                     Text("\(report.cachedCount)개")
                 }
                 .font(.ui(.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
             }
             if report.photoSuccessCount > 0 {
                 HStack {
@@ -1158,7 +1162,7 @@ private struct SuperThumbnailReportView: View {
                     Text("성공 \(report.photoSuccessCount)개")
                 }
                 .font(.ui(.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
             }
             Divider()
             stageRow(
@@ -1209,7 +1213,7 @@ private struct SuperThumbnailReportView: View {
                 Spacer()
                 Text("보관 \(report.vaultUploadedCount) · 대기 \(report.vaultPendingCount) · 실패 \(report.vaultFailedCount)")
                     .font(.ui(.caption).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             }
             Text(
                 "이어하기 순서 · 생성 실패 \(report.failures.count) → "
@@ -1217,7 +1221,7 @@ private struct SuperThumbnailReportView: View {
                     + "신규·변경 \(max(report.pendingCount - report.failures.count, 0)) → 전체 확인"
             )
             .font(.ui(.caption))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(PorcelainMetrics.secondary)
 
             ForEach(report.vaultFolders) { folder in
                 Divider()
@@ -1241,11 +1245,11 @@ private struct SuperThumbnailReportView: View {
                         }
                     }
                     .font(.ui(.caption2).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     if let errorDescription = folder.errorDescription {
                         Text(errorDescription)
                             .font(.ui(.caption2))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                             .lineLimit(2)
                     }
                 }
@@ -1253,7 +1257,7 @@ private struct SuperThumbnailReportView: View {
             if let verifiedAt = report.vaultLastVerifiedAt {
                 Text("마지막 전체 확인 · \(verifiedAt.formatted(date: .abbreviated, time: .shortened))")
                     .font(.ui(.caption2))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             }
         }
         .padding(ui(15))
@@ -1281,10 +1285,10 @@ private struct SuperThumbnailReportView: View {
                         Text(failure.durationSeconds.map(formattedDuration) ?? "길이 미상")
                     }
                     .font(.ui(.caption2).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     Text(failure.reason)
                         .font(.ui(.caption2))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                         .lineLimit(2)
                 }
                 if failure.id != failures.last?.id { Divider() }
@@ -1326,8 +1330,10 @@ private struct SuperThumbnailProgressView: View {
     @State private var isFailurePanelExpanded = false
     @State private var isDetailsExpanded = false
     @State private var vaultReport: SuperThumbnailSessionReport?
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         NavigationStack {
             ScrollView {
                 VStack(spacing: ui(14)) {
@@ -1345,7 +1351,7 @@ private struct SuperThumbnailProgressView: View {
                             .foregroundStyle(SkyBreezeTheme.folderBlue.opacity(0.78))
                         Text(folderTitle)
                             .font(.ui(.subheadline))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                             .lineLimit(1)
                             .truncationMode(.middle)
                     }
@@ -1385,7 +1391,7 @@ private struct SuperThumbnailProgressView: View {
                         || preheater.vaultFailedCount > 0 {
                         Text("NAS 보관 \(preheater.vaultStoredCount)/\(preheater.generatedCount + preheater.cachedCount) · 대기 \(preheater.vaultPendingCount)")
                         .font(.ui(.caption).monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                     }
                     if let vaultErrorMessage = preheater.vaultErrorMessage {
                         Text("NAS 보관 대기 · \(vaultErrorMessage)")
@@ -1398,13 +1404,13 @@ private struct SuperThumbnailProgressView: View {
                             if let workPhase = preheater.workPhase {
                                 Text(workPhase)
                                     .font(.ui(.caption))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(PorcelainMetrics.secondary)
                             }
                             etaPanel
                             if let verifiedAt = preheater.vaultLastVerifiedAt {
                                 Text("NAS 전체 확인 · \(verifiedAt.formatted(date: .omitted, time: .shortened))")
                                     .font(.ui(.caption2))
-                                    .foregroundStyle(.secondary)
+                                    .foregroundStyle(PorcelainMetrics.secondary)
                             }
                             if !preheater.recentGeneratedThumbnails.isEmpty {
                                 overflowPanel
@@ -1414,12 +1420,12 @@ private struct SuperThumbnailProgressView: View {
                             }
                             Text("세션 네트워크 · " + formattedProgressBytes(preheater.transferredBytes + preheater.currentItemTransferredBytes))
                                 .font(.ui(.footnote).monospacedDigit())
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(PorcelainMetrics.secondary)
                         }
                         .padding(.top, ui(10))
                     }
                     .font(.ui(.subheadline))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
 
                     if !preheater.isRunning, preheater.totalCount > 0 {
                         completionReportPanel
@@ -1459,8 +1465,7 @@ private struct SuperThumbnailProgressView: View {
                                 .frame(maxWidth: .infinity)
                                 .frame(height: ui(54))
                         }
-                        .buttonStyle(.borderedProminent)
-                        .buttonBorderShape(.roundedRectangle(radius: 14))
+                        .buttonStyle(PorcelainProminentButtonStyle(cornerRadius: 14))
                     }
                 }
                 .padding(.horizontal, ui(24))
@@ -1529,7 +1534,7 @@ private struct SuperThumbnailProgressView: View {
             Text("\(value)")
                 .font(.ui(.headline).monospacedDigit().weight(.medium))
                 .foregroundStyle(.primary)
-            Text(title).font(.ui(.caption2)).foregroundStyle(.secondary)
+            Text(title).font(.ui(.caption2)).foregroundStyle(PorcelainMetrics.secondary)
         }
     }
 
@@ -1539,7 +1544,7 @@ private struct SuperThumbnailProgressView: View {
                 .foregroundStyle(.blue)
             Text("남은 시간")
                 .font(.ui(.subheadline))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
             Spacer()
             Text(formattedETA)
                 .font(.ui(.headline).monospacedDigit().weight(.medium))
@@ -1596,7 +1601,7 @@ private struct SuperThumbnailProgressView: View {
                 )
             }
             .font(.ui(.caption).weight(.medium))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(PorcelainMetrics.secondary)
 
             if isOverflowExpanded {
                 coverFlow
@@ -1647,7 +1652,7 @@ private struct SuperThumbnailProgressView: View {
                 ForEach(preheater.failedItemNames, id: \.self) { detail in
                     Text(detail)
                         .font(.ui(.caption2))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                         .lineLimit(3)
                 }
             }
@@ -1726,7 +1731,7 @@ private struct SuperThumbnailProgressView: View {
                     Text(String(format: "%02ds 남음", remaining))
                 }
                 .font(.ui(.caption2).monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 ProgressView(
                     value: preheater.isRunning ? min(elapsed / limit, 1) : 1
                 )
@@ -1734,7 +1739,7 @@ private struct SuperThumbnailProgressView: View {
                     .tint(.indigo.opacity(0.72))
                 Text(currentItemTransferText)
                     .font(.ui(.caption2).monospacedDigit())
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, ui(12))
@@ -1766,7 +1771,7 @@ private struct SuperThumbnailProgressView: View {
                 HStack(alignment: .firstTextBaseline) {
                     Text("총계")
                         .font(.ui(.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                     Spacer()
                     Text("\(preheater.totalCount)개")
                         .font(.ui(.title3).monospacedDigit().weight(.regular))
@@ -1776,7 +1781,7 @@ private struct SuperThumbnailProgressView: View {
                 if preheater.photoSuccessCount > 0 {
                     HStack {
                         Text("사진 미리보기")
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                         Spacer()
                         Text("성공 \(preheater.photoSuccessCount)")
                             .monospacedDigit()
@@ -1820,7 +1825,7 @@ private struct SuperThumbnailProgressView: View {
                                 + "실패 \(vaultReport.vaultFailedCount)"
                         )
                         .font(.ui(.caption2).monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                     }
                     ForEach(vaultReport.vaultFolders) { folder in
                         HStack(spacing: ui(8)) {
@@ -1837,7 +1842,7 @@ private struct SuperThumbnailProgressView: View {
                             }
                         }
                         .font(.ui(.caption2).monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                     }
                     if let verifiedAt = vaultReport.vaultLastVerifiedAt {
                         Text(
@@ -1845,7 +1850,7 @@ private struct SuperThumbnailProgressView: View {
                                 + verifiedAt.formatted(date: .abbreviated, time: .shortened)
                         )
                         .font(.ui(.caption2))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                     }
                 }
             }
@@ -1858,7 +1863,7 @@ private struct SuperThumbnailProgressView: View {
                         .foregroundStyle(.orange.opacity(0.88))
                     Text(failureSummaryText)
                         .font(.ui(.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                 }
                 failureTable
             }
@@ -1879,10 +1884,10 @@ private struct SuperThumbnailProgressView: View {
         VStack(spacing: ui(3)) {
             Text("\(seconds)초")
                 .font(.ui(.caption2))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
             Text("시도 \(success + remaining)")
                 .font(.ui(.caption2).monospacedDigit())
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
             Text("성공 \(success)")
                 .font(.ui(.subheadline).monospacedDigit().weight(.regular))
                 .foregroundStyle(.primary)
@@ -2030,8 +2035,10 @@ private struct SuperThumbnailCoverCard: View {
     let filename: String
     let index: Int
     let totalCount: Int
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         VStack(spacing: ui(6)) {
             ZStack(alignment: .bottomLeading) {
                 Image(uiImage: image)
@@ -2058,7 +2065,7 @@ private struct SuperThumbnailCoverCard: View {
 
             Text(filename)
                 .font(.ui(.caption2))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.55)
                 .allowsTightening(true)
@@ -2117,7 +2124,7 @@ private struct SuperThumbnailFolderPickerView: View {
                                     Text(connection.name).foregroundStyle(.primary)
                                     Text(connection.normalizedRootPath)
                                         .font(.ui(.caption2))
-                                        .foregroundStyle(.secondary)
+                                        .foregroundStyle(PorcelainMetrics.secondary)
                                 }
                             } icon: {
                                 Image(systemName: connection.kind.systemImage)
@@ -2247,7 +2254,7 @@ private struct SuperThumbnailFolderBrowser: View {
                 Label("이 폴더 선택", systemImage: "checkmark.circle.fill")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PorcelainProminentButtonStyle())
             .controlSize(.large)
             .padding(.all, MacUIScale.defaultPadding)
             .background(.ultraThinMaterial)

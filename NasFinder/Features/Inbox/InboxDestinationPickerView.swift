@@ -97,8 +97,10 @@ private struct InboxDestinationFolderView: View {
     @State private var isCreatingFolder = false
     @State private var newFolderName = ""
     @State private var folderError: String?
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         List {
             if folderOptions.isEmpty {
                 ContentUnavailableView {
@@ -121,6 +123,7 @@ private struct InboxDestinationFolderView: View {
                         Label(option.name, systemImage: "folder.fill")
                     }
                     .disabled(isWorking)
+                    .listRowBackground(PorcelainMetrics.card)
                 }
             }
         }
@@ -173,7 +176,7 @@ private struct InboxDestinationFolderView: View {
                     Label("이 폴더를 선택", systemImage: "checkmark.circle.fill")
                         .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PorcelainProminentButtonStyle())
                 .controlSize(.large)
                 .disabled(isWorking)
             }

@@ -81,29 +81,41 @@ struct LocalPhotoLibraryView: View {
         case nil: "내 사진·영상"
         }
     }
-    var body: some View { mediaContent.modifier(PreserveMediaNavigation()) }
+    private var themeRefresh = ThemeRefresh()
+    var body: some View {
+        let _ = themeRefresh.theme
+        mediaContent.modifier(PreserveMediaNavigation())
+    }
     private var mediaContent: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
                 Button { dismiss() } label: {
-                    Image(systemName: "chevron.left").font(.system(size: ui(17), weight: .semibold))
+                    InterfaceIcon(systemName: "chevron.left", size: ui(22)).font(.system(size: ui(17), weight: .semibold))
+                        .foregroundStyle(PorcelainMetrics.accent)
                         .frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("뒤로")
                 Text(navigationTitleText).font(.ui(.headline))
+                    .foregroundStyle(PorcelainMetrics.graphite)
                 Spacer()
-            }.padding(.horizontal, ui(4))
+            }
+            .padding(.horizontal, ui(4))
+            .background(PorcelainMetrics.paper)
             MediaSourceTabBar(page: $sourcePage)
             MediaSourcePager(page: $sourcePage) { page in
                 pageContent(page).disabled(isBusy)
             }
         }
+        .background(PorcelainMetrics.paper.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
-        .safeAreaInset(edge: .bottom) { bottomActionBar }
+        .safeAreaInset(edge: .bottom) {
+            if !entries.isEmpty || isCopyingToPhoneHard { bottomActionBar }
+        }
         .safeAreaInset(edge: .top) {
             if isLoadingSelection { progressBanner }
             else if let importSummaryText {
-                Text(importSummaryText).font(.ui(.footnote)).foregroundStyle(.secondary)
-                    .padding(ui(8)).frame(maxWidth: .infinity, alignment: .leading).background(.bar)
+                Text(importSummaryText).font(.ui(.footnote)).foregroundStyle(PorcelainMetrics.secondary)
+                    .padding(ui(8)).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(PorcelainMetrics.sidebar)
             }
         }
         .photosPicker(isPresented: $isPickerPresented, selection: $pickerSelection,
@@ -264,7 +276,7 @@ struct LocalPhotoLibraryView: View {
             Text("설정에서 사진 접근을 허용하거나 시스템 선택기로 필요한 항목만 선택할 수 있습니다. 기존 선택 항목은 유지됩니다.")
         } actions: {
             Button("설정에서 사진 접근 확인") { openPhotoSettings() }
-            Button("시스템 사진 선택기") { isPickerPresented = true }.buttonStyle(.borderedProminent)
+            Button("시스템 사진 선택기") { isPickerPresented = true }.buttonStyle(PorcelainProminentButtonStyle())
         }
     }
     private var bottomActionBar: some View {
@@ -272,15 +284,6 @@ struct LocalPhotoLibraryView: View {
             if isCopyingToPhoneHard {
                 Text("폰하드로 복사하는 중 · \(copyProgressCompleted)/\(copyProgressTotal)개").font(.ui(.footnote))
                 ProgressView(value: Double(copyProgressCompleted), total: Double(max(copyProgressTotal, 1)))
-            }
-            HStack {
-                Text("선택됨 \(entries.count)개").font(.ui(.footnote)).foregroundStyle(.secondary)
-                Spacer()
-                if !entries.isEmpty {
-                    Button("미리보기", systemImage: "eye") {
-                        startPreparation { await previewSelected() }
-                    }.font(.ui(.footnote)).frame(minHeight: 44).disabled(isBusy)
-                }
             }
             if !entries.isEmpty {
                 MediaBasketTray(
@@ -291,19 +294,30 @@ struct LocalPhotoLibraryView: View {
                     onRemove: { id in if let entry = entries.first(where: { $0.id == id }) { remove(entry) } })
             }
             HStack(spacing: ui(8)) {
-                Button {
-                    pendingPhoneHardCopy = nil
-                    inboxStore.reload()
-                    isChoosingPhoneHardDestination = true
-                } label: { Text("폰하드 복사").frame(maxWidth: .infinity, minHeight: ui(32)) }
-                Button {
-                    startPreparation { await beginTrailer(mode: initialMode ?? .trailer) }
-                } label: { Text("영상 편집").frame(maxWidth: .infinity, minHeight: ui(32)) }
+                Text("선택됨 \(entries.count)개").font(.ui(.footnote)).foregroundStyle(PorcelainMetrics.secondary)
+                if !entries.isEmpty {
+                    Button("미리보기", systemImage: "eye") {
+                        startPreparation { await previewSelected() }
+                    }.font(.ui(.footnote)).frame(minHeight: 36).disabled(isBusy)
+                }
+                Spacer(minLength: ui(4))
+                Group {
+                    Button {
+                        pendingPhoneHardCopy = nil
+                        inboxStore.reload()
+                        isChoosingPhoneHardDestination = true
+                    } label: { Text("폰하드 복사").padding(.horizontal, ui(8)).frame(minHeight: ui(30)) }
+                    Button {
+                        startPreparation { await beginTrailer(mode: initialMode ?? .trailer) }
+                    } label: { Text("영상 편집").padding(.horizontal, ui(8)).frame(minHeight: ui(30)) }
+                }
+                .font(PorcelainTypeface.font(size: 14, weight: .medium))
+                .buttonStyle(PorcelainProminentButtonStyle())
+                .disabled(isBusy || entries.isEmpty)
             }
-            .font(.ui(.subheadline).weight(.semibold))
-            .buttonStyle(.borderedProminent)
-            .disabled(isBusy || entries.isEmpty)
-        }.padding(ui(12)).background(.bar)
+        }.padding(.horizontal, ui(12)).padding(.vertical, ui(8))
+        .background(PorcelainMetrics.card.opacity(0.95))
+        .overlay(alignment: .top) { PorcelainMetrics.line.frame(height: 0.5) }
     }
     private var progressStatusText: String {
         loadTotal > 0 ? "사진·영상 준비 중 · \(loadCompleted)/\(loadTotal)개" : "사진·영상 준비 중…"
@@ -319,7 +333,9 @@ struct LocalPhotoLibraryView: View {
             }
             ProgressView(value: Double(loadCompleted), total: Double(max(loadTotal, 1)))
             if let currentLoadingLabel { Text(currentLoadingLabel).font(.ui(.caption2)).foregroundStyle(.secondary) }
-        }.padding(ui(10)).background(.bar)
+        }.padding(ui(10))
+        .background(PorcelainMetrics.sidebar)
+        .overlay(alignment: .bottom) { PorcelainMetrics.line.frame(height: 0.5) }
     }
     private func photoKey(for item: PhotosPickerItem) -> String {
         if let identifier = item.itemIdentifier { return identifier }

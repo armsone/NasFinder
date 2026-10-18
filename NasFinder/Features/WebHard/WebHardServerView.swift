@@ -189,11 +189,11 @@ private enum WebHardFileLayoutStyle: String, CaseIterable, Identifiable {
 struct WebHardConnectionPanel: View {
     @EnvironmentObject private var controller: WebHardServerController
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.system.rawValue
+        AppThemePreference.light.rawValue
     @State private var isExpanded = false
 
     private var isEnamel: Bool {
-        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+        false // 예전 에나멜 장식은 6개 테마에 없다.
     }
 
     var body: some View {
@@ -230,7 +230,7 @@ struct WebHardConnectionPanel: View {
 
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.ui(.caption).weight(.semibold))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                 }
                 .contentShape(Rectangle())
             }
@@ -286,8 +286,8 @@ struct WebHardConnectionPanel: View {
     private var compactRunningStatus: some View {
         if let accessURL = controller.accessURL {
             Text(accessURL.absoluteString)
-                .font(.ui(.footnote).monospaced())
-                .foregroundStyle(.secondary)
+                .font(.ui(.footnote, design: .monospaced))
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
@@ -335,11 +335,11 @@ struct WebHardConnectionPanel: View {
 private struct WebHardConnectionControls: View {
     @EnvironmentObject private var controller: WebHardServerController
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.system.rawValue
+        AppThemePreference.light.rawValue
     @State private var isPasswordExpanded = false
 
     private var isEnamel: Bool {
-        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+        false // 예전 에나멜 장식은 6개 테마에 없다.
     }
 
     var body: some View {
@@ -370,7 +370,7 @@ private struct WebHardConnectionControls: View {
         if controller.selectedAddress == nil {
             Label("사용 가능한 접속 주소가 없습니다", systemImage: "network.slash")
                 .font(.ui(.subheadline))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
         } else {
             HStack(spacing: ui(8)) {
                 addressLabel
@@ -387,12 +387,12 @@ private struct WebHardConnectionControls: View {
     private var addressLabel: some View {
         Text("접속 주소")
             .font(.ui(.caption))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(PorcelainMetrics.secondary)
     }
 
     private func addressText(alignment: TextAlignment) -> some View {
         Text(addressValue)
-            .font(.ui(.footnote).monospaced())
+            .font(.ui(.footnote, design: .monospaced))
             .foregroundStyle(
                 isEnamel ? Color(red: 0.12, green: 0.13, blue: 0.14) : Color.primary
             )
@@ -465,7 +465,7 @@ private struct WebHardConnectionControls: View {
                 .opacity(toggleIsDisabled ? 0.45 : 1)
         } else {
             connectionToggleButton
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PorcelainProminentButtonStyle())
                 .controlSize(.small)
                 .frame(minWidth: ui(88), maxWidth: .infinity)
         }
@@ -586,7 +586,7 @@ struct WebHardServerView: View {
     @AppStorage("browser.coverFlowBackground.v1")
     private var coverFlowUsesDarkBackground = false
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.system.rawValue
+        AppThemePreference.light.rawValue
     @State private var shareItem: WebHardShareItem?
     @State private var deleteCandidate: WebHardFileItem?
     @State private var contentSize = CGSize.zero
@@ -599,7 +599,7 @@ struct WebHardServerView: View {
     }
 
     private var isEnamel: Bool {
-        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+        false // 예전 에나멜 장식은 6개 테마에 없다.
     }
 
     var body: some View {
@@ -829,13 +829,13 @@ struct WebHardServerView: View {
                         Spacer()
                         Text("\(Int((upload.fractionCompleted * 100).rounded()))%")
                             .font(.ui(.caption).monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                     }
                     ProgressView(value: upload.fractionCompleted)
                         .tint(serviceColor)
                     Text("\(ByteCountFormatter.string(fromByteCount: upload.receivedBytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: upload.totalBytes, countStyle: .file))")
                         .font(.ui(.caption2))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                 }
                 .padding(.vertical, ui(4))
             }
@@ -992,7 +992,7 @@ struct WebHardServerView: View {
             if let size = item.size, !item.isDirectory {
                 Text(ByteCountFormatter.string(fromByteCount: size, countStyle: .file))
                     .font(.system(size: metadataFontSize))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

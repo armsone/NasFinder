@@ -98,7 +98,7 @@ capabilities:
     entry_points: ["메인 대시보드"]
     preconditions: ["기존 연결·즐겨찾기·폰하드 데이터는 선택적으로 존재"]
     inputs: ["메뉴 탭", "폰하드 롱터치", "영상 만들기 선택(미디어 선택 후 편집 화면 상단에서 예고편/뮤직비디오 전환)", "보관한 편집 열기"]
-    normal_result: "네트워크의 즐겨찾기·연결·Google 포토·브라우저, 내 파일의 폰하드·내 사진·영상·기기 간 전송·저장공간, 영상 편집의 단일 영상 만들기와 보관한 편집, 기존 설정에 접근한다. 영상 만들기는 미디어 선택으로 바로 이동하며, 최종 영상 편집의 제작 방식 옵션에서 예고편과 뮤직비디오를 전환한다. 선택 원본·순서·BGM을 유지하고 예고편 복귀 시 필요한 하이라이트 분석을 수행한다."
+    normal_result: "네트워크의 즐겨찾기·연결·Google 포토·브라우저, 내 파일의 폰하드·내 사진·영상·기기 간 전송·저장공간, 영상 편집의 단일 영상 만들기와 보관한 편집, 기존 설정에 접근한다. 영상 만들기는 미디어 선택으로 바로 이동하며, 최종 영상 편집의 제작 방식 옵션에서 예고편과 뮤직비디오를 전환한다. 선택 원본·순서·BGM을 유지하고 예고편 복귀 시 필요한 하이라이트 분석을 수행한다. 새 편집의 기본 순서는 추가순이며 순서 선택은 추가순·시간순·가나다순·랜덤(선택 시 1회 섞기)이고, 화면 모양 기본은 원본(현재 순서 첫 영상의 방향 보정 비율, 사진만이면 첫 사진)이며 원본·1:1·3:4·4:3·9:16·16:9 정사각 타일에 비율 글리프와 하단 비율 글자를 둔다. 기존 초안의 명시 선택은 그대로 유지한다. 테마 길게 누르기 작은 팝오버 목록과 Mac 우클릭 메뉴의 각 행은 테마 아이콘과 이름·선택 표시를 함께 보인다."
     states: [empty, populated, navigation, cancelled, error]
     algorithms_and_thresholds: ["섹션 순서 고정", "기존 무제한 편집 목록과 0개 안내 유지", "기존 사진·달력·파일 및 Google 포토 선택 경로 유지"]
     data_contracts: ["2.8.0", "기존 연결·즐겨찾기·미디어 저장 형식 변경 없음"]
@@ -193,26 +193,26 @@ capabilities:
     parity_row_ids: [app-foreground-return]
 
   - id: settings.theme_icons_awake
-    purpose: "Let users choose appearance, alternate icon and screen-awake policy with durable preferences."
-    source_refs: ["NasFinder/App/SkyBreezeTheme.swift", "NasFinder/App/ScreenAwakeController.swift", "NasFinder/Features/Settings/AppSettingsView.swift", "NasFinder/Features/Settings/AppIconSettingsView.swift", "NasFinder/Resources/Assets.xcassets"]
-    entry_points: ["root settings", "theme and icon sections"]
+    purpose: "Let users choose appearance (병기스타일 테마 6종: light/medium/dark/jarvis/friday/ultron), alternate icon and screen-awake policy with durable preferences."
+    source_refs: ["NasFinder/App/SkyBreezeTheme.swift", "NasFinder/App/ScreenAwakeController.swift", "NasFinder/Features/Settings/AppSettingsView.swift", "NasFinder/Features/Settings/AppIconSettingsView.swift", "NasFinder/Features/Connections/ConnectionListView.swift", "NasFinder/Resources/Assets.xcassets"]
+    entry_points: ["root settings", "dashboard theme badge/toolbar button", "theme and icon sections"]
     preconditions: ["alternate icons supported for icon switching"]
-    inputs: ["system/light/dark/day/vibe/cyber/workbench theme choice", "icon choice", "automatic/always/never awake mode"]
-    normal_result: "Theme tokens, service badges and decoration update consistently; iPhone/iPad icon and awake mode apply and persist. On Mac, themes change without invoking the unsupported alternate-icon API, one fixed app icon remains, and the unavailable icon picker is hidden."
+    inputs: ["light/medium/dark/jarvis/friday/ultron theme choice, tap to cycle, 500ms longpress to open list", "icon choice", "automatic/always/never awake mode"]
+    normal_result: "Theme tokens, service badges and decoration update consistently across exactly 6 themes (light 밝은, medium 중간, dark 어두운, jarvis 자비스, friday 프라이데이, ultron 울트론); 24x24 native vector glyphs render per theme; iPhone/iPad icon and awake mode apply and persist. On Mac, themes change without invoking the unsupported alternate-icon API, one fixed app icon remains, and the unavailable icon picker is hidden."
     states: [idle, selecting, applying, applied, unsupported, error]
-    algorithms_and_thresholds: ["unknown stored theme falls back to system", "automatic awake only while app active and one or more tracked activities are active"]
-    data_contracts: ["UserDefaults/AppStorage stable raw values", "registered alternate icon asset names"]
-    producer_consumer_routes: ["settings selection -> AppStorage/controller -> every themed view, UIApplication idle timer and icon API"]
+    algorithms_and_thresholds: ["unknown stored theme falls back to light; legacy 'night' reads as dark, legacy 'bkstyle' reads as medium without rewriting stored value on read", "tap cycles next theme in fixed order (light -> medium -> dark -> jarvis -> friday -> ultron -> light)", "500ms longpress opens 6-entry selectable list titled 병기스타일 테마 with current choice marked; release does not cycle; movement > 10px cancels", "automatic awake only while app active and one or more tracked activities are active"]
+    data_contracts: ["UserDefaults/AppStorage stable raw values (light, medium, dark, jarvis, friday, ultron; legacy bkstyle, night read-mapped)", "registered alternate icon asset names"]
+    producer_consumer_routes: ["settings selection or dashboard theme button -> AppStorage/controller -> every themed view, UIApplication idle timer and icon API"]
     persistence_relaunch: "Theme, icon and awake selection restore across relaunch."
     permissions_privacy_security: ["No content leaves device"]
     background_lifecycle: "Automatic mode releases the idle timer when app is inactive or final activity finishes."
-    gestures_accessibility: ["Selectable rows/cards expose names, state and sufficient targets"]
-    supported_devices_layouts: ["iPhone/iPad adaptive settings", "Designed for iPad on Mac and Mac Catalyst use the 2x Mac presentation scale"]
-    visual_reference: "SkyBreezeTheme tokens and icon preview assets; runtime visual verification pending"
-    platform_adaptations: {ios: ["iPhone/iPad use UIApplication alternate icons and idleTimerDisabled", "Mac hosts keep one fixed icon, hide icon selection, and never call alternate-icon APIs"], android: ["Use supported launcher aliases/shortcuts where possible and FLAG_KEEP_SCREEN_ON with equivalent lifecycle"]}
+    gestures_accessibility: ["Tap to cycle next theme; longpress opens the anchored theme popover list; accessible labels include 병기스타일 테마: {현재} (누르면 {다음}, 길게 누르면 목록)", "Selectable rows/cards expose names, state and sufficient targets"]
+    supported_devices_layouts: ["iPhone/iPad adaptive settings and dashboard", "Designed for iPad on Mac and Mac Catalyst use the 2x/2.5x Mac presentation scale"]
+    visual_reference: "SkyBreezeTheme 6-theme palette and 24x24 vector glyphs; runtime verified on Mac and iPhone, iPad GUI unverified"
+    platform_adaptations: {ios: ["iPhone/iPad use ByungkiThemeControlButton with tap cycle, 500ms LongPressGesture opening a small button-anchored popover (.presentationCompactAdaptation(.popover)) whose six rows each draw the theme glyph, name and selected checkmark (iOS has no contextMenu on this control)", "Mac hosts open the native right-click contextMenu Label list with theme icon, name and selected mark", "Mac hosts keep one fixed icon, hide icon selection, and never call alternate-icon APIs"], android: ["Use supported launcher aliases/shortcuts where possible and Compose clickable/combinedClickable for 6 themes"]}
     intentional_differences: []
     implementations:
-      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/App/SkyBreezeTheme.swift", "NasFinder/App/ScreenAwakeController.swift", "NasFinder/Features/Settings/AppIconSettingsView.swift"], tests: ["NasFinderTests/AppThemePreferenceTests.swift", "NasFinderTests/AppIconChoiceTests.swift", "NasFinderTests/ScreenAwakeControllerTests.swift"], evidence: ["static tests inventoried"]}
+      ios: {status: implemented_source_only, source_refs: ["NasFinder/App/SkyBreezeTheme.swift", "NasFinder/Features/Connections/ConnectionListView.swift", "NasFinder/Features/Settings/AppSettingsView.swift"], tests: [], evidence: ["source updated with Byungki 6-theme palette, 24x24 vector glyphs and tap/longpress button; runtime 2026-10-19 07:54 KST: Mac and iPhone theme glyph 6 hold shows no cycle and short tap cycles 1; Mac final 2.20.1/202610190729 aspect 6 single row and prepared 2s draft 0:02 PASS; iPad GUI unverified"]}
       android: {status: source_implemented_runtime_partially_verified, source_refs: ["AppSettingsRepository.kt", "AppIconController.kt", "NasFinderTheme.kt"], tests: ["AppThemeParityTest", "AppIconSwitchPolicyTest", "LauncherIconAssetContractTest"], evidence: ["old device settings/two alias transitions; current full matrix pending"]}
     dependencies: [app.shell.routes_lifecycle]
     parity_row_ids: [settings-theme, settings-icons, settings-awake]

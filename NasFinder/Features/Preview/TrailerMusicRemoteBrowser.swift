@@ -234,11 +234,13 @@ struct TrailerMusicNetworkRows: View {
     @EnvironmentObject private var connectionStore: ConnectionStore
     @ObservedObject var loader: TrailerMusicRemoteLoader
     @ObservedObject var audition: TrailerMusicAuditionPlayer
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         if connectionStore.connections.isEmpty {
             Text("연결된 NAS가 없습니다. 먼저 NasFinder에 네트워크 연결을 추가해 주세요.")
-                .font(.ui(.footnote)).foregroundStyle(.secondary)
+                .font(.ui(.footnote)).foregroundStyle(PorcelainMetrics.secondary)
         }
         ForEach(connectionStore.connections) { connection in
             NavigationLink {
@@ -263,7 +265,7 @@ struct TrailerMusicNetworkRows: View {
                     .font(.ui(.headline))
                 Text(connection.endpointDescription)
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .lineLimit(1)
                 Label(connection.normalizedRootPath, systemImage: "folder")
                     .font(.ui(.caption2))
@@ -291,10 +293,13 @@ struct TrailerMusicFavoriteRows: View {
         favoriteStore.items.filter { $0.kind == .folder }
     }
 
+    private var themeRefresh = ThemeRefresh()
+
     var body: some View {
+        let _ = themeRefresh.theme
         if folders.isEmpty {
             Text("즐겨찾기한 폴더가 없습니다.")
-                .font(.ui(.footnote)).foregroundStyle(.secondary)
+                .font(.ui(.footnote)).foregroundStyle(PorcelainMetrics.secondary)
         }
         ForEach(folders) { favorite in
             if let connection = connectionStore.connections.first(where: { $0.id == favorite.connectionID }) {
@@ -318,7 +323,7 @@ struct TrailerMusicFavoriteRows: View {
                     .lineLimit(2)
                 Text(detail)
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .lineLimit(1)
             }
         } icon: {
@@ -408,7 +413,10 @@ private struct TrailerMusicRemoteFolderView: View {
         )
     }
 
+    private var themeRefresh = ThemeRefresh()
+
     var body: some View {
+        let _ = themeRefresh.theme
         Group {
             if viewModel.isLoading && viewModel.items.isEmpty {
                 ProgressView("폴더를 불러오는 중…")
@@ -422,7 +430,7 @@ private struct TrailerMusicRemoteFolderView: View {
                     Button("다시 시도") {
                         Task { await viewModel.load() }
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PorcelainProminentButtonStyle())
                 }
             } else if entries.isEmpty {
                 ContentUnavailableView {
@@ -494,7 +502,7 @@ private struct TrailerMusicRemoteFolderView: View {
             VStack(alignment: .leading, spacing: ui(2)) {
                 Text(item.name).lineLimit(2)
                 Text(detail(for: item, isActive: isActive))
-                    .font(.ui(.caption)).foregroundStyle(.secondary).monospacedDigit()
+                    .font(.ui(.caption)).foregroundStyle(PorcelainMetrics.secondary).monospacedDigit()
             }
             Spacer(minLength: ui(8))
             Button("사용") {
@@ -527,12 +535,14 @@ private struct TrailerMusicRemoteFolderView: View {
 struct TrailerMusicDownloadBanner: View {
     let active: TrailerMusicRemoteLoader.Active
     let onCancel: () -> Void
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         HStack(spacing: ui(12)) {
             VStack(alignment: .leading, spacing: ui(6)) {
                 Text(title)
-                    .font(.ui(.subheadline).weight(.semibold))
+                    .font(.ui(.subheadline).weight(.medium))
                     .lineLimit(1)
                 if active.phase == .downloading, let fraction = active.fractionCompleted {
                     ProgressView(value: fraction)
@@ -542,7 +552,7 @@ struct TrailerMusicDownloadBanner: View {
                 if let byteText {
                     Text(byteText)
                         .font(.ui(.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                         .monospacedDigit()
                 }
             }
@@ -554,7 +564,7 @@ struct TrailerMusicDownloadBanner: View {
         }
         .padding(.horizontal, ui(16))
         .padding(.vertical, ui(10))
-        .background(.bar)
+        .background(PorcelainMetrics.sidebar)
         .overlay(alignment: .top) { Divider() }
         .accessibilityElement(children: .contain)
     }

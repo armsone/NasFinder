@@ -106,6 +106,11 @@ enum RemoteThumbnailCacheKey {
     }
 }
 
+extension EnvironmentValues {
+    /// true면 Porcelain에서도 썸네일을 틀에 채워 자른다(즐겨찾기 정사각 커버 등).
+    @Entry var remoteThumbnailFillsFrame = false
+}
+
 enum RemoteThumbnailDisplayMode: Equatable, Sendable {
     /// Loads the thumbnail from caches, the backend, or local generation.
     case standard
@@ -286,6 +291,17 @@ private struct RemoteThumbnailRenderedContent: View {
     @ObservedObject var loader: RemoteThumbnailLoader
     let item: RemoteFileItem
     let blursSkinToneDominantImage: Bool
+    @AppStorage(AppThemePreference.storageKey) private var themeRawValue =
+        AppThemePreference.light.rawValue
+    @Environment(\.remoteThumbnailFillsFrame) private var fillsFrame
+
+    /// 6개 테마 모두 실제 사진의 비율을 그대로 보여 주고(잘라 내지 않음) 남는 곳은 종이색 바탕이다.
+    /// 정사각 커버처럼 틀을 채워야 하는 곳은 `remoteThumbnailFillsFrame`으로 채워 자른다.
+    private var contentMode: ContentMode {
+        !item.isDirectory && !fillsFrame
+            ? .fit
+            : .fill
+    }
 
     var body: some View {
         GeometryReader { geometry in
@@ -293,7 +309,7 @@ private struct RemoteThumbnailRenderedContent: View {
                 if let image = loader.image {
                     Image(uiImage: image)
                         .resizable()
-                        .aspectRatio(contentMode: .fill)
+                        .aspectRatio(contentMode: contentMode)
                         .frame(
                             width: geometry.size.width,
                             height: geometry.size.height

@@ -215,7 +215,7 @@ private struct NasFinderPhotoDurationFilterEditor: View {
             Button {
                 dismiss()
             } label: {
-                Image(systemName: "xmark")
+                InterfaceIcon(systemName: "xmark", size: 18)
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(NasFinderPhotoPickerTheme.text)
                     .frame(width: 38, height: 38)
@@ -447,8 +447,8 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
         private func configureCollectionView() {
             collectionView.backgroundColor = .clear
             collectionView.alwaysBounceVertical = true
-            collectionView.contentInset.bottom = 92
-            collectionView.verticalScrollIndicatorInsets.bottom = 92
+            collectionView.contentInset.bottom = 60
+            collectionView.verticalScrollIndicatorInsets.bottom = 60
             collectionView.isDirectionalLockEnabled = true
             collectionView.allowsMultipleSelection = true
             collectionView.dataSource = self
@@ -552,32 +552,37 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
                 clearSelectionButton
             ])
             buttonStack.axis = .horizontal
-            buttonStack.alignment = .center
-            buttonStack.distribution = .equalSpacing
+            buttonStack.alignment = .fill
+            buttonStack.distribution = .fillEqually
+            buttonStack.spacing = 8
             buttonStack.translatesAutoresizingMaskIntoConstraints = false
             view.addSubview(buttonStack)
             NSLayoutConstraint.activate([
                 buttonStack.leadingAnchor.constraint(
                     equalTo: view.safeAreaLayoutGuide.leadingAnchor,
-                    constant: 18
+                    constant: 12
                 ),
                 buttonStack.trailingAnchor.constraint(
                     equalTo: view.safeAreaLayoutGuide.trailingAnchor,
-                    constant: -18
+                    constant: -12
                 ),
                 buttonStack.bottomAnchor.constraint(
                     equalTo: view.safeAreaLayoutGuide.bottomAnchor,
-                    constant: -16
+                    constant: -8
                 ),
-                filterButton.widthAnchor.constraint(equalToConstant: 54),
-                filterButton.heightAnchor.constraint(equalToConstant: 54),
-                previousDayButton.widthAnchor.constraint(equalToConstant: 54),
-                previousDayButton.heightAnchor.constraint(equalToConstant: 54),
-                todayButton.widthAnchor.constraint(equalToConstant: 54),
-                todayButton.heightAnchor.constraint(equalToConstant: 54),
-                clearSelectionButton.widthAnchor.constraint(equalToConstant: 54),
-                clearSelectionButton.heightAnchor.constraint(equalToConstant: 54)
+                buttonStack.heightAnchor.constraint(greaterThanOrEqualToConstant: 44)
             ])
+        }
+
+        override func viewDidLayoutSubviews() {
+            super.viewDidLayoutSubviews()
+            // 툴바 실제 높이(최소 44) + 위아래 8 간격을 따라 하단 인셋을 맞춘다(기본 44+8+8=60).
+            let toolbarHeight = max(44, filterButton.superview?.bounds.height ?? 44)
+            let bottomInset = toolbarHeight + 16
+            if collectionView.contentInset.bottom != bottomInset {
+                collectionView.contentInset.bottom = bottomInset
+                collectionView.verticalScrollIndicatorInsets.bottom = bottomInset
+            }
         }
 
         private func configureFloatingDayButton(
@@ -585,13 +590,15 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
             title: String,
             accessibilityHint: String
         ) {
+            // 둥근 테마 버튼 외형을 Mac idiom에서도 유지한다(Mac 스타일 UIButton 커스텀 API 예외 방지).
+            button.preferredBehavioralStyle = .pad
             button.configuration = nil
             button.setTitle(title, for: .normal)
             button.setTitleColor(NasFinderPhotoPickerTheme.primaryUIColor, for: .normal)
             button.titleLabel?.font = UIFontMetrics(
                 forTextStyle: .footnote
             ).scaledFont(
-                for: .systemFont(ofSize: 13, weight: .semibold),
+                for: PorcelainTypeface.uiFont(size: 13, weight: .medium),
                 maximumPointSize: 18
             )
             button.titleLabel?.adjustsFontForContentSizeCategory = true
@@ -599,16 +606,13 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
             button.titleLabel?.lineBreakMode = .byTruncatingTail
             button.backgroundColor = UIColor(NasFinderPhotoPickerTheme.background)
                 .withAlphaComponent(0.86)
-            button.layer.cornerRadius = 29
+            button.layer.cornerRadius = 8
             button.layer.cornerCurve = .continuous
-            button.layer.borderWidth = 1.25
+            button.layer.borderWidth = 1
             button.layer.borderColor = NasFinderPhotoPickerTheme.secondaryUIColor
                 .withAlphaComponent(0.34).cgColor
-            button.layer.shadowColor = NasFinderPhotoPickerTheme.secondaryUIColor.cgColor
-            button.layer.shadowOpacity = 0.18
-            button.layer.shadowRadius = 10
-            button.layer.shadowOffset = CGSize(width: 0, height: 5)
             button.translatesAutoresizingMaskIntoConstraints = false
+            button.heightAnchor.constraint(greaterThanOrEqualToConstant: 44).isActive = true
             button.accessibilityLabel = title
             button.accessibilityHint = accessibilityHint
         }
@@ -1005,7 +1009,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
             referenceSizeForHeaderInSection section: Int
         ) -> CGSize {
             let font = UIFontMetrics(forTextStyle: .footnote).scaledFont(
-                for: .systemFont(ofSize: 13, weight: .semibold),
+                for: PorcelainTypeface.uiFont(size: 13, weight: .semibold),
                 maximumPointSize: 18
             )
             return CGSize(
@@ -1533,7 +1537,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
             super.init(frame: frame)
             backgroundColor = UIColor(NasFinderPhotoPickerTheme.background)
             dateLabel.font = UIFontMetrics(forTextStyle: .footnote).scaledFont(
-                for: .systemFont(ofSize: 13, weight: .semibold),
+                for: PorcelainTypeface.uiFont(size: 13, weight: .semibold),
                 maximumPointSize: 18
             )
             dateLabel.adjustsFontForContentSizeCategory = true
@@ -1624,6 +1628,10 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
         override func viewDidLoad() {
             super.viewDidLoad()
             view.backgroundColor = .clear
+            // 트랙 색과 테마 버튼을 쓰므로 Mac idiom에서도 iPad 동작 스타일을 유지한다.
+            playPauseButton.preferredBehavioralStyle = .pad
+            progressSlider.preferredBehavioralStyle = .pad
+            loopButton.preferredBehavioralStyle = .pad
             configurePreviewSurface()
             configureOutsideTapToDismiss()
             if asset.mediaType == .video {
@@ -1832,6 +1840,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
 
         private func configureCloseButton() {
             let closeButton = UIButton(type: .system)
+            closeButton.preferredBehavioralStyle = .pad
             closeButton.setImage(
                 UIImage(systemName: "xmark.circle.fill"),
                 for: .normal
@@ -1985,6 +1994,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
 
         private func makePreviewActionButton() -> UIButton {
             let button = UIButton(type: .system)
+            button.preferredBehavioralStyle = .pad
             button.setTitle(onDelete == nil ? "닫기" : "제거", for: .normal)
             button.setTitleColor(
                 UIColor(NasFinderPhotoPickerTheme.onSecondary),
@@ -2469,7 +2479,8 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
             selectionOverlay.isHidden = !isSelected
             checkLabel.isHidden = false
             checkLabel.text = isSelected ? "✓" : "○"
-            checkLabel.backgroundColor = isSelected ? NasFinderPhotoPickerTheme.secondaryUIColor : UIColor.black.withAlphaComponent(0.4)
+            checkLabel.backgroundColor = isSelected ? UIColor(PorcelainMetrics.solidAction) : UIColor.black.withAlphaComponent(0.4)
+            checkLabel.textColor = isSelected ? UIColor(PorcelainMetrics.onAccent) : .white
             accessibilityCustomActions = [UIAccessibilityCustomAction(name: isSelected ? "선택 해제" : "선택에 추가",
                 target: self, selector: #selector(accessibilityToggleSelection))]
             let scale: CGFloat = isSelected ? 0.86 : 1
@@ -2478,7 +2489,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
             selectionOverlay.transform = transform
             imageView.layer.cornerRadius = isSelected ? 9 : 0
             contentView.backgroundColor = isSelected
-                ? NasFinderPhotoPickerTheme.secondaryUIColor.withAlphaComponent(0.16)
+                ? UIColor(PorcelainMetrics.selected)
                 : .clear
         }
 
@@ -2534,19 +2545,26 @@ struct NasFinderAssetPreview: UIViewControllerRepresentable {
 }
 
 @MainActor private enum NasFinderPhotoPickerTheme {
-    static var background: Color { Color(uiColor: .systemBackground) }
-    static var backgroundWithBlack: Color { Color(uiColor: .secondarySystemBackground) }
-    static var panelFill: Color { Color(uiColor: .secondarySystemBackground) }
-    static var primary: Color { SkyBreezeTheme.accent }
-    static var secondary: Color { SkyBreezeTheme.folderBlue }
-    static var text: Color { SkyBreezeTheme.primaryText }
-    static var onSecondary: Color { .white }
+    /// 6개 테마 공통: 바탕·표면은 현재 테마의 의미 색.
+    static var background: Color {
+        PorcelainMetrics.paper
+    }
+    static var backgroundWithBlack: Color {
+        PorcelainMetrics.sidebar
+    }
+    static var panelFill: Color {
+        PorcelainMetrics.card
+    }
+    static var primary: Color { PorcelainMetrics.accent }
+    static var secondary: Color { PorcelainMetrics.accent }
+    static var text: Color { PorcelainMetrics.graphite }
+    static var onSecondary: Color { PorcelainMetrics.onAccent }
     static var primaryUIColor: UIColor { UIColor(primary) }
     static var secondaryUIColor: UIColor { UIColor(secondary) }
 }
 @MainActor private enum NasFinderPhotoPickerTypography {
     static func uiFont(textStyle: UIFont.TextStyle, weight: UIFont.Weight) -> UIFont {
-        UIFontMetrics(forTextStyle: textStyle).scaledFont(for: .systemFont(ofSize: UIFont.preferredFont(forTextStyle: textStyle).pointSize, weight: weight))
+        UIFontMetrics(forTextStyle: textStyle).scaledFont(for: PorcelainTypeface.uiFont(size: UIFont.preferredFont(forTextStyle: textStyle).pointSize, weight: weight))
     }
 }
 @MainActor private enum NasFinderPhotoPickerAudio {

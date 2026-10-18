@@ -277,7 +277,7 @@ struct BrowserFavoritesEditorView: View {
                         Button(role: .destructive) {
                             store.remove(favorite)
                         } label: {
-                            Image(systemName: "trash")
+                            ThemedSymbol(systemName: "trash", size: ui(22))
                         }
                         .buttonStyle(.plain)
                     }
@@ -309,7 +309,7 @@ struct BrowserFavoritesEditorView: View {
                             Button {
                                 isExporting = true
                             } label: {
-                                Image(systemName: "square.and.arrow.up")
+                                ThemedSymbol(systemName: "square.and.arrow.up", size: ui(22))
                             }
                             .disabled(store.favorites.isEmpty)
                             .accessibilityLabel("즐겨찾기 파일로 저장")

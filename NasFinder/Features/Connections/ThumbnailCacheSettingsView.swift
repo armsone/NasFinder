@@ -2,8 +2,10 @@ import SwiftUI
 
 struct ThumbnailCacheSettingsLink: View {
     @State private var statistics = RemoteThumbnailCacheStatistics.empty
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         NavigationLink {
             ThumbnailCacheSettingsView { updatedStatistics in
                 statistics = updatedStatistics
@@ -11,7 +13,7 @@ struct ThumbnailCacheSettingsLink: View {
         } label: {
             LabeledContent {
                 Text(Self.formattedByteCount(statistics.totalBytes))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             } label: {
                 HStack(spacing: ui(7)) {
                     ThemedSymbol(systemName: "photo.stack", size: ui(32), symbolSize: ui(17))

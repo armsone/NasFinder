@@ -5,19 +5,22 @@ struct RemoteFileInfoView: View {
 
     let item: RemoteFileItem
     let connection: RemoteConnection
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         NavigationStack {
             Form {
                 Section {
                     VStack(spacing: ui(12)) {
                         Image(systemName: item.systemImage)
                             .font(.system(size: ui(46)))
-                            .foregroundStyle(item.isDirectory ? Color.blue : Color.accentColor)
+                            .foregroundStyle(item.isDirectory ? PorcelainMetrics.graphite : PorcelainMetrics.accent)
                             .accessibilityHidden(true)
 
                         Text(item.name)
-                            .font(.ui(.headline))
+                            .font(.ui(.body))
+                            .foregroundStyle(PorcelainMetrics.graphite)
                             .multilineTextAlignment(.center)
                             .textSelection(.enabled)
                     }
@@ -55,7 +58,7 @@ struct RemoteFileInfoView: View {
                     VStack(alignment: .leading, spacing: ui(6)) {
                         Text("전체 경로")
                             .font(.ui(.caption))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                         Text(item.path)
                             .font(.ui(.body, design: .monospaced))
                             .textSelection(.enabled)

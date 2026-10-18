@@ -93,7 +93,7 @@ struct ReceivedFilesView: View {
         ReceivedFilesLayoutStyle.details.rawValue
     @AppStorage("receivedFilesOverflowDark.v1") private var overflowUsesDarkBackground = false
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.system.rawValue
+        AppThemePreference.light.rawValue
     @State private var previewItem: RemoteFileItem?
     @State private var inlineMusic = InlineMusicPlayback()
     @State private var trailerSelection: VideoTrailerSelection?
@@ -171,7 +171,7 @@ struct ReceivedFilesView: View {
                     Button("파일 가져오기", systemImage: "doc.badge.plus") {
                         isImportingFromFiles = true
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PorcelainProminentButtonStyle())
 
                     Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
                         isImportingFromGooglePhotos = true
@@ -536,6 +536,7 @@ struct ReceivedFilesView: View {
                             }
                         }
                         .contextMenu { recordContextMenu(record) }
+                        .listRowBackground(Color.clear)
                 }
             }
             .listStyle(.plain)
@@ -805,7 +806,7 @@ struct ReceivedFilesView: View {
                     .foregroundStyle(.primary)
                 Text("\(childCount)개 항목")
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             }
             Spacer(minLength: 0)
             Image(systemName: "chevron.right")
@@ -825,7 +826,7 @@ struct ReceivedFilesView: View {
     }
 
     private var isEnamel: Bool {
-        AppThemePreference.resolved(selectedThemeRawValue) == .skeuomorphism
+        false // 예전 에나멜 장식은 6개 테마에 없다.
     }
 
     private var gridColumns: [GridItem] {
@@ -935,12 +936,12 @@ struct ReceivedFilesView: View {
 
                 LocalInboxSizeLabel(record: record, item: item, playback: inlineMusic)
                     .font(.ui(.caption2))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
 
                 if poster {
                     Text(record.importedAt, format: .dateTime.year().month().day().hour().minute())
                         .font(.ui(.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                         .lineLimit(1)
                 }
             }
@@ -991,7 +992,7 @@ struct ReceivedFilesView: View {
                                 .year().month().day().hour().minute())
                         }
                         .font(.ui(.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                     }
 
                     Spacer(minLength: 0)
@@ -1010,7 +1011,7 @@ struct ReceivedFilesView: View {
 
             if !isSelecting, let fileURL = try? SharedInbox.fileURL(for: record) {
                 ShareLink(item: fileURL) {
-                    Image(systemName: "square.and.arrow.up")
+                    ThemedSymbol(systemName: "square.and.arrow.up", size: ui(22))
                         .frame(width: ui(38), height: ui(38))
                 }
                 .buttonStyle(.borderless)
@@ -1041,7 +1042,7 @@ struct ReceivedFilesView: View {
             Button("NAS로 보내기", systemImage: "arrow.up.doc") {
                 beginUpload(of: selectedUploadableRecords)
             }
-            .buttonStyle(.borderedProminent)
+            .buttonStyle(PorcelainProminentButtonStyle())
             .controlSize(.large)
             .frame(maxWidth: .infinity)
             .disabled(selectedUploadableRecords.isEmpty)
@@ -1455,7 +1456,7 @@ private struct LocalInboxThumbnailView: View {
             } else {
                 Image(systemName: item.systemImage)
                     .font(.ui(.title2))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             }
 
             if item.isVideo {

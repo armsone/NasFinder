@@ -439,7 +439,10 @@ struct TrailerMusicPickerView: View {
             && components.allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
     }
 
+    private var themeRefresh = ThemeRefresh()
+
     var body: some View {
+        let _ = themeRefresh.theme
         NavigationStack {
             List {
                 Section {
@@ -533,7 +536,7 @@ struct TrailerMusicPickerView: View {
         Section {
             if audioRecords.isEmpty {
                 Text("폰하드 Music 폴더에 음악 파일이 없습니다.")
-                    .font(.ui(.footnote)).foregroundStyle(.secondary)
+                    .font(.ui(.footnote)).foregroundStyle(PorcelainMetrics.secondary)
             }
             ForEach(audioRecords) { record in
                 HStack(spacing: ui(10)) {
@@ -589,7 +592,7 @@ struct TrailerMusicPickerView: View {
             VStack(alignment: .leading, spacing: ui(2)) {
                 Text(title).lineLimit(2)
                 if let detail {
-                    Text(detail).font(.ui(.caption)).foregroundStyle(.secondary).monospacedDigit()
+                    Text(detail).font(.ui(.caption)).foregroundStyle(PorcelainMetrics.secondary).monospacedDigit()
                 }
             }
             Spacer(minLength: ui(8))

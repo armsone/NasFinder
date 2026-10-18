@@ -47,6 +47,11 @@ final class FileBrowserInteractionCoordinator: ObservableObject {
         category: "file-browser-panel"
     )
 
+    /// 홈 즐겨찾기 작업 호스트의 단계 기록. 이름·경로 없이 단계만 남긴다.
+    static func logFavoriteActionHost(_ event: String) {
+        logger.notice("favorite action host: \(event, privacy: .public)")
+    }
+
     func showBrowserPanel() {
         clearPendingAction()
         panel = .browser

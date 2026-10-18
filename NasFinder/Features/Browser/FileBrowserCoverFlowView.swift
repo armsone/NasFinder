@@ -367,8 +367,10 @@ struct FileBrowserCoverFlowChromeIcon: View {
 
     let kind: Kind
     let usesDarkBackground: Bool
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         Image(systemName: kind == .back ? "chevron.left" : "ellipsis")
             .font(
                 kind == .back

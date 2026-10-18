@@ -28,24 +28,24 @@ struct PhotoTransferReceiverSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var isDismissConfirmationPresented = false
     @State private var copiedPairingCode: String?
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
-        NavigationStack {
-            ScrollView {
-                content
-                    .padding(.all, MacUIScale.defaultPadding)
-                    .frame(maxWidth: .infinity)
-            }
-            .background(SkyBreezeBackground())
-            .navigationTitle("QR 표시해서 받기")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .topBarTrailing) {
-                    Group {
-                        Button("닫기") { requestDismiss() }
-                    }
-                    .uiBarFont()
+        let _ = themeRefresh.theme
+        ScrollView {
+            content
+                .padding(.all, MacUIScale.defaultPadding)
+                .frame(maxWidth: .infinity)
+        }
+        .background(SkyBreezeBackground())
+        .navigationTitle("QR 표시해서 받기")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Group {
+                    Button("닫기") { requestDismiss() }
                 }
+                .uiBarFont()
             }
         }
         .onAppear { session.start() }
@@ -77,8 +77,8 @@ struct PhotoTransferReceiverSheet: View {
                     .font(.ui(.subheadline))
                     .multilineTextAlignment(.center)
                 Text(verbatim: "\(payload.host):\(payload.port)")
-                    .font(.ui(.caption).monospaced())
-                    .foregroundStyle(.secondary)
+                    .font(.ui(.caption, design: .monospaced))
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .accessibilityLabel("수신 주소 \(payload.host) 포트 \(payload.port)")
                 Button {
                     UIPasteboard.general.string = payload.pairingURLString
@@ -96,7 +96,7 @@ struct PhotoTransferReceiverSheet: View {
                 .buttonStyle(.bordered)
                 .font(MacUIScale.isMac ? .ui(.subheadline) : nil)
                 .controlSize(.small)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .accessibilityHint("QR 스캔을 사용할 수 없는 기기에 붙여넣을 일회용 연결 코드를 복사합니다.")
                 ProgressView("연결 대기 중…")
                     .font(.ui(.caption))
@@ -108,7 +108,7 @@ struct PhotoTransferReceiverSheet: View {
                 .buttonStyle(.bordered)
                 .font(MacUIScale.isMac ? .ui(.subheadline) : nil)
                 .controlSize(.small)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .disabled(!session.canRegeneratePairingQRCode)
                 .accessibilityLabel("페어링 QR 코드 다시 만들기")
                 .accessibilityHint("현재 QR 코드를 무효화하고 새 연결 코드를 만듭니다.")
@@ -135,7 +135,7 @@ struct PhotoTransferReceiverSheet: View {
                     .frame(maxWidth: ui(280))
                     Text("\(session.receivedFileCount)개 받음")
                         .font(.ui(.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                 } else {
                     ProgressView("파일 기다리는 중…")
                         .font(.ui(.caption))
@@ -152,7 +152,7 @@ struct PhotoTransferReceiverSheet: View {
                     .font(.ui(.subheadline))
                     .multilineTextAlignment(.center)
                 Button("다시 시도") { session.start() }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PorcelainProminentButtonStyle())
             }
             .padding(.top, ui(48))
         }
@@ -189,7 +189,7 @@ struct PhotoTransferReceiverSheet: View {
                             .fill(.quaternary)
                         Image(systemName: result.kind.systemImage)
                             .font(.ui(.title2))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                     }
 
                     if result.kind == .video {
@@ -230,23 +230,23 @@ struct PhotoTransferSenderSheet: View {
     @State private var scanErrorMessage: String?
     @State private var manualPayloadText = ""
     @State private var isDismissConfirmationPresented = false
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
-        NavigationStack {
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(SkyBreezeBackground())
-                .navigationTitle("QR 스캔해서 보내기")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .topBarTrailing) {
-                        Group {
-                            Button("닫기") { requestDismiss() }
-                        }
-                        .uiBarFont()
+        let _ = themeRefresh.theme
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(SkyBreezeBackground())
+            .navigationTitle("QR 스캔해서 보내기")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Group {
+                        Button("닫기") { requestDismiss() }
                     }
+                    .uiBarFont()
                 }
-        }
+            }
         .onDisappear { session.cancel() }
         .interactiveDismissDisabled(requiresDismissConfirmation)
         .confirmationDialog(
@@ -275,7 +275,7 @@ struct PhotoTransferSenderSheet: View {
                 .buttonStyle(.bordered)
                 .font(MacUIScale.isMac ? .ui(.subheadline) : nil)
                 .controlSize(.small)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .accessibilityHint("현재 연결 시도를 취소하고 QR 스캔 화면으로 돌아갑니다.")
             }
         case .connected(let payload, let peerPlatform):
@@ -287,8 +287,8 @@ struct PhotoTransferSenderSheet: View {
                 Text("\(peerPlatform.title) 기기와 연결되었습니다.")
                     .font(.ui(.headline))
                 Text(verbatim: "\(payload.host):\(payload.port)")
-                    .font(.ui(.caption).monospaced())
-                    .foregroundStyle(.secondary)
+                    .font(.ui(.caption, design: .monospaced))
+                    .foregroundStyle(PorcelainMetrics.secondary)
                 if session.transferFinished {
                     Text("\(session.sentItemCount)개 보내기 완료")
                         .font(.ui(.subheadline).weight(.semibold))
@@ -303,12 +303,12 @@ struct PhotoTransferSenderSheet: View {
                     Button("4 보내기 · \(selectedItems.count)개") {
                         session.send(items: selectedItems, kinds: mediaKinds)
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PorcelainProminentButtonStyle())
                     .disabled(selectedItems.isEmpty)
                     if selectedItems.isEmpty {
                         Text("먼저 이전 화면에서 사진이나 영상을 선택하세요.")
                             .font(.ui(.caption))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                     }
                 }
             }
@@ -325,7 +325,7 @@ struct PhotoTransferSenderSheet: View {
                     scanErrorMessage = nil
                     session.cancel()
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PorcelainProminentButtonStyle())
             }
             .padding(.all, MacUIScale.defaultPadding)
         }
@@ -341,7 +341,7 @@ struct PhotoTransferSenderSheet: View {
                     .accessibilityLabel("QR 코드 스캐너")
                 Text("받는 기기 화면의 QR 코드를 비추세요.")
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                 if let scanErrorMessage {
                     Text(scanErrorMessage)
                         .font(.ui(.caption))
@@ -362,13 +362,13 @@ struct PhotoTransferSenderSheet: View {
                         .textInputAutocapitalization(.never)
                         .autocorrectionDisabled()
                         .keyboardType(.URL)
-                        .font(.ui(.caption).monospaced())
+                        .font(.ui(.caption, design: .monospaced))
                     Button("연결") {
                         handleScannedCode(
                             manualPayloadText.trimmingCharacters(in: .whitespacesAndNewlines)
                         )
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(PorcelainProminentButtonStyle())
                     .disabled(manualPayloadText.isEmpty)
                     if let scanErrorMessage {
                         Text(scanErrorMessage)

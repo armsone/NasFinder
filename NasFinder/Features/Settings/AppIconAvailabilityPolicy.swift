@@ -50,15 +50,8 @@ enum AppIconAvailabilityPolicy {
         let remembersCurrentIcon: Bool
     }
 
-    /// Mirrors the theme → icon coupling used on iPhone/iPad:
-    /// - entering BK Style installs the enamel icon and remembers the
-    ///   previous icon,
-    /// - leaving BK Style restores the remembered icon,
-    /// - entering Vibe Coder installs the Vibe Coder icon,
-    /// - every other change leaves the icon alone.
-    ///
-    /// On the Mac this always returns `nil` so the theme still applies
-    /// immediately while the alternate-icon API is never called.
+    /// 테마와 런처 아이콘은 서로 독립이다. 6개 테마 중 무엇을 골라도 앱 아이콘을
+    /// 바꾸거나 되돌리지 않는다(항상 `nil`). 아이콘은 앱 아이콘 설정에서만 바꾼다.
     static func themeSynchronization(
         from oldTheme: AppThemePreference,
         to newTheme: AppThemePreference,
@@ -66,23 +59,6 @@ enum AppIconAvailabilityPolicy {
         iconBeforeEnamel: AppIconChoice?,
         isIOSAppOnMac: Bool
     ) -> ThemeSynchronization? {
-        guard !isIOSAppOnMac else { return nil }
-
-        if newTheme == .skeuomorphism {
-            return ThemeSynchronization(
-                icon: .enamelNAS,
-                remembersCurrentIcon: currentIcon != .enamelNAS
-            )
-        }
-        if oldTheme == .skeuomorphism {
-            return ThemeSynchronization(
-                icon: iconBeforeEnamel ?? .blueNAS,
-                remembersCurrentIcon: false
-            )
-        }
-        if newTheme == .digitalRain {
-            return ThemeSynchronization(icon: .vibeCoder, remembersCurrentIcon: false)
-        }
         return nil
     }
 }

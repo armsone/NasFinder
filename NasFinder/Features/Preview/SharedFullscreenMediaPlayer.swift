@@ -80,8 +80,8 @@ struct SharedVideoProgressBar: View {
             VStack(spacing: ui(-4)) {
                 if let sourceLabel {
                     Text(sourceLabel)
-                        .font(.system(size: ui(8), weight: .medium))
-                        .foregroundStyle(.white.opacity(0.48))
+                        .font(PorcelainTypeface.font(size: ui(11), weight: .regular))
+                        .foregroundStyle(.white.opacity(0.72))
                         .lineLimit(1)
                 }
 
@@ -216,7 +216,7 @@ struct SharedPlayerCircleLabel: View {
     var isActive = false
 
     var body: some View {
-        Image(systemName: systemImage)
+        InterfaceIcon(systemName: systemImage, size: ui(22))
             .font(.system(size: ui(16), weight: .bold))
             .foregroundStyle(.white.opacity(0.9))
             .frame(width: ui(44), height: ui(44))

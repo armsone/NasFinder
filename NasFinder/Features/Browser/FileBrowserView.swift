@@ -156,7 +156,7 @@ private struct FileBrowserPageTitle: View {
                 )
             }
             .uiBarFont(.caption2)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(PorcelainMetrics.secondary)
             .monospacedDigit()
         }
         .frame(maxWidth: ui(230), minHeight: uiBar(44))
@@ -242,6 +242,8 @@ struct FileBrowserView: View {
     @AppStorage("fileBrowserNamePriority") private var storedNamePriority = FileBrowserNamePriority.numbersFirst.rawValue
     @AppStorage("fileBrowserFoldersFirst") private var foldersFirst = true
     @AppStorage("browser.coverFlowBackground.v1") private var coverFlowUsesDarkBackground = false
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
+        AppThemePreference.light.rawValue
     @StateObject private var viewModel: FileBrowserViewModel
     @StateObject private var trafficTracker: PageNetworkTrafficTracker
     @StateObject private var shareCoordinator = RemoteFileShareCoordinator()
@@ -289,7 +291,9 @@ struct FileBrowserView: View {
         operationCoordinator: FileOperationCoordinator = FileOperationCoordinator(),
         trafficTracker: PageNetworkTrafficTracker? = nil,
         returnToDashboardAction: ReturnToDashboardAction? = nil,
-        onPickMedia: (([RemoteFileItem], any RemoteFileService) -> Void)? = nil
+        onPickMedia: (([RemoteFileItem], any RemoteFileService) -> Void)? = nil,
+        favoriteActionHost: FavoriteActionHost? = nil,
+        initialSelection: RemoteFileItem? = nil
     ) {
         let tracker = trafficTracker ?? PageNetworkTrafficTracker()
         let measuredService: any RemoteFileService
@@ -311,12 +315,54 @@ struct FileBrowserView: View {
         self.title = title
         self.explicitReturnToDashboardAction = returnToDashboardAction
         self.onPickMedia = onPickMedia
+        self.favoriteActionHost = favoriteActionHost
+        self.initialSelection = initialSelection
         _isSelecting = State(initialValue: onPickMedia != nil)
     }
 
     /// 영상만들기 선택기에서만 지정한다. 지정하면 사진·영상 파일만 골라 이 콜백으로 돌려주고
     /// 폴더는 계속 열 수 있으며, 기존 브라우저 동작은 바뀌지 않는다.
     private let onPickMedia: (([RemoteFileItem], any RemoteFileService) -> Void)?
+    /// 홈 즐겨찾기를 길게 눌렀다 뗄 때만 지정한다. 지정하면 브라우저 화면은 그리지 않고,
+    /// 상위 폴더를 뒤에서만 읽어 현재 항목을 확인한 뒤 홈 위 `anchor` 자리에 기존 항목 작업
+    /// 패널을 띄운다. 이 뷰가 서비스·조정자·후속 확인창·선택기·작업을 끝까지 가지고 있다가
+    /// 모두 끝나거나 취소되면 `finished`를 부른다.
+    struct FavoriteActionHost {
+        /// 즐겨찾기 해제에만 쓰는 원래 즐겨찾기 ID.
+        let favoriteID: FavoriteItem.ID
+        /// 저장된 즐겨찾기 정보. 현재 항목을 찾는 데만 쓰고 작업 대상으로는 쓰지 않는다.
+        let snapshot: RemoteFileItem
+        /// 홈 좌표에서 누른 타일 자리.
+        let anchor: CGRect
+        let unfavorite: @MainActor () -> Void
+        let resolutionFailed: @MainActor (String) -> Void
+        let finished: @MainActor () -> Void
+    }
+    private let favoriteActionHost: FavoriteActionHost?
+    private var isFavoriteActionHost: Bool { favoriteActionHost != nil }
+    // 목록에서 ID·연결·종류가 확인된 현재 항목. 모든 파일 작업은 이 항목만 대상으로 한다.
+    @State private var resolvedFavoriteActionItem: RemoteFileItem?
+    /// 패널 버튼을 눌러 패널이 닫히는 중이고 그 후속 동작이 아직 실행되지 않았다.
+    @State private var favoriteActionPanelActionPending = false
+    /// 폴더 내용 확인처럼 화면 상태가 아직 바뀌지 않은 비동기 준비가 진행 중이다.
+    @State private var favoriteActionPreparationCount = 0
+    /// 홈 패널에서 선택·복사·이동을 누른 뒤 여는 기존 상위 폴더 화면.
+    /// 이 호스트의 연결·서비스·작업 조정자(클립보드)를 그대로 넘긴다.
+    struct FavoriteActionFollowup: Identifiable {
+        enum Kind {
+            /// 확인된 항목이 선택된 상태로 기존 선택 화면을 연다.
+            case selection
+            /// 항목을 클립보드에 넣고, 기존 폴더 화면에서 대상 폴더로 가서 붙여넣는다.
+            case destination
+        }
+        let id = UUID()
+        let kind: Kind
+        let item: RemoteFileItem
+    }
+    @State private var favoriteActionFollowup: FavoriteActionFollowup?
+    /// 홈 패널의 "선택"으로 연 폴더 화면에서만 지정한다. 첫 로드 뒤 ID·연결·종류가 같은 항목을 한 번 선택한다.
+    private let initialSelection: RemoteFileItem?
+    @State private var didApplyInitialSelection = false
     /// 영상 만들기 출처 페이지에 임베드될 때만 지정한다. 폴더 이동·뒤로를 NavigationStack push/dismiss 대신
     /// 출처 페이지가 가진 경로로 처리해서, 뒤로가 상위 영상 만들기 화면을 닫지 않는다.
     private var selectionNavigation: MediaSelectionNavigation?
@@ -350,60 +396,75 @@ struct FileBrowserView: View {
             .frame(maxWidth: .infinity)
     }
 
-    var body: some View {
-        AnyView(
-            VStack(spacing: 0) {
-                if let selectionNavigation, onPickMedia != nil {
-                    // 임베드된 출처 페이지는 내비게이션 바가 없어 뒤로·제목·보기 방식 메뉴를 여기에 둔다.
-                    selectionHeader(selectionNavigation)
+    /// 브라우저 화면 자체. 홈 즐겨찾기 작업 호스트일 때는 화면 없이 홈 위 앵커만 둔다.
+    @ViewBuilder
+    private var browserRoot: some View {
+        if let favoriteActionHost {
+            favoriteActionAnchor(favoriteActionHost)
+        } else {
+            AnyView(
+                VStack(spacing: 0) {
+                    if let selectionNavigation, onPickMedia != nil {
+                        // 임베드된 출처 페이지는 내비게이션 바가 없어 뒤로·제목·보기 방식 메뉴를 여기에 둔다.
+                        selectionHeader(selectionNavigation)
+                    }
+                    if layoutStyle != .coverFlow {
+                        currentPathBar
+                        thumbnailProgressLine
+                    }
+                    browserContent
                 }
-                if layoutStyle != .coverFlow {
-                    currentPathBar
-                    thumbnailProgressLine
-                }
-                browserContent
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
+                .toolbarColorScheme(
+                    AppThemePreference.resolved(selectedThemeRawValue).isDark ? .dark : .light,
+                    for: .navigationBar
+                )
+                .tint(SkyBreezeTheme.accent)
+                .modifier(
+                    FileBrowserNavigationAppearanceModifier(
+                        isCoverFlow: layoutStyle == .coverFlow,
+                        usesDarkBackground: coverFlowUsesDarkBackground
+                    )
+                )
+                .navigationTitle("")
+                .navigationBarTitleDisplayMode(.inline)
+                .modifier(
+                    FileBrowserCoverFlowChromeModifier(
+                        isActive: layoutStyle == .coverFlow
+                    )
+                )
+                .modifier(
+                    FileBrowserSearchModifier(
+                        isEnabled: !isEmbeddedSourceRoot,
+                        text: $searchText,
+                        isPresented: $isSearchPresented
+                    )
+                )
+                .toolbar { browserToolbar }
+                .overlay { coverFlowNavigationOverlay }
+            )
+            .navigationBarBackButtonHidden(true)
+            .navigationDestination(item: $navigatedFolder) { item in
+                FileBrowserView(
+                    connection: viewModel.connection,
+                    path: item.path,
+                    service: viewModel.service,
+                    title: item.name,
+                    operationCoordinator: operationCoordinator,
+                    trafficTracker: trafficTracker,
+                    returnToDashboardAction: dashboardAction,
+                    onPickMedia: onPickMedia
+                )
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
-            .modifier(
-                FileBrowserNavigationAppearanceModifier(
-                    isCoverFlow: layoutStyle == .coverFlow,
-                    usesDarkBackground: coverFlowUsesDarkBackground
-                )
-            )
-            .navigationTitle("")
-            .navigationBarTitleDisplayMode(.inline)
-            .modifier(
-                FileBrowserCoverFlowChromeModifier(
-                    isActive: layoutStyle == .coverFlow
-                )
-            )
-            .modifier(
-                FileBrowserSearchModifier(
-                    isEnabled: !isEmbeddedSourceRoot,
-                    text: $searchText,
-                    isPresented: $isSearchPresented
-                )
-            )
-            .toolbar { browserToolbar }
-            .overlay { coverFlowNavigationOverlay }
-        )
-        .navigationBarBackButtonHidden(true)
-        .navigationDestination(item: $navigatedFolder) { item in
-            FileBrowserView(
-                connection: viewModel.connection,
-                path: item.path,
-                service: viewModel.service,
-                title: item.name,
-                operationCoordinator: operationCoordinator,
-                trafficTracker: trafficTracker,
-                returnToDashboardAction: dashboardAction,
-                onPickMedia: onPickMedia
-            )
+            .refreshable {
+                await refreshCurrentPage()
+            }
         }
-        .refreshable {
-            await refreshCurrentPage()
-        }
+    }
+
+    var body: some View {
+        browserRoot
         .fileImporter(
             isPresented: $isImportingFiles,
             allowedContentTypes: [.data, .content],
@@ -442,6 +503,8 @@ struct FileBrowserView: View {
             )
         }
         .onAppear {
+            // 홈 작업 호스트는 보기 방식·최근 위치·썸네일 진행 표시 같은 브라우저 상태를 건드리지 않는다.
+            guard !isFavoriteActionHost else { return }
             if onPickMedia == nil, storedLayoutStyle == LayoutStyle.coverFlow.rawValue {
                 storedLayoutStyle = LayoutStyle.largeThumbnails.rawValue
                 coverFlowEnteredFromPoster = false
@@ -458,6 +521,7 @@ struct FileBrowserView: View {
             }
         }
         .onChange(of: layoutStyle, initial: true) { _, style in
+            guard !isFavoriteActionHost else { return }
             updateCoverFlowOrientation(for: style)
         }
         .background {
@@ -470,8 +534,25 @@ struct FileBrowserView: View {
             }
         }
         .task {
-            await RemoteThumbnailDiskCache.shared.clearTransientFailures()
-            await viewModel.load()
+            guard let favoriteActionHost else {
+                await RemoteThumbnailDiskCache.shared.clearTransientFailures()
+                await viewModel.load()
+                applyInitialSelectionIfNeeded()
+                return
+            }
+            await resolveFavoriteActionItem(favoriteActionHost)
+        }
+        .onChange(of: favoriteActionHostIsSettled) { _, isSettled in
+            guard isSettled, resolvedFavoriteActionItem != nil else { return }
+            favoriteActionHost?.finished()
+        }
+        .sheet(item: $favoriteActionFollowup, onDismiss: {
+            // 붙여넣기 전에 닫으면 남은 "복사 준비" 안내만 지워 호스트가 끝나게 한다.
+            // 작업 중이면 그대로 두고, 작업이 끝난 뒤 기존 상태 안내로 마무리한다.
+            guard !operationCoordinator.isBusy else { return }
+            operationCoordinator.dismissStatus()
+        }) { followup in
+            favoriteActionFollowupBrowser(followup)
         }
         .overlay(alignment: .bottom) {
             browserStatusOverlay
@@ -618,6 +699,9 @@ struct FileBrowserView: View {
         }
         .onDisappear {
             inlineMusic.stop()
+            // 홈 작업 호스트는 예고편 전체 화면 같은 후속 화면이 열릴 때도 사라진 것으로 불린다.
+            // 그 후속 작업을 끊지 않도록 취소하지 않고, 호스트는 모두 끝난 뒤에만 정리된다.
+            guard !isFavoriteActionHost else { return }
             shareCoordinator.cancelPreparation()
             cancelDownload()
             thumbnailPreheater.cancel()
@@ -708,7 +792,7 @@ struct FileBrowserView: View {
                 }
             }
         } label: {
-            Image(systemName: layoutStyle.systemImage)
+            InterfaceIcon(systemName: layoutStyle.systemImage, size: ui(18))
                 .font(.system(size: ui(15), weight: .bold))
                 .foregroundStyle(SkyBreezeTheme.accent)
                 .frame(width: ui(32), height: ui(32))
@@ -721,7 +805,7 @@ struct FileBrowserView: View {
         HStack(spacing: ui(6)) {
             if let goBack = navigation.goBack {
                 Button(action: goBack) {
-                    Image(systemName: "chevron.left")
+                    InterfaceIcon(systemName: "chevron.left", size: ui(20))
                         .font(.system(size: ui(17), weight: .semibold))
                         .foregroundStyle(SkyBreezeTheme.accent)
                         .frame(width: ui(32), height: ui(32))
@@ -730,7 +814,7 @@ struct FileBrowserView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("이전 폴더")
+                .accessibilityLabel("뒤로")
             }
             Text(title)
                 .font(.ui(.headline))
@@ -748,7 +832,7 @@ struct FileBrowserView: View {
     }
 
     private var browserBackButton: some View {
-        Image(systemName: "chevron.left")
+        InterfaceIcon(systemName: "chevron.left", size: ui(20))
             .font(.system(size: ui(17), weight: .semibold))
             .foregroundStyle(SkyBreezeTheme.accent)
             .frame(width: ui(32), height: ui(32))
@@ -761,7 +845,7 @@ struct FileBrowserView: View {
                 )
                 .accessibilityHidden(true)
             }
-            .accessibilityLabel("이전 폴더")
+            .accessibilityLabel("뒤로")
             .accessibilityHint("길게 누르면 NasFinder 첫 화면으로 바로 이동합니다.")
             .accessibilityAddTraits(.isButton)
             .accessibilityAction {
@@ -847,7 +931,7 @@ struct FileBrowserView: View {
             )
             .accessibilityHidden(true)
         }
-        .accessibilityLabel("이전 폴더")
+        .accessibilityLabel("뒤로")
         .accessibilityHint("길게 누르면 NasFinder 첫 화면으로 바로 이동합니다.")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction {
@@ -934,7 +1018,7 @@ struct FileBrowserView: View {
                 Button("다시 시도") {
                     Task { await viewModel.load() }
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PorcelainProminentButtonStyle())
             }
         } else if viewModel.items.isEmpty {
             if showsPhoneHardServerPanel {
@@ -1018,7 +1102,7 @@ struct FileBrowserView: View {
     }
 
     private func reconcileAutomaticCoverFlow() {
-        guard onPickMedia == nil else { return }
+        guard onPickMedia == nil, !isFavoriteActionHost else { return }
         guard Date.now >= suppressAutomaticCoverFlowUntil else { return }
         let shouldPresent = FileBrowserOverflowPresentationPolicy
             .shouldPresentPosterAsOverflow(
@@ -1044,7 +1128,9 @@ struct FileBrowserView: View {
         generationMode: RemoteVideoThumbnailGenerationMode = .bounded
     ) {
         if item.isDirectory {
+            favoriteActionPreparationCount += 1
             Task {
+                defer { favoriteActionPreparationCount -= 1 }
                 do {
                     let children = try await viewModel.service.list(directory: item.path)
                         .filter { RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name) }
@@ -1084,7 +1170,9 @@ struct FileBrowserView: View {
         _ folder: RemoteFileItem,
         mode: VideoTrailerMode = .trailer
     ) {
+        favoriteActionPreparationCount += 1
         Task {
+            defer { favoriteActionPreparationCount -= 1 }
             do {
                 let children = try await viewModel.service.list(directory: folder.path)
                     .filter { RemoteFileVisibilityPolicy.shouldDisplay(filename: $0.name) }
@@ -1112,7 +1200,9 @@ struct FileBrowserView: View {
     /// built, without aborting the rest of the batch.
     private func collectFolderTrailerCandidates(_ folder: RemoteFileItem, recursive: Bool) {
         let mode = folderTrailerScopeMode
+        favoriteActionPreparationCount += 1
         Task {
+            defer { favoriteActionPreparationCount -= 1 }
             do {
                 var candidates: [RemoteFileItem] = []
                 var visitedPaths: Set<String> = []
@@ -1328,7 +1418,7 @@ struct FileBrowserView: View {
         // An ideal size instead of a fixed one: a window smaller than the panel shrinks it and
         // the content scrolls, rather than the panel being cut off at the window edge.
         .frame(idealWidth: ui(340), maxWidth: ui(340), idealHeight: ui(460), maxHeight: ui(460))
-        .background(Color(uiColor: .systemBackground))
+        .background(PorcelainMetrics.paper)
         .presentationCompactAdaptation(.popover)
         .buttonStyle(.plain)
         .accessibilityLabel("파일 작업과 보기 설정")
@@ -1448,12 +1538,15 @@ struct FileBrowserView: View {
 
             Text(itemCountLabel)
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
         }
         .font(.ui(.caption))
         .padding(.horizontal, ui(12))
         .padding(.vertical, ui(8))
-        .background(Color(uiColor: .secondarySystemBackground))
+        .background(PorcelainMetrics.sidebar)
+        .overlay(alignment: .bottom) {
+            PorcelainMetrics.line.frame(height: 0.5)
+        }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
             "\(viewModel.connection.name), 현재 경로 \(viewModel.path), \(itemCountLabel)"
@@ -1518,7 +1611,7 @@ struct FileBrowserView: View {
         VStack(spacing: 0) {
             GeometryReader { geometry in
                 ZStack(alignment: .leading) {
-                    Color(uiColor: .separator).opacity(0.38)
+                    PorcelainMetrics.line.opacity(0.5)
 
                     if thumbnailActivity.isActive {
                         SkyBreezeTheme.accent
@@ -1538,7 +1631,7 @@ struct FileBrowserView: View {
             if let limitMessage = thumbnailActivity.limitMessage {
                 Text(limitMessage)
                     .font(.ui(.caption2))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, ui(12))
                     .padding(.vertical, ui(4))
@@ -1586,7 +1679,14 @@ struct FileBrowserView: View {
         }
     }
 
+    /// 예전 테마별 열 배치는 쓰지 않는다(6개 테마 공통).
+    private var usesUnifiedColumns: Bool { true }
+
     private func columns(for style: LayoutStyle) -> [GridItem] {
+        // 6개 테마 모두 같은 승인안 열 배치를 쓴다.
+        if usesUnifiedColumns {
+            return porcelainColumns(for: style)
+        }
         let minimum: CGFloat
         let maximum: CGFloat
         let spacing: CGFloat
@@ -1619,6 +1719,25 @@ struct FileBrowserView: View {
         ]
     }
 
+    /// Porcelain: 창 폭에 맞춰 늘고 줄어드는 썸네일 우선 격자(Mac에서도 1.5배 확대 없음).
+    private func porcelainColumns(for style: LayoutStyle) -> [GridItem] {
+        let accessibility = dynamicTypeSize.isAccessibilitySize
+        let range: ClosedRange<CGFloat>
+        let spacing: CGFloat
+        switch style {
+        case .smallThumbnails:
+            range = (accessibility ? 120 : 96)...(accessibility ? 170 : 132)
+            spacing = 10
+        case .largeThumbnails:
+            range = (accessibility ? 250 : 170)...300
+            spacing = 14
+        case .list, .coverFlow:
+            range = 320...560
+            spacing = 12
+        }
+        return [GridItem(.adaptive(minimum: range.lowerBound, maximum: range.upperBound), spacing: spacing, alignment: .top)]
+    }
+
     private var list: some View {
         List {
             if showsPhoneHardServerPanel {
@@ -1628,9 +1747,13 @@ struct FileBrowserView: View {
             }
             ForEach(displayedItems) { item in
                 listItem(item)
+                    .listRowBackground(PorcelainMetrics.paper)
+                    .listRowSeparatorTint(PorcelainMetrics.line)
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
     }
 
     private func gridItem(_ item: RemoteFileItem, style: LayoutStyle) -> some View {
@@ -1748,7 +1871,13 @@ struct FileBrowserView: View {
 
             HStack(spacing: ui(4)) {
                 CompactPanelButton(title: "선택", systemImage: "checkmark.circle") {
-                    performContextPanelAction { beginQuickSelection(with: item) }
+                    performContextPanelAction {
+                        if isFavoriteActionHost {
+                            beginFavoriteActionFollowup(.selection, with: item)
+                        } else {
+                            beginQuickSelection(with: item)
+                        }
+                    }
                 }
                 .disabled(
                     selectionInteractionsAreBlocked
@@ -1759,6 +1888,9 @@ struct FileBrowserView: View {
                 CompactPanelButton(title: "복사", systemImage: "doc.on.doc") {
                     performContextPanelAction {
                         operationCoordinator.placeOnClipboard([item], mode: .copy)
+                        if isFavoriteActionHost {
+                            beginFavoriteActionFollowup(.destination, with: item)
+                        }
                     }
                 }
                 .disabled(
@@ -1769,6 +1901,9 @@ struct FileBrowserView: View {
                 CompactPanelButton(title: "이동", systemImage: "folder") {
                     performContextPanelAction {
                         operationCoordinator.placeOnClipboard([item], mode: .move)
+                        if isFavoriteActionHost {
+                            beginFavoriteActionFollowup(.destination, with: item)
+                        }
                     }
                 }
                 .disabled(
@@ -1805,12 +1940,21 @@ struct FileBrowserView: View {
             }
 
             HStack(spacing: ui(4)) {
-                CompactPanelButton(
-                    title: favoriteStore.contains(item) ? "별 해제" : "즐겨찾기",
-                    systemImage: favoriteStore.contains(item) ? "star.slash" : "star"
-                ) {
-                    performContextPanelAction {
-                        favoriteStore.toggle(item)
+                if let favoriteActionHost {
+                    // 홈에서 누른 즐겨찾기 자체를 원래 ID로 해제한다.
+                    CompactPanelButton(title: "즐겨찾기 해제", systemImage: "star.slash") {
+                        performContextPanelAction {
+                            favoriteActionHost.unfavorite()
+                        }
+                    }
+                } else {
+                    CompactPanelButton(
+                        title: favoriteStore.contains(item) ? "별 해제" : "즐겨찾기",
+                        systemImage: favoriteStore.contains(item) ? "star.slash" : "star"
+                    ) {
+                        performContextPanelAction {
+                            favoriteStore.toggle(item)
+                        }
                     }
                 }
 
@@ -1887,7 +2031,7 @@ struct FileBrowserView: View {
                     ForEach(unavailableNotes, id: \.self) { note in
                         Text(note)
                             .font(.ui(.caption2))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -1976,7 +2120,7 @@ struct FileBrowserView: View {
         }
         .padding(ui(10))
         .background(
-            Color(uiColor: .secondarySystemBackground),
+            PorcelainMetrics.card,
             in: RoundedRectangle(cornerRadius: ui(12), style: .continuous)
         )
         .accessibilityElement(children: .contain)
@@ -1985,7 +2129,135 @@ struct FileBrowserView: View {
     private func performContextPanelAction(
         _ action: @escaping @MainActor () -> Void
     ) {
-        interactionCoordinator.dismissPanel(then: action)
+        guard isFavoriteActionHost else {
+            interactionCoordinator.dismissPanel(then: action)
+            return
+        }
+        // 패널이 닫힌 뒤 후속 동작이 실행될 때까지 홈 작업 호스트가 끝나지 않게 한다.
+        favoriteActionPanelActionPending = true
+        interactionCoordinator.dismissPanel {
+            action()
+            favoriteActionPanelActionPending = false
+        }
+    }
+
+    /// 홈 작업 호스트의 패널·후속 확인창·선택기·공유·다운로드·작업·오류가 모두 끝났다.
+    private var favoriteActionHostIsSettled: Bool {
+        interactionCoordinator.panel == nil
+            && !favoriteActionPanelActionPending
+            && favoriteActionPreparationCount == 0
+            && favoriteActionFollowup == nil
+            && folderTrailerScopeChoice == nil
+            && !hasBlockingPresentation
+            && !hasPendingError
+            && !shareCoordinator.isPreparing
+            && !isStagingFolderShare
+            && !downloadCoordinator.isRunning
+            && !operationCoordinator.isBusy
+            && operationCoordinator.statusMessage == nil
+            && !thumbnailPreheater.isRunning
+    }
+
+    /// 상위 폴더를 뒤에서만 읽어, 저장된 즐겨찾기와 ID·연결·종류가 모두 같은 현재 항목을
+    /// 찾았을 때만 패널을 띄운다. 이동·삭제·로드 실패면 옛 경로로 대체하지 않고 호스트에 알린다.
+    private func resolveFavoriteActionItem(_ host: FavoriteActionHost) async {
+        resolvedFavoriteActionItem = nil
+        FileBrowserInteractionCoordinator.logFavoriteActionHost("resolve start")
+        await viewModel.load()
+        let snapshot = host.snapshot
+        if let current = viewModel.items.first(where: {
+            $0.id == snapshot.id
+                && $0.connectionID == viewModel.connection.id
+                && $0.connectionID == snapshot.connectionID
+                && $0.kind == snapshot.kind
+        }) {
+            FileBrowserInteractionCoordinator.logFavoriteActionHost(
+                "resolved, cancelled \(Task.isCancelled ? 1 : 0)"
+            )
+            resolvedFavoriteActionItem = current
+            interactionCoordinator.showItemPanel(current)
+        } else if let error = viewModel.errorMessage {
+            FileBrowserInteractionCoordinator.logFavoriteActionHost("resolve failed: load error")
+            host.resolutionFailed("상위 폴더를 읽지 못했습니다: \(error)")
+        } else {
+            FileBrowserInteractionCoordinator.logFavoriteActionHost("resolve failed: not found")
+            host.resolutionFailed("이 항목을 상위 폴더에서 찾을 수 없습니다. 이동되었거나 삭제되었을 수 있습니다.")
+        }
+    }
+
+    /// 홈 좌표의 누른 타일 자리. 확인 전에는 작은 진행 표시만, 확인 후에는 기존 항목 패널을 띄운다.
+    private func favoriteActionAnchor(_ host: FavoriteActionHost) -> some View {
+        Group {
+            if let item = resolvedFavoriteActionItem {
+                Color.clear
+                    .modifier(panelPopover(for: .item(item)) {
+                        contextActionPopover(for: item)
+                    })
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel("즐겨찾기 항목 확인 중")
+                    .padding(ui(6))
+                    .background(.regularMaterial, in: Circle())
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .allowsHitTesting(false)
+            }
+        }
+        .frame(width: max(host.anchor.width, 1), height: max(host.anchor.height, 1))
+        .position(x: host.anchor.midX, y: host.anchor.midY)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .accessibilityHidden(resolvedFavoriteActionItem != nil)
+    }
+
+    /// 홈 패널의 선택·복사·이동 뒤에 이 호스트의 확인된 항목으로 기존 폴더 화면을 연다.
+    private func beginFavoriteActionFollowup(
+        _ kind: FavoriteActionFollowup.Kind,
+        with item: RemoteFileItem
+    ) {
+        guard isFavoriteActionHost,
+              item.id == resolvedFavoriteActionItem?.id,
+              item.connectionID == viewModel.connection.id else { return }
+        if kind == .selection {
+            guard !selectionInteractionsAreBlocked,
+                  !hasBlockingPresentation,
+                  !hasPendingError else { return }
+        }
+        favoriteActionFollowup = FavoriteActionFollowup(kind: kind, item: item)
+    }
+
+    /// 홈 작업 호스트가 가진 연결·서비스·작업 조정자로 여는 기존 상위 폴더 브라우저.
+    /// 선택 화면, 폴더 이동, 붙여넣기, 확인창은 모두 기존 브라우저 그대로 쓴다.
+    private func favoriteActionFollowupBrowser(_ followup: FavoriteActionFollowup) -> some View {
+        let close = $favoriteActionFollowup
+        let folderName = (viewModel.path as NSString).lastPathComponent
+        return NavigationStack {
+            FileBrowserView(
+                connection: viewModel.connection,
+                path: viewModel.path,
+                service: viewModel.service,
+                title: folderName.isEmpty || folderName == "/" ? viewModel.connection.name : folderName,
+                operationCoordinator: operationCoordinator,
+                trafficTracker: trafficTracker,
+                returnToDashboardAction: { close.wrappedValue = nil },
+                initialSelection: followup.kind == .selection ? followup.item : nil
+            )
+        }
+        .environmentObject(connectionStore)
+        .environmentObject(favoriteStore)
+        .environmentObject(inboxStore)
+    }
+
+    /// 홈 패널의 "선택"으로 연 화면에서, 첫 로드 뒤 ID·연결·종류가 같은 현재 항목만 한 번 선택한다.
+    private func applyInitialSelectionIfNeeded() {
+        guard let initialSelection, !didApplyInitialSelection else { return }
+        didApplyInitialSelection = true
+        guard let current = viewModel.items.first(where: {
+            $0.id == initialSelection.id
+                && $0.connectionID == viewModel.connection.id
+                && $0.connectionID == initialSelection.connectionID
+                && $0.kind == initialSelection.kind
+        }) else { return }
+        beginQuickSelection(with: current)
     }
 
     private var selectedItems: [RemoteFileItem] {
@@ -2029,10 +2301,10 @@ struct FileBrowserView: View {
                 } label: {
                     Text("영상 만들기에 담기").frame(maxWidth: .infinity, minHeight: ui(32))
                 }
-                .buttonStyle(.borderedProminent)
+                .buttonStyle(PorcelainProminentButtonStyle())
                 .disabled(selectedItems.allSatisfy { $0.isDirectory || !$0.isTrailerEligible })
                 Text("폴더를 열어 사진·영상을 고르세요. 선택한 항목만 가져오며 원본은 바뀌지 않습니다.")
-                    .font(.ui(.caption2)).foregroundStyle(.secondary)
+                    .font(.ui(.caption2)).foregroundStyle(PorcelainMetrics.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
             ScrollView(.horizontal, showsIndicators: false) {
@@ -2103,7 +2375,7 @@ struct FileBrowserView: View {
             if onPickMedia == nil, let note = selectionUnavailableNote {
                 Text(note)
                     .font(.ui(.caption2))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -2111,8 +2383,8 @@ struct FileBrowserView: View {
         .padding(.horizontal, ui(16))
         .padding(.top, ui(10))
         .padding(.bottom, ui(8))
-        .background(.bar)
-        .overlay(alignment: .top) { Divider() }
+        .background(PorcelainMetrics.paper)
+        .overlay(alignment: .top) { PorcelainMetrics.line.frame(height: 0.5) }
     }
 
     /// Why an action in the selection bar is dimmed for what is selected now.
@@ -2284,6 +2556,7 @@ struct FileBrowserView: View {
             || isImportingFromGooglePhotos
             || isChoosingNASUploadDestination
             || downloadDestinationStep != nil
+            || favoriteActionFollowup != nil
     }
 
     private var hasPendingError: Bool {
@@ -2436,8 +2709,10 @@ private struct RemoteFileGridCell: View {
     let service: any RemoteFileService
     let isLarge: Bool
     let thumbnailReloadVersion: Int
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         VStack(alignment: .leading, spacing: ui(isLarge ? 9 : 6)) {
             RemoteThumbnailView(
                 item: item,
@@ -2458,8 +2733,7 @@ private struct RemoteFileGridCell: View {
                 .clipShape(RoundedRectangle(cornerRadius: ui(isLarge ? 15 : 11)))
 
             Text(item.name)
-                .font(isLarge ? .ui(.headline) : .ui(.caption))
-                .fontWeight(isLarge ? .semibold : .regular)
+                .font(isLarge ? .ui(.body) : .ui(.caption))
                 .foregroundStyle(SkyBreezeTheme.primaryText)
                 .lineLimit(2)
                 .minimumScaleFactor(isLarge ? 0.85 : 0.72)
@@ -2475,7 +2749,7 @@ private struct RemoteFileGridCell: View {
                     generation: thumbnailReloadVersion,
                     style: isLarge ? .caption : .caption2
                 )
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.secondary)
             }
 
             RemoteFileMetadataView(
@@ -2508,8 +2782,10 @@ private struct RemoteFileListRow: View {
     /// Set for a music file: its thumbnail then carries the inline play button.
     var playback: InlineMusicPlayback?
     var toggleMusic: () -> Void = {}
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         HStack(spacing: ui(12)) {
             RemoteThumbnailView(
                 item: item,
@@ -2547,7 +2823,7 @@ private struct RemoteFileListRow: View {
                         generation: thumbnailReloadVersion,
                         style: .caption
                     )
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                 }
 
                 RemoteFileMetadataView(
@@ -2577,6 +2853,7 @@ private struct RemoteFileMetadataView: View {
     let compact: Bool
     /// Set for a music row: its time text follows the size.
     var playback: InlineMusicPlayback?
+    private var themeRefresh = ThemeRefresh()
 
     /// A PhoneHard video or music file shows its playing time right after its size; the
     /// file is on the device, so reading its length costs no transfer.
@@ -2585,6 +2862,7 @@ private struct RemoteFileMetadataView: View {
     }
 
     var body: some View {
+        let _ = themeRefresh.theme
         VStack(alignment: .leading, spacing: ui(2)) {
             if !item.isDirectory {
                 if compact {
@@ -3033,8 +3311,10 @@ private enum RemoteFileShareError: LocalizedError {
 
 private struct ThumbnailPreheatProgressBanner: View {
     @ObservedObject var preheater: ThumbnailPreheater
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         HStack(spacing: ui(12)) {
             if let fraction = preheater.fractionCompleted {
                 ProgressView(value: fraction)
@@ -3048,7 +3328,7 @@ private struct ThumbnailPreheatProgressBanner: View {
                     .font(.ui(.subheadline).weight(.semibold))
                 Text(progressDescription)
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .lineLimit(1)
             }
 
@@ -3060,10 +3340,10 @@ private struct ThumbnailPreheatProgressBanner: View {
             .buttonStyle(.bordered)
         }
         .padding(ui(14))
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: ui(16)))
+        .background(PorcelainMetrics.card, in: RoundedRectangle(cornerRadius: ui(16)))
         .overlay {
             RoundedRectangle(cornerRadius: ui(16))
-                .stroke(.separator.opacity(0.25), lineWidth: 0.5)
+                .stroke(PorcelainMetrics.line, lineWidth: 0.5)
         }
         .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
         .accessibilityElement(children: .contain)
@@ -3094,14 +3374,17 @@ private struct ThumbnailPreheatProgressBanner: View {
 private struct MorePanelSectionTitle: View {
     let title: String
 
+    private var themeRefresh = ThemeRefresh()
+
     init(_ title: String) {
         self.title = title
     }
 
     var body: some View {
+        let _ = themeRefresh.theme
         Text(title)
             .font(.ui(.subheadline).weight(.bold))
-            .foregroundStyle(.primary)
+            .foregroundStyle(PorcelainMetrics.graphite)
             .textCase(.uppercase)
             .padding(.horizontal, ui(8))
             .padding(.vertical, ui(6))
@@ -3112,10 +3395,12 @@ private struct CompactPanelButton: View {
     let title: String
     let systemImage: String
     var isSelected = false
-    var tint = Color(uiColor: .label)
+    var tint: Color? = nil
     let action: () -> Void
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         Button(action: action) {
             VStack(spacing: ui(3)) {
                 Image(systemName: systemImage)
@@ -3123,23 +3408,23 @@ private struct CompactPanelButton: View {
                     .frame(width: ui(24), height: ui(24))
 
                 Text(title)
-                    .font(.system(size: ui(10), weight: .semibold))
+                    .font(PorcelainTypeface.font(size: ui(11), weight: .medium))
                     .lineLimit(1)
                     .minimumScaleFactor(0.65)
             }
-            .foregroundStyle(isSelected ? Color.white : tint)
+            .foregroundStyle(isSelected ? PorcelainMetrics.onAccent : (tint ?? PorcelainMetrics.graphite))
             .frame(maxWidth: .infinity)
             .frame(height: ui(52))
             .background(
-                isSelected ? SkyBreezeTheme.accent : Color(uiColor: .secondarySystemBackground),
+                isSelected ? PorcelainMetrics.solidAction : PorcelainMetrics.card,
                 in: RoundedRectangle(cornerRadius: ui(10), style: .continuous)
             )
             .overlay {
                 RoundedRectangle(cornerRadius: ui(10), style: .continuous)
                     .stroke(
                         isSelected
-                            ? SkyBreezeTheme.accent
-                            : Color(uiColor: .separator).opacity(0.24),
+                            ? PorcelainMetrics.solidAction
+                            : PorcelainMetrics.line.opacity(0.6),
                         lineWidth: 0.75
                     )
             }
@@ -3152,6 +3437,7 @@ private struct CompactPanelButton: View {
 private struct CompactPanelOptionRow<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
+    private var themeRefresh = ThemeRefresh()
 
     init(title: String, @ViewBuilder content: () -> Content) {
         self.title = title
@@ -3159,10 +3445,11 @@ private struct CompactPanelOptionRow<Content: View>: View {
     }
 
     var body: some View {
+        let _ = themeRefresh.theme
         VStack(alignment: .leading, spacing: ui(5)) {
             Text(title)
                 .font(.ui(.caption2).weight(.semibold))
-                .foregroundStyle(.primary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .padding(.horizontal, ui(2))
 
             content
@@ -3176,32 +3463,34 @@ private struct CompactPanelOptionButton: View {
     let title: String
     let isSelected: Bool
     let action: () -> Void
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         Button(action: action) {
             Text(title)
-                .font(.system(size: ui(12), weight: isSelected ? .semibold : .regular))
+                .font(PorcelainTypeface.font(size: ui(13), weight: isSelected ? .medium : .regular))
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 .foregroundStyle(
                     isSelected
-                        ? Color.white
-                        : Color(uiColor: .label)
+                        ? PorcelainMetrics.onAccent
+                        : PorcelainMetrics.graphite
                 )
                 .frame(maxWidth: .infinity)
                 .frame(minHeight: ui(44))
                 .background(
                     isSelected
-                        ? SkyBreezeTheme.accent
-                        : Color(uiColor: .secondarySystemBackground),
+                        ? PorcelainMetrics.solidAction
+                        : PorcelainMetrics.card,
                     in: RoundedRectangle(cornerRadius: ui(10), style: .continuous)
                 )
                 .overlay {
                     RoundedRectangle(cornerRadius: ui(10), style: .continuous)
                         .stroke(
                             isSelected
-                                ? SkyBreezeTheme.accent
-                                : Color(uiColor: .separator).opacity(0.24),
+                                ? PorcelainMetrics.solidAction
+                                : PorcelainMetrics.line.opacity(0.6),
                             lineWidth: 0.75
                         )
                 }
@@ -3214,17 +3503,19 @@ private struct CompactPanelOptionButton: View {
 private struct CompactInformationRow: View {
     let title: String
     let value: String
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         HStack(alignment: .firstTextBaseline, spacing: ui(8)) {
             Text(title)
                 .font(.ui(.caption2))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(PorcelainMetrics.secondary)
                 .frame(width: ui(54), alignment: .leading)
 
             Text(value)
                 .font(.ui(.caption))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(PorcelainMetrics.graphite)
                 .lineLimit(2)
 
             Spacer(minLength: 0)
@@ -3236,22 +3527,24 @@ private struct MorePanelRow: View {
     let title: String
     let systemImage: String
     var showsDisclosure = false
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         HStack(spacing: ui(12)) {
             Image(systemName: systemImage)
                 .frame(width: ui(22))
-                .foregroundStyle(.tint)
+                .foregroundStyle(PorcelainMetrics.accent)
 
             Text(title)
-                .foregroundStyle(.primary)
+                .foregroundStyle(PorcelainMetrics.graphite)
 
             Spacer(minLength: ui(8))
 
             if showsDisclosure {
                 Image(systemName: "chevron.right")
                     .font(.ui(.caption).weight(.semibold))
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             }
         }
         .contentShape(Rectangle())
@@ -3267,19 +3560,21 @@ private struct SharePreparationBanner: View {
     let progress: RemoteDownloadProgress?
     let isStaging: Bool
     let onCancel: () -> Void
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         VStack(alignment: .leading, spacing: ui(10)) {
             HStack(spacing: ui(8)) {
                 Text(isStaging ? "공유 준비 중" : "내려받는 중")
-                    .font(.ui(.subheadline).weight(.semibold))
+                    .font(.ui(.subheadline).weight(.medium))
                     .layoutPriority(1)
 
                 if totalCount > 1 {
                     Text("\(min(completedCount + 1, totalCount)) / \(totalCount)")
                         .font(.ui(.caption))
                         .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                 }
 
                 Spacer(minLength: ui(4))
@@ -3287,17 +3582,17 @@ private struct SharePreparationBanner: View {
                 Button("취소", role: .cancel, action: onCancel)
                     .font(.ui(.caption).weight(.semibold))
                     .buttonStyle(.plain)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(PorcelainMetrics.danger)
                     .padding(.horizontal, ui(12))
                     .padding(.vertical, ui(6))
-                    .background(.red.opacity(0.1), in: Capsule())
+                    .background(PorcelainMetrics.danger.opacity(0.12), in: Capsule())
                     .frame(minHeight: ui(44))
                     .contentShape(Rectangle())
             }
 
             Text(itemName ?? "파일 준비 중")
                 .font(.ui(.subheadline))
-                .foregroundStyle(.primary)
+                .foregroundStyle(PorcelainMetrics.graphite)
                 .lineLimit(3)
                 .truncationMode(.middle)
                 .fixedSize(horizontal: false, vertical: true)
@@ -3308,7 +3603,7 @@ private struct SharePreparationBanner: View {
                     if let progress {
                         Text(byteProgressDescription(progress))
                             .font(.ui(.caption))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                     }
 
                     Spacer(minLength: ui(4))
@@ -3331,10 +3626,10 @@ private struct SharePreparationBanner: View {
         .padding(.horizontal, ui(16))
         .padding(.vertical, ui(10))
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: ui(16)))
+        .background(PorcelainMetrics.card, in: RoundedRectangle(cornerRadius: ui(16)))
         .overlay {
             RoundedRectangle(cornerRadius: ui(16))
-                .stroke(.separator.opacity(0.25), lineWidth: 0.5)
+                .stroke(PorcelainMetrics.line, lineWidth: 0.5)
         }
         .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
         .accessibilityElement(children: .contain)
@@ -3354,8 +3649,10 @@ struct FileOperationProgressBanner: View {
     let title: String
     let progress: RemoteOperationProgress?
     let onCancel: () -> Void
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         HStack(spacing: ui(12)) {
             if let fraction = progress?.fractionCompleted {
                 ProgressView(value: fraction)
@@ -3366,12 +3663,12 @@ struct FileOperationProgressBanner: View {
 
             VStack(alignment: .leading, spacing: ui(2)) {
                 Text(title)
-                    .font(.ui(.subheadline).weight(.semibold))
+                    .font(.ui(.subheadline).weight(.medium))
                     .lineLimit(1)
                 if let progress {
                     Text(progressDescription(progress))
                         .font(.ui(.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                         .lineLimit(1)
                 }
             }
@@ -3382,7 +3679,11 @@ struct FileOperationProgressBanner: View {
                 .buttonStyle(.bordered)
         }
         .padding(ui(14))
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: ui(16)))
+        .background(PorcelainMetrics.card, in: RoundedRectangle(cornerRadius: ui(16)))
+        .overlay {
+            RoundedRectangle(cornerRadius: ui(16))
+                .stroke(PorcelainMetrics.line, lineWidth: 0.5)
+        }
         .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
     }
 
@@ -3407,23 +3708,31 @@ struct FileOperationProgressBanner: View {
 struct FileOperationStatusBanner: View {
     let message: String
     let onDismiss: () -> Void
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         HStack(spacing: ui(10)) {
             Image(systemName: "checkmark.circle.fill")
-                .foregroundStyle(.green)
+                .foregroundStyle(PorcelainMetrics.accent)
             Text(message)
-                .font(.ui(.subheadline).weight(.semibold))
+                .font(.ui(.subheadline).weight(.medium))
+                .foregroundStyle(PorcelainMetrics.graphite)
                 .lineLimit(2)
             Spacer(minLength: ui(8))
             Button(action: onDismiss) {
                 Image(systemName: "xmark")
+                    .foregroundStyle(PorcelainMetrics.secondary)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("상태 메시지 닫기")
         }
         .padding(ui(14))
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: ui(16)))
+        .background(PorcelainMetrics.card, in: RoundedRectangle(cornerRadius: ui(16)))
+        .overlay {
+            RoundedRectangle(cornerRadius: ui(16))
+                .stroke(PorcelainMetrics.line, lineWidth: 0.5)
+        }
         .shadow(color: .black.opacity(0.16), radius: 12, y: 4)
     }
 }

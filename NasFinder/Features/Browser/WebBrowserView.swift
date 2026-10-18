@@ -200,8 +200,10 @@ struct WebBrowserView: View {
     @State private var isChoosingMusicCandidate = false
     @State private var dismissMusicTrigger = 0
     @State private var isMusicNoticeHidden = false
+    private var themeRefresh = ThemeRefresh()
 
     var body: some View {
+        let _ = themeRefresh.theme
         VStack(spacing: 0) {
             addressBar
 
@@ -240,7 +242,7 @@ struct WebBrowserView: View {
                 } else if let statusMessage {
                     Text(statusMessage)
                         .font(.ui(.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                         .padding(.horizontal, ui(12))
                         .padding(.vertical, ui(8))
                         .background(.regularMaterial, in: Capsule())
@@ -252,7 +254,7 @@ struct WebBrowserView: View {
             .ignoresSafeArea(.container, edges: .bottom)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color(uiColor: .systemBackground))
+        .background(PorcelainMetrics.paper)
         .overlay(alignment: .bottom) {
             if !isDownloading, !isMusicNoticeHidden, !musicCandidates.isEmpty || onMusicSaved != nil {
                 musicDownloadBar
@@ -420,7 +422,7 @@ struct WebBrowserView: View {
             if musicCandidates.isEmpty {
                 Text("음악 파일이 있는 페이지를 열면 받을 수 있어요")
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             } else {
                 Button("음악 다운로드") {
                     if musicCandidates.count == 1 || musicCandidates[0].isPlaying {
@@ -433,12 +435,12 @@ struct WebBrowserView: View {
                 if musicCandidates.count > 1 {
                     Text("\(musicCandidates.count)개")
                         .font(.ui(.caption))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(PorcelainMetrics.secondary)
                 }
             }
             Button(action: closeMusicNotice) {
                 Image(systemName: "xmark.circle.fill")
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             }
             .buttonStyle(.plain)
             .accessibilityLabel("음악 알림 닫기")
@@ -600,7 +602,7 @@ struct WebBrowserView: View {
             if favoritesStore.favorites.isEmpty {
                 Text("등록된 즐겨찾기가 없습니다.")
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
                     .padding(ui(24))
             } else {
                 ScrollView {
@@ -648,7 +650,7 @@ struct WebBrowserView: View {
                             .lineLimit(1)
                         Text(favorite)
                             .font(.ui(.caption2))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(PorcelainMetrics.secondary)
                             .lineLimit(1)
                     }
                     Spacer(minLength: ui(4))
