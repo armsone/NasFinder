@@ -9,51 +9,107 @@ struct VideoTrailerScene: Identifiable {
 
 struct VideoTrailerPlan {
     let analysis: AudioAnalysisResult
+    /// Always finite and never negative; 0 marks a source whose duration was missing or invalid,
+    /// which never produces a scene.
     let duration: Double
     let recommendedClipLength: Double
-    let recommendedTotal: Double
+    /// Distinct clips the recommendation takes from this source at `recommendedClipLength`.
+    let recommendedCount: Int
+    var recommendedTotal: Double { Double(recommendedCount) * recommendedClipLength }
+    /// True only when the analysis found real, contrasting audio/motion energy. Silence, a flat
+    /// or empty waveform and the centre-pick fallback are unknown content, not highlights.
+    let hasEvidence: Bool
+    private let waveform: [Double]
+    private let peaks: [Double]
+
+    static let maximumDuration: Double = 31_536_000
+
+    /// Scene pacing follows the source: short sources get shorter scenes, long ones longer.
+    /// 2...4 s floor (duration / 20) and 4...10 s ceiling (duration / 8), never beyond the source.
+    static func sceneBounds(duration: Double) -> (minimum: Double, maximum: Double) {
+        (min(duration, max(2, min(4, duration / 20))), min(duration, max(4, min(10, duration / 8))))
+    }
 
     init(analysis: AudioAnalysisResult, duration: Double) {
         self.analysis = analysis
-        self.duration = duration
-        let waveform = analysis.waveform
+        // Bounded so the clip-count arithmetic below can never overflow an Int.
+        let length = duration.isFinite && duration > 0 ? min(duration, Self.maximumDuration) : 0
+        self.duration = length
+        let waveform = analysis.waveform.map { $0.isFinite ? max(0, $0) : 0 }
+        let peaks = analysis.peakTimes.filter { $0.isFinite && $0 >= 0 && $0 <= length }
+        self.waveform = waveform
+        self.peaks = peaks
+        let top = waveform.max() ?? 0
         let baseline = waveform.isEmpty ? 0 : waveform.reduce(0, +) / Double(waveform.count)
-        let strong = analysis.peakTimes.filter { peak in
-            guard !waveform.isEmpty else { return false }
-            let index = min(waveform.count - 1, max(0, Int(peak / duration * Double(waveform.count))))
-            return waveform[index] >= max(baseline, (waveform.max() ?? 0) * 0.55)
+        // Contrast: a flat waveform (peak barely above its own average) has no highlight either.
+        let evidence = length > 0 && analysis.highlightSource != .fallback && top > 0
+            && (top - baseline) >= top * 0.15 && !peaks.isEmpty
+        hasEvidence = evidence
+        guard length > 0 else {
+            recommendedClipLength = 1
+            recommendedCount = 0
+            return
         }
-        let lengths = analysis.peakTimes.map { peak -> Double in
-            guard !waveform.isEmpty else { return min(4, duration) }
-            let index = min(waveform.count - 1, max(0, Int(peak / duration * Double(waveform.count))))
-            let threshold = baseline + max(0, waveform[index] - baseline) * 0.4
-            var left = index
-            var right = index
-            while left > 0, waveform[left - 1] > threshold, index - left < 12 { left -= 1 }
-            while right + 1 < waveform.count, waveform[right + 1] > threshold, right - index < 12 { right += 1 }
-            return min(duration, max(1, min(10, Double(right - left + 1) * duration / Double(waveform.count) + 1)))
+        let bounds = Self.sceneBounds(duration: length)
+        let bucket = length / Double(max(1, waveform.count))
+        func index(_ time: Double) -> Int { min(waveform.count - 1, max(0, Int(time / length * Double(waveform.count)))) }
+        let strong = evidence ? peaks.filter { waveform[index($0)] >= max(baseline, top * 0.55) } : []
+        // Highlights that carry the sizing: the strong ones, or every found peak when none is.
+        let sizing = strong.isEmpty ? (evidence ? peaks : []) : strong
+        // A scene covers the continuous run of high energy around a peak (up to the ceiling), so a
+        // narrow spike is only a floor-length scene and a long loud stretch gets a longer one.
+        let lengths = sizing.map { peak -> Double in
+            let center = index(peak)
+            let threshold = baseline + max(0, waveform[center] - baseline) * 0.4
+            var left = center
+            var right = center
+            while left > 0, waveform[left - 1] > threshold, Double(center - left + 1) * bucket < bounds.maximum { left -= 1 }
+            while right + 1 < waveform.count, waveform[right + 1] > threshold, Double(right - center + 1) * bucket < bounds.maximum { right += 1 }
+            return Double(right - left + 1) * bucket
         }.sorted()
-        recommendedClipLength = max(min(1, duration), min(duration, (lengths.isEmpty ? 4 : lengths[lengths.count / 2]).rounded()))
-        let count = min(max(1, Int(duration / max(0.001, recommendedClipLength))), max(1, min(8, strong.count)))
-        recommendedTotal = Double(count) * recommendedClipLength
+        // Unknown content gets the neutral 4 seconds (within the source's own bounds).
+        let typical = lengths.isEmpty ? 4 : lengths[lengths.count / 2]
+        let clip = min(length, max(bounds.minimum, min(bounds.maximum, typical.rounded())))
+        recommendedClipLength = clip
+        // Budget: distinct usable highlights (at least the 3 best peaks when fewer are strong),
+        // never repeats; unknown content scales with duration. At most half the source.
+        var kept: [Double] = []
+        func distinct(_ times: [Double]) -> Int {
+            kept = []
+            for time in times where kept.allSatisfy({ abs($0 - time) >= clip }) { kept.append(time) }
+            return kept.count
+        }
+        let wanted: Int
+        if evidence {
+            let strongCount = distinct(strong)
+            wanted = min(8, max(strongCount, min(3, distinct(peaks))))
+        } else {
+            wanted = min(3, 1 + Int(length / 20))
+        }
+        let capacity = max(1, Int(length / clip))
+        let shareCap = max(1, Int(length * 0.5 / clip))
+        recommendedCount = min(capacity, shareCap, max(1, wanted))
     }
 
     func proposal(total: Double? = nil, clipLength: Double? = nil) -> [VideoTrailerScene] {
-        let length = max(0.001, min(duration, clipLength ?? recommendedClipLength))
+        guard duration > 0 else { return [] }
+        let requestedClip = clipLength.flatMap { $0.isFinite && $0 > 0 ? $0 : nil } ?? recommendedClipLength
+        let requestedTotal = total.flatMap { $0.isFinite ? $0 : nil } ?? recommendedTotal
+        let length = max(0.001, min(duration, requestedClip))
         let capacity = max(1, Int((duration / length + 0.000001).rounded(.down)))
-        let count = min(capacity, max(1, Int(((total ?? recommendedTotal) / length).rounded())))
+        let count = Int(min(Double(capacity), max(1, (requestedTotal / length).rounded())))
         let regionLength = duration / Double(count)
         // One distinct region per required clip guarantees the requested count,
         // while the shared analysis chooses the strongest moment in each region.
         return (0..<count).map { index in
             let lower = Double(index) * regionLength
             let upper = min(duration, Double(index + 1) * regionLength)
-            let rankedPeaks = analysis.peakTimes.filter { $0 >= lower && $0 < upper }
-            let waveformPeaks = analysis.waveform.indices.compactMap { bucket -> (Double, Double)? in
-                let time = (Double(bucket) + 0.5) / Double(analysis.waveform.count) * duration
-                return time >= lower && time < upper ? (time, analysis.waveform[bucket]) : nil
+            let rankedPeaks = peaks.filter { $0 >= lower && $0 < upper }
+            let waveformPeaks = waveform.indices.compactMap { bucket -> (Double, Double)? in
+                let time = (Double(bucket) + 0.5) / Double(waveform.count) * duration
+                return time >= lower && time < upper ? (time, waveform[bucket]) : nil
             }
-            let peak = analysis.highlightSource == .fallback ? (lower + upper) / 2
+            let peak = !hasEvidence ? (lower + upper) / 2
                 : (rankedPeaks.first ?? waveformPeaks.max(by: { $0.1 < $1.1 })?.0 ?? (lower + upper) / 2)
             let start = max(lower, min(upper - length, peak - length / 2))
             return VideoTrailerScene(id: index, start: start, length: length)
@@ -135,9 +191,10 @@ func videoTrailerTime(_ seconds: Double) -> String {
 enum VideoTrailerBatchPlan {
     static let maximumRequestedDuration: Double = 7_200
 
-    /// Every source once, in order and uncut: whole videos and 1 second per photo.
+    /// Every source once, in order and uncut: whole videos and 1 second per photo. A video without
+    /// a valid duration has nothing to show and is skipped.
     static func wholeMedia(sources: [VideoTrailerSource]) -> [VideoTrailerScene] {
-        sources.enumerated().map { index, source in
+        sources.filter { $0.isImage || $0.duration > 0 }.enumerated().map { index, source in
             var scene = VideoTrailerScene(id: index, start: 0, length: source.isImage ? 1 : source.duration)
             scene.sourceID = source.id
             return scene
@@ -191,16 +248,88 @@ enum VideoTrailerBatchPlan {
         return result
     }
 
+    /// The common scene length: the median of the videos' own recommended lengths (photos never
+    /// count; sources without real highlight evidence only when no video has any). A short
+    /// video does not shrink it, it is clamped per source in `proposal`.
+    static func recommendedClipLength(_ sources: [VideoTrailerSource]) -> Double {
+        let videos = sources.filter { !$0.isImage && $0.duration > 0 }
+        let informed = videos.filter { $0.plan.hasEvidence }
+        let lengths = (informed.isEmpty ? videos : informed).map { $0.plan.recommendedClipLength }.sorted()
+        return lengths.isEmpty ? 4 : lengths[lengths.count / 2]
+    }
+
+    /// Length of one scene of `source` when the common scene length is `clipLength`: a photo's own
+    /// fraction of it, a video the common length (its whole length when it is shorter).
+    static func sceneLength(_ source: VideoTrailerSource, clipLength: Double) -> Double {
+        source.isImage ? clipLength * source.imageDurationRatio : max(0.001, min(clipLength, source.duration))
+    }
+
+    /// How many scenes the automatic recommendation takes from `source` at the common `clipLength`:
+    /// one per photo, none from a video without a valid duration, otherwise the video's own
+    /// recommended clip count (distinct highlights) limited by what fits at this length and
+    /// by half of the source, so one long video can never use another source's budget.
+    static func recommendedCount(_ source: VideoTrailerSource, clipLength: Double) -> Int {
+        if source.isImage { return 1 }
+        guard source.duration > 0, clipLength.isFinite, clipLength > 0 else { return 0 }
+        let length = sceneLength(source, clipLength: clipLength)
+        let capacity = max(1, Int((source.duration / length + 0.000001).rounded(.down)))
+        let share = max(1, Int(source.duration * 0.5 / length))
+        return min(source.plan.recommendedCount, capacity, share)
+    }
+
+    /// Time budget of the automatic recommendation: every source's recommended scene count times
+    /// its scene length at the common `clipLength` (photos included, in full), so the budget is
+    /// exactly what the automatic proposal can place.
+    static func recommendedBudget(sources: [VideoTrailerSource], clipLength: Double) -> Double {
+        guard clipLength.isFinite, clipLength > 0 else { return 0 }
+        return sources.reduce(0) { $0 + Double(recommendedCount($1, clipLength: clipLength)) * sceneLength($1, clipLength: clipLength) }
+    }
+
+    /// What the editor starts with, and what an export without a chosen total makes: the real
+    /// sum of the proposed scenes, so the shown total and the exported video agree.
+    static func recommendedTotal(sources: [VideoTrailerSource], clipLength: Double) -> Double {
+        recommendedProposal(sources: sources, clipLength: clipLength).reduce(0) { $0 + $1.length }
+    }
+
+    /// The automatic scene plan itself: the one scene list the initial settings, the preview and
+    /// the export all share while the length and clip length are still the recommended ones.
+    static func recommendedProposal(sources: [VideoTrailerSource], clipLength: Double) -> [VideoTrailerScene] {
+        proposal(sources: sources, total: recommendedBudget(sources: sources, clipLength: clipLength),
+                 clipLength: clipLength, repeatToFill: false)
+    }
+
+    /// The scenes for the settings in effect. A missing total, or a total equal (within floating
+    /// tolerance, also after the 1...maximum clamp a chosen total goes through) to the
+    /// recommended one, is the automatic plan. Any other total is a manual one, which may use
+    /// each source up to its capacity and repeat scenes to fill the exact length.
+    static func selection(sources: [VideoTrailerSource], total: Double?, clipLength: Double) -> [VideoTrailerScene] {
+        let automatic = recommendedProposal(sources: sources, clipLength: clipLength)
+        guard let total else { return automatic }
+        let recommended = automatic.reduce(0) { $0 + $1.length }
+        let clamped = min(maximumRequestedDuration, max(1, recommended))
+        if abs(total - recommended) < 0.0005 || abs(total - clamped) < 0.0005 { return automatic }
+        return proposal(sources: sources, total: total, clipLength: clipLength)
+    }
+
+    /// `repeatToFill: false` is the automatic recommendation: every source is limited to its own
+    /// recommended count and nothing is repeated just to fill time. `true` (a chosen total) may
+    /// use every source up to its full capacity and then repeats the scenes to the exact total.
     static func proposal(sources: [VideoTrailerSource], total: Double, clipLength: Double, repeatToFill: Bool = true) -> [VideoTrailerScene] {
         guard total.isFinite, total > 0, clipLength.isFinite, clipLength > 0, !sources.isEmpty else { return [] }
         let requestedTotal = min(maximumRequestedDuration, total)
         // A still image always contributes exactly one clip, at its own quality/similarity
-        // analysis-derived fraction of the video clip length, regardless of its nominal
-        // duration; videos planned against the shared duration total still use the video
-        // clip length so timing isn't skewed by any one photo's length.
-        let capacity = sources.map { $0.isImage ? 1 : max(0, Int(($0.duration / clipLength + 0.000001).rounded(.down))) }
-        let lengthFor: (Int) -> Double = { sources[$0].isImage ? clipLength * sources[$0].imageDurationRatio : clipLength }
-        guard capacity.contains(where: { $0 > 0 }) else { return [] }
+        // analysis-derived fraction of the video clip length. A video shorter than the common
+        // clip length keeps its place with one scene of its own whole length; a video without a
+        // valid duration is skipped.
+        let lengthFor: (Int) -> Double = { sceneLength(sources[$0], clipLength: clipLength) }
+        let fullCapacity = sources.indices.map { index -> Int in
+            if sources[index].isImage { return 1 }
+            guard sources[index].duration > 0 else { return 0 }
+            return max(1, Int((sources[index].duration / lengthFor(index) + 0.000001).rounded(.down)))
+        }
+        guard fullCapacity.contains(where: { $0 > 0 }) else { return [] }
+        let capacity = repeatToFill ? fullCapacity
+            : sources.indices.map { min(fullCapacity[$0], recommendedCount(sources[$0], clipLength: clipLength)) }
         var counts = Array(repeating: 0, count: sources.count)
         var remainingTime = requestedTotal
         // Include each source once when it has capacity and the budget allows it, then
@@ -212,13 +341,13 @@ enum VideoTrailerBatchPlan {
         while remainingTime > 0 {
             guard let index = sources.indices.filter({ !sources[$0].isImage && counts[$0] < capacity[$0] }).max(by: {
                 sources[$0].duration / Double(counts[$0] + 1) < sources[$1].duration / Double(counts[$1] + 1)
-            }), remainingTime >= clipLength else { break }
+            }), remainingTime + 0.000001 >= lengthFor(index) else { break }
             counts[index] += 1
-            remainingTime -= clipLength
+            remainingTime -= lengthFor(index)
         }
         // A budget too small for even one scene still yields the single shortest one,
         // matching the previous behaviour of always proposing at least one clip.
-        if counts.allSatisfy({ $0 == 0 }), let index = sources.indices.filter({ capacity[$0] > 0 }).min(by: { lengthFor($0) < lengthFor($1) }) {
+        if counts.allSatisfy({ $0 == 0 }), let index = sources.indices.filter({ fullCapacity[$0] > 0 }).min(by: { lengthFor($0) < lengthFor($1) }) {
             counts[index] = 1
         }
         var result: [VideoTrailerScene] = []
@@ -228,7 +357,7 @@ enum VideoTrailerBatchPlan {
                 combined.sourceID = sources[index].id
                 result.append(combined)
             } else {
-                for scene in sources[index].plan.proposal(total: Double(counts[index]) * clipLength, clipLength: clipLength) {
+                for scene in sources[index].plan.proposal(total: Double(counts[index]) * lengthFor(index), clipLength: lengthFor(index)) {
                     var combined = VideoTrailerScene(id: result.count, start: scene.start, length: scene.length)
                     combined.sourceID = sources[index].id
                     result.append(combined)

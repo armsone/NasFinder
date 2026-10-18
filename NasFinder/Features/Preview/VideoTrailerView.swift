@@ -437,10 +437,8 @@ struct VideoTrailerView: View {
         let staged = model.sources
         guard var draft else {
             let clipLength = model.recommendedClipLength
-            let recommended = staged.reduce(0) { $0 + $1.plan.recommendedTotal }
             // The length the recommendation really comes to, as the editor's starting total.
-            let total = mode == .mediaMusic ? 0 : VideoTrailerBatchPlan.proposal(sources: staged, total: recommended,
-                clipLength: clipLength, repeatToFill: false).reduce(0) { $0 + $1.length }
+            let total = mode == .mediaMusic ? 0 : VideoTrailerBatchPlan.recommendedTotal(sources: staged, clipLength: clipLength)
             return TrailerSettingsDraft(sources: staged, total: total, clipLength: clipLength,
                                         aspectRatio: model.aspectRatio, music: model.music)
         }
@@ -495,9 +493,7 @@ struct VideoTrailerView: View {
             guard var current = draft else { return }
             if analyzed || current.total <= 0 {
                 current.clipLength = model.recommendedClipLength
-                current.total = VideoTrailerBatchPlan.proposal(sources: current.sources,
-                    total: current.sources.reduce(0) { $0 + $1.plan.recommendedTotal },
-                    clipLength: current.clipLength, repeatToFill: false).reduce(0) { $0 + $1.length }
+                current.total = VideoTrailerBatchPlan.recommendedTotal(sources: current.sources, clipLength: current.clipLength)
                 if let music = current.music, music.policy == .fitMusic { current.total = music.fittedDuration }
             }
             let byID = Dictionary(uniqueKeysWithValues: model.sources.map { ($0.id, $0) })
@@ -610,7 +606,7 @@ private struct VideoTrailerSettings: View {
     /// The plan without music: unchanged trailer rules, or every source whole.
     private var baseProposal: [VideoTrailerScene] {
         mode == .mediaMusic ? VideoTrailerBatchPlan.wholeMedia(sources: sources)
-            : VideoTrailerBatchPlan.proposal(sources: sources, total: total, clipLength: clipLength)
+            : VideoTrailerBatchPlan.selection(sources: sources, total: total, clipLength: clipLength)
     }
     private var baseTotal: Double { baseProposal.reduce(0) { $0 + $1.length } }
     /// Empty when the chosen music cannot be matched within the repeat limit.
@@ -959,9 +955,7 @@ private struct VideoTrailerSettings: View {
                     if mode == .trailer {
                         Button("자동 추천으로 되돌리기") {
                             clipLength = VideoTrailerModel.recommendedLength(sources)
-                            total = VideoTrailerBatchPlan.proposal(sources: sources,
-                                total: sources.reduce(0) { $0 + $1.plan.recommendedTotal },
-                                clipLength: clipLength, repeatToFill: false).reduce(0) { $0 + $1.length }
+                            total = VideoTrailerBatchPlan.recommendedTotal(sources: sources, clipLength: clipLength)
                             syncTotalToFit(music)
                             showingDuration = false
                             showingClipLength = false
@@ -1601,10 +1595,8 @@ private final class VideoTrailerModel: ObservableObject {
 
     var recommendedClipLength: Double { Self.recommendedLength(sources) }
     static func recommendedLength(_ sources: [VideoTrailerSource]) -> Double {
-        // Still images only carry a nominal duration, so they never shorten or skew this.
-        let videos = sources.filter { !$0.isImage }
-        let lengths = videos.map { $0.plan.recommendedClipLength }.sorted()
-        return min(videos.map(\.duration).min() ?? 4, lengths.isEmpty ? 4 : lengths[lengths.count / 2])
+        // Photos never count, and a short video no longer shortens the common length.
+        VideoTrailerBatchPlan.recommendedClipLength(sources)
     }
 
     /// Actually decodes the planned ranges of one staged video and returns the error chain
@@ -1979,8 +1971,7 @@ private final class VideoTrailerModel: ObservableObject {
                 while true {
                     stage = "plan"
                     baseSelected = mode == .mediaMusic ? VideoTrailerBatchPlan.wholeMedia(sources: sources)
-                        : VideoTrailerBatchPlan.proposal(sources: sources,
-                            total: total ?? sources.reduce(0) { $0 + $1.plan.recommendedTotal },
+                        : VideoTrailerBatchPlan.selection(sources: sources, total: total,
                             clipLength: clipLength ?? recommendedClipLength)
                     guard !baseSelected.isEmpty else { throw TrailerError.exportFailed }
                     if let music, let musicInput, music.policy == .fitMusic {
