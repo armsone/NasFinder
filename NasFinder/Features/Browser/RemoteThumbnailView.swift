@@ -24,7 +24,13 @@ final class RemoteThumbnailActivityTracker: ObservableObject {
         limitMessage = nil
     }
 
-    func reachedTrafficLimit(maximumBytes: Int) {
+    /// `nil` means the active network has no byte quota (Wi-Fi), so no
+    /// arbitrary maximum is reported.
+    func reachedTrafficLimit(maximumBytes: Int?) {
+        guard let maximumBytes else {
+            limitMessage = "썸네일 네트워크 요청이 일시 중지됨"
+            return
+        }
         let formatted = ByteCountFormatter.string(
             fromByteCount: Int64(maximumBytes),
             countStyle: .file
@@ -884,7 +890,7 @@ final class RemoteThumbnailLoader: ObservableObject {
                 guard isCurrentRequest(generation, cacheKey) else { return }
                 RemoteThumbnailActivityTracker.shared.reachedTrafficLimit(
                     maximumBytes: ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
-                        ? RemoteVideoThumbnailTrafficBudget.defaultMaximumFolderBytes
+                        ? nil
                         : Int(ThumbnailPreheater.maximumCellularDataBytes)
                 )
                 cacheNegative(cacheKey, for: 30)

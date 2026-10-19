@@ -671,9 +671,9 @@ final class ThumbnailPreheater: ObservableObject {
 
                 currentItemStartedAt = Date()
                 if generationMode == .completeFile {
-                    currentItemTotalBytes = Int64(item.isImage
-                        ? 4 * 1_024 * 1_024
-                        : superThumbnailMaximumBytes(for: work.attempt))
+                    currentItemTotalBytes = item.isImage
+                        ? Int64(4 * 1_024 * 1_024)
+                        : max(item.size ?? 0, 0)
                 }
 
                 let estimatedBytes = estimatedTransferBytes(for: item, service: service)
@@ -819,7 +819,7 @@ final class ThumbnailPreheater: ObservableObject {
                         reachedPreviouslyUsedDataLimit = true
                     }
                     let trafficBudget = generationMode == .completeFile
-                        ? RemoteVideoThumbnailTrafficBudget.completeFileShared
+                        ? superThumbnailTrafficBudget(for: work.attempt)
                         : service.connection.kind == .sftp
                             ? RemoteVideoThumbnailTrafficBudget.sftpShared
                             : RemoteVideoThumbnailTrafficBudget.shared
@@ -1306,14 +1306,6 @@ final class ThumbnailPreheater: ObservableObject {
         case 0: return 5
         case 1: return 20
         default: return 40
-        }
-    }
-
-    private func superThumbnailMaximumBytes(for attempt: Int) -> Int {
-        switch attempt {
-        case 0: return 24 * 1_024 * 1_024
-        case 1: return 40 * 1_024 * 1_024
-        default: return 64 * 1_024 * 1_024
         }
     }
 

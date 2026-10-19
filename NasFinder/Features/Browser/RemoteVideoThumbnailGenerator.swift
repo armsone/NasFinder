@@ -79,7 +79,7 @@ enum RemoteVideoThumbnailGenerationError: LocalizedError, Sendable {
         case .trafficBudgetExhausted:
             "이 폴더의 썸네일 데이터 사용 한도에 도달했습니다."
         case .itemTrafficLimitReached:
-            "파일당 128MB 범위 한도에서 썸네일을 만들지 못했습니다."
+            "파일당 네트워크 데이터 한도에서 썸네일을 만들지 못했습니다."
         case .invalidDuration:
             "영상 재생 시간을 확인할 수 없습니다."
         case .imageGenerationFailed:
@@ -467,15 +467,21 @@ actor RemoteVideoThumbnailTrafficBudget {
     struct Lease: Sendable {
         fileprivate let identifier: UUID
         fileprivate let folderKey: String
+        /// Cumulative network quota for this item. `Int.max` on Wi-Fi.
         let maximumBytes: Int
+        /// Finite ceiling for any single in-memory allocation, independent of
+        /// the network quota above.
+        let maximumAllocationBytes: Int
     }
 
-    /// Wi-Fi has no folder or session byte quota: every eligible item is
-    /// processed incrementally. Per-item leases below still bound each
-    /// transfer, and the cellular pool keeps its own fixed total.
+    /// Wi-Fi has no folder, session, or per-item cumulative byte quota: every
+    /// eligible item is processed incrementally. Single allocations stay under
+    /// `maximumAllocationBytes`, and the cellular pool keeps its fixed totals.
     static let unboundedFolderBytes = Int.max
+    static let unboundedItemBytes = Int.max
     static let shared = RemoteVideoThumbnailTrafficBudget(
-        maximumFolderBytes: unboundedFolderBytes
+        maximumFolderBytes: unboundedFolderBytes,
+        maximumItemBytes: unboundedItemBytes
     )
     static let cellularShared = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: 24 * 1_024 * 1_024,
@@ -483,30 +489,29 @@ actor RemoteVideoThumbnailTrafficBudget {
         minimumLeaseBytes: defaultMinimumLeaseBytes,
         maximumTotalBytes: 24 * 1_024 * 1_024
     )
-    static let completeFileMaximumItemBytes = 128 * 1_024 * 1_024
     static let completeFileFastPass = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: unboundedFolderBytes,
-        maximumItemBytes: 24 * 1_024 * 1_024,
+        maximumItemBytes: unboundedItemBytes,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
     static let completeFileRetryPass = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: unboundedFolderBytes,
-        maximumItemBytes: 40 * 1_024 * 1_024,
+        maximumItemBytes: unboundedItemBytes,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
     static let completeFileRecoveryPass = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: unboundedFolderBytes,
-        maximumItemBytes: 64 * 1_024 * 1_024,
+        maximumItemBytes: unboundedItemBytes,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
     static let completeFileShared = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: unboundedFolderBytes,
-        maximumItemBytes: completeFileMaximumItemBytes,
+        maximumItemBytes: unboundedItemBytes,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
     static let sftpShared = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: unboundedFolderBytes,
-        maximumItemBytes: defaultMaximumItemBytes,
+        maximumItemBytes: unboundedItemBytes,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
 
@@ -523,29 +528,40 @@ actor RemoteVideoThumbnailTrafficBudget {
     private let maximumItemBytes: Int
     private let minimumLeaseBytes: Int
     private let maximumTotalBytes: Int?
+    private let maximumAllocationBytes: Int
     private var folders: [String: FolderState] = [:]
     private var totalTransferredBytes = 0
+
+    /// True when neither a folder nor a session quota applies (Wi-Fi). Leases
+    /// then reserve nothing, so concurrent items never starve each other and
+    /// `Int.max` item quotas cannot overflow the reservation sums.
+    private var hasUnlimitedQuota: Bool {
+        maximumFolderBytes == Int.max && maximumTotalBytes == nil
+    }
 
     init(
         maximumFolderBytes: Int = defaultMaximumFolderBytes,
         maximumItemBytes: Int = defaultMaximumItemBytes,
         minimumLeaseBytes: Int = defaultMinimumLeaseBytes,
-        maximumTotalBytes: Int? = nil
+        maximumTotalBytes: Int? = nil,
+        maximumAllocationBytes: Int = defaultMaximumItemBytes
     ) {
         self.maximumFolderBytes = max(maximumFolderBytes, 0)
         self.maximumItemBytes = max(maximumItemBytes, 0)
         self.minimumLeaseBytes = max(minimumLeaseBytes, 1)
         self.maximumTotalBytes = maximumTotalBytes.map { max($0, 0) }
+        self.maximumAllocationBytes = max(maximumAllocationBytes, 0)
     }
 
     func lease(for item: RemoteFileItem) -> Lease? {
         let folderKey = Self.folderKey(for: item)
         var state = folders[folderKey] ?? FolderState()
-        let reservedBytes = state.reservations.values.reduce(0, +)
-        let folderAvailableBytes = max(
-            maximumFolderBytes - state.transferredBytes - reservedBytes,
-            0
-        )
+        let reservedBytes = hasUnlimitedQuota
+            ? 0
+            : state.reservations.values.reduce(0, +)
+        let folderAvailableBytes = hasUnlimitedQuota
+            ? Int.max
+            : max(maximumFolderBytes - state.transferredBytes - reservedBytes, 0)
         let allReservedBytes = folders.values.reduce(0) {
             $0 + $1.reservations.values.reduce(0, +)
         }
@@ -560,12 +576,13 @@ actor RemoteVideoThumbnailTrafficBudget {
         guard grantedBytes >= minimumLeaseBytes else { return nil }
 
         let identifier = UUID()
-        state.reservations[identifier] = grantedBytes
+        state.reservations[identifier] = hasUnlimitedQuota ? 0 : grantedBytes
         folders[folderKey] = state
         return Lease(
             identifier: identifier,
             folderKey: folderKey,
-            maximumBytes: grantedBytes
+            maximumBytes: grantedBytes,
+            maximumAllocationBytes: min(grantedBytes, maximumAllocationBytes)
         )
     }
 
@@ -574,10 +591,23 @@ actor RemoteVideoThumbnailTrafficBudget {
               let reservedBytes = state.reservations.removeValue(
                   forKey: lease.identifier
               ) else { return }
-        let chargedBytes = min(max(transferredBytes, 0), reservedBytes)
-        state.transferredBytes += chargedBytes
-        totalTransferredBytes += chargedBytes
+        let chargedBytes = hasUnlimitedQuota
+            ? min(max(transferredBytes, 0), lease.maximumBytes)
+            : min(max(transferredBytes, 0), reservedBytes)
+        state.transferredBytes = Self.saturatingSum(
+            state.transferredBytes,
+            chargedBytes
+        )
+        totalTransferredBytes = Self.saturatingSum(
+            totalTransferredBytes,
+            chargedBytes
+        )
         folders[lease.folderKey] = state
+    }
+
+    private static func saturatingSum(_ lhs: Int, _ rhs: Int) -> Int {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? Int.max : sum
     }
 
     func hasCapacity() -> Bool {
@@ -667,7 +697,7 @@ extension RemoteVideoThumbnailTrafficBudget {
             let data = try await service.thumbnailData(
                 for: item,
                 size: size,
-                maximumByteCount: lease.maximumBytes
+                maximumByteCount: lease.maximumAllocationBytes
             )
             outcome = data.map { $0.isEmpty ? .empty : .data(byteCount: $0.count) } ?? .empty
             result = .success(data)
@@ -679,7 +709,7 @@ extension RemoteVideoThumbnailTrafficBudget {
             lease,
             transferredBytes: RemoteThumbnailCellularAccountingPolicy.chargedBytes(
                 for: outcome,
-                leaseMaximumBytes: lease.maximumBytes
+                leaseMaximumBytes: lease.maximumAllocationBytes
             )
         )
         return try result.get()

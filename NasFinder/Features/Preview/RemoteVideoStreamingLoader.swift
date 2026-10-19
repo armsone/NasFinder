@@ -184,8 +184,18 @@ final class RemoteVideoStreamingRangeCache: @unchecked Sendable {
         var endOffset: Int64 { offset + Int64(data.count) }
     }
 
+    /// The network quota can be unlimited on Wi-Fi, so the cache carries its
+    /// own finite memory ceiling. Evicted ranges are simply fetched again.
+    static let defaultMaximumCachedBytes = 16 * 1_024 * 1_024
+
+    private let maximumCachedBytes: Int
     private let lock = NSLock()
     private var entries: [Entry] = []
+    private var cachedBytes = 0
+
+    init(maximumCachedBytes: Int = RemoteVideoStreamingRangeCache.defaultMaximumCachedBytes) {
+        self.maximumCachedBytes = max(maximumCachedBytes, 0)
+    }
 
     func data(at offset: Int64, maximumLength: Int) -> Data? {
         guard offset >= 0, maximumLength > 0 else { return nil }
@@ -205,7 +215,9 @@ final class RemoteVideoStreamingRangeCache: @unchecked Sendable {
     }
 
     func store(_ data: Data, at offset: Int64) {
-        guard offset >= 0, !data.isEmpty else { return }
+        guard offset >= 0, !data.isEmpty, data.count <= maximumCachedBytes else {
+            return
+        }
         let newEntry = Entry(offset: offset, data: data)
         lock.lock()
         entries.removeAll {
@@ -215,6 +227,10 @@ final class RemoteVideoStreamingRangeCache: @unchecked Sendable {
             $0.offset <= newEntry.offset && $0.endOffset >= newEntry.endOffset
         }) {
             entries.append(newEntry)
+        }
+        cachedBytes = entries.reduce(0) { $0 + $1.data.count }
+        while cachedBytes > maximumCachedBytes, entries.count > 1 {
+            cachedBytes -= entries.removeFirst().data.count
         }
         lock.unlock()
     }

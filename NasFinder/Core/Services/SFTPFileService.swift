@@ -202,6 +202,51 @@ actor SFTPFileService: RemoteFileService {
         }
     }
 
+    /// Cellular callers (`meteredThumbnailData`) lease the shared cellular pool
+    /// themselves and pass that lease as `maximumByteCount`. The unlimited
+    /// `sftpShared` pool must not run underneath them, so the cap is enforced
+    /// here on the actual SFTP reads without charging any pool a second time.
+    func thumbnailData(
+        for item: RemoteFileItem,
+        size: RemoteThumbnailSize,
+        maximumByteCount: Int
+    ) async throws -> Data? {
+        guard !item.isDirectory, item.isVideo else { return nil }
+
+        let temporaryURL = Self.videoThumbnailTemporaryURL(for: item)
+        guard FileManager.default.createFile(
+            atPath: temporaryURL.path,
+            contents: nil
+        ) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+
+        let byteBudget = RemoteVideoStreamingByteBudget(
+            maximumBytes: max(maximumByteCount, 0)
+        )
+        do {
+            let data = try await writeAdaptiveSparseVideoPreview(
+                for: item,
+                size: size,
+                to: temporaryURL,
+                byteBudget: byteBudget
+            )
+            guard data.count <= maximumByteCount else {
+                throw RemoteThumbnailError.responseTooLarge
+            }
+            return data
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
+            throw RemoteVideoThumbnailGenerationError.trafficBudgetExhausted
+        } catch RemoteThumbnailError.responseTooLarge {
+            throw RemoteThumbnailError.responseTooLarge
+        } catch {
+            throw RemoteThumbnailError.optimizedPreviewUnavailable
+        }
+    }
+
     func thumbnailData(
         for item: RemoteFileItem,
         size: RemoteThumbnailSize

@@ -907,7 +907,7 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
                 onTransfer: { streamBytes in
                     progress?(
                         Int64(baseTransferredBytes + streamBytes),
-                        Int64(lease.maximumBytes)
+                        min(Int64(lease.maximumBytes), item.size ?? Int64.max)
                     )
                 }
             )
@@ -919,7 +919,7 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
         }
         do {
             if mode == .completeFile {
-                let fastPassLimit = min(64 * 1_024 * 1_024, lease.maximumBytes)
+                let fastPassLimit = lease.maximumBytes
                 let fastStream = try makeStream(
                     maximumBytes: fastPassLimit,
                     baseTransferredBytes: 0
@@ -971,7 +971,9 @@ enum CompatibilityRemoteVideoThumbnailGenerator {
             let media: VLCMedia?
             if mode != .completeFile,
                let fileSize = item.size,
-               fileSize <= Int64(lease.maximumBytes),
+               // Single in-memory allocation: never the (possibly unlimited)
+               // network quota, so Wi-Fi still streams larger files by range.
+               fileSize <= Int64(lease.maximumAllocationBytes),
                fileSize <= Int64(Int.max) {
                 let data = try await service.readRange(
                     of: item,
