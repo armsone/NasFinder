@@ -205,11 +205,11 @@ struct FileBrowserView: View {
             case .list:
                 "자세히"
             case .smallThumbnails:
-                "작은 썸네일"
+                "썸네일"
             case .largeThumbnails:
                 "포스터"
             case .coverFlow:
-                "오버플로우"
+                "플로잉"
             }
         }
 
@@ -269,7 +269,19 @@ struct FileBrowserView: View {
     @State private var thumbnailReloadVersion = 0
     @State private var isRequestingCoverFlowOrientation = false
     @State private var coverFlowEnteredFromPoster = false
-    @State private var suppressAutomaticCoverFlowUntil = Date.distantPast
+    /// View mode that was active before iPad/Mac chose 플로잉 explicitly; closing
+    /// Flowing returns to it without leaving the folder.
+    @State private var explicitCoverFlowReturnStyle: LayoutStyle?
+    /// Set when the user leaves Flowing while the phone is still wide; the
+    /// automatic entry stays off until the page stops qualifying (portrait,
+    /// selection or no items) so closing never re-enters immediately.
+    @State private var suppressAutomaticCoverFlow = false
+    /// A folder opened from the full-window Flowing cover; it is pushed after
+    /// the cover has closed so the push lands on this page's stack.
+    @State private var folderToOpenAfterCoverFlow: RemoteFileItem?
+    /// True while the Flowing cover has covered this page, so the page's
+    /// reappearance after the cover closes does not restart the session.
+    @State private var returnedFromCoverFlow = false
     @State private var browserContentSize = CGSize.zero
     @StateObject private var downloadCoordinator = RemoteDownloadCoordinator()
     @State private var pendingDownloadItems: [RemoteFileItem] = []
@@ -408,11 +420,11 @@ struct FileBrowserView: View {
                         // 임베드된 출처 페이지는 내비게이션 바가 없어 뒤로·제목·보기 방식 메뉴를 여기에 둔다.
                         selectionHeader(selectionNavigation)
                     }
-                    if layoutStyle != .coverFlow {
+                    if inlineLayoutStyle != .coverFlow {
                         currentPathBar
                         thumbnailProgressLine
                     }
-                    browserContent
+                    browserContent(for: inlineLayoutStyle)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
                 .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
@@ -423,7 +435,7 @@ struct FileBrowserView: View {
                 .tint(SkyBreezeTheme.accent)
                 .modifier(
                     FileBrowserNavigationAppearanceModifier(
-                        isCoverFlow: layoutStyle == .coverFlow,
+                        isCoverFlow: inlineLayoutStyle == .coverFlow,
                         usesDarkBackground: coverFlowUsesDarkBackground
                     )
                 )
@@ -431,18 +443,17 @@ struct FileBrowserView: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .modifier(
                     FileBrowserCoverFlowChromeModifier(
-                        isActive: layoutStyle == .coverFlow
+                        isActive: inlineLayoutStyle == .coverFlow
                     )
                 )
                 .modifier(
                     FileBrowserSearchModifier(
-                        isEnabled: !isEmbeddedSourceRoot,
+                        isEnabled: !isEmbeddedSourceRoot && !presentsCoverFlowFullWindow,
                         text: $searchText,
                         isPresented: $isSearchPresented
                     )
                 )
                 .toolbar { browserToolbar }
-                .overlay { coverFlowNavigationOverlay }
             )
             .navigationBarBackButtonHidden(true)
             .navigationDestination(item: $navigatedFolder) { item in
@@ -463,39 +474,14 @@ struct FileBrowserView: View {
         }
     }
 
+    /// The browser page and its non-modal lifecycle. Every modal it can present
+    /// is attached in `browserPresentations`, on the topmost host only.
     var body: some View {
+        browserPresentations(browserLifecycle, isActive: !presentsCoverFlowFullWindow)
+    }
+
+    private var browserLifecycle: some View {
         browserRoot
-        .fileImporter(
-            isPresented: $isImportingFiles,
-            allowedContentTypes: [.data, .content],
-            allowsMultipleSelection: true
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard !urls.isEmpty else { return }
-                operationCoordinator.upload(
-                    urls.map { LocalUploadSource(url: $0) },
-                    into: viewModel.path,
-                    using: viewModel.service,
-                    conflictPolicy: .keepBoth,
-                    operationName: isPhoneHard ? "가져오기" : "업로드"
-                ) {
-                    await viewModel.reloadAfterCurrentLoad()
-                }
-            case .failure(let error):
-                let cocoaError = error as NSError
-                guard !(error is CancellationError),
-                      !(cocoaError.domain == NSCocoaErrorDomain
-                        && cocoaError.code == CocoaError.Code.userCancelled.rawValue) else {
-                    return
-                }
-                operationCoordinator.errorMessage = error.localizedDescription
-            }
-        }
-        .fileDialogConfirmationLabel(isPhoneHard ? "가져오기" : "업로드")
-        .fileDialogMessage(
-            isPhoneHard ? "현재 폴더로 가져올 파일을 선택하세요." : "현재 폴더에 올릴 파일을 선택하세요."
-        )
         .onChange(of: displayRequest, initial: true) { _, request in
             viewModel.configureDisplay(
                 matching: request.query,
@@ -508,6 +494,12 @@ struct FileBrowserView: View {
             if onPickMedia == nil, storedLayoutStyle == LayoutStyle.coverFlow.rawValue {
                 storedLayoutStyle = LayoutStyle.largeThumbnails.rawValue
                 coverFlowEnteredFromPoster = false
+                explicitCoverFlowReturnStyle = nil
+            }
+            // 전체 창 플로잉이 닫히며 다시 나타나는 것은 새 화면이 아니므로 썸네일 세션을 끊지 않는다.
+            if returnedFromCoverFlow {
+                returnedFromCoverFlow = false
+                return
             }
             trafficTracker.reset()
             thumbnailActivity.beginNewSession()
@@ -523,6 +515,14 @@ struct FileBrowserView: View {
         .onChange(of: layoutStyle, initial: true) { _, style in
             guard !isFavoriteActionHost else { return }
             updateCoverFlowOrientation(for: style)
+        }
+        .onChange(of: presentsCoverFlowFullWindow) { wasPresented, isPresented in
+            // The return marker belongs to exactly one cover session: it is set
+            // when the cover closes and is dropped as soon as the cover opens
+            // again or this page truly disappears, so a system that does not
+            // re-fire onAppear after the cover can never leave it dangling.
+            guard !isFavoriteActionHost else { return }
+            returnedFromCoverFlow = wasPresented && !isPresented
         }
         .background {
             GeometryReader { proxy in
@@ -557,151 +557,21 @@ struct FileBrowserView: View {
         .overlay(alignment: .bottom) {
             browserStatusOverlay
         }
-        .modifier(
-            RemoteDownloadDestinationFlow(
-                step: $downloadDestinationStep,
-                inboxStore: inboxStore,
-                itemCount: pendingDownloadItems.count,
-                onChoose: startDownload
-            )
-        )
         .safeAreaInset(edge: .bottom) {
             if isSelecting {
                 selectionBar
             }
         }
         .animation(.easeInOut(duration: 0.2), value: shareCoordinator.isPreparing)
-        .alert(errorTitle, isPresented: errorBinding) {
-            Button("확인", role: .cancel) {
-                viewModel.errorMessage = nil
-                shareCoordinator.errorMessage = nil
-                operationCoordinator.dismissError()
-                thumbnailPreheater.errorMessage = nil
-                downloadErrorMessage = nil
-            }
-        } message: {
-            Text(
-                shareCoordinator.errorMessage
-                    ?? operationCoordinator.errorMessage
-                    ?? thumbnailPreheater.errorMessage
-                    ?? downloadErrorMessage
-                    ?? viewModel.errorMessage
-                    ?? ""
-            )
-        }
-        .sheet(
-            item: $shareCoordinator.preparedShare,
-            onDismiss: { shareCoordinator.shareSheetDidDismiss() }
-        ) { preparedShare in
-            RemoteFileActivityView(fileURLs: preparedShare.fileURLs)
-        }
-        .fullScreenCover(item: $trailerSelection) { selection in
-            VideoTrailerView(items: selection.items, service: viewModel.service, mode: selection.mode)
-        }
-        .modifier(
-            FileBrowserPhoneHardModifier(
-                isPhoneHard: isPhoneHard,
-                items: viewModel.items,
-                inboxStore: inboxStore,
-                isImportingFromGooglePhotos: $isImportingFromGooglePhotos,
-                isChoosingNASUploadDestination: $isChoosingNASUploadDestination,
-                nasUploadSources: pendingNASUploadSources,
-                reloadItems: { await viewModel.reloadAfterCurrentLoad() },
-                nasUploadDidClose: {
-                    pendingNASUploadSources = []
-                    endSelection()
-                }
-            )
-        )
-        .fullScreenCover(item: $previewItem) { item in
-            RemotePreviewView(
-                item: item,
-                sequentialItems: sequentialPreviewItems(for: item),
-                service: viewModel.service
-            )
-        }
-        .confirmationDialog(
-            deleteConfirmationTitle,
-            isPresented: deleteConfirmationBinding,
-            titleVisibility: .visible
-        ) {
-            Button("삭제", role: .destructive) {
-                let items = pendingDeleteItems
-                pendingDeleteItems = []
-                operationCoordinator.delete(items, using: viewModel.service) {
-                    await viewModel.reloadAfterCurrentLoad()
-                }
-                endSelection()
-            }
-            Button("취소", role: .cancel) {
-                pendingDeleteItems = []
-            }
-        } message: {
-            Text("폴더를 선택한 경우 안의 파일도 함께 삭제됩니다. 이 작업은 되돌릴 수 없습니다.")
-        }
-        .confirmationDialog(
-            folderTrailerScopeMode == .mediaMusic ? "음악을 입힐 범위" : "예고편에 포함할 범위",
-            isPresented: Binding(
-                get: { folderTrailerScopeChoice != nil },
-                set: { if !$0 { folderTrailerScopeChoice = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            Button("현재 폴더만") {
-                if let folder = folderTrailerScopeChoice {
-                    folderTrailerScopeChoice = nil
-                    collectFolderTrailerCandidates(folder, recursive: false)
-                }
-            }
-            Button("하위 폴더 포함") {
-                if let folder = folderTrailerScopeChoice {
-                    folderTrailerScopeChoice = nil
-                    collectFolderTrailerCandidates(folder, recursive: true)
-                }
-            }
-            Button("취소", role: .cancel) { folderTrailerScopeChoice = nil }
-        }
-        .alert("이름 수정", isPresented: renameAlertBinding) {
-            TextField("새 이름", text: $renameText)
-            Button("취소", role: .cancel) {
-                renameItem = nil
-            }
-            Button("변경") {
-                guard let item = renameItem else { return }
-                let name = renameText
-                renameItem = nil
-                operationCoordinator.rename(item, to: name, using: viewModel.service) {
-                    await viewModel.reloadAfterCurrentLoad()
-                }
-            }
-        }
-        .alert("새 폴더", isPresented: $isCreatingFolder) {
-            TextField("폴더 이름", text: $newFolderName)
-            Button("취소", role: .cancel) {}
-            Button("만들기") {
-                let name = newFolderName
-                operationCoordinator.createFolder(
-                    named: name,
-                    in: viewModel.path,
-                    using: viewModel.service
-                ) {
-                    await viewModel.reloadAfterCurrentLoad()
-                }
-            }
-        }
-        .alert("음악을 재생할 수 없습니다", isPresented: Binding(
-            get: { inlineMusic.failure != nil },
-            set: { if !$0 { inlineMusic.failure = nil } }
-        )) {
-            Button("확인", role: .cancel) { inlineMusic.failure = nil }
-        } message: {
-            Text(inlineMusic.failure ?? "")
-        }
         .onDisappear {
             inlineMusic.stop()
             // 홈 작업 호스트는 예고편 전체 화면 같은 후속 화면이 열릴 때도 사라진 것으로 불린다.
             // 그 후속 작업을 끊지 않도록 취소하지 않고, 호스트는 모두 끝난 뒤에만 정리된다.
             guard !isFavoriteActionHost else { return }
+            // 전체 창 플로잉·미리보기·예고편이 위에 떠 있는 동안에는 이 화면의 작업과 출처를 끝내지 않는다.
+            guard !isModalPresentedOverBrowser else { return }
+            // 정말 떠나는 것이므로 플로잉 복귀 표식은 끝난다. 다시 돌아오면 새 화면으로 시작한다.
+            returnedFromCoverFlow = false
             shareCoordinator.cancelPreparation()
             cancelDownload()
             thumbnailPreheater.cancel()
@@ -723,11 +593,240 @@ struct FileBrowserView: View {
         .onChange(of: isSelecting) { _, _ in
             reconcileAutomaticCoverFlow()
         }
+        .onChange(of: previewItem == nil && trailerSelection == nil) { _, _ in
+            reconcileAutomaticCoverFlow()
+        }
         .onChange(of: shareCoordinator.preparedShare?.id) { _, preparedID in
             if preparedID != nil {
                 endSelection(allowDuringSharePreparation: true)
             }
         }
+        .onChange(of: isImportingFromGooglePhotos) { _, isPresenting in
+            // 구글 포토 가져오기는 이 화면의 내비게이션 스택으로 이동하므로 플로잉 커버를 먼저 닫는다.
+            if isPresenting, presentsCoverFlowFullWindow {
+                closeCoverFlowOrGoBack()
+            }
+        }
+        .modifier(
+            FileBrowserPhoneHardModifier(
+                isPhoneHard: isPhoneHard,
+                items: viewModel.items,
+                inboxStore: inboxStore,
+                isImportingFromGooglePhotos: $isImportingFromGooglePhotos,
+                isChoosingNASUploadDestination: gated(
+                    $isChoosingNASUploadDestination,
+                    !presentsCoverFlowFullWindow
+                ),
+                nasUploadSources: pendingNASUploadSources,
+                reloadItems: { await viewModel.reloadAfterCurrentLoad() },
+                nasUploadDidClose: {
+                    pendingNASUploadSources = []
+                    endSelection()
+                }
+            )
+        )
+        .fullScreenCover(
+            isPresented: Binding(
+                get: { presentsCoverFlowFullWindow },
+                set: { isPresented in
+                    // 시스템 취소(아래로 쓸기·Esc)도 뒤로 버튼과 같은 닫기 동작이다.
+                    if !isPresented, presentsCoverFlowFullWindow {
+                        closeCoverFlowOrGoBack()
+                    }
+                }
+            ),
+            onDismiss: coverFlowCoverDidDismiss
+        ) {
+            coverFlowCover
+        }
+    }
+
+    /// Everything the browser can present as a modal. SwiftUI cannot present
+    /// from a page that is already presenting, so this is applied to the page
+    /// while it is on top and to the full-window Flowing cover while that is
+    /// up; the inactive copy sees every binding as closed and never writes.
+    private func browserPresentations<C: View>(_ content: C, isActive: Bool) -> some View {
+        content
+        .fileImporter(
+            isPresented: gated($isImportingFiles, isActive),
+            allowedContentTypes: [.data, .content],
+            allowsMultipleSelection: true
+        ) { result in
+            switch result {
+            case .success(let urls):
+                guard !urls.isEmpty else { return }
+                operationCoordinator.upload(
+                    urls.map { LocalUploadSource(url: $0) },
+                    into: viewModel.path,
+                    using: viewModel.service,
+                    conflictPolicy: .keepBoth,
+                    operationName: isPhoneHard ? "가져오기" : "업로드"
+                ) {
+                    await viewModel.reloadAfterCurrentLoad()
+                }
+            case .failure(let error):
+                let cocoaError = error as NSError
+                guard !(error is CancellationError),
+                      !(cocoaError.domain == NSCocoaErrorDomain
+                        && cocoaError.code == CocoaError.Code.userCancelled.rawValue) else {
+                    return
+                }
+                operationCoordinator.errorMessage = error.localizedDescription
+            }
+        }
+        .fileDialogConfirmationLabel(isPhoneHard ? "가져오기" : "업로드")
+        .fileDialogMessage(
+            isPhoneHard ? "현재 폴더로 가져올 파일을 선택하세요." : "현재 폴더에 올릴 파일을 선택하세요."
+        )
+        .modifier(
+            RemoteDownloadDestinationFlow(
+                step: gated($downloadDestinationStep, isActive),
+                inboxStore: inboxStore,
+                itemCount: pendingDownloadItems.count,
+                onChoose: startDownload
+            )
+        )
+        .alert(errorTitle, isPresented: gated(errorBinding, isActive)) {
+            Button("확인", role: .cancel) {
+                viewModel.errorMessage = nil
+                shareCoordinator.errorMessage = nil
+                operationCoordinator.dismissError()
+                thumbnailPreheater.errorMessage = nil
+                downloadErrorMessage = nil
+            }
+        } message: {
+            Text(
+                shareCoordinator.errorMessage
+                    ?? operationCoordinator.errorMessage
+                    ?? thumbnailPreheater.errorMessage
+                    ?? downloadErrorMessage
+                    ?? viewModel.errorMessage
+                    ?? ""
+            )
+        }
+        .sheet(
+            item: gated($shareCoordinator.preparedShare, isActive),
+            onDismiss: { shareCoordinator.shareSheetDidDismiss() }
+        ) { preparedShare in
+            RemoteFileActivityView(fileURLs: preparedShare.fileURLs)
+        }
+        .fullScreenCover(item: gated($trailerSelection, isActive)) { selection in
+            VideoTrailerView(items: selection.items, service: viewModel.service, mode: selection.mode)
+        }
+        .sheet(
+            // 폰하드 수정자의 같은 시트는 페이지가 맨 위일 때만 쓰고, 플로잉 커버 위에서는 여기서 연다.
+            isPresented: gated($isChoosingNASUploadDestination, isActive && presentsCoverFlowFullWindow),
+            onDismiss: {
+                pendingNASUploadSources = []
+                endSelection()
+            }
+        ) {
+            InboxUploadDestinationView(sources: pendingNASUploadSources)
+        }
+        .fullScreenCover(item: gated($previewItem, isActive)) { item in
+            RemotePreviewView(
+                item: item,
+                sequentialItems: sequentialPreviewItems(for: item),
+                service: viewModel.service
+            )
+        }
+        .confirmationDialog(
+            deleteConfirmationTitle,
+            isPresented: gated(deleteConfirmationBinding, isActive),
+            titleVisibility: .visible
+        ) {
+            Button("삭제", role: .destructive) {
+                let items = pendingDeleteItems
+                pendingDeleteItems = []
+                operationCoordinator.delete(items, using: viewModel.service) {
+                    await viewModel.reloadAfterCurrentLoad()
+                }
+                endSelection()
+            }
+            Button("취소", role: .cancel) {
+                pendingDeleteItems = []
+            }
+        } message: {
+            Text("폴더를 선택한 경우 안의 파일도 함께 삭제됩니다. 이 작업은 되돌릴 수 없습니다.")
+        }
+        .confirmationDialog(
+            folderTrailerScopeMode == .mediaMusic ? "음악을 입힐 범위" : "예고편에 포함할 범위",
+            isPresented: gated(
+                Binding(
+                    get: { folderTrailerScopeChoice != nil },
+                    set: { if !$0 { folderTrailerScopeChoice = nil } }
+                ),
+                isActive
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("현재 폴더만") {
+                if let folder = folderTrailerScopeChoice {
+                    folderTrailerScopeChoice = nil
+                    collectFolderTrailerCandidates(folder, recursive: false)
+                }
+            }
+            Button("하위 폴더 포함") {
+                if let folder = folderTrailerScopeChoice {
+                    folderTrailerScopeChoice = nil
+                    collectFolderTrailerCandidates(folder, recursive: true)
+                }
+            }
+            Button("취소", role: .cancel) { folderTrailerScopeChoice = nil }
+        }
+        .alert("이름 수정", isPresented: gated(renameAlertBinding, isActive)) {
+            TextField("새 이름", text: $renameText)
+            Button("취소", role: .cancel) {
+                renameItem = nil
+            }
+            Button("변경") {
+                guard let item = renameItem else { return }
+                let name = renameText
+                renameItem = nil
+                operationCoordinator.rename(item, to: name, using: viewModel.service) {
+                    await viewModel.reloadAfterCurrentLoad()
+                }
+            }
+        }
+        .alert("새 폴더", isPresented: gated($isCreatingFolder, isActive)) {
+            TextField("폴더 이름", text: $newFolderName)
+            Button("취소", role: .cancel) {}
+            Button("만들기") {
+                let name = newFolderName
+                operationCoordinator.createFolder(
+                    named: name,
+                    in: viewModel.path,
+                    using: viewModel.service
+                ) {
+                    await viewModel.reloadAfterCurrentLoad()
+                }
+            }
+        }
+        .alert("음악을 재생할 수 없습니다", isPresented: gated(
+            Binding(
+                get: { inlineMusic.failure != nil },
+                set: { if !$0 { inlineMusic.failure = nil } }
+            ),
+            isActive
+        )) {
+            Button("확인", role: .cancel) { inlineMusic.failure = nil }
+        } message: {
+            Text(inlineMusic.failure ?? "")
+        }
+    }
+
+    private func gated(_ binding: Binding<Bool>, _ isActive: Bool) -> Binding<Bool> {
+        Binding(
+            get: { isActive && binding.wrappedValue },
+            set: { if isActive { binding.wrappedValue = $0 } }
+        )
+    }
+
+    private func gated<Value>(_ binding: Binding<Value?>, _ isActive: Bool) -> Binding<Value?> {
+        Binding(
+            get: { isActive ? binding.wrappedValue : nil },
+            set: { if isActive { binding.wrappedValue = $0 } }
+        )
     }
 
     @ToolbarContentBuilder
@@ -926,16 +1025,16 @@ struct FileBrowserView: View {
         )
         .overlay {
             FileBrowserBackTouchTarget(
-                goBack: { dismiss() },
+                goBack: closeCoverFlowOrGoBack,
                 goHome: dashboardAction
             )
             .accessibilityHidden(true)
         }
-        .accessibilityLabel("뒤로")
+        .accessibilityLabel(isPhoneIdiom ? "뒤로" : "플로잉 닫기")
         .accessibilityHint("길게 누르면 NasFinder 첫 화면으로 바로 이동합니다.")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction {
-            dismiss()
+            closeCoverFlowOrGoBack()
         }
         .accessibilityAction(named: "NasFinder 첫 화면") {
             dashboardAction()
@@ -1006,7 +1105,7 @@ struct FileBrowserView: View {
     }
 
     @ViewBuilder
-    private var browserContent: some View {
+    private func browserContent(for style: LayoutStyle) -> some View {
         if viewModel.isLoading && viewModel.items.isEmpty {
             ProgressView("불러오는 중…")
         } else if let error = viewModel.errorMessage, viewModel.items.isEmpty {
@@ -1037,11 +1136,11 @@ struct FileBrowserView: View {
         } else if displayedItems.isEmpty {
             ContentUnavailableView.search(text: searchText)
         } else {
-            switch layoutStyle {
+            switch style {
             case .list:
                 list
             case .smallThumbnails, .largeThumbnails:
-                thumbnailGrid(for: layoutStyle)
+                thumbnailGrid(for: style)
             case .coverFlow:
                 FileBrowserCoverFlowView(
                     items: displayedItems,
@@ -1075,15 +1174,105 @@ struct FileBrowserView: View {
             let style = LayoutStyle(rawValue: storedSelectionLayoutStyle) ?? .smallThumbnails
             return style == .coverFlow ? .smallThumbnails : style
         }
-        return LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
+        let style = LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
+        // The hidden Home favorite-action host never presents Flowing.
+        return isFavoriteActionHost && style == .coverFlow ? .largeThumbnails : style
+    }
+
+    /// Flowing is presented as a full-screen cover so it covers the whole
+    /// content window, including the wide Home/NAS sidebar that sits beside
+    /// this page. The page itself keeps showing the mode Flowing returns to.
+    private var presentsCoverFlowFullWindow: Bool {
+        layoutStyle == .coverFlow
+    }
+
+    private var inlineLayoutStyle: LayoutStyle {
+        guard layoutStyle == .coverFlow else { return layoutStyle }
+        return explicitCoverFlowReturnStyle ?? .largeThumbnails
+    }
+
+    /// Preview, trailer and the Flowing cover sit above this page; while any is
+    /// up, the page disappearing must not cancel its downloads, shares or source.
+    private var isModalPresentedOverBrowser: Bool {
+        presentsCoverFlowFullWindow || previewItem != nil || trailerSelection != nil
+    }
+
+    private var coverFlowCover: AnyView {
+        AnyView(
+            browserPresentations(
+                NavigationStack {
+                    browserContent(for: .coverFlow)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                        .background(SkyBreezeTheme.contentBackground.ignoresSafeArea())
+                        .tint(SkyBreezeTheme.accent)
+                        .navigationTitle("")
+                        .navigationBarTitleDisplayMode(.inline)
+                        .modifier(
+                            FileBrowserNavigationAppearanceModifier(
+                                isCoverFlow: true,
+                                usesDarkBackground: coverFlowUsesDarkBackground
+                            )
+                        )
+                        .modifier(FileBrowserCoverFlowChromeModifier(isActive: true))
+                        .modifier(
+                            FileBrowserSearchModifier(
+                                isEnabled: !isEmbeddedSourceRoot,
+                                text: $searchText,
+                                isPresented: $isSearchPresented
+                            )
+                        )
+                        .overlay { coverFlowNavigationOverlay }
+                        .overlay(alignment: .bottom) { browserStatusOverlay }
+                        .background {
+                            GeometryReader { proxy in
+                                Color.clear
+                                    .onAppear { updateBrowserContentSize(proxy.size) }
+                                    .onChange(of: proxy.size) { _, size in
+                                        updateBrowserContentSize(size)
+                                    }
+                            }
+                        }
+                },
+                isActive: true
+            )
+        )
+    }
+
+    private func coverFlowCoverDidDismiss() {
+        guard let folder = folderToOpenAfterCoverFlow else { return }
+        folderToOpenAfterCoverFlow = nil
+        navigatedFolder = folder
+    }
+
+    /// iPhone enters Flowing automatically from a landscape poster page. iPad
+    /// and Mac list 플로잉 as a fourth mode and enter it only when chosen.
+    private var isPhoneIdiom: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone
     }
 
     private var availableLayoutStyles: [LayoutStyle] {
-        LayoutStyle.allCases.filter { $0 != .coverFlow }
+        LayoutStyle.allCases.filter {
+            $0 != .coverFlow || (onPickMedia == nil && !isPhoneIdiom)
+        }
+    }
+
+    /// Every close of Flowing (back button, system cancel, selection, rotation
+    /// back to portrait) is this one action on every device: return to the
+    /// previous view mode in the same folder and sort. The navigation stack is
+    /// never popped; on iPhone the automatic entry stays off until the page
+    /// stops qualifying, so closing does not re-enter at once.
+    private func closeCoverFlowOrGoBack() {
+        guard layoutStyle == .coverFlow else { return }
+        let returnStyle = explicitCoverFlowReturnStyle ?? .largeThumbnails
+        explicitCoverFlowReturnStyle = nil
+        coverFlowEnteredFromPoster = false
+        suppressAutomaticCoverFlow = true
+        storedLayoutStyle = returnStyle.rawValue
     }
 
     private func updateCoverFlowOrientation(for style: LayoutStyle) {
         if style == .coverFlow,
+           isPhoneIdiom,
            !coverFlowEnteredFromPoster,
            !isRequestingCoverFlowOrientation {
             FileBrowserOrientationController.beginCoverFlow()
@@ -1103,13 +1292,26 @@ struct FileBrowserView: View {
 
     private func reconcileAutomaticCoverFlow() {
         guard onPickMedia == nil, !isFavoriteActionHost else { return }
-        guard Date.now >= suppressAutomaticCoverFlowUntil else { return }
+        if !isPhoneIdiom {
+            // iPad/Mac: selecting files leaves the explicit Flowing view for the
+            // previous mode; nothing is ever presented automatically.
+            if isSelecting, layoutStyle == .coverFlow {
+                closeCoverFlowOrGoBack()
+            }
+            return
+        }
+        // 미리보기·예고편이 떠 있는 동안에는 플로잉을 열거나 닫지 않는다. 닫힌 뒤 다시 맞춘다.
+        guard previewItem == nil, trailerSelection == nil else { return }
         let shouldPresent = FileBrowserOverflowPresentationPolicy
             .shouldPresentPosterAsOverflow(
                 contentSize: browserContentSize,
                 isSelecting: isSelecting,
                 hasItems: !displayedItems.isEmpty
             )
+        if !shouldPresent {
+            suppressAutomaticCoverFlow = false
+        }
+        if shouldPresent, suppressAutomaticCoverFlow { return }
         if shouldPresent,
            layoutStyle == .largeThumbnails {
             coverFlowEnteredFromPoster = true
@@ -1328,7 +1530,14 @@ struct FileBrowserView: View {
                         ) {
                             performMorePanelAction {
                                 coverFlowEnteredFromPoster = false
-                                suppressAutomaticCoverFlowUntil = Date.now.addingTimeInterval(0.8)
+                                suppressAutomaticCoverFlow = true
+                                if style == .coverFlow {
+                                    if layoutStyle != .coverFlow {
+                                        explicitCoverFlowReturnStyle = layoutStyle
+                                    }
+                                } else {
+                                    explicitCoverFlowReturnStyle = nil
+                                }
                                 storedLayoutStyle = style.rawValue
                             }
                         }
@@ -1835,7 +2044,13 @@ struct FileBrowserView: View {
             guard !shareCoordinator.isPreparing else { return }
             toggleSelection(for: item)
         case .openFolder:
-            navigatedFolder = item
+            if presentsCoverFlowFullWindow {
+                // 플로잉 커버가 닫힌 뒤(이전 보기로 복귀) 이 스택에 폴더를 연다.
+                folderToOpenAfterCoverFlow = item
+                closeCoverFlowOrGoBack()
+            } else {
+                navigatedFolder = item
+            }
         case .preview:
             guard canBeginUserPresentation else { return }
             inlineMusic.stop()

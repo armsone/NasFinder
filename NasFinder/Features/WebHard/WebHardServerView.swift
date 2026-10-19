@@ -166,14 +166,22 @@ private enum WebHardFileLayoutStyle: String, CaseIterable, Identifiable {
     case list
     case smallThumbnails
     case largeThumbnails
+    case coverFlow
 
     var id: String { rawValue }
+
+    /// iPhone enters 플로잉 automatically from a landscape poster page; iPad and
+    /// Mac list it as an explicit fourth mode.
+    static func selectableCases(isPhone: Bool) -> [Self] {
+        isPhone ? [.list, .smallThumbnails, .largeThumbnails] : allCases
+    }
 
     var title: String {
         switch self {
         case .list: "자세히"
-        case .smallThumbnails: "작은 썸네일"
+        case .smallThumbnails: "썸네일"
         case .largeThumbnails: "포스터"
+        case .coverFlow: "플로잉"
         }
     }
 
@@ -182,6 +190,7 @@ private enum WebHardFileLayoutStyle: String, CaseIterable, Identifiable {
         case .list: "list.bullet"
         case .smallThumbnails: "square.grid.3x3"
         case .largeThumbnails: "square.grid.2x2"
+        case .coverFlow: "rectangle.stack.fill"
         }
     }
 }
@@ -587,6 +596,7 @@ struct WebHardServerView: View {
     private var coverFlowUsesDarkBackground = false
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.light.rawValue
+    @State private var coverFlowReturnStyle: WebHardFileLayoutStyle?
     @State private var shareItem: WebHardShareItem?
     @State private var deleteCandidate: WebHardFileItem?
     @State private var contentSize = CGSize.zero
@@ -688,12 +698,19 @@ struct WebHardServerView: View {
     }
 
     private var showsCoverFlow: Bool {
-        layoutStyle == .largeThumbnails
-            && FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
-                contentSize: contentSize,
-                isSelecting: false,
-                hasItems: !controller.files.isEmpty
-            )
+        if isPhoneIdiom {
+            return layoutStyle == .largeThumbnails
+                && FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
+                    contentSize: contentSize,
+                    isSelecting: false,
+                    hasItems: !controller.files.isEmpty
+                )
+        }
+        return layoutStyle == .coverFlow && !controller.files.isEmpty
+    }
+
+    private var isExplicitCoverFlow: Bool {
+        !isPhoneIdiom && layoutStyle == .coverFlow
     }
 
     private func updateContentSize(_ size: CGSize) {
@@ -726,7 +743,9 @@ struct WebHardServerView: View {
             GeometryReader { geometry in
                 HStack(spacing: ui(8)) {
                     Button {
-                        if controller.currentPath == "/" {
+                        if isExplicitCoverFlow {
+                            closeExplicitCoverFlow()
+                        } else if controller.currentPath == "/" {
                             dismiss()
                         } else {
                             controller.navigateUp()
@@ -746,7 +765,11 @@ struct WebHardServerView: View {
                         radius: 8,
                         y: 2
                     )
-                    .accessibilityLabel(controller.currentPath == "/" ? "폰하드 닫기" : "상위 폴더")
+                    .accessibilityLabel(
+                        isExplicitCoverFlow
+                            ? "플로잉 닫기"
+                            : controller.currentPath == "/" ? "폰하드 닫기" : "상위 폴더"
+                    )
 
                     Text(controller.currentPath == "/" ? "폰하드" : controller.currentPath)
                         .font(.ui(.subheadline).weight(.medium))
@@ -779,7 +802,7 @@ struct WebHardServerView: View {
                         radius: 8,
                         y: 2
                     )
-                    .accessibilityLabel("오버플로우 배경")
+                    .accessibilityLabel("플로잉 배경")
                 }
                 .padding(.horizontal, ui(12))
                 .padding(.top, geometry.safeAreaInsets.top + ui(4))
@@ -807,7 +830,19 @@ struct WebHardServerView: View {
     }
 
     private var layoutStyle: WebHardFileLayoutStyle {
-        WebHardFileLayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
+        let style = WebHardFileLayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
+        return style == .coverFlow && isPhoneIdiom ? .largeThumbnails : style
+    }
+
+    private var isPhoneIdiom: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone
+    }
+
+    /// iPad/Mac close an explicitly chosen 플로잉 back to the previous view mode
+    /// in the same folder, without leaving the folder or the screen.
+    private func closeExplicitCoverFlow() {
+        storedLayoutStyle = (coverFlowReturnStyle ?? .largeThumbnails).rawValue
+        coverFlowReturnStyle = nil
     }
 
     private var filesSection: some View {
@@ -860,8 +895,9 @@ struct WebHardServerView: View {
                     .truncationMode(.middle)
                 Spacer()
                 HStack(spacing: ui(8)) {
-                    ForEach(WebHardFileLayoutStyle.allCases) { style in
+                    ForEach(WebHardFileLayoutStyle.selectableCases(isPhone: isPhoneIdiom)) { style in
                         Button {
+                            coverFlowReturnStyle = style == .coverFlow ? layoutStyle : nil
                             storedLayoutStyle = style.rawValue
                         } label: {
                             Image(systemName: style.systemImage)

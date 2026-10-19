@@ -30,6 +30,42 @@ actor SuperThumbnailCache {
         try? Data(contentsOf: fileURL(forKey: key), options: .mappedIfSafe)
     }
 
+    /// Version stamp of a stored entry: the NAS Super Thumbnail's modification
+    /// date when the entry was restored from the Vault, otherwise the local
+    /// write time. It is the file's own modification date, so no extra
+    /// metadata file or schema exists, and older entries keep working.
+    func storedVersion(forKey key: String) -> Date? {
+        let attributes = try? fileManager.attributesOfItem(atPath: fileURL(forKey: key).path)
+        return attributes?[.modificationDate] as? Date
+    }
+
+    /// Byte size of the stored raw JPEG payload (file attribute only, no read).
+    /// Stored bytes are the exact Vault payload, so this is comparable with the
+    /// NAS record size; decoded image sizes are never compared.
+    func storedByteSize(forKey key: String) -> Int64? {
+        let attributes = try? fileManager.attributesOfItem(atPath: fileURL(forKey: key).path)
+        return (attributes?[.size] as? NSNumber)?.int64Value
+    }
+
+    /// A NAS record is newer when its mtime is strictly later than the local
+    /// version, or when both byte sizes are known and positive and differ.
+    /// Unknown values never invalidate; same size with same/unknown mtime is
+    /// treated as unchanged (a known limitation).
+    nonisolated static func nasRecordIsNewer(
+        nasModifiedAt: Date?,
+        nasSize: Int64?,
+        localVersion: Date,
+        localSize: Int64?
+    ) -> Bool {
+        if let nasModifiedAt, nasModifiedAt.timeIntervalSince(localVersion) > 1 {
+            return true
+        }
+        if let nasSize, let localSize, nasSize > 0, localSize > 0, nasSize != localSize {
+            return true
+        }
+        return false
+    }
+
     func containsData(forKey key: String) -> Bool {
         fileManager.fileExists(atPath: fileURL(forKey: key).path)
     }
@@ -43,7 +79,8 @@ actor SuperThumbnailCache {
     func store(
         _ data: Data,
         forKey key: String,
-        expectedGeneration: UInt64? = nil
+        expectedGeneration: UInt64? = nil,
+        nasModifiedAt: Date? = nil
     ) async {
         guard !data.isEmpty else { return }
         if let expectedGeneration, expectedGeneration != generation { return }
@@ -53,6 +90,13 @@ actor SuperThumbnailCache {
                 withIntermediateDirectories: true
             )
             try data.write(to: fileURL(forKey: key), options: .atomic)
+            if let nasModifiedAt {
+                // Compare NAS time with NAS time later, never with the phone clock.
+                try? fileManager.setAttributes(
+                    [.modificationDate: nasModifiedAt],
+                    ofItemAtPath: fileURL(forKey: key).path
+                )
+            }
             await FileProviderThumbnailCache.shared.store(data, forKey: key)
             await MainActor.run {
                 NotificationCenter.default.post(

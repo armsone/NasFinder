@@ -809,8 +809,15 @@ final class ThumbnailPreheater: ObservableObject {
                     }
                     throw CancellationError()
                 } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
-                    reachedDataLimit = true
-                    reachedPreviouslyUsedDataLimit = true
+                    // With no total quota only this item's own lease ran out:
+                    // skip it and keep advancing through the folder.
+                    let isUnboundedRun = appliedMaximumDataBytes == Int64.max
+                    if isUnboundedRun {
+                        failedCount += 1
+                    } else {
+                        reachedDataLimit = true
+                        reachedPreviouslyUsedDataLimit = true
+                    }
                     let trafficBudget = generationMode == .completeFile
                         ? RemoteVideoThumbnailTrafficBudget.completeFileShared
                         : service.connection.kind == .sftp
@@ -962,7 +969,10 @@ final class ThumbnailPreheater: ObservableObject {
                 ? "\(appliedMaximumDataBytes / 1_000_000) MB"
                 : "\(appliedMaximumDataBytes / (1_024 * 1_024)) MB"
             let suffix: String
-            if reachedPreviouslyUsedDataLimit {
+            if appliedMaximumDataBytes == Int64.max {
+                // Wi-Fi has no total quota; only a single item's lease ran out.
+                suffix = reachedDataLimit ? " · 일부 항목은 전송 한도로 건너뜀" : ""
+            } else if reachedPreviouslyUsedDataLimit {
                 suffix = " · 이 폴더의 \(limitText) 한도가 이미 소진됨"
             } else if reachedDataLimit {
                 suffix = " · \(limitText) 한도에서 중지"
@@ -1363,16 +1373,20 @@ final class ThumbnailPreheater: ObservableObject {
         generationMode: RemoteVideoThumbnailGenerationMode,
         allowsConstrainedRun: Bool
     ) -> Int64 {
-        if generationMode == .completeFile {
-            return Self.maximumCompleteFileDataBytes
-        }
+        // Only an explicit constrained-network override can run off Wi-Fi
+        // (every other start requires unmetered Wi-Fi, or the local PhoneHard
+        // service). Those runs keep their previous cellular totals.
         if allowsConstrainedRun,
+           !bypassesNetworkRequirement(for: service),
            !ThumbnailNetworkMonitor.shared.isUnmeteredWiFi {
-            return Self.maximumCellularDataBytes
+            return generationMode == .completeFile
+                ? Self.maximumCompleteFileDataBytes
+                : Self.maximumCellularDataBytes
         }
-        return service.connection.kind == .synology
-            ? Self.maximumSynologyDataBytes
-            : Self.maximumSFTPDataBytes
+        // Wi-Fi runs have no total or session byte quota; the queue advances
+        // one bounded item at a time until the folder is done. Per-item leases
+        // still cap each transfer.
+        return Int64.max
     }
 
     private func bypassesNetworkRequirement(for service: any RemoteFileService) -> Bool {

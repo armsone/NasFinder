@@ -358,7 +358,16 @@ final class RemoteThumbnailLoader: ObservableObject {
     private static var negativeCacheExpirations: [NSString: RemoteThumbnailNegativeCacheEntry] = [:]
     private var loadedCacheKey: NSString?
     private var displayedImageCacheKey: NSString?
+    /// Rendered key of the item this loader currently serves. A slower, older
+    /// load for another item (the loader is reused when a card slot receives a
+    /// different item) must not publish its image into this loader.
+    private var activeCacheKey: NSString?
     private var operationID: UUID?
+    /// Bumped by every new request and by `cancelRetainedLoad`. A run captures
+    /// it once and may publish state only while it is still the latest
+    /// generation for the same key and not cancelled, whatever cache, Vault,
+    /// folder, video or network await it just returned from.
+    private var requestGeneration = 0
     private var loadedReloadVersion = 0
     private var retainedLoadIdentity: String?
     private var retainedLoadTask: Task<Void, Never>?
@@ -393,6 +402,7 @@ final class RemoteThumbnailLoader: ObservableObject {
         reloadVersion: Int,
         detectSkinToneDominance: Bool = false
     ) {
+        activeCacheKey = renderedImageCacheKey(for: item, size: size)
         restoreRenderedImageIfCached(
             item: item,
             size: size,
@@ -401,6 +411,8 @@ final class RemoteThumbnailLoader: ObservableObject {
         guard retainedLoadIdentity != identity else { return }
 
         retainedLoadTask?.cancel()
+        // The superseded run may still finish an await for this same key.
+        _ = beginRequestGeneration()
         // The replacement task must not lose a race with the cancelled task's
         // loaded-key guard. The displayed image has its own key and remains
         // visible while this request is restarted.
@@ -428,6 +440,34 @@ final class RemoteThumbnailLoader: ObservableObject {
         retainedLoadTask = nil
         retainedLoadIdentity = nil
         retainedLoadID = nil
+        // Cancelled without a replacement: nothing it still awaits may apply
+        // later, and the key is released so a later request can retry.
+        _ = beginRequestGeneration()
+        loadedCacheKey = nil
+    }
+
+    /// Starts a new request generation and detaches the previous run's loading
+    /// state, so only the newest request decides `isLoading`.
+    private func beginRequestGeneration() -> Int {
+        requestGeneration &+= 1
+        operationID = nil
+        isLoading = false
+        return requestGeneration
+    }
+
+    /// True only for the latest generation, still serving `cacheKey`, and not
+    /// cancelled. A cancelled run that is still the latest releases its key.
+    private func isCurrentRequest(_ generation: Int, _ cacheKey: NSString) -> Bool {
+        guard generation == requestGeneration, activeCacheKey == cacheKey else {
+            return false
+        }
+        if Task.isCancelled {
+            if loadedCacheKey == cacheKey {
+                loadedCacheKey = nil
+            }
+            return false
+        }
+        return true
     }
 
     private func restoreRenderedImageIfCached(
@@ -482,6 +522,8 @@ final class RemoteThumbnailLoader: ObservableObject {
         }
         guard loadedCacheKey != cacheKey else { return }
         loadedCacheKey = cacheKey
+        activeCacheKey = cacheKey
+        let generation = beginRequestGeneration()
 
         if displayedImageCacheKey != cacheKey {
             image = nil
@@ -503,18 +545,23 @@ final class RemoteThumbnailLoader: ObservableObject {
             isLoading = false
         }
 
-        // 1. Prioritize Super Thumbnail cache first
+        // 1. Prioritize Super Thumbnail cache first. The key already carries the
+        // original's id/mtime/size, so a changed original misses here. A hit is
+        // shown at once, then checked against the NAS record (listing only).
+        var cachedSuperKey = diskCacheKey
         var cachedSuperData = await SuperThumbnailCache.shared.data(forKey: diskCacheKey)
         if cachedSuperData == nil, requestedRemoteSize != .small {
             let smallKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
             cachedSuperData = await SuperThumbnailCache.shared.data(forKey: smallKey)
+            cachedSuperKey = smallKey
         }
+        guard isCurrentRequest(generation, cacheKey) else { return }
         if let diskData = cachedSuperData,
            let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
                data: diskData,
                maximumPixelSize: maximumPixelSize(for: size)
            ) {
-            try? Task.checkCancellation()
+            guard isCurrentRequest(generation, cacheKey) else { return }
             let diskImage = UIImage(
                 cgImage: decodedImage.image,
                 scale: UIScreen.main.scale,
@@ -526,16 +573,50 @@ final class RemoteThumbnailLoader: ObservableObject {
                 detectSkinToneDominance: detectSkinToneDominance
             )
             cache(diskImage, forKey: cacheKey)
+            // A NAS Super Thumbnail regenerated after this copy was stored
+            // replaces it; an unknown or equal NAS version keeps the local one.
+            let newerNAS = await newerNASSuperThumbnail(
+                for: item,
+                service: service,
+                localKey: cachedSuperKey
+            )
+            guard isCurrentRequest(generation, cacheKey) else { return }
+            if let newerNAS,
+               let newerDecoded = try? await RemoteThumbnailImageDecoder.downsample(
+                   data: newerNAS.data,
+                   maximumPixelSize: maximumPixelSize(for: size)
+               ) {
+                guard isCurrentRequest(generation, cacheKey) else { return }
+                let newerImage = UIImage(
+                    cgImage: newerDecoded.image,
+                    scale: UIScreen.main.scale,
+                    orientation: .up
+                )
+                setImage(
+                    newerImage,
+                    forKey: cacheKey,
+                    detectSkinToneDominance: detectSkinToneDominance
+                )
+                cache(newerImage, forKey: cacheKey)
+                await SuperThumbnailCache.shared.store(
+                    newerNAS.data,
+                    forKey: cachedSuperKey,
+                    nasModifiedAt: newerNAS.modifiedAt
+                )
+            }
             return
         }
 
         // 2. Prioritize valid NAS Super Thumbnail from .NasFinder-Vault before phone-generated thumbnails
-        if let vaultData = await SuperThumbnailVault.shared.data(for: item, service: service),
+        let fetchedVault = await SuperThumbnailVault.shared.versionedData(for: item, service: service)
+        let fetchedVaultData = fetchedVault?.data
+        guard isCurrentRequest(generation, cacheKey) else { return }
+        if let vaultData = fetchedVaultData,
            let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
                data: vaultData,
                maximumPixelSize: maximumPixelSize(for: size)
            ) {
-            try? Task.checkCancellation()
+            guard isCurrentRequest(generation, cacheKey) else { return }
             let vaultImage = UIImage(
                 cgImage: decodedImage.image,
                 scale: UIScreen.main.scale,
@@ -549,10 +630,14 @@ final class RemoteThumbnailLoader: ObservableObject {
             cache(vaultImage, forKey: cacheKey)
             await SuperThumbnailCache.shared.store(
                 vaultData,
-                forKey: diskCacheKey
+                forKey: diskCacheKey,
+                nasModifiedAt: fetchedVault?.modifiedAt
             )
             return
         }
+
+        // The Vault decode above is an await too.
+        guard isCurrentRequest(generation, cacheKey) else { return }
 
         // A rendered phone thumbnail may already be in memory. Check the NAS
         // vault first so a newly available Super Thumbnail still replaces it.
@@ -575,12 +660,13 @@ final class RemoteThumbnailLoader: ObservableObject {
             let smallKey = RemoteThumbnailCacheKey.remoteData(for: item, size: .small)
             cachedStandardData = await RemoteThumbnailDiskCache.shared.data(forKey: smallKey)
         }
+        guard isCurrentRequest(generation, cacheKey) else { return }
         if let diskData = cachedStandardData,
            let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
                data: diskData,
                maximumPixelSize: maximumPixelSize(for: size)
            ) {
-            try? Task.checkCancellation()
+            guard isCurrentRequest(generation, cacheKey) else { return }
             let diskImage = UIImage(
                 cgImage: decodedImage.image,
                 scale: UIScreen.main.scale,
@@ -594,6 +680,8 @@ final class RemoteThumbnailLoader: ObservableObject {
             cache(diskImage, forKey: cacheKey)
             return
         }
+        // The standard-cache decode above is an await too.
+        guard isCurrentRequest(generation, cacheKey) else { return }
         if isNegativelyCached(cacheKey) {
             image = nil
             isLoading = false
@@ -604,6 +692,7 @@ final class RemoteThumbnailLoader: ObservableObject {
             return
         }
         let diskCacheGeneration = await RemoteThumbnailDiskCache.shared.currentGeneration()
+        guard isCurrentRequest(generation, cacheKey) else { return }
 
         let currentOperationID = UUID()
         operationID = currentOperationID
@@ -635,12 +724,14 @@ final class RemoteThumbnailLoader: ObservableObject {
             // SFTP video previews deliberately avoid downloading the complete
             // original when a bounded head/tail range is not sufficient.
             // Keep the video icon visible and allow a later reload to retry.
+            guard isCurrentRequest(generation, cacheKey) else { return }
             cacheNegative(cacheKey, for: 5 * 60)
             return
         } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
             // The shared cellular pool is spent. Pause briefly instead of
             // recording a long failure; the pool resets on Wi-Fi and a
             // network change retries the card.
+            guard isCurrentRequest(generation, cacheKey) else { return }
             RemoteThumbnailActivityTracker.shared.reachedTrafficLimit(
                 maximumBytes: Int(ThumbnailPreheater.maximumCellularDataBytes)
             )
@@ -654,12 +745,15 @@ final class RemoteThumbnailLoader: ObservableObject {
         } catch {
             // Backends may not have a thumbnail for every media format. In
             // that case, fall through to local Quick Look generation.
+            guard isCurrentRequest(generation, cacheKey) else { return }
             if service.connection.kind == .sftp, item.isVideo {
                 cacheNegative(cacheKey, for: 60)
                 return
             }
             remoteThumbnailData = nil
         }
+        // A successful fetch is applied only if this run is still the newest.
+        guard isCurrentRequest(generation, cacheKey) else { return }
 
         if let remoteThumbnailData {
             do {
@@ -671,9 +765,11 @@ final class RemoteThumbnailLoader: ObservableObject {
                     )
                 }
                 try Task.checkCancellation()
-                guard operationID == currentOperationID else { return }
-                guard await RemoteThumbnailDiskCache.shared.currentGeneration()
-                    == diskCacheGeneration else {
+                let remoteDiskGenerationIsCurrent = await RemoteThumbnailDiskCache.shared
+                    .currentGeneration() == diskCacheGeneration
+                guard isCurrentRequest(generation, cacheKey),
+                      operationID == currentOperationID else { return }
+                guard remoteDiskGenerationIsCurrent else {
                     loadedCacheKey = nil
                     return
                 }
@@ -707,6 +803,7 @@ final class RemoteThumbnailLoader: ObservableObject {
                     }
                     return
                 }
+                guard isCurrentRequest(generation, cacheKey) else { return }
                 // A malformed server thumbnail may still have a valid original,
                 // except when doing so would require a complete remote movie.
                 if item.isVideo,
@@ -752,9 +849,11 @@ final class RemoteThumbnailLoader: ObservableObject {
                     )
                 }
                 try Task.checkCancellation()
-                guard operationID == currentOperationID else { return }
-                guard await RemoteThumbnailDiskCache.shared.currentGeneration()
-                    == diskCacheGeneration else {
+                let generatedDiskGenerationIsCurrent = await RemoteThumbnailDiskCache.shared
+                    .currentGeneration() == diskCacheGeneration
+                guard isCurrentRequest(generation, cacheKey),
+                      operationID == currentOperationID else { return }
+                guard generatedDiskGenerationIsCurrent else {
                     loadedCacheKey = nil
                     return
                 }
@@ -782,6 +881,7 @@ final class RemoteThumbnailLoader: ObservableObject {
                 }
                 return
             } catch RemoteVideoThumbnailGenerationError.trafficBudgetExhausted {
+                guard isCurrentRequest(generation, cacheKey) else { return }
                 RemoteThumbnailActivityTracker.shared.reachedTrafficLimit(
                     maximumBytes: ThumbnailNetworkMonitor.shared.isUnmeteredWiFi
                         ? RemoteVideoThumbnailTrafficBudget.defaultMaximumFolderBytes
@@ -796,11 +896,13 @@ final class RemoteThumbnailLoader: ObservableObject {
                     }
                     return
                 }
+                guard isCurrentRequest(generation, cacheKey) else { return }
                 cacheNegative(cacheKey, for: 5 * 60)
                 return
             }
         }
 
+        guard isCurrentRequest(generation, cacheKey) else { return }
         guard ThumbnailNetworkMonitor.shared.isUnmeteredWiFi else {
             cacheNegative(cacheKey, for: 30)
             return
@@ -821,9 +923,11 @@ final class RemoteThumbnailLoader: ObservableObject {
                 )
             }
             try Task.checkCancellation()
-            guard operationID == currentOperationID else { return }
-            guard await RemoteThumbnailDiskCache.shared.currentGeneration()
-                == diskCacheGeneration else {
+            let quickLookDiskGenerationIsCurrent = await RemoteThumbnailDiskCache.shared
+                .currentGeneration() == diskCacheGeneration
+            guard isCurrentRequest(generation, cacheKey),
+                  operationID == currentOperationID else { return }
+            guard quickLookDiskGenerationIsCurrent else {
                 loadedCacheKey = nil
                 return
             }
@@ -856,10 +960,35 @@ final class RemoteThumbnailLoader: ObservableObject {
                 return
             }
             // A file icon remains visible when a thumbnail cannot be generated.
-            if operationID == currentOperationID {
+            if isCurrentRequest(generation, cacheKey), operationID == currentOperationID {
                 cacheNegative(cacheKey, for: 60)
             }
         }
+    }
+
+    /// Metadata-only freshness check of a local Super Thumbnail against its NAS
+    /// record: the shared Vault listing supplies the record's modification
+    /// date and the local entry carries the NAS date it was restored from (or
+    /// its write time). Only a strictly newer NAS record is downloaded; an
+    /// unreadable listing, missing record or unknown date keeps the local copy.
+    private func newerNASSuperThumbnail(
+        for item: RemoteFileItem,
+        service: any RemoteFileService,
+        localKey: String
+    ) async -> (data: Data, modifiedAt: Date?)? {
+        guard let localVersion = await SuperThumbnailCache.shared.storedVersion(forKey: localKey),
+              let nasVersion = await SuperThumbnailVault.shared.recordVersion(
+                  for: item,
+                  service: service
+              ),
+              SuperThumbnailCache.nasRecordIsNewer(
+                  nasModifiedAt: nasVersion.modifiedAt,
+                  nasSize: nasVersion.size,
+                  localVersion: localVersion,
+                  localSize: await SuperThumbnailCache.shared.storedByteSize(forKey: localKey)
+              )
+        else { return nil }
+        return await SuperThumbnailVault.shared.versionedData(for: item, service: service)
     }
 
     /// Displays a folder Super Thumbnail generated by the Mac helper. This is
@@ -888,6 +1017,8 @@ final class RemoteThumbnailLoader: ObservableObject {
         }
         guard loadedCacheKey != cacheKey else { return }
         loadedCacheKey = cacheKey
+        activeCacheKey = cacheKey
+        let generation = beginRequestGeneration()
 
         if displayedImageCacheKey != cacheKey {
             image = nil
@@ -895,26 +1026,56 @@ final class RemoteThumbnailLoader: ObservableObject {
             displayedImageCacheKey = nil
         }
 
-        if let cachedImage = Self.imageCache.object(forKey: cacheKey) {
+        // A folder's own mtime does not change when a child's content is edited,
+        // so a memory or disk hit is shown first and then compared with the NAS
+        // sheet record (listing only) before it is trusted.
+        let cachedMemoryImage = Self.imageCache.object(forKey: cacheKey)
+        if let cachedMemoryImage {
             setImage(
-                cachedImage,
+                cachedMemoryImage,
                 forKey: cacheKey,
                 detectSkinToneDominance: detectSkinToneDominance
             )
             isLoading = false
-            return
         }
         var cachedDiskData: Data?
+        var cachedDiskKey: String?
         for candidateKey in RemoteThumbnailCacheKey.allRemoteDataKeys(for: item) {
-            cachedDiskData = await SuperThumbnailCache.shared.data(forKey: candidateKey)
-            if cachedDiskData != nil { break }
+            if cachedMemoryImage != nil {
+                // Only the version is needed; do not read or decode the sheet.
+                if await SuperThumbnailCache.shared.storedVersion(forKey: candidateKey) != nil {
+                    cachedDiskKey = candidateKey
+                    break
+                }
+            } else {
+                cachedDiskData = await SuperThumbnailCache.shared.data(forKey: candidateKey)
+                if cachedDiskData != nil {
+                    cachedDiskKey = candidateKey
+                    break
+                }
+            }
+        }
+        guard isCurrentRequest(generation, cacheKey) else { return }
+        if cachedMemoryImage != nil {
+            if let cachedDiskKey {
+                await applyNewerFolderSheet(
+                    for: item,
+                    service: service,
+                    size: size,
+                    localKey: cachedDiskKey,
+                    generation: generation,
+                    cacheKey: cacheKey,
+                    detectSkinToneDominance: detectSkinToneDominance
+                )
+            }
+            return
         }
         if let diskData = cachedDiskData,
            let decodedImage = try? await RemoteThumbnailImageDecoder.downsample(
                data: diskData,
                maximumPixelSize: maximumPixelSize(for: size)
            ) {
-            try? Task.checkCancellation()
+            guard isCurrentRequest(generation, cacheKey) else { return }
             let diskImage = UIImage(
                 cgImage: decodedImage.image,
                 scale: UIScreen.main.scale,
@@ -926,8 +1087,21 @@ final class RemoteThumbnailLoader: ObservableObject {
                 detectSkinToneDominance: detectSkinToneDominance
             )
             cache(diskImage, forKey: cacheKey)
+            if let cachedDiskKey {
+                await applyNewerFolderSheet(
+                    for: item,
+                    service: service,
+                    size: size,
+                    localKey: cachedDiskKey,
+                    generation: generation,
+                    cacheKey: cacheKey,
+                    detectSkinToneDominance: detectSkinToneDominance
+                )
+            }
             return
         }
+        // The cache decode above is an await too.
+        guard isCurrentRequest(generation, cacheKey) else { return }
         if isNegativelyCached(cacheKey) {
             image = nil
             isLoading = false
@@ -939,6 +1113,7 @@ final class RemoteThumbnailLoader: ObservableObject {
         }
 
         let diskCacheGeneration = await SuperThumbnailCache.shared.currentGeneration()
+        guard isCurrentRequest(generation, cacheKey) else { return }
         let currentOperationID = UUID()
         operationID = currentOperationID
         isLoading = true
@@ -949,18 +1124,16 @@ final class RemoteThumbnailLoader: ObservableObject {
             }
         }
 
-        let lookup = await SuperThumbnailVault.shared.folderSheet(
+        let versionedLookup = await SuperThumbnailVault.shared.versionedFolderSheet(
             for: item,
             service: service
         )
-        if Task.isCancelled {
-            // A scroll-away cancellation must not look like a missing sheet.
-            if operationID == currentOperationID {
-                loadedCacheKey = nil
-            }
-            return
-        }
-        guard operationID == currentOperationID else { return }
+        let lookup = versionedLookup.lookup
+        // A scroll-away cancellation must not look like a missing sheet; a
+        // cancelled or superseded run applies nothing (and releases the key
+        // only when it is still the latest).
+        guard isCurrentRequest(generation, cacheKey),
+              operationID == currentOperationID else { return }
         if case .data(let sheetData) = lookup {
             do {
                 let decodedImage = try await RemoteThumbnailImageDecoder.downsample(
@@ -968,7 +1141,8 @@ final class RemoteThumbnailLoader: ObservableObject {
                     maximumPixelSize: maximumPixelSize(for: size)
                 )
                 try Task.checkCancellation()
-                guard operationID == currentOperationID else { return }
+                guard isCurrentRequest(generation, cacheKey),
+                      operationID == currentOperationID else { return }
                 let sheetImage = UIImage(
                     cgImage: decodedImage.image,
                     scale: UIScreen.main.scale,
@@ -983,7 +1157,8 @@ final class RemoteThumbnailLoader: ObservableObject {
                 await SuperThumbnailCache.shared.store(
                     sheetData,
                     forKey: RemoteThumbnailCacheKey.remoteData(for: item, size: .small),
-                    expectedGeneration: diskCacheGeneration
+                    expectedGeneration: diskCacheGeneration,
+                    nasModifiedAt: versionedLookup.modifiedAt
                 )
                 return
             } catch is CancellationError {
@@ -995,6 +1170,9 @@ final class RemoteThumbnailLoader: ObservableObject {
                 // A malformed sheet keeps the folder icon and stays retryable.
             }
         }
+        // The sheet decode above is an await too.
+        guard isCurrentRequest(generation, cacheKey),
+              operationID == currentOperationID else { return }
         if displayedImageCacheKey != cacheKey {
             image = nil
         }
@@ -1002,6 +1180,61 @@ final class RemoteThumbnailLoader: ObservableObject {
             for: lookup
         ) ?? 60
         cacheNegative(cacheKey, for: duration)
+    }
+
+    /// Replaces an already displayed local folder sheet only when the NAS
+    /// sheet record is strictly newer. Every await is guarded by the request
+    /// generation; failures and unknown versions leave the local sheet shown.
+    private func applyNewerFolderSheet(
+        for item: RemoteFileItem,
+        service: any RemoteFileService,
+        size: CGSize,
+        localKey: String,
+        generation: Int,
+        cacheKey: NSString,
+        detectSkinToneDominance: Bool
+    ) async {
+        guard let localVersion = await SuperThumbnailCache.shared.storedVersion(forKey: localKey),
+              let nasVersion = await SuperThumbnailVault.shared.recordVersion(
+                  for: item,
+                  service: service
+              ),
+              SuperThumbnailCache.nasRecordIsNewer(
+                  nasModifiedAt: nasVersion.modifiedAt,
+                  nasSize: nasVersion.size,
+                  localVersion: localVersion,
+                  localSize: await SuperThumbnailCache.shared.storedByteSize(forKey: localKey)
+              ),
+              isCurrentRequest(generation, cacheKey)
+        else { return }
+        let fetched = await SuperThumbnailVault.shared.versionedFolderSheet(
+            for: item,
+            service: service
+        )
+        guard isCurrentRequest(generation, cacheKey),
+              case .data(let sheetData) = fetched.lookup,
+              let decoded = try? await RemoteThumbnailImageDecoder.downsample(
+                  data: sheetData,
+                  maximumPixelSize: maximumPixelSize(for: size)
+              ),
+              isCurrentRequest(generation, cacheKey)
+        else { return }
+        let sheetImage = UIImage(
+            cgImage: decoded.image,
+            scale: UIScreen.main.scale,
+            orientation: .up
+        )
+        setImage(
+            sheetImage,
+            forKey: cacheKey,
+            detectSkinToneDominance: detectSkinToneDominance
+        )
+        cache(sheetImage, forKey: cacheKey)
+        await SuperThumbnailCache.shared.store(
+            sheetData,
+            forKey: localKey,
+            nasModifiedAt: fetched.modifiedAt
+        )
     }
 
     private func fetchRemoteThumbnailData(
@@ -1088,6 +1321,9 @@ final class RemoteThumbnailLoader: ObservableObject {
         forKey cacheKey: NSString,
         detectSkinToneDominance: Bool
     ) {
+        // A cancelled or superseded load for a previous item can still finish
+        // after this loader was handed to another item; drop its image.
+        guard activeCacheKey == cacheKey else { return }
         self.image = image
         displayedImageCacheKey = cacheKey
         isSkinToneDominant = detectSkinToneDominance

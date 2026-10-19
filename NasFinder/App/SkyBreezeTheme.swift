@@ -635,7 +635,7 @@ struct ByungkiThemeGlyph: View {
                 let circlePath = Path(ellipseIn: CGRect(x: 4, y: 4, width: 16, height: 16))
                 context.stroke(circlePath, with: .color(drawColor), style: strokeStyle)
 
-                // path d="M12 4a8 8 0 0 0 0 16z" fill=currentColor (우측 반원)
+                // path d="M12 4a8 8 0 0 0 0 16z" fill=currentColor (좌측 반원, sweep=0 → 12,4에서 x=4 쪽으로)
                 var halfPath = Path()
                 halfPath.move(to: CGPoint(x: 12, y: 4))
                 halfPath.addArc(
@@ -643,7 +643,7 @@ struct ByungkiThemeGlyph: View {
                     radius: 8,
                     startAngle: .degrees(-90),
                     endAngle: .degrees(90),
-                    clockwise: false
+                    clockwise: true
                 )
                 halfPath.closeSubpath()
                 context.fill(halfPath, with: .color(drawColor))
@@ -753,6 +753,38 @@ struct ByungkiThemeGlyph: View {
     }
 }
 
+extension AppThemePreference {
+    /// 선택기 배지 전용 채움/테두리(=글리프) 색. 앱 팔레트 accent와는 별개다.
+    fileprivate var chooserBadgeColors: (fill: Color, border: Color) {
+        func rgb(_ hex: Int) -> Color {
+            Color(.sRGB, red: Double((hex >> 16) & 0xFF) / 255, green: Double((hex >> 8) & 0xFF) / 255, blue: Double(hex & 0xFF) / 255, opacity: 1)
+        }
+        switch self {
+        case .light: return (rgb(0xF5F4F0), rgb(0x5C6B3C))
+        case .bkstyle: return (rgb(0xD9D3C7), rgb(0x46532B))
+        case .night: return (rgb(0x1C1C1A), rgb(0x93B163))
+        case .jarvis: return (rgb(0x0C1520), rgb(0x4DC2E6))
+        case .friday: return (rgb(0xF8EFE3), rgb(0xB8651B))
+        case .ultron: return (rgb(0x121316), rgb(0xF2566A))
+        }
+    }
+}
+
+/// 테마 선택기 28 정원 배지: 채움 + 1 테두리 + 20 글리프(테두리와 같은 단색).
+private struct ByungkiThemeChooserBadge: View {
+    let theme: AppThemePreference
+
+    var body: some View {
+        let colors = theme.chooserBadgeColors
+        ZStack {
+            Circle().fill(colors.fill)
+            Circle().strokeBorder(colors.border, lineWidth: 1)
+            ByungkiThemeGlyph(theme: theme, size: 20, tintColor: colors.border)
+        }
+        .frame(width: 28, height: 28)
+    }
+}
+
 /// 우클릭 메뉴는 Mac에서만 붙인다. iOS의 contextMenu는 롱프레스에도 반응해 홀드 목록과 겹치기 때문이다.
 private struct ThemeRightClickMenu<MenuItems: View>: ViewModifier {
     let isEnabled: Bool
@@ -854,17 +886,21 @@ struct ByungkiThemeControlButton: View {
                     showingThemeSheet = false
                 } label: {
                     HStack(spacing: 10) {
-                        ByungkiThemeGlyph(theme: theme, size: 22, tintColor: theme == currentTheme ? theme.palette.accent : .primary)
+                        ByungkiThemeChooserBadge(theme: theme)
                         Text(theme.title)
-                            .font(.body)
-                            .foregroundStyle(.primary)
+                            .font(PorcelainTypeface.font(size: 14, weight: theme == currentTheme ? .semibold : .regular))
+                            .foregroundStyle(currentTheme.palette.text)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
                         Spacer(minLength: 12)
                         Image(systemName: "checkmark")
-                            .font(.footnote.weight(.semibold))
-                            .foregroundStyle(theme.palette.accent)
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(theme.chooserBadgeColors.border)
+                            .frame(width: 20)
                             .opacity(theme == currentTheme ? 1 : 0)
                     }
-                    .padding(.horizontal, 14)
+                    .padding(.leading, 10)
+                    .padding(.trailing, 12)
                     .frame(minHeight: 44)
                     .contentShape(Rectangle())
                 }
@@ -874,23 +910,36 @@ struct ByungkiThemeControlButton: View {
             }
         }
         .padding(.vertical, 6)
-        .frame(minWidth: 210)
+        .fixedSize()
         .accessibilityElement(children: .contain)
         .accessibilityLabel("병기스타일 테마")
     }
 
     @ViewBuilder
     private var themeContextMenuContent: some View {
-        Text("병기스타일 테마")
-        Divider()
         ForEach(AppThemePreference.allCases) { theme in
             Button {
                 withAnimation(.easeInOut(duration: 0.20)) {
                     selectedThemeRawValue = theme.rawValue
                 }
             } label: {
-                Label("\(theme.title)\(theme == currentTheme ? " ✓" : "")", systemImage: theme.systemImage)
+                Label {
+                    Text("\(theme.title)\(theme == currentTheme ? " ✓" : "")")
+                } icon: {
+                    menuGlyphImage(for: theme)
+                }
             }
         }
+    }
+
+    /// 네이티브 메뉴는 아이콘을 템플릿(검정)으로 칠하므로, 선택기와 같은 28 원형 배지+20 글리프를 original 렌더링 이미지로 넘긴다.
+    @MainActor
+    private func menuGlyphImage(for theme: AppThemePreference) -> Image {
+        let renderer = ImageRenderer(content: ByungkiThemeChooserBadge(theme: theme))
+        renderer.scale = 3
+        guard let uiImage = renderer.uiImage else {
+            return Image(systemName: theme.systemImage)
+        }
+        return Image(uiImage: uiImage.withRenderingMode(.alwaysOriginal))
     }
 }

@@ -66,12 +66,59 @@ actor SuperThumbnailVault {
     private var directoryEntries: [String: [RemoteFileItem]] = [:]
     private var missingLeaseFirstSeen: [String: Date] = [:]
     private var folderListingFetchedAt: [String: Date] = [:]
+    private var pendingListings: [String: Task<[RemoteFileItem], Error>] = [:]
 
     func data(
         for item: RemoteFileItem,
         service: any RemoteFileService,
         refreshListing: Bool = false
     ) async -> Data? {
+        await versionedData(
+            for: item,
+            service: service,
+            refreshListing: refreshListing
+        )?.data
+    }
+
+    /// Metadata-only freshness probe: the modification date of the NAS Super
+    /// Thumbnail record for this file or folder, from the shared (60 second)
+    /// directory listing. Downloads nothing; nil when the listing is
+    /// unavailable or no record exists, which callers treat as "unknown".
+    func recordModificationDate(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) async -> Date? {
+        await recordVersion(for: item, service: service)?.modifiedAt
+    }
+
+    /// Like `recordModificationDate` but also returns the record's byte size
+    /// (the JPEG payload size, matching the local raw cache file size). Either
+    /// value is nil when the listing does not report it; the whole result is
+    /// nil when the listing is unavailable or no record exists.
+    func recordVersion(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) async -> (modifiedAt: Date?, size: Int64?)? {
+        let directory = parentDirectory(of: item.path)
+        let vaultPath = appending(Self.directoryName, to: directory)
+        guard let siblings = try? await folderEntries(in: directory, service: service),
+              siblings.contains(where: { $0.name == Self.directoryName && $0.isDirectory }),
+              let entries = try? await folderEntries(in: vaultPath, service: service)
+        else { return nil }
+        let name = filename(for: item)
+        guard let record = entries.first(where: { $0.name == name && !$0.isDirectory }) else {
+            return nil
+        }
+        return (record.modifiedAt, record.size)
+    }
+
+    /// Like `data(for:)` but also returns the record's NAS modification date
+    /// so the local cache can remember which NAS version it holds.
+    func versionedData(
+        for item: RemoteFileItem,
+        service: any RemoteFileService,
+        refreshListing: Bool = false
+    ) async -> (data: Data, modifiedAt: Date?)? {
         let directory = parentDirectory(of: item.path)
         let vaultPath = appending(Self.directoryName, to: directory)
         do {
@@ -92,7 +139,7 @@ actor SuperThumbnailVault {
             let localURL = try await service.download(stored)
             defer { try? FileManager.default.removeItem(at: localURL) }
             let data = try Data(contentsOf: localURL, options: .mappedIfSafe)
-            return data.isEmpty ? nil : data
+            return data.isEmpty ? nil : (data, stored.modifiedAt)
         } catch {
             return nil
         }
@@ -105,14 +152,22 @@ actor SuperThumbnailVault {
         for item: RemoteFileItem,
         service: any RemoteFileService
     ) async -> FolderSuperThumbnailLookup {
-        guard item.isDirectory else { return .missing }
+        await versionedFolderSheet(for: item, service: service).lookup
+    }
+
+    /// `folderSheet` plus the sheet record's NAS modification date.
+    func versionedFolderSheet(
+        for item: RemoteFileItem,
+        service: any RemoteFileService
+    ) async -> (lookup: FolderSuperThumbnailLookup, modifiedAt: Date?) {
+        guard item.isDirectory else { return (.missing, nil) }
         let directory = parentDirectory(of: item.path)
         let vaultPath = appending(Self.directoryName, to: directory)
         do {
             let siblings = try await folderEntries(in: directory, service: service)
             guard siblings.contains(where: {
                 $0.name == Self.directoryName && $0.isDirectory
-            }) else { return .missing }
+            }) else { return (.missing, nil) }
             let vaultEntries = try await folderEntries(in: vaultPath, service: service)
             let sheetName = FolderSuperThumbnailNaming.thumbnailFilename(
                 folderName: item.name
@@ -123,17 +178,17 @@ actor SuperThumbnailVault {
                 let localURL = try await service.download(stored)
                 defer { try? FileManager.default.removeItem(at: localURL) }
                 let data = try Data(contentsOf: localURL, options: .mappedIfSafe)
-                if !data.isEmpty { return .data(data) }
+                if !data.isEmpty { return (.data(data), stored.modifiedAt) }
             }
             let markerName = FolderSuperThumbnailNaming.emptyMarkerFilename(
                 folderName: item.name
             )
             if vaultEntries.contains(where: { $0.name == markerName }) {
-                return .emptyIndexed
+                return (.emptyIndexed, nil)
             }
-            return .missing
+            return (.missing, nil)
         } catch {
-            return .missing
+            return (.missing, nil)
         }
     }
 
@@ -655,16 +710,33 @@ actor SuperThumbnailVault {
         if directoryEntries[key] == nil {
             folderListingFetchedAt[key] = Date()
         }
-        return try await entries(in: path, service: service)
+        return try await entries(
+            in: path,
+            service: service,
+            sharesPendingListing: true
+        )
     }
 
     private func entries(
         in path: String,
-        service: any RemoteFileService
+        service: any RemoteFileService,
+        sharesPendingListing: Bool = false
     ) async throws -> [RemoteFileItem] {
         let key = listingKey(path, service: service)
         if let cached = directoryEntries[key] { return cached }
-        let listed = try await service.list(directory: path)
+        guard sharesPendingListing else {
+            let listed = try await service.list(directory: path)
+            directoryEntries[key] = listed
+            return listed
+        }
+        // Read-only lookups of one folder's cards ask for the same two
+        // listings at once (the freshness probe now runs for cache hits too);
+        // share one request. Mutating paths above never join a pending listing.
+        if let pending = pendingListings[key] { return try await pending.value }
+        let listing = Task { try await service.list(directory: path) }
+        pendingListings[key] = listing
+        defer { pendingListings[key] = nil }
+        let listed = try await listing.value
         directoryEntries[key] = listed
         return listed
     }

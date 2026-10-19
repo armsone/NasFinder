@@ -470,7 +470,13 @@ actor RemoteVideoThumbnailTrafficBudget {
         let maximumBytes: Int
     }
 
-    static let shared = RemoteVideoThumbnailTrafficBudget()
+    /// Wi-Fi has no folder or session byte quota: every eligible item is
+    /// processed incrementally. Per-item leases below still bound each
+    /// transfer, and the cellular pool keeps its own fixed total.
+    static let unboundedFolderBytes = Int.max
+    static let shared = RemoteVideoThumbnailTrafficBudget(
+        maximumFolderBytes: unboundedFolderBytes
+    )
     static let cellularShared = RemoteVideoThumbnailTrafficBudget(
         maximumFolderBytes: 24 * 1_024 * 1_024,
         maximumItemBytes: 4 * 1_024 * 1_024,
@@ -479,27 +485,27 @@ actor RemoteVideoThumbnailTrafficBudget {
     )
     static let completeFileMaximumItemBytes = 128 * 1_024 * 1_024
     static let completeFileFastPass = RemoteVideoThumbnailTrafficBudget(
-        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumFolderBytes: unboundedFolderBytes,
         maximumItemBytes: 24 * 1_024 * 1_024,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
     static let completeFileRetryPass = RemoteVideoThumbnailTrafficBudget(
-        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumFolderBytes: unboundedFolderBytes,
         maximumItemBytes: 40 * 1_024 * 1_024,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
     static let completeFileRecoveryPass = RemoteVideoThumbnailTrafficBudget(
-        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumFolderBytes: unboundedFolderBytes,
         maximumItemBytes: 64 * 1_024 * 1_024,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
     static let completeFileShared = RemoteVideoThumbnailTrafficBudget(
-        maximumFolderBytes: 64 * 1_024 * 1_024 * 1_024,
+        maximumFolderBytes: unboundedFolderBytes,
         maximumItemBytes: completeFileMaximumItemBytes,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )
     static let sftpShared = RemoteVideoThumbnailTrafficBudget(
-        maximumFolderBytes: 18_000_000,
+        maximumFolderBytes: unboundedFolderBytes,
         maximumItemBytes: defaultMaximumItemBytes,
         minimumLeaseBytes: defaultMinimumLeaseBytes
     )

@@ -19,7 +19,7 @@ enum ReceivedFilesLayoutStyle: String, CaseIterable, Identifiable {
         case .details: "자세히"
         case .thumbnails: "썸네일"
         case .posters: "포스터"
-        case .overflow: "오버플로우"
+        case .overflow: "플로잉"
         }
     }
 
@@ -34,9 +34,17 @@ enum ReceivedFilesLayoutStyle: String, CaseIterable, Identifiable {
 }
 
 enum ReceivedFilesLayoutPresentationPolicy {
-    static func normalizedSelection(_ rawValue: String) -> ReceivedFilesLayoutStyle {
+    /// iPhone enters 플로잉 automatically from a landscape poster page; iPad and
+    /// Mac list it as an explicit fourth mode (`allowsExplicitOverflow`).
+    static func normalizedSelection(
+        _ rawValue: String,
+        allowsExplicitOverflow: Bool = false
+    ) -> ReceivedFilesLayoutStyle {
         guard let style = ReceivedFilesLayoutStyle(rawValue: rawValue), style != .overflow else {
-            return rawValue == ReceivedFilesLayoutStyle.overflow.rawValue ? .posters : .details
+            if rawValue == ReceivedFilesLayoutStyle.overflow.rawValue {
+                return allowsExplicitOverflow ? .overflow : .posters
+            }
+            return .details
         }
         return style
     }
@@ -45,9 +53,14 @@ enum ReceivedFilesLayoutPresentationPolicy {
         selectedStyle: ReceivedFilesLayoutStyle,
         contentSize: CGSize,
         isSelecting: Bool,
-        hasRecords: Bool
+        hasRecords: Bool,
+        isPhone: Bool = true
     ) -> ReceivedFilesLayoutStyle {
-        selectedStyle == .posters
+        if selectedStyle == .overflow {
+            return hasRecords && !isSelecting ? .overflow : .posters
+        }
+        return isPhone
+            && selectedStyle == .posters
             && FileBrowserOverflowPresentationPolicy.shouldPresentPosterAsOverflow(
                 contentSize: contentSize,
                 isSelecting: isSelecting,
@@ -100,6 +113,7 @@ struct ReceivedFilesView: View {
     /// `nil` is the PhoneHard root; otherwise a folder's `storedFilename`, including the
     /// physical Music folder, which now navigates through this same mechanism.
     @State private var currentPath: String?
+    @State private var overflowReturnStyle: ReceivedFilesLayoutStyle?
     @State private var isSelecting = false
     @State private var selectedRecordIDs: Set<SharedInboxRecord.ID> = []
     @State private var uploadableRecordIDs: Set<SharedInboxRecord.ID> = []
@@ -454,8 +468,17 @@ struct ReceivedFilesView: View {
 
     private var layoutMenu: some View {
         Menu {
-            ForEach(ReceivedFilesLayoutStyle.selectableCases) { style in
+            ForEach(
+                isPhoneIdiom
+                    ? ReceivedFilesLayoutStyle.selectableCases
+                    : ReceivedFilesLayoutStyle.allCases
+            ) { style in
                 Button {
+                    if style == .overflow {
+                        if layoutStyle != .overflow { overflowReturnStyle = layoutStyle }
+                    } else {
+                        overflowReturnStyle = nil
+                    }
                     storedLayoutStyle = style.rawValue
                 } label: {
                     layoutMenuRowLabel(for: style)
@@ -638,7 +661,7 @@ struct ReceivedFilesView: View {
             ) { containerWidth in
                 HStack(spacing: FileBrowserCoverFlowChromePolicy.itemSpacing) {
                     Button {
-                        dismiss()
+                        closeOverflowOrDismiss()
                     } label: {
                         FileBrowserCoverFlowChromeIcon(
                             kind: .back,
@@ -710,7 +733,10 @@ struct ReceivedFilesView: View {
     }
 
     private var layoutStyle: ReceivedFilesLayoutStyle {
-        ReceivedFilesLayoutPresentationPolicy.normalizedSelection(storedLayoutStyle)
+        ReceivedFilesLayoutPresentationPolicy.normalizedSelection(
+            storedLayoutStyle,
+            allowsExplicitOverflow: !isPhoneIdiom
+        )
     }
 
     /// Direct children of `currentPath`: never a grandchild, so one screen is always
@@ -821,8 +847,24 @@ struct ReceivedFilesView: View {
             selectedStyle: layoutStyle,
             contentSize: contentSize,
             isSelecting: isSelecting,
-            hasRecords: !inboxStore.records.isEmpty
+            hasRecords: !inboxStore.records.isEmpty,
+            isPhone: isPhoneIdiom
         )
+    }
+
+    private var isPhoneIdiom: Bool {
+        UIDevice.current.userInterfaceIdiom == .phone
+    }
+
+    /// iPad/Mac close an explicitly chosen 플로잉 back to the previous view mode
+    /// in the same folder; iPhone keeps its existing dismiss.
+    private func closeOverflowOrDismiss() {
+        guard !isPhoneIdiom, layoutStyle == .overflow else {
+            dismiss()
+            return
+        }
+        storedLayoutStyle = (overflowReturnStyle ?? .posters).rawValue
+        overflowReturnStyle = nil
     }
 
     private var isEnamel: Bool {

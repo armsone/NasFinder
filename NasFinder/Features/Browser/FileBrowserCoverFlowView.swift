@@ -472,10 +472,10 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
                 .position(x: proxy.size.width / 2, y: layout.floorCenterY)
                 .allowsHitTesting(false)
 
-                ForEach(visibleIndices, id: \.self) { index in
+                ForEach(visibleCardSlots) { slot in
                     coverCard(
-                        item: items[index],
-                        index: index,
+                        item: items[slot.index],
+                        index: slot.index,
                         availableSize: proxy.size,
                         layout: layout
                     )
@@ -529,7 +529,7 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
             scrollPosition = CGFloat(selectedIndex)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("오버플로우 보기")
+        .accessibilityLabel("플로잉 보기")
     }
 
     private var selectedItem: Item? {
@@ -553,6 +553,15 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
             scrollPosition: scrollPosition
         ).sorted {
             abs($0 - selectedIndex) > abs($1 - selectedIndex)
+        }
+    }
+
+    /// Cards are identified by their item so a card's thumbnail loader moves
+    /// with the item; index identity handed one loader to a different item
+    /// after a sort, refresh, or folder change.
+    private var visibleCardSlots: [FileBrowserCoverFlowCardSlot<Item.ID>] {
+        visibleIndices.map {
+            FileBrowserCoverFlowCardSlot(id: items[$0].id, index: $0)
         }
     }
 
@@ -827,6 +836,11 @@ struct FileBrowserCoverFlowView<Item: Identifiable, Thumbnail: View>: View {
         let clamped = min(max(distance, -1), 1)
         return -Double(clamped) * 42
     }
+}
+
+private struct FileBrowserCoverFlowCardSlot<ID: Hashable>: Identifiable {
+    let id: ID
+    let index: Int
 }
 
 @MainActor
