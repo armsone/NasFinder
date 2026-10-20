@@ -93,6 +93,7 @@ struct InboxFileOperation: Identifiable {
 /// PhoneHard's earlier own screen. The dashboard now opens `PhoneHardBrowserView`, the
 /// shared browser, instead; this stays as it was and is not routed to.
 struct ReceivedFilesView: View {
+    @Environment(\.trailerProjectSink) private var projectSink
     private struct UploadabilityTaskID: Hashable {
         let records: [SharedInboxRecord]
         let refreshGeneration: Int
@@ -139,7 +140,8 @@ struct ReceivedFilesView: View {
                     excludedPaths: excludedDestinationPaths(for: operation.records)
                 )
             }
-            .fullScreenCover(item: $trailerSelection, onDismiss: { reloadInbox() }) { selection in
+            .routesTrailerSelection($trailerSelection, service: { LocalInboxFileService(records: inboxStore.records) }, sink: projectSink)
+            .fullScreenCover(item: trailerCoverBinding($trailerSelection, sink: projectSink), onDismiss: { reloadInbox() }) { selection in
                 VideoTrailerView(items: selection.items, service: LocalInboxFileService(records: inboxStore.records),
                                  mode: selection.mode)
             }

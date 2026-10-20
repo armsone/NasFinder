@@ -84,6 +84,8 @@ struct RemotePreviewView: View {
     @State private var systemVolumeSlider: UISlider?
     @State private var screenAwakeActivityID = UUID()
     @State private var resumeAfterSuspension = false
+    @State private var defaultPlayerTask: Task<Void, Never>?
+    @State private var defaultPlayerMessage: String?
     private let accessoryControls: AnyView?
     private let onClose: (() -> Void)?
     private let playbackSuspended: Bool
@@ -117,6 +119,14 @@ struct RemotePreviewView: View {
                 service: service
             )
         )
+    }
+
+    private var isRunningOnMac: Bool {
+        #if targetEnvironment(macCatalyst)
+        true
+        #else
+        ProcessInfo.processInfo.isiOSAppOnMac
+        #endif
     }
 
     var body: some View {
@@ -197,6 +207,8 @@ struct RemotePreviewView: View {
             }
         }
         .onChange(of: viewModel.currentItem.id) { _, _ in
+            defaultPlayerTask?.cancel()
+            defaultPlayerMessage = nil
             resetVideoTransform()
             if !viewModel.currentItem.isImage || !viewModel.isPlaying {
                 revealControls()
@@ -221,6 +233,7 @@ struct RemotePreviewView: View {
         }
         .onDisappear {
             controlsHideTask?.cancel()
+            defaultPlayerTask?.cancel()
             ScreenAwakeController.shared.finishActivity(screenAwakeActivityID)
             viewModel.tearDown()
             shareCoordinator.cancelAndCleanUp()
@@ -269,11 +282,7 @@ struct RemotePreviewView: View {
                 } description: {
                     Text(errorMessage)
                 } actions: {
-                    Button("다시 시도") {
-                        Task { await viewModel.retryCurrentItem() }
-                    }
-                    .buttonStyle(PorcelainProminentButtonStyle())
-
+                    previewErrorActions
                 }
                 .foregroundStyle(.white)
             } else {
@@ -347,6 +356,103 @@ struct RemotePreviewView: View {
             }
         case .loading:
             remoteLoadingView
+        }
+    }
+
+    /// Retry, the platform default player and close sit side by side and stack on narrow
+    /// widths, so a file this Mac cannot decode never leaves the user stuck on the error.
+    private var previewErrorActions: some View {
+        VStack(spacing: ui(12)) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: ui(10)) { previewErrorButtons }
+                VStack(spacing: ui(10)) { previewErrorButtons }
+            }
+
+            if viewModel.isPreparingDefaultPlayer {
+                VStack(spacing: ui(6)) {
+                    if let fraction = viewModel.defaultPlayerProgress?.fractionCompleted {
+                        ProgressView(value: fraction)
+                            .tint(.white)
+                            .frame(maxWidth: ui(260))
+                    } else {
+                        ProgressView()
+                            .tint(.white)
+                    }
+                    Text(
+                        viewModel.defaultPlayerProgress.map {
+                            "기본 플레이어용 사본을 받는 중… \(downloadProgressDescription($0))"
+                        } ?? "기본 플레이어용 사본을 준비하는 중…"
+                    )
+                    .font(.ui(.caption).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.72))
+                }
+                .accessibilityElement(children: .combine)
+            }
+
+            if let defaultPlayerMessage {
+                Text(defaultPlayerMessage)
+                    .font(.ui(.footnote))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var previewErrorButtons: some View {
+        Button("다시 시도") {
+            defaultPlayerMessage = nil
+            Task { await viewModel.retryCurrentItem() }
+        }
+        .buttonStyle(PorcelainProminentButtonStyle())
+        .disabled(viewModel.isPreparingDefaultPlayer)
+
+        if isRunningOnMac, viewModel.currentItem.isPlayerMedia {
+            Button("기본 플레이어로 열기") { openInDefaultPlayer() }
+                .buttonStyle(.bordered)
+                .tint(.white)
+                .disabled(defaultPlayerTask != nil)
+                .accessibilityHint("이 Mac에서 이 형식에 지정된 앱으로 사본을 엽니다.")
+        }
+
+        Button("닫기") { closePreview() }
+            .buttonStyle(.bordered)
+            .tint(.white)
+            .keyboardShortcut(.cancelAction)
+            .accessibilityHint("미리보기를 닫고 목록으로 돌아갑니다.")
+    }
+
+    /// Hands a local copy to the app macOS associates with the file. Only a `file://` URL
+    /// leaves the app, so no NAS address or credential is passed to the other app.
+    private func openInDefaultPlayer() {
+        guard defaultPlayerTask == nil else { return }
+        defaultPlayerMessage = nil
+        let item = viewModel.currentItem
+        defaultPlayerTask = Task {
+            defer { defaultPlayerTask = nil }
+            do {
+                let localURL = try await viewModel.prepareDefaultPlayerFile()
+                let stagedURL = try await PreviewDefaultPlayerStaging.stage(
+                    localURL: localURL,
+                    originalFilename: item.name
+                )
+                guard !Task.isCancelled, viewModel.currentItem.id == item.id else { return }
+                let opened = await withCheckedContinuation { continuation in
+                    UIApplication.shared.open(stagedURL, options: [:]) { opened in
+                        continuation.resume(returning: opened)
+                    }
+                }
+                guard !Task.isCancelled else { return }
+                defaultPlayerMessage = opened
+                    ? "기본 플레이어에서 열었습니다. 이 미리보기는 닫아도 됩니다."
+                    : "이 형식을 열 기본 앱이 Mac에 없거나 앱이 파일을 열지 못했습니다. 이 형식을 지원하는 플레이어를 설치하거나, 공유 버튼으로 다른 앱에 보내 주세요."
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                defaultPlayerMessage = "기본 플레이어용 사본을 준비하지 못했습니다: \(error.localizedDescription)"
+            }
         }
     }
 
@@ -436,20 +542,25 @@ struct RemotePreviewView: View {
         safeAreaInsets: EdgeInsets,
         viewportSize: CGSize
     ) -> some View {
-        VStack(spacing: 0) {
+        // Embedded in the trailer editor the host already places this view inside the safe
+        // area, so the chrome stays within the frame it is given instead of growing past it
+        // by the container insets (which pushed the bottom transport out of the window).
+        let isEmbedded = accessoryControls != nil
+        let insets = isEmbedded ? EdgeInsets() : safeAreaInsets
+        return VStack(spacing: 0) {
             topBar(showsPosition: viewportSize.width <= viewportSize.height)
-                .padding(.top, max(safeAreaInsets.top, ui(8)) + ui(8))
+                .padding(.top, max(insets.top, ui(8)) + ui(8))
 
             Spacer(minLength: ui(72))
 
             if viewModel.currentItem.isImage || viewModel.currentItem.isPlayerMedia {
                 bottomControls(isLandscape: viewportSize.width > viewportSize.height)
-                    .padding(.bottom, max(safeAreaInsets.bottom, ui(8)) + ui(10))
+                    .padding(.bottom, max(insets.bottom, ui(8)) + ui(10))
             }
         }
-        .padding(.leading, max(safeAreaInsets.leading, ui(8)) + ui(8))
-        .padding(.trailing, max(safeAreaInsets.trailing, ui(8)) + ui(8))
-        .ignoresSafeArea()
+        .padding(.leading, max(insets.leading, ui(8)) + ui(8))
+        .padding(.trailing, max(insets.trailing, ui(8)) + ui(8))
+        .ignoresSafeArea(edges: isEmbedded ? [] : .all)
         .opacity(
             requiresAlwaysVisibleChrome
                 ? 1
@@ -537,9 +648,13 @@ struct RemotePreviewView: View {
 
     /// Music is neither an image nor a video, so its play/pause, close and seek controls
     /// stay pinned: no auto-hide timer is scheduled and a tap on the surface cannot hide
-    /// them. Video keeps its auto-hide.
+    /// them. Video keeps its auto-hide, except in the trailer editor (`accessoryControls`),
+    /// whose save, share and fullscreen buttons must stay reachable on a fresh result.
+    /// An error has no player surface to tap, so its close button must not hide either.
     private var requiresAlwaysVisibleChrome: Bool {
-        !(viewModel.currentItem.isImage || viewModel.currentItem.isVideo)
+        accessoryControls != nil
+            || viewModel.errorMessage != nil
+            || !(viewModel.currentItem.isImage || viewModel.currentItem.isVideo)
     }
 
     private func resumeSuspendedPlaybackIfReady() {
@@ -581,13 +696,12 @@ struct RemotePreviewView: View {
 
             if let accessoryControls {
                 accessoryControls
-            } else {
-                Button { shareCurrentItem() } label: {
-                    SharedPlayerCircleLabel(systemImage: "square.and.arrow.up")
-                }
-                .disabled(shareCoordinator.isPreparing || viewModel.isPreparingExternalPlayback)
-                .accessibilityLabel("현재 파일 공유")
             }
+            Button { shareCurrentItem() } label: {
+                SharedPlayerCircleLabel(systemImage: "square.and.arrow.up")
+            }
+            .disabled(playbackSuspended || shareCoordinator.isPreparing || viewModel.isPreparingExternalPlayback)
+            .accessibilityLabel("현재 파일 공유")
         }
         .foregroundStyle(.white)
         .shadow(color: .black.opacity(0.45), radius: 5, y: 2)
@@ -1082,6 +1196,8 @@ final class RemotePreviewViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isPreparingVideo = false
     @Published private(set) var isPreparingExternalPlayback = false
+    @Published private(set) var isPreparingDefaultPlayer = false
+    @Published private(set) var defaultPlayerProgress: RemoteDownloadProgress?
     @Published private(set) var downloadProgress: RemoteDownloadProgress?
     @Published private(set) var streamedVideoByteCount: Int64 = 0
     @Published private(set) var videoPlaybackSource: RemoteVideoPlaybackSource?
@@ -1110,6 +1226,7 @@ final class RemotePreviewViewModel: ObservableObject {
     private var externalSubtitleTask: Task<Void, Never>?
     private var activeDownloadTask: Task<URL, Error>?
     private var activeDownloadGeneration: UUID?
+    private var defaultPlayerDownloadTask: Task<URL, Error>?
     private var downloadInactivityTask: Task<Void, Never>?
     private var downloadInactivityGeneration: UUID?
     private var lastDownloadActivity: ContinuousClock.Instant?
@@ -1438,6 +1555,59 @@ final class RemotePreviewViewModel: ObservableObject {
         return localURL
     }
 
+    /// Returns a complete local file for the platform default player without building
+    /// another in-app player: the file already prepared for this preview when there is one,
+    /// otherwise a fresh full download through the service. The service's own download
+    /// cache keeps its lifetime; this never touches the original on the source.
+    func prepareDefaultPlayerFile() async throws -> URL {
+        let item = currentItem
+        let fileManager = FileManager.default
+        if let localURL, fileManager.fileExists(atPath: localURL.path) {
+            return localURL
+        }
+        if let cachedURL = downloadedURLs[item.id],
+           fileManager.fileExists(atPath: cachedURL.path) {
+            return cachedURL
+        }
+        guard !isPreparingDefaultPlayer else {
+            throw PreviewExternalPlaybackError.preparationInProgress
+        }
+
+        isPreparingDefaultPlayer = true
+        defaultPlayerProgress = nil
+        defer {
+            isPreparingDefaultPlayer = false
+            defaultPlayerProgress = nil
+            defaultPlayerDownloadTask = nil
+        }
+        let service = service
+        let downloadTask = Task {
+            try await service.download(item) { [weak self] progress in
+                await self?.updateDefaultPlayerProgress(progress, itemID: item.id)
+            }
+        }
+        defaultPlayerDownloadTask = downloadTask
+        let url = try await withTaskCancellationHandler {
+            try await downloadTask.value
+        } onCancel: {
+            downloadTask.cancel()
+        }
+        guard currentItem.id == item.id else { throw CancellationError() }
+        guard url.isFileURL, fileManager.fileExists(atPath: url.path) else {
+            throw PreviewExternalPlaybackError.localFileUnavailable
+        }
+        downloadedURLs[item.id] = url
+        return url
+    }
+
+    private func updateDefaultPlayerProgress(
+        _ progress: RemoteDownloadProgress,
+        itemID: RemoteFileItem.ID
+    ) {
+        guard isPreparingDefaultPlayer, currentItem.id == itemID else { return }
+        defaultPlayerProgress = progress
+    }
+
     private func reportPlaybackFailure(for itemID: RemoteFileItem.ID) {
         guard currentItem.id == itemID else { return }
         errorMessage = errorMessage ?? "전용 플레이어에서 이 영상을 재생할 수 없습니다."
@@ -1604,6 +1774,7 @@ final class RemotePreviewViewModel: ObservableObject {
         externalSubtitleTask?.cancel()
         externalSubtitleTask = nil
         cancelActiveDownload()
+        defaultPlayerDownloadTask?.cancel()
         stopDownloadInactivityWatchdog()
         activeLoadGeneration = nil
         isLoading = false
@@ -1635,6 +1806,7 @@ final class RemotePreviewViewModel: ObservableObject {
         externalSubtitleTask?.cancel()
         externalSubtitleTask = nil
         cancelActiveDownload()
+        defaultPlayerDownloadTask?.cancel()
         stopDownloadInactivityWatchdog()
         isPreparingVideo = false
         streamingLoader?.cancel()
@@ -2342,6 +2514,76 @@ private enum PreviewExternalPlaybackError: LocalizedError {
         case .localFileUnavailable:
             "전체 파일을 받지 못했습니다. 네트워크를 확인한 뒤 다시 시도해 주세요."
         }
+    }
+}
+
+/// Copies the prepared local file into the app's own temporary folder under its original
+/// name, so the default app sees the right extension and keeps a file even when the
+/// service later removes its download (device-folder copies vanish with their access).
+/// `copyItem` clones on APFS and never links, so the other app cannot write into the
+/// source. Copies are not removed when the preview closes, because the other app may still
+/// be reading; folders older than the remote download cache age (7 days) are pruned on the
+/// next hand-off, and the system purges the temporary folder as usual.
+private enum PreviewDefaultPlayerStaging {
+    private static let maximumAge: TimeInterval = 7 * 24 * 60 * 60
+
+    static func stage(localURL: URL, originalFilename: String) async throws -> URL {
+        try await Task.detached(priority: .utility) {
+            let fileManager = FileManager.default
+            guard localURL.isFileURL,
+                  fileManager.fileExists(atPath: localURL.path) else {
+                throw PreviewExternalPlaybackError.localFileUnavailable
+            }
+            let root = fileManager.temporaryDirectory
+                .appending(path: "NasFinderDefaultPlayer", directoryHint: .isDirectory)
+            pruneExpiredFolders(in: root)
+
+            let directory = root.appending(path: UUID().uuidString, directoryHint: .isDirectory)
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            do {
+                let stagedURL = directory.appending(
+                    path: filename(originalFilename, fallbackURL: localURL),
+                    directoryHint: .notDirectory
+                )
+                try fileManager.copyItem(at: localURL, to: stagedURL)
+                return stagedURL
+            } catch {
+                try? fileManager.removeItem(at: directory)
+                throw error
+            }
+        }.value
+    }
+
+    private static func pruneExpiredFolders(in root: URL) {
+        let fileManager = FileManager.default
+        guard let folders = try? fileManager.contentsOfDirectory(
+            at: root,
+            includingPropertiesForKeys: [.creationDateKey, .isDirectoryKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        let now = Date()
+        for folder in folders {
+            guard let values = try? folder.resourceValues(
+                forKeys: [.creationDateKey, .isDirectoryKey]
+            ),
+                values.isDirectory == true,
+                let createdAt = values.creationDate,
+                now.timeIntervalSince(createdAt) > maximumAge else { continue }
+            try? fileManager.removeItem(at: folder)
+        }
+    }
+
+    private static func filename(_ filename: String, fallbackURL: URL) -> String {
+        let basename = (filename as NSString).lastPathComponent
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let name = basename.isEmpty || basename.hasPrefix(".")
+            ? (fallbackURL.lastPathComponent.isEmpty ? "NasFinder Video" : fallbackURL.lastPathComponent)
+            : basename
+        // Keep the extension the default app is chosen by, even if the source name lost it.
+        if (name as NSString).pathExtension.isEmpty, !fallbackURL.pathExtension.isEmpty {
+            return (name as NSString).appendingPathExtension(fallbackURL.pathExtension) ?? name
+        }
+        return name
     }
 }
 

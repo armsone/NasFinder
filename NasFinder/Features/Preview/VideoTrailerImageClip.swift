@@ -17,6 +17,15 @@ enum VideoTrailerImageClip {
         }
     }
 
+    /// 사용자가 직접 정한 화면 구성. 있으면 자동 확대·이동 효과 없이 고른 상태 그대로 그린다.
+    /// `fitsFrame`는 사진 전체를 보여 주고 남는 곳을 검게 두며, 아니면 화면을 채우고 `offset`만큼 위치를 옮긴다.
+    struct Framing: Equatable {
+        var fitsFrame: Bool
+        /// -1...1. 0이 가운데이고 사진이 화면을 넘치는 방향으로만 움직인다.
+        var offsetX: Double
+        var offsetY: Double
+    }
+
     static func imageSize(at url: URL) throws -> CGSize {
         guard let image = UIImage(contentsOfFile: url.path), image.size.width > 0, image.size.height > 0 else {
             throw ClipError.decodeFailed
@@ -25,7 +34,7 @@ enum VideoTrailerImageClip {
     }
 
     /// - Parameter seed: stable per-clip seed so zoom direction and focal point are sampled once, not per frame.
-    static func render(imageURL: URL, duration: Double, renderSize: CGSize, outputURL: URL, seed: Int) throws {
+    static func render(imageURL: URL, duration: Double, renderSize: CGSize, outputURL: URL, seed: Int, framing: Framing? = nil) throws {
         guard let source = UIImage(contentsOfFile: imageURL.path), source.size.width > 0, source.size.height > 0 else {
             throw ClipError.decodeFailed
         }
@@ -62,8 +71,10 @@ enum VideoTrailerImageClip {
                 Thread.sleep(forTimeInterval: 0.002)
             }
             let t = totalFrames > 1 ? Double(frame) / Double(totalFrames - 1) : 1
-            let scale = zoomsIn ? 1.0 + 0.10 * t : 1.10 - 0.10 * t
-            guard let pixelBuffer = Self.pixelBuffer(for: source, renderSize: renderSize, scale: scale, focal: focal, pool: adaptor.pixelBufferPool) else {
+            let scale = framing != nil ? 1.0 : (zoomsIn ? 1.0 + 0.10 * t : 1.10 - 0.10 * t)
+            let chosenFocal = framing.map { CGPoint(x: -$0.offsetX, y: -$0.offsetY) } ?? focal
+            guard let pixelBuffer = Self.pixelBuffer(for: source, renderSize: renderSize, scale: scale, focal: chosenFocal,
+                                                     fitsFrame: framing?.fitsFrame ?? false, pool: adaptor.pixelBufferPool) else {
                 throw ClipError.writeFailed
             }
             let time = CMTimeMultiply(frameDuration, multiplier: Int32(frame))
@@ -76,7 +87,7 @@ enum VideoTrailerImageClip {
         guard writer.status == .completed else { throw writer.error ?? ClipError.writeFailed }
     }
 
-    private static func pixelBuffer(for image: UIImage, renderSize: CGSize, scale: CGFloat, focal: CGPoint, pool: CVPixelBufferPool?) -> CVPixelBuffer? {
+    private static func pixelBuffer(for image: UIImage, renderSize: CGSize, scale: CGFloat, focal: CGPoint, fitsFrame: Bool = false, pool: CVPixelBufferPool?) -> CVPixelBuffer? {
         var buffer: CVPixelBuffer?
         if let pool {
             CVPixelBufferPoolCreatePixelBuffer(nil, pool, &buffer)
@@ -101,7 +112,9 @@ enum VideoTrailerImageClip {
         UIGraphicsPushContext(context)
         context.clear(CGRect(origin: .zero, size: renderSize))
         let imageSize = image.size
-        let fillScale = max(renderSize.width / imageSize.width, renderSize.height / imageSize.height)
+        let fillScale = fitsFrame
+            ? min(renderSize.width / imageSize.width, renderSize.height / imageSize.height)
+            : max(renderSize.width / imageSize.width, renderSize.height / imageSize.height)
         let baseSize = CGSize(width: imageSize.width * fillScale, height: imageSize.height * fillScale)
         let size = CGSize(width: baseSize.width * scale, height: baseSize.height * scale)
         let marginX = max(0, (size.width - renderSize.width) / 2)

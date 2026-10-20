@@ -96,17 +96,53 @@ private struct TrailerFailureDiagnostic: Encodable {
 /// when the editor is opened again.
 /// The prepared plan the settings panel shows, computed once for both the panel and the
 /// suspended-draft length so the two can never drift apart.
-private enum TrailerPreparedPlan {
-    static func base(mode: VideoTrailerMode, sources: [VideoTrailerSource], total: Double,
-                     clipLength: Double) -> [VideoTrailerScene] {
-        mode == .mediaMusic ? VideoTrailerBatchPlan.wholeMedia(sources: sources)
+/// 저장본에서 작업 폴더로 복사한 결과. 상대 경로를 복사된 파일 주소로 이어 준다.
+struct TrailerRestoredFiles: Sendable {
+    let folder: URL
+    let copies: [String: URL]
+    let failed: [String]
+}
+
+enum TrailerPreparedPlan {
+    /// 직접 편집한 장면 목록을 그대로 계획으로 바꾼다. 제외한 장면과 사라진 소스의 장면은 빠지고,
+    /// 시간 값은 실제 소스 길이 안으로 맞춘다. 자동 추천 규칙은 쓰지 않는다.
+    static func manual(_ edits: [TrailerEditScene], sources: [VideoTrailerSource]) -> [VideoTrailerScene] {
+        let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var result: [VideoTrailerScene] = []
+        for edit in edits where !edit.excluded {
+            guard let source = byID[edit.sourceID] else { continue }
+            var scene: VideoTrailerScene
+            if source.isImage {
+                scene = VideoTrailerScene(id: result.count, start: 0, length: min(30, max(0.5, edit.length)))
+            } else {
+                guard source.duration > 0 else { continue }
+                let start = min(max(0, edit.start), max(0, source.duration - 0.2))
+                let length = max(0.2, min(edit.length, source.duration - start))
+                scene = VideoTrailerScene(id: result.count, start: start, length: length)
+            }
+            scene.sourceID = source.id
+            scene.muted = edit.muted && !source.isImage
+            scene.fitsFrame = edit.fitsFrame
+            scene.volume = source.isImage ? 1 : min(1, max(0, edit.volume))
+            scene.offsetX = min(1, max(-1, edit.offsetX))
+            scene.offsetY = min(1, max(-1, edit.offsetY))
+            result.append(scene)
+        }
+        return result
+    }
+
+    static func base(mode: VideoTrailerMode, sources: [VideoTrailerSource], total: Double?,
+                     clipLength: Double, manual: [TrailerEditScene]? = nil) -> [VideoTrailerScene] {
+        if let manual { return Self.manual(manual, sources: sources) }
+        return mode == .mediaMusic ? VideoTrailerBatchPlan.wholeMedia(sources: sources)
             : VideoTrailerBatchPlan.selection(sources: sources, total: total, clipLength: clipLength)
     }
 
     /// Empty when the chosen music cannot be matched within the repeat limit.
     static func scenes(mode: VideoTrailerMode, sources: [VideoTrailerSource], total: Double,
-                       clipLength: Double, music: TrailerMusicSelection?) -> [VideoTrailerScene] {
-        let base = base(mode: mode, sources: sources, total: total, clipLength: clipLength)
+                       clipLength: Double, music: TrailerMusicSelection?,
+                       manual: [TrailerEditScene]? = nil) -> [VideoTrailerScene] {
+        let base = base(mode: mode, sources: sources, total: total, clipLength: clipLength, manual: manual)
         guard let music else { return base }
         switch music.policy {
         case .fitMusic:
@@ -120,14 +156,49 @@ private enum TrailerPreparedPlan {
             return base
         }
     }
+
+    /// 지금 자동 계획을 직접 편집용 장면 목록으로 옮긴다. 계획에 들지 못한 소스도 목록에 남긴다:
+    /// 사진은 포함으로, 영상은 제외로 표시해 어느 것도 조용히 사라지지 않는다.
+    static func seedEdits(mode: VideoTrailerMode, sources: [VideoTrailerSource], total: Double,
+                          clipLength: Double) -> [TrailerEditScene] {
+        let planned = base(mode: mode, sources: sources, total: total, clipLength: clipLength)
+        var result: [TrailerEditScene] = []
+        var next = 1
+        func append(_ scene: VideoTrailerScene, excluded: Bool = false) {
+            result.append(TrailerEditScene(id: next, sourceID: scene.sourceID, start: scene.start,
+                                           length: scene.length, excluded: excluded))
+            next += 1
+        }
+        for scene in planned { append(scene) }
+        let covered = Set(planned.map(\.sourceID))
+        for source in sources where !covered.contains(source.id) {
+            if source.isImage {
+                var scene = VideoTrailerScene(id: 0, start: 0, length: max(0.5, clipLength * source.imageDurationRatio))
+                scene.sourceID = source.id
+                append(scene)
+            } else if source.duration > 0 {
+                let length = VideoTrailerBatchPlan.sceneLength(source, clipLength: clipLength)
+                var scene = source.plan.proposal(total: length, clipLength: length).first
+                    ?? VideoTrailerScene(id: 0, start: 0, length: length)
+                scene.sourceID = source.id
+                append(scene, excluded: true)
+            }
+        }
+        return result
+    }
 }
 
-private struct TrailerSettingsDraft {
+struct TrailerSettingsDraft {
     var sources: [VideoTrailerSource]
     var total: Double
     var clipLength: Double
     var aspectRatio: OutputAspectRatio?
     var music: TrailerMusicSelection?
+    /// 장면 직접 편집 목록. nil이면 자동 추천 계획을 쓴다.
+    var scenes: [TrailerEditScene]?
+    var nextSceneID = 1
+    /// 이 초안이 이미 알고 있는 소스. 여기 없는 새 소스만 목록 끝에 붙이므로 사용자가 뺀 것은 되살아나지 않는다.
+    var knownIDs: Set<Int> = []
     /// Whether each "다른 길이" slider is open.
     var showingDuration = false
     var showingClipLength = false
@@ -178,9 +249,28 @@ func trailerThumbnailImage(at url: URL, maxPixelSize: CGFloat) async -> UIImage?
 /// clip lengths can be chosen.
 private let trailerImageNominalDuration = 4.0
 
+/// 디스크에 저장된 프로젝트를 편집기가 이어받을 때 `TrailerDraftEntry.session`에 들어가는 값.
+final class TrailerPersistedSession {
+    let record: TrailerProjectRecord
+    init(record: TrailerProjectRecord) { self.record = record }
+}
+
+/// 저장 변경 감지용 서명. 이 값이 바뀌면 잠시 뒤 프로젝트를 자동 저장한다.
+private struct TrailerProjectChangeKey: Equatable {
+    var draft: TrailerDraftSignature?
+    var mode: VideoTrailerMode
+    var output: String?
+    var sourceCount: Int
+    var itemCount: Int
+    var staged: Bool
+    var selectedScene: Int?
+}
+
 struct VideoTrailerView: View {
-    let items: [RemoteFileItem]
-    let service: any RemoteFileService
+    /// Grows when the user adds material from the Finder panel; a source's id is its index here.
+    @State private var items: [RemoteFileItem]
+    /// Routes each item to the service it came from (NAS, PhoneHard, Photos, system files).
+    @State private var routed: TrailerRoutedService
     /// The mode this editor is in right now: it starts as the caller's (or the saved draft's)
     /// and the top selector of the editor changes it without leaving the editor.
     @State private var mode: VideoTrailerMode
@@ -188,45 +278,154 @@ struct VideoTrailerView: View {
     @State private var outputMode: VideoTrailerMode?
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var inboxStore: SharedInboxStore
+    @EnvironmentObject private var connectionStore: ConnectionStore
     @StateObject private var model: VideoTrailerModel
+    @StateObject private var history = TrailerEditHistory()
+    @ObservedObject private var projects = TrailerProjectStore.shared
     @State private var presentedSettings: TrailerSettingsPresentation?
     @State private var draft: TrailerSettingsDraft?
     /// This editing session in `TrailerDraftStore`, the same before and after a suspension.
+    /// It is also the id of the project saved on disk.
     @State private var sessionID: UUID
     @State private var didBegin = false
     /// The user already chose how this showing ends, so `onDisappear` leaves it alone.
     @State private var exitHandled = false
-    @State private var showingReplacePrompt = false
     @State private var showingStalePrompt = false
     @State private var resumeNotice: String?
+    @State private var selectedSceneID: Int?
+    @State private var saveTask: Task<Void, Never>?
+    @State private var finderRequest = 0
+    @State private var finderCloseRequest = 0
+    @State private var showingAppSettings = false
+    @State private var pendingStage = false
+    @State private var addNotice: String?
+    @State private var persistedRecord: TrailerProjectRecord?
     private let keepsSelectionOrder: Bool
     private let isResumed: Bool
     private let reopensSettings: Bool
     private var showingSettings: Bool { presentedSettings != nil }
+    private var service: any RemoteFileService { routed }
 
     /// With `resuming` the editor continues that suspended session instead of starting one.
     init(items: [RemoteFileItem], service: any RemoteFileService, mode: VideoTrailerMode = .trailer,
          keepsSelectionOrder: Bool = false, resuming entry: TrailerDraftEntry? = nil) {
-        self.items = items
         self.keepsSelectionOrder = keepsSelectionOrder
-        self.service = service
-        _mode = State(initialValue: mode)
         let suspended = entry?.session as? TrailerSuspendedSession
-        isResumed = suspended != nil
-        reopensSettings = suspended?.showedSettings ?? false
+        let persisted = entry?.session as? TrailerPersistedSession
+        isResumed = suspended != nil || persisted != nil
+        reopensSettings = suspended?.showedSettings ?? persisted?.record.showedSettings ?? false
+        _items = State(initialValue: items)
+        _routed = State(initialValue: (service as? TrailerRoutedService) ?? TrailerRoutedService(fallback: service))
+        _mode = State(initialValue: persisted.map { $0.record.mode == "mediaMusic" ? .mediaMusic : .trailer } ?? mode)
         _model = StateObject(wrappedValue: suspended?.model ?? VideoTrailerModel())
         _draft = State(initialValue: suspended?.draft)
         _sessionID = State(initialValue: entry?.id ?? UUID())
+        _persistedRecord = State(initialValue: persisted?.record)
     }
 
     @AppStorage(AppThemePreference.storageKey) private var themeRawValue = AppThemePreference.light.rawValue
 
     var body: some View {
         let _ = themeRawValue
-        mediaContent.modifier(PreserveMediaNavigation())
+        workspace
+            .modifier(PreserveMediaNavigation())
+            .task { await begin() }
+            // Autosave: a short pause after the last real change, with the result shown in the header.
+            .onChange(of: changeKey) { _, _ in scheduleSave() }
+            .onChange(of: draft?.signature) { _, _ in if let draft { history.observe(draft) } }
+            .onChange(of: model.sources.map(\.id)) { _, _ in absorbStagedSources() }
+            .onChange(of: model.isBusy) { _, busy in if !busy, pendingStage { stageAdded() } }
+            .alert("알림", isPresented: Binding(get: { addNotice != nil }, set: { if !$0 { addNotice = nil } })) {
+                Button("확인", role: .cancel) { addNotice = nil }
+            } message: { Text(addNotice ?? "") }
+            .sheet(isPresented: $showingAppSettings) {
+                NavigationStack {
+                    AppSettingsView(connectionCount: connectionStore.connections.count)
+                        .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기") { showingAppSettings = false } } }
+                }
+            }
     }
 
-    private var mediaContent: some View {
+    private var projectTitle: String {
+        projects.records[sessionID]?.customTitle ?? persistedRecord?.customTitle
+            ?? (items.first.map { items.count == 1 ? $0.name : "\($0.name) 외 \(items.count - 1)개" } ?? "새 편집")
+    }
+
+    private var changeKey: TrailerProjectChangeKey {
+        TrailerProjectChangeKey(draft: draft?.signature, mode: mode, output: model.outputURL?.lastPathComponent,
+                                sourceCount: model.sources.count, itemCount: items.count, staged: model.isStaged,
+                                selectedScene: selectedSceneID)
+    }
+
+    private var sink: TrailerProjectSink {
+        TrailerProjectSink(add: { added, origin in addItems(added, origin) })
+    }
+
+    private var draftBinding: Binding<TrailerSettingsDraft> {
+        Binding(get: { draft ?? currentDraft() }, set: { draft = $0 })
+    }
+
+    private func chrome(for tier: TrailerWorkspaceTier) -> TrailerEditorChrome {
+        let state = projects.state(sessionID)
+        var chrome = TrailerEditorChrome()
+        chrome.title = projectTitle
+        chrome.showsAdd = !tier.dockedFinder
+        chrome.onAdd = { finderRequest += 1 }
+        chrome.canUndo = history.canUndo
+        chrome.canRedo = history.canRedo
+        chrome.onUndo = undo
+        chrome.onRedo = redo
+        chrome.saveLabel = state == .idle ? "" : state.label
+        if case .failed = state { chrome.saveFailed = true }
+        chrome.onRetrySave = { scheduleSave(immediately: true) }
+        chrome.onCancelWork = { model.cancelCurrentWork() }
+        chrome.onRetryRender = retry
+        chrome.projectID = sessionID
+        return chrome
+    }
+
+    private func undo() {
+        let current = draft ?? currentDraft()
+        guard let previous = history.undo(current: current) else { return }
+        draft = previous
+    }
+
+    private func redo() {
+        let current = draft ?? currentDraft()
+        guard let next = history.redo(current: current) else { return }
+        draft = next
+    }
+
+    private func leave(to tab: AppTab?) {
+        requestExit()
+        if let tab { AppShellRouter.shared.request = tab }
+    }
+
+    private var workspace: some View {
+        TrailerWorkspace(
+            finderOpenRequest: finderRequest,
+            finderCloseRequest: finderCloseRequest,
+            editor: { tier in mediaContent(tier: tier) },
+            finder: { isOverlay, close in
+                TrailerFinderPanel(sink: sink, projectName: projectTitle, isOverlay: isOverlay, close: close)
+            },
+            detail: { tier in inspector(tier: tier) },
+            openSettings: { showingAppSettings = true },
+            leave: leave(to:))
+    }
+
+    private func inspector(tier: TrailerWorkspaceTier) -> some View {
+        let current = draftBinding
+        return TrailerSceneInspector(
+            mode: mode, sources: current.wrappedValue.sources, scenes: current.scenes,
+            nextSceneID: current.nextSceneID, selectedID: $selectedSceneID,
+            clipLength: current.wrappedValue.clipLength,
+            beginEditing: { var next = current.wrappedValue; next.beginSceneEditing(mode: mode); draft = next
+                selectedSceneID = next.scenes?.first?.id },
+            chrome: chrome(for: tier), aspectRatio: current.wrappedValue.aspectRatio)
+    }
+
+    private func mediaContent(tier: TrailerWorkspaceTier) -> some View {
         NavigationStack {
             TrailerSettingsHost(
                 mode: mode,
@@ -247,10 +446,13 @@ struct VideoTrailerView: View {
                                suffix: (outputMode ?? mode) == .mediaMusic ? "음악" : "예고편")
                 },
                 isSaved: model.isSaved,
-                apply: apply
+                apply: apply,
+                selectedSceneID: $selectedSceneID,
+                inspectorInline: tier == .phone,
+                chrome: chrome(for: tier)
             )
             .background(PorcelainMetrics.paper)
-            .task { await begin() }
+            .statusBarHidden(true)
             // Both modes go straight to the editor once the sources are in, before any
             // clip is joined, any photo scene is encoded or anything is exported.
             .onChange(of: model.isAwaitingSettings) { _, awaiting in
@@ -263,18 +465,6 @@ struct VideoTrailerView: View {
             .onDisappear {
                 guard !exitHandled, model.hasResumableWork else { return }
                 suspendSession()
-            }
-            .alert("보관 중인 다른 편집이 있습니다", isPresented: $showingReplacePrompt) {
-                Button("둘 다 보관") { suspendAndDismiss() }
-                Button("이전 편집을 버리고 이 편집 보관", role: .destructive) {
-                    let store = TrailerDraftStore.shared
-                    for other in store.others(mode: mode, than: sessionID) { store.discard(other.id) }
-                    suspendAndDismiss()
-                }
-                Button("이 편집 버리기", role: .destructive) { discardAndDismiss() }
-                Button("계속 편집", role: .cancel) { }
-            } message: {
-                Text("같은 종류의 편집이 이미 보관되어 있습니다. 고르지 않은 편집은 지워지지 않습니다.")
             }
             .alert("보관한 편집 파일이 사라졌습니다", isPresented: $showingStalePrompt) {
                 Button("다시 가져오기") {
@@ -297,6 +487,36 @@ struct VideoTrailerView: View {
         }
     }
 
+    // MARK: 소스 추가
+
+    /// Material chosen in the Finder panel joins this project. Items already in it are skipped;
+    /// nothing already staged is touched, and a render that is running finishes first.
+    private func addItems(_ added: [RemoteFileItem], _ origin: any RemoteFileService) {
+        let known = Set(items.map(\.id))
+        let fresh = added.filter { $0.isTrailerEligible && !known.contains($0.id) }
+        guard !fresh.isEmpty else {
+            addNotice = "이미 이 프로젝트에 있거나 영상·사진이 아닌 항목이라 추가하지 않았습니다."
+            return
+        }
+        routed.register(fresh, service: origin)
+        items.append(contentsOf: fresh)
+        finderCloseRequest += 1
+        addNotice = "\(fresh.count)개를 현재 프로젝트에 추가합니다." + (fresh.count < added.count ? " 중복·미지원 \(added.count - fresh.count)개는 건너뛰었습니다." : "")
+        stageAdded()
+    }
+
+    private func stageAdded() {
+        guard !model.isBusy else { pendingStage = true; return }
+        pendingStage = false
+        model.start(items: items, service: routed, mode: mode, keepsInputOrder: true)
+    }
+
+    /// Newly staged sources are appended to the end of the user's order; ones the user took out stay out.
+    private func absorbStagedSources() {
+        guard var current = draft, didBegin else { return }
+        if current.absorbNewSources(model.sources) { draft = current }
+    }
+
     /// A new editor stages its sources; a reopened one checks what is really still there
     /// and continues from it, saying so plainly when something is gone.
     private func begin() async {
@@ -305,6 +525,29 @@ struct VideoTrailerView: View {
         while model.isSuspending, !Task.isCancelled { try? await Task.sleep(for: .milliseconds(50)) }
         guard !Task.isCancelled, !didBegin else { return }
         didBegin = true
+        // A project saved on disk is brought into this model's own working folder first; the
+        // saved copies are only read, so nothing the editor does later can remove them.
+        if let record = persistedRecord, model.sources.isEmpty {
+            guard let files = await model.copyStoredFiles(record: record, store: projects) else {
+                // 복사 중 닫혔다. 저장된 프로젝트는 건드리지 않았고 다음에 열 때 처음부터 다시 불러온다.
+                didBegin = false
+                return
+            }
+            let restored = model.adopt(record: record, restored: files)
+            draft = restored
+            selectedSceneID = record.selectedSceneID
+            history.reset(to: restored)
+            let unreadable = projects.missing(record)
+            if !unreadable.isEmpty {
+                resumeNotice = "저장된 파일 \(unreadable.count)개를 찾을 수 없습니다. 있는 것은 그대로 불러왔습니다."
+            }
+            if !files.failed.isEmpty {
+                resumeNotice = (resumeNotice.map { $0 + " " } ?? "")
+                    + "복사하지 못한 파일 \(files.failed.count)개: " + files.failed.joined(separator: ", ")
+            }
+        } else if draft != nil {
+            history.reset(to: draft)
+        }
         guard isResumed else {
             if model.sources.isEmpty { model.start(items: items, service: service, mode: mode, keepsInputOrder: keepsSelectionOrder) }
             return
@@ -345,11 +588,8 @@ struct VideoTrailerView: View {
             dismiss()
             return
         }
-        if TrailerDraftStore.shared.others(mode: mode, than: sessionID).isEmpty {
-            suspendAndDismiss()
-        } else {
-            showingReplacePrompt = true
-        }
+        // Projects are independent and uncapped, so leaving never replaces another one.
+        suspendAndDismiss()
     }
 
     private func suspendSession() {
@@ -373,10 +613,35 @@ struct VideoTrailerView: View {
         } else {
             entry.totalDuration = TrailerPreparedPlan.scenes(
                 mode: mode, sources: prepared.sources, total: prepared.total,
-                clipLength: prepared.clipLength, music: prepared.music).reduce(0) { $0 + $1.length }
+                clipLength: prepared.clipLength, music: prepared.music, manual: prepared.scenes).reduce(0) { $0 + $1.length }
         }
         entry.suspendedAt = Date()
+        entry.customTitle = projects.records[sessionID]?.customTitle
         TrailerDraftStore.shared.suspend(entry)
+        // Leaving always saves what is on screen, without waiting for the autosave pause.
+        scheduleSave(immediately: true)
+    }
+
+    // MARK: 자동 저장
+
+    /// Saves the project a short moment after the last change. The staged copies are copied into
+    /// the project's own folder and the metadata is replaced atomically; a failure keeps the earlier
+    /// saved project untouched and is shown with a retry.
+    private func scheduleSave(immediately: Bool = false) {
+        guard model.isStaged, !model.sources.isEmpty || draft != nil, didBegin else { return }
+        saveTask?.cancel()
+        let snapshot = makeSnapshot()
+        saveTask = Task { @MainActor in
+            if !immediately { try? await Task.sleep(for: .seconds(1.2)) }
+            guard !Task.isCancelled else { return }
+            await projects.save(snapshot)
+        }
+    }
+
+    private func makeSnapshot() -> TrailerProjectSnapshot {
+        model.projectSnapshot(id: sessionID, existing: projects.records[sessionID] ?? persistedRecord, mode: mode,
+                              outputMode: outputMode, draft: currentDraft(), itemCount: items.count,
+                              selectedSceneID: selectedSceneID, showedSettings: showingSettings)
     }
 
     private func suspendAndDismiss() {
@@ -390,8 +655,12 @@ struct VideoTrailerView: View {
     private func discardAndDismiss() {
         exitHandled = true
         presentedSettings = nil
+        saveTask?.cancel()
         TrailerDraftStore.shared.reopen(sessionID)
         model.stop()
+        // The user confirmed discarding this edit: only this project's own folder goes.
+        // Material basket items, collection videos and the originals are other files.
+        projects.delete(sessionID)
         dismiss()
     }
 
@@ -406,8 +675,10 @@ struct VideoTrailerView: View {
             let clipLength = model.recommendedClipLength
             // The length the recommendation really comes to, as the editor's starting total.
             let total = mode == .mediaMusic ? 0 : VideoTrailerBatchPlan.recommendedTotal(sources: staged, clipLength: clipLength)
-            return TrailerSettingsDraft(sources: staged, total: total, clipLength: clipLength,
-                                        aspectRatio: model.aspectRatio, music: model.music)
+            var fresh = TrailerSettingsDraft(sources: staged, total: total, clipLength: clipLength,
+                                             aspectRatio: model.aspectRatio, music: model.music)
+            fresh.knownIDs = Set(staged.map(\.id))
+            return fresh
         }
         let byID = Dictionary(uniqueKeysWithValues: staged.map { ($0.id, $0) })
         draft.sources = draft.sources.compactMap { byID[$0.id] }
@@ -427,8 +698,14 @@ struct VideoTrailerView: View {
         guard !draft.sources.isEmpty else { return }
         presentedSettings = nil
         outputMode = mode
+        // Sources the user took out leave the session for good, so earlier undo steps that
+        // still point at them are dropped.
+        let dropsSources = model.sources.contains { staged in !draft.sources.contains { $0.id == staged.id } }
+        // Value copies of everything the render reads: later edits never change a running render.
         model.start(items: items, service: service, mode: mode, generate: true, sourceOrder: draft.sources.map(\.id),
-                    total: draft.total, clipLength: draft.clipLength, aspectRatio: draft.aspectRatio, music: draft.music)
+                    total: draft.total, clipLength: draft.clipLength, aspectRatio: draft.aspectRatio, music: draft.music,
+                    manualScenes: draft.scenes)
+        if dropsSources { history.reset(to: draft) }
     }
 
     /// After a failed attempt with the sources still staged this repeats that attempt;
@@ -523,7 +800,7 @@ private struct TrailerOutputFileService: RemoteFileService {
 
 /// A video's real displayed size (natural size with its preferred transform applied), nil
 /// without a video track. Loads only the track metadata, never frames.
-private func trailerOrientedVideoSize(url: URL) async throws -> CGSize? {
+func trailerOrientedVideoSize(url: URL) async throws -> CGSize? {
     let asset = AVURLAsset(url: url)
     guard let track = try await asset.loadTracks(withMediaType: .video).first else { return nil }
     let naturalSize = try await track.load(.naturalSize)
@@ -546,6 +823,9 @@ private struct TrailerWorkspacePreview: View {
     let joinProgress: (completed: Int, total: Int)?
     let accessoryControls: AnyView?
     let onClose: () -> Void
+    var isFullscreen = false
+    var onCancel: () -> Void = {}
+    var onRetry: () -> Void = {}
 
     @State private var previewImage: UIImage?
     @State private var firstVideoSize: (id: Int, size: CGSize)?
@@ -654,12 +934,17 @@ private struct TrailerWorkspacePreview: View {
                         .foregroundStyle(error != nil ? .red : .white)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, ui(16))
+                    if isBusy {
+                        Button("취소", action: onCancel).buttonStyle(.bordered).tint(.white)
+                    } else if error != nil {
+                        Button("다시 시도", action: onRetry).buttonStyle(.bordered).tint(.white)
+                    }
                 }
                 .padding(ui(12))
                 .background(.black.opacity(0.7), in: RoundedRectangle(cornerRadius: ui(12)))
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: ui(12), style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: isFullscreen ? 0 : ui(12), style: .continuous))
     }
 }
 
@@ -682,6 +967,9 @@ private struct TrailerSettingsHost: View {
     let onSave: (() -> Void)?
     let isSaved: Bool
     let apply: (TrailerSettingsDraft) -> Void
+    var selectedSceneID: Binding<Int?> = .constant(nil)
+    var inspectorInline = false
+    var chrome = TrailerEditorChrome()
     private var themeRefresh = ThemeRefresh()
 
     var body: some View {
@@ -697,7 +985,9 @@ private struct TrailerSettingsHost: View {
             outputURL: outputURL, error: error,
             onModeChange: onModeChange, onClose: onClose, onDiscard: onDiscard,
             onSave: onSave, isSaved: isSaved,
-            regenerate: { apply(draft ?? opening) }
+            regenerate: { apply(draft ?? opening) },
+            scenes: binding.scenes, nextSceneID: binding.nextSceneID, selectedSceneID: selectedSceneID,
+            inspectorInline: inspectorInline, chrome: chrome
         )
         .scrollContentBackground(isPorcelain ? .hidden : .automatic)
         .background(isPorcelain ? PorcelainMetrics.paper : Color.clear)
@@ -736,9 +1026,22 @@ private struct VideoTrailerSettings: View {
     let onSave: (() -> Void)?
     let isSaved: Bool
     let regenerate: () -> Void
+    @Binding var scenes: [TrailerEditScene]?
+    @Binding var nextSceneID: Int
+    @Binding var selectedSceneID: Int?
+    let inspectorInline: Bool
+    let chrome: TrailerEditorChrome
     @EnvironmentObject private var inboxStore: SharedInboxStore
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue = AppThemePreference.light.rawValue
     @State private var showingMusicPicker = false
+    /// The finished video fills the whole window. The same preview view (and so the same
+    /// player, position and play/pause state) stays in the tree; only its siblings go away.
+    @State private var isPreviewFullscreen = false
     @State private var confirmingDiscard = false
+    @State private var showingCollectionAdd = false
+    /// Bottom edge of the window's usable area (window height minus its bottom safe area), in
+    /// the window's own coordinates. Zero until the window has reported it.
+    @State private var windowUsableBottom: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var draggedSourceID: Int?
     @State private var dragLocation = CGPoint.zero
@@ -755,12 +1058,12 @@ private struct VideoTrailerSettings: View {
     private var originalTotal: Double { sources.reduce(0) { $0 + $1.duration } }
     /// The plan without music: unchanged trailer rules, or every source whole.
     private var baseProposal: [VideoTrailerScene] {
-        TrailerPreparedPlan.base(mode: mode, sources: sources, total: total, clipLength: clipLength)
+        TrailerPreparedPlan.base(mode: mode, sources: sources, total: total, clipLength: clipLength, manual: scenes)
     }
     private var baseTotal: Double { baseProposal.reduce(0) { $0 + $1.length } }
     /// Empty when the chosen music cannot be matched within the repeat limit.
     private var proposal: [VideoTrailerScene] {
-        TrailerPreparedPlan.scenes(mode: mode, sources: sources, total: total, clipLength: clipLength, music: music)
+        TrailerPreparedPlan.scenes(mode: mode, sources: sources, total: total, clipLength: clipLength, music: music, manual: scenes)
     }
     private var musicRepeatCount: Int {
         guard let music, music.duration > 0 else { return 0 }
@@ -788,6 +1091,15 @@ private struct VideoTrailerSettings: View {
             get: { self.music?.autoDuck ?? true },
             set: { self.music?.autoDuck = $0 }))
             .font(.ui(.subheadline))
+    }
+
+    private var musicLevelSlider: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("배경음악 음량 \(Int(((music?.level ?? 1) * 100).rounded()))%")
+                .font(.ui(.subheadline)).monospacedDigit()
+            Slider(value: Binding<Double>(get: { self.music?.level ?? 1 }, set: { self.music?.level = $0 }), in: 0...1)
+                .accessibilityLabel("배경음악 음량")
+        }
     }
 
     private var autoDuckCaption: some View {
@@ -870,6 +1182,7 @@ private struct VideoTrailerSettings: View {
                 }
             }
             autoDuckToggle
+            musicLevelSlider
             if let musicHint {
                 Text(musicHint).font(.ui(.caption)).foregroundStyle(proposal.isEmpty ? Color.red : Color.secondary)
             }
@@ -948,17 +1261,32 @@ private struct VideoTrailerSettings: View {
     var body: some View {
         let _ = themeRefresh.theme
         GeometryReader { geometry in
-            let isWide = geometry.size.width >= 640
-            if isWide {
-                wideLayout(width: geometry.size.width)
-            } else {
-                narrowLayout
+            // On Mac Catalyst the hosting controller can be placed below the title/toolbar area
+            // yet still be proposed the whole window height, so the bottom (the transport row
+            // and the create bar) lands outside the window. The height actually available is
+            // what remains of the window below this view's own origin.
+            let originY = geometry.frame(in: .global).minY
+            let available = windowUsableBottom > 0
+                ? min(geometry.size.height, max(windowUsableBottom - originY, 0))
+                : geometry.size.height
+            editorLayout(size: CGSize(width: geometry.size.width, height: available))
+                .frame(width: geometry.size.width, height: available, alignment: .top)
+        }
+        .background(TrailerWindowBottomReader { windowUsableBottom = $0 })
+        .background { if isPreviewFullscreen { Color.black.ignoresSafeArea() } }
+        // The hidden toolbar no longer owns Escape, so the presenting full-screen cover would
+        // take it and dismiss the whole editor. While fullscreen, this responder consumes it.
+        .background {
+            if isPreviewFullscreen {
+                TrailerFullscreenEscapeCatcher { isPreviewFullscreen = false }
             }
         }
+        .toolbar(isPreviewFullscreen ? .hidden : .automatic, for: .navigationBar)
         .fullScreenCover(isPresented: $showingMusicPicker) {
             TrailerMusicPickerView(currentID: music?.recordID) { picked in
                 var next = picked
                 next?.autoDuck = music?.autoDuck ?? true
+                next?.level = music?.level ?? 1
                 music = next
             }
             .environmentObject(inboxStore)
@@ -973,7 +1301,17 @@ private struct VideoTrailerSettings: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .cancellationAction) {
-                Button("닫기", action: onClose).uiBarFont()
+                // Escape resolves to this button; in fullscreen it only leaves fullscreen.
+                Button("닫기", action: isPreviewFullscreen ? { isPreviewFullscreen = false } : onClose).uiBarFont()
+            }
+            if chrome.showsAdd {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: chrome.onAdd) { Image(systemName: "plus.circle") }
+                        .accessibilityLabel("재료 추가")
+                }
+            }
+            ToolbarItem(placement: .primaryAction) {
+                ByungkiThemeControlButton(selectedThemeRawValue: $selectedThemeRawValue)
             }
             if let onSave {
                 ToolbarItem(placement: .primaryAction) {
@@ -984,47 +1322,67 @@ private struct VideoTrailerSettings: View {
                     .accessibilityLabel(isSaved ? "폰하드에 저장됨" : "폰하드에 저장")
                 }
             }
+            if let outputURL, !isBusy {
+                ToolbarItem(placement: .primaryAction) {
+                    Button { showingCollectionAdd = true } label: {
+                        InterfaceToolbarIcon(systemName: "photo.stack")
+                    }
+                    .accessibilityLabel("컬렉션에 추가")
+                    .sheet(isPresented: $showingCollectionAdd) {
+                        CollectionAddSheet(videoURL: outputURL, suggestedTitle: "내 영상", sourceProjectID: chrome.projectID)
+                    }
+                }
+            }
         }
     }
 
-    private func wideLayout(width: CGFloat) -> some View {
-        HStack(alignment: .top, spacing: ui(16)) {
-            VStack(alignment: .leading, spacing: ui(12)) {
-                previewSection
-                    .frame(maxHeight: ui(380))
-                orderSection
-            }
-            .frame(width: max(ui(320), (width - ui(48)) * 0.54))
+    /// One tree for both widths. `AnyLayout` swaps HStack/VStack without changing the identity of
+    /// its children, so the preview (and its player, position and play/pause state) survives
+    /// rotation, window resizing across 640pt and entering or leaving fullscreen.
+    private func editorLayout(size: CGSize) -> some View {
+        let isWide = size.width >= 640
+        let layout = isWide
+            ? AnyLayout(HStackLayout(alignment: .top, spacing: ui(16)))
+            : AnyLayout(VStackLayout(alignment: .leading, spacing: ui(14)))
+        return ScrollView(isWide ? [] : .vertical) {
+            layout {
+                VStack(alignment: .leading, spacing: ui(isWide ? 12 : 14)) {
+                    if !isPreviewFullscreen { projectBar }
+                    previewSection
+                        // Fullscreen is exactly the viewport (safe area excluded), never taller.
+                        .frame(minHeight: isPreviewFullscreen ? size.height : nil,
+                               maxHeight: isPreviewFullscreen ? size.height : ui(isWide ? 380 : 260))
+                    if !isPreviewFullscreen { orderSection }
+                }
+                .frame(width: isWide && !isPreviewFullscreen ? max(ui(320), (size.width - ui(48)) * 0.54) : nil)
+                .frame(maxWidth: isPreviewFullscreen ? .infinity : nil)
 
-            VStack(spacing: 0) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: ui(12)) {
+                if !isPreviewFullscreen {
+                    if isWide {
+                        VStack(spacing: 0) {
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: ui(12)) {
+                                    optionsSection
+                                }
+                                .padding(.vertical, ui(8))
+                            }
+                            .scrollBounceBehavior(.always, axes: .vertical)
+
+                            createBar
+                        }
+                        .frame(maxWidth: .infinity)
+                    } else {
+                        Divider()
                         optionsSection
                     }
-                    .padding(.vertical, ui(8))
                 }
-                .scrollBounceBehavior(.always, axes: .vertical)
-
-                createBar
             }
-            .frame(maxWidth: .infinity)
-        }
-        .padding(ui(16))
-    }
-
-    private var narrowLayout: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: ui(14)) {
-                previewSection
-                    .frame(maxHeight: ui(260))
-                orderSection
-                Divider()
-                optionsSection
-            }
-            .padding(ui(16))
+            .padding(isPreviewFullscreen ? 0 : ui(16))
+            .frame(height: isWide ? size.height : nil)
         }
         .scrollBounceBehavior(.always, axes: .vertical)
-        .safeAreaInset(edge: .bottom) { createBar }
+        .scrollDisabled(isPreviewFullscreen || isWide)
+        .safeAreaInset(edge: .bottom) { if !isPreviewFullscreen && !isWide { createBar } }
     }
 
     private var previewSection: some View {
@@ -1039,12 +1397,21 @@ private struct VideoTrailerSettings: View {
             exportProgress: exportProgress,
             joinProgress: joinProgress,
             accessoryControls: AnyView(trailerControlsView),
-            onClose: onClose
+            // In fullscreen the close button and Escape return to the editor, not leave it.
+            onClose: isPreviewFullscreen ? { isPreviewFullscreen = false } : onClose,
+            isFullscreen: isPreviewFullscreen,
+            onCancel: chrome.onCancelWork,
+            onRetry: chrome.onRetryRender
         )
     }
 
     private var trailerControlsView: some View {
         HStack(spacing: ui(8)) {
+            Button { isPreviewFullscreen.toggle() } label: {
+                SharedPlayerCircleLabel(systemImage: isPreviewFullscreen
+                    ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+            }
+            .accessibilityLabel(isPreviewFullscreen ? "전체화면 닫기" : "전체화면")
             if let onSave {
                 Button(action: onSave) {
                     SharedPlayerCircleLabel(systemImage: isSaved ? "checkmark.circle" : "square.and.arrow.down")
@@ -1074,7 +1441,73 @@ private struct VideoTrailerSettings: View {
         .frame(maxWidth: .infinity, minHeight: ui(28))
     }
 
+    @ViewBuilder
     private var orderSection: some View {
+        if let editScenes = scenes {
+            VStack(alignment: .leading, spacing: ui(6)) {
+                HStack(spacing: ui(6)) {
+                    Text("장면 (\(editScenes.count))").font(.ui(.subheadline).weight(.semibold))
+                    Text("직접 편집 중").font(.ui(.caption)).foregroundStyle(.secondary)
+                    Spacer()
+                }
+                TrailerSceneStrip(scenes: editScenes, sources: sources, selectedID: $selectedSceneID)
+                if inspectorInline {
+                    TrailerSceneInspector(
+                        mode: mode, sources: sources, scenes: $scenes, nextSceneID: $nextSceneID,
+                        selectedID: $selectedSceneID, clipLength: clipLength, beginEditing: beginSceneEditing, chrome: chrome,
+                        aspectRatio: aspectRatio)
+                }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: ui(6)) {
+                sourceOrderSection
+                HStack {
+                    Button("장면 직접 편집 시작", action: beginSceneEditing)
+                        .buttonStyle(.bordered).controlSize(.small)
+                        .disabled(sources.isEmpty || isBusy)
+                    Text("장면별로 자르고 순서를 바꿔요. 사진은 빠지지 않아요.")
+                        .font(.ui(.caption2)).foregroundStyle(.secondary)
+                }
+                if inspectorInline {
+                    TrailerSceneInspector(
+                        mode: mode, sources: sources, scenes: $scenes, nextSceneID: $nextSceneID,
+                        selectedID: $selectedSceneID, clipLength: clipLength, beginEditing: beginSceneEditing, chrome: chrome,
+                        aspectRatio: aspectRatio)
+                }
+            }
+        }
+    }
+
+    private func beginSceneEditing() {
+        guard scenes == nil else { return }
+        let seeded = TrailerPreparedPlan.seedEdits(mode: mode, sources: sources, total: total, clipLength: clipLength)
+        scenes = seeded
+        nextSceneID = (seeded.map(\.id).max() ?? 0) + 1
+        selectedSceneID = seeded.first?.id
+    }
+
+    /// 이 프로젝트의 이름과 저장 상태, 되돌리기/다시 실행.
+    private var projectBar: some View {
+        HStack(spacing: ui(8)) {
+            Text(chrome.title).font(.ui(.footnote).weight(.semibold)).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: ui(4))
+            if !chrome.saveLabel.isEmpty {
+                Text(chrome.saveLabel).font(.ui(.caption2)).lineLimit(1)
+                    .foregroundStyle(chrome.saveFailed ? Color.red : Color.secondary)
+                if chrome.saveFailed {
+                    Button("다시 저장", action: chrome.onRetrySave).font(.ui(.caption2).weight(.semibold))
+                }
+            }
+            Button(action: chrome.onUndo) { Image(systemName: "arrow.uturn.backward") }
+                .disabled(!chrome.canUndo).accessibilityLabel("되돌리기")
+            Button(action: chrome.onRedo) { Image(systemName: "arrow.uturn.forward") }
+                .disabled(!chrome.canRedo).accessibilityLabel("다시 실행")
+        }
+        .buttonStyle(.plain)
+        .frame(minHeight: ui(28))
+    }
+
+    private var sourceOrderSection: some View {
         VStack(alignment: .leading, spacing: ui(6)) {
             HStack(spacing: ui(6)) {
                 Text("영상 순서 (\(sources.count))")
@@ -1128,7 +1561,13 @@ private struct VideoTrailerSettings: View {
                 }
             }
 
-            if mode == .trailer {
+            if scenes != nil {
+                Divider()
+                Text("장면을 직접 편집 중이라 총길이는 장면 길이의 합이에요. 자동 추천으로 되돌리면 총길이·장면 길이 설정을 다시 쓸 수 있어요.")
+                    .font(.ui(.caption)).foregroundStyle(.secondary)
+            }
+
+            if mode == .trailer && scenes == nil {
                 Divider()
                 VStack(alignment: .leading, spacing: ui(4)) {
                     Text("얼마나 길게 볼까요?").font(.ui(.subheadline).weight(.semibold))
@@ -1188,8 +1627,10 @@ private struct VideoTrailerSettings: View {
                     .font(.ui(.caption)).foregroundStyle(.secondary)
             }
             HStack {
-                if mode == .trailer {
+                if mode == .trailer || scenes != nil {
                     Button("자동 추천으로 되돌리기") {
+                        scenes = nil
+                        selectedSceneID = nil
                         clipLength = VideoTrailerModel.recommendedLength(sources)
                         total = VideoTrailerBatchPlan.recommendedTotal(sources: sources, clipLength: clipLength)
                         syncTotalToFit(music)
@@ -1662,7 +2103,7 @@ private struct TrailerSourceThumbnail: View {
 }
 
 @MainActor
-private final class VideoTrailerModel: ObservableObject {
+final class VideoTrailerModel: ObservableObject {
     @Published private(set) var status = ""
     @Published private(set) var isBusy = false
     @Published private(set) var error: String?
@@ -1962,7 +2403,8 @@ private final class VideoTrailerModel: ObservableObject {
     func start(items: [RemoteFileItem], service: any RemoteFileService, mode: VideoTrailerMode = .trailer,
                generate: Bool = false, sourceOrder: [Int]? = nil, total: Double? = nil,
                clipLength: Double? = nil, aspectRatio: OutputAspectRatio? = nil,
-               music: TrailerMusicSelection? = nil, keepsInputOrder: Bool = false) {
+               music: TrailerMusicSelection? = nil, keepsInputOrder: Bool = false,
+               manualScenes: [TrailerEditScene]? = nil) {
         guard !isBusy, !items.isEmpty else { return }
         let total = total.map { $0.isFinite ? min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, $0)) : 1 }
         self.mode = mode
@@ -2175,9 +2617,10 @@ private final class VideoTrailerModel: ObservableObject {
                 // actual decode, so this ends within as many passes as there are sources.
                 while true {
                     stage = "plan"
-                    baseSelected = mode == .mediaMusic ? VideoTrailerBatchPlan.wholeMedia(sources: sources)
-                        : VideoTrailerBatchPlan.selection(sources: sources, total: total,
-                            clipLength: clipLength ?? recommendedClipLength)
+                    // `manualScenes` is a value copy taken when this render began, so edits made
+                    // while it runs only affect the next one.
+                    baseSelected = TrailerPreparedPlan.base(mode: mode, sources: sources, total: total,
+                        clipLength: clipLength ?? recommendedClipLength, manual: manualScenes)
                     guard !baseSelected.isEmpty else { throw TrailerError.exportFailed }
                     if let music, let musicInput, music.policy == .fitMusic {
                         // Same ordered scenes, repeated or cut at the end to the music's length
@@ -2231,6 +2674,7 @@ private final class VideoTrailerModel: ObservableObject {
                     var clipURLs: [URL] = []
                     var imageClipCache: [String: URL] = [:]
                     var originalSound: [TrailerMusicDucking.Clip] = []
+                    var originalVolumes: [(time: CMTime, volume: Float)] = []
                     var instructions: [AVMutableVideoCompositionInstruction] = []
                     var renderSize = aspectRatio?.renderSize
                     // 원본 = the first video of the current order (orientation-correct), even when
@@ -2259,7 +2703,10 @@ private final class VideoTrailerModel: ObservableObject {
                             // transform below upscales to the full render size, which is the only
                             // part of the export that actually makes photo scenes faster to encode.
                             let photoRenderSize = Self.photoRenderSize(for: renderSize)
-                            let cacheKey = "\(source.id):\(Int64((segment.length * 600).rounded())):\(Int(photoRenderSize.width))x\(Int(photoRenderSize.height))"
+                            let framing: VideoTrailerImageClip.Framing? = (segment.fitsFrame || segment.offsetX != 0 || segment.offsetY != 0)
+                                ? .init(fitsFrame: segment.fitsFrame, offsetX: segment.offsetX, offsetY: segment.offsetY) : nil
+                            let framingKey = framing.map { "\($0.fitsFrame ? "fit" : "fill")\($0.offsetX),\($0.offsetY)" } ?? "auto"
+                            let cacheKey = "\(source.id):\(Int64((segment.length * 600).rounded())):\(Int(photoRenderSize.width))x\(Int(photoRenderSize.height)):\(framingKey)"
                             let clipURL: URL
                             if let cached = imageClipCache[cacheKey] {
                                 clipURL = cached
@@ -2268,7 +2715,7 @@ private final class VideoTrailerModel: ObservableObject {
                                     .appendingPathExtension("mov")
                                 try await Task.detached(priority: .userInitiated) {
                                     try VideoTrailerImageClip.render(imageURL: source.url, duration: segment.length,
-                                        renderSize: photoRenderSize, outputURL: clipURL, seed: segment.id ^ generationSeed)
+                                        renderSize: photoRenderSize, outputURL: clipURL, seed: segment.id ^ generationSeed, framing: framing)
                                 }.value
                                 clipURLs.append(clipURL)
                                 attemptFiles.append(clipURL)
@@ -2299,21 +2746,26 @@ private final class VideoTrailerModel: ObservableObject {
                             : CMTimeRange(start: CMTime(seconds: segment.start, preferredTimescale: 600),
                                           duration: CMTime(seconds: segment.length, preferredTimescale: 600))
                         try outputVideo.insertTimeRange(range, of: video, at: cursor)
-                        if !source.isImage, let audio = try await asset.loadTracks(withMediaType: .audio).first, let outputAudio,
+                        if !source.isImage, !segment.muted, let audio = try await asset.loadTracks(withMediaType: .audio).first, let outputAudio,
                            try await audio.load(.isDecodable) {
                             let audioRange = try await audio.load(.timeRange)
                             let overlap = CMTimeRangeGetIntersection(range, otherRange: audioRange)
                             if overlap.duration.seconds > 0 {
                                 let audioStart = CMTimeAdd(cursor, CMTimeSubtract(overlap.start, range.start))
                                 try outputAudio.insertTimeRange(overlap, of: audio, at: audioStart)
+                                originalVolumes.append((audioStart, Float(min(1, max(0, segment.volume)))))
                                 originalSound.append(TrailerMusicDucking.Clip(outputStart: audioStart.seconds,
                                     sourceStart: overlap.start.seconds, length: overlap.duration.seconds,
                                     envelope: activityBySourceID[source.id]))
                             }
                         }
                         let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: outputVideo)
-                        layer.setTransform(source.isImage ? transform : TrailerOutputRenderer.aspectFillTransform(naturalSize: naturalSize,
-                            preferredTransform: transform, renderSize: renderSize), at: cursor)
+                        layer.setTransform(source.isImage ? transform : (segment.fitsFrame
+                            ? TrailerOutputRenderer.aspectFitTransform(naturalSize: naturalSize,
+                                preferredTransform: transform, renderSize: renderSize)
+                            : TrailerOutputRenderer.aspectFillTransform(naturalSize: naturalSize,
+                                preferredTransform: transform, renderSize: renderSize,
+                                offsetX: segment.offsetX, offsetY: segment.offsetY)), at: cursor)
                         let instruction = AVMutableVideoCompositionInstruction()
                         instruction.timeRange = CMTimeRange(start: cursor, duration: range.duration)
                         instruction.layerInstructions = [layer]
@@ -2331,6 +2783,7 @@ private final class VideoTrailerModel: ObservableObject {
                     // AVFoundationErrorDomain -11838 / -16976 "Operation Stopped".
                     if let outputAudio, outputAudio.segments.isEmpty { composition.removeTrack(outputAudio) }
                     var audioMix: AVMutableAudioMix?
+                    let keepsOriginalTrack = outputAudio.map { !$0.segments.isEmpty } ?? false
                     if let musicInput {
                         stage = "music"
                         guard let musicTrack = composition.addMutableTrack(withMediaType: .audio,
@@ -2361,11 +2814,15 @@ private final class VideoTrailerModel: ObservableObject {
                             let rampStart = CMTime(seconds: ramp.start, preferredTimescale: 600)
                             let rampEnd = CMTime(seconds: ramp.end, preferredTimescale: 600)
                             guard CMTimeCompare(rampStart, rampEnd) < 0 else { continue }
-                            parameters.setVolumeRamp(fromStartVolume: ramp.from, toEndVolume: ramp.to,
+                            parameters.setVolumeRamp(fromStartVolume: ramp.from * Float(min(1, max(0, music?.level ?? 1))),
+                                toEndVolume: ramp.to * Float(min(1, max(0, music?.level ?? 1))),
                                 timeRange: CMTimeRange(start: rampStart, end: rampEnd))
                         }
+                        let musicLevel = Float(min(1, max(0, music?.level ?? 1)))
                         if music?.autoDuck == false {
-                            parameters.setVolume(TrailerMusicDucking.loudVolume, at: .zero)
+                            parameters.setVolume(TrailerMusicDucking.loudVolume * musicLevel, at: .zero)
+                        } else if ramps.isEmpty, musicLevel != 1 {
+                            parameters.setVolume(musicLevel, at: .zero)
                         }
                         let mix = AVMutableAudioMix()
                         mix.inputParameters = [parameters]
@@ -2373,6 +2830,14 @@ private final class VideoTrailerModel: ObservableObject {
                         layout += " music \(pieces) ducked \(ramps.count)"
                         diagnostic.music?.ducked = ramps.count
                         stage = "compose"
+                    }
+                    // 장면별 원본 소리 음량. 모두 100%면 기존 믹스를 그대로 둔다.
+                    if keepsOriginalTrack, let outputAudio, originalVolumes.contains(where: { $0.volume != 1 }) {
+                        let originalParameters = AVMutableAudioMixInputParameters(track: outputAudio)
+                        for entry in originalVolumes { originalParameters.setVolume(entry.volume, at: entry.time) }
+                        let mix = audioMix ?? AVMutableAudioMix()
+                        mix.inputParameters = (mix.inputParameters) + [originalParameters]
+                        audioMix = mix
                     }
                     let videoComposition = AVMutableVideoComposition()
                     videoComposition.renderSize = renderSize
@@ -2518,6 +2983,154 @@ private final class VideoTrailerModel: ObservableObject {
         }
     }
 
+    // MARK: 프로젝트 저장·복원
+
+    /// 렌더링이나 준비를 취소한다. 편집기는 열린 채 남고, 이번 시도가 만든 미완성 파일만 지워진다.
+    func cancelCurrentWork() {
+        guard task != nil, !isSaving else { return }
+        suspend()
+    }
+
+    func stagedMusicFile(_ music: TrailerMusicSelection) -> URL? {
+        musicSnapshots[music.recordID].flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
+    }
+
+    /// 편집기 상태를 저장 가능한 값으로 만든다. 파일 복사는 저장소가 백그라운드에서 한다.
+    func projectSnapshot(id: UUID, existing: TrailerProjectRecord?, mode: VideoTrailerMode,
+                         outputMode: VideoTrailerMode?, draft: TrailerSettingsDraft, itemCount: Int,
+                         selectedSceneID: Int?, showedSettings: Bool) -> TrailerProjectSnapshot {
+        let kept = Set(draft.sources.map(\.id))
+        let removedByDraft = Set(sources.map(\.id)).subtracting(kept)
+        var staged: [Int: URL] = [:]
+        let rows: [TrailerProjectRecord.Source] = draft.sources.map { source in
+            staged[source.id] = source.url
+            let analysis = source.plan.analysis
+            return TrailerProjectRecord.Source(
+                id: source.id, name: source.name, file: "", isImage: source.isImage, duration: source.duration,
+                contentTypeIdentifier: source.contentTypeIdentifier, captureDate: source.captureDate,
+                imageDurationRatio: source.imageDurationRatio, waveform: analysis.waveform,
+                peakTime: analysis.peakTime, peakTimes: analysis.peakTimes,
+                highlightSource: analysis.highlightSource.rawValue,
+                audioAvailability: analysis.audioAvailability.rawValue,
+                highlightAnalyzed: highlightAnalyzedIDs.contains(source.id))
+        }
+        var musicRow: TrailerProjectRecord.Music?
+        var musicFile: URL?
+        if let music = draft.music {
+            musicFile = stagedMusicFile(music) ?? (FileManager.default.fileExists(atPath: music.url.path) ? music.url : nil)
+            musicRow = TrailerProjectRecord.Music(recordID: music.recordID, name: music.name, file: "",
+                duration: music.duration, policy: music.policy.rawValue, fitCount: music.fitCount, autoDuck: music.autoDuck, level: music.level)
+        }
+        let record = TrailerProjectRecord(
+            id: id, customTitle: existing?.customTitle, mode: mode == .mediaMusic ? "mediaMusic" : "trailer",
+            createdAt: existing?.createdAt ?? Date(), updatedAt: Date(), revision: existing?.revision ?? 0,
+            sources: rows, nextSourceID: itemCount, removedSourceIDs: Array(removedSourceIDs.union(removedByDraft)).sorted(),
+            skippedSourceIDs: Array(skippedSourceIDs).sorted(), knownSourceIDs: Array(draft.knownIDs).sorted(),
+            photosAnalyzed: photoDurationsAnalyzed, total: draft.total, clipLength: draft.clipLength,
+            aspectRatio: draft.aspectRatio?.rawValue, music: musicRow, scenes: draft.scenes,
+            nextSceneID: draft.nextSceneID, selectedSceneID: selectedSceneID,
+            outputFile: nil, outputMode: outputURL == nil ? nil : (outputMode ?? mode) == .mediaMusic ? "mediaMusic" : "trailer",
+            showedSettings: showedSettings, linkedCollectionVideoIDs: existing?.linkedCollectionVideoIDs ?? [])
+        return TrailerProjectSnapshot(record: record, stagedFiles: staged, musicFile: musicFile,
+                                      outputFile: outputURL)
+    }
+
+    /// 저장된 프로젝트를 이 모델의 새 작업 폴더로 되살린다. 프로젝트 폴더의 파일은 읽기만 하고
+    /// 모델은 자기 사본만 지우므로, 편집기에서 소스를 빼거나 다시 가져와도 저장된 사본은 그대로다.
+    /// 저장본의 파일을 이 모델의 새 작업 폴더로 복사한다. 복사는 파일마다 메인 스레드 밖에서 하고
+    /// 진행 상황을 `status`에 보여 준다. 저장된 프로젝트 폴더는 읽기만 하며, 취소되면 이번에 만든 작업 폴더만 지운다.
+    /// 복사에 실패한 파일은 `failed`에 담겨 돌아오고, 상태 변경은 호출한 쪽(메인)에서 한다.
+    func copyStoredFiles(record: TrailerProjectRecord, store: TrailerProjectStore) async -> TrailerRestoredFiles? {
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("NasFinderTrailer-\(UUID().uuidString)", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        var relatives = record.sources.map(\.file)
+        if let music = record.music { relatives.append(music.file) }
+        if let output = record.outputFile { relatives.append(output) }
+        var jobs: [(relative: String, origin: URL, destination: URL)] = []
+        for relative in relatives where !relative.isEmpty {
+            let destination = folder.appendingPathComponent((relative as NSString).lastPathComponent)
+            if let origin = store.fileURL(relative, id: record.id), FileManager.default.fileExists(atPath: origin.path) {
+                jobs.append((relative, origin, destination))
+            }
+        }
+        var copies: [String: URL] = [:]
+        var failed: [String] = []
+        for (index, job) in jobs.enumerated() {
+            if Task.isCancelled {
+                try? FileManager.default.removeItem(at: folder)
+                return nil
+            }
+            status = "저장된 파일을 불러오는 중 · \(index + 1)/\(jobs.count)"
+            let ok = await Task.detached(priority: .userInitiated) { () -> Bool in
+                do {
+                    try? FileManager.default.removeItem(at: job.destination)
+                    try FileManager.default.copyItem(at: job.origin, to: job.destination)
+                    return true
+                } catch {
+                    try? FileManager.default.removeItem(at: job.destination)
+                    return false
+                }
+            }.value
+            if ok { copies[job.relative] = job.destination } else { failed.append((job.relative as NSString).lastPathComponent) }
+        }
+        if Task.isCancelled {
+            try? FileManager.default.removeItem(at: folder)
+            return nil
+        }
+        return TrailerRestoredFiles(folder: folder, copies: copies, failed: failed)
+    }
+
+    func adopt(record: TrailerProjectRecord, restored: TrailerRestoredFiles) -> TrailerSettingsDraft {
+        let files = FileManager.default
+        let folder = restored.folder
+        directory = folder
+        mode = record.mode == "mediaMusic" ? .mediaMusic : .trailer
+        func bring(_ relative: String) -> URL {
+            restored.copies[relative] ?? folder.appendingPathComponent((relative as NSString).lastPathComponent)
+        }
+        sources = record.sources.map { row in
+            let analysis = AudioAnalysisResult(
+                waveform: row.waveform, peakTime: row.peakTime, peakTimes: row.peakTimes,
+                audioAvailability: ClipAudioAvailability(rawValue: row.audioAvailability) ?? .unknown,
+                highlightSource: ClipHighlightSource(rawValue: row.highlightSource) ?? .fallback)
+            return VideoTrailerSource(id: row.id, name: row.name, url: bring(row.file),
+                plan: VideoTrailerPlan(analysis: analysis, duration: row.duration), isImage: row.isImage,
+                contentTypeIdentifier: row.contentTypeIdentifier, captureDate: row.captureDate,
+                imageDurationRatio: row.imageDurationRatio)
+        }
+        highlightAnalyzedIDs = Set(record.sources.filter(\.highlightAnalyzed).map(\.id))
+        photoDurationsAnalyzed = record.photosAnalyzed
+        removedSourceIDs = Set(record.removedSourceIDs)
+        skippedSourceIDs = Set(record.skippedSourceIDs)
+        skippedCount = skippedSourceIDs.count
+        isStaged = true
+        var restoredMusic: TrailerMusicSelection?
+        if let row = record.music {
+            let copy = bring(row.file)
+            musicSnapshots[row.recordID] = copy
+            restoredMusic = TrailerMusicSelection(recordID: row.recordID, name: row.name, url: copy,
+                duration: row.duration, policy: TrailerMusicPolicy(rawValue: row.policy) ?? .single,
+                fitCount: row.fitCount, autoDuck: row.autoDuck, level: min(1, max(0, row.level ?? 1)))
+        }
+        let ratio = record.aspectRatio.flatMap(OutputAspectRatio.init(rawValue:))
+        aspectRatio = ratio
+        if let output = record.outputFile {
+            let copy = bring(output)
+            if files.fileExists(atPath: copy.path) {
+                outputURL = copy
+                music = restoredMusic
+                status = "저장된 완성 영상을 불러왔습니다."
+            }
+        }
+        var draft = TrailerSettingsDraft(sources: sources, total: record.total, clipLength: record.clipLength,
+                                         aspectRatio: ratio, music: restoredMusic)
+        draft.scenes = record.scenes
+        draft.nextSceneID = record.nextSceneID
+        draft.knownIDs = Set(record.knownSourceIDs).union(sources.map(\.id))
+        return draft
+    }
+
     func save(to store: SharedInboxStore, filename: String, suffix: String = "예고편") {
         guard let outputURL, !isBusy, !isSaved else { return }
         isBusy = true
@@ -2654,6 +3267,101 @@ private final class VideoTrailerModel: ObservableObject {
         skippedSourceIDs = []
         if let directory { try? FileManager.default.removeItem(at: directory) }
         directory = nil
+    }
+}
+
+/// Reports the bottom edge of the hosting window's usable area, so the editor can size itself to
+/// what is really visible instead of the height it was proposed.
+private struct TrailerWindowBottomReader: UIViewRepresentable {
+    let onChange: (CGFloat) -> Void
+
+    func makeUIView(context: Context) -> ReaderView {
+        let view = ReaderView()
+        view.isUserInteractionEnabled = false
+        view.onChange = onChange
+        return view
+    }
+
+    func updateUIView(_ view: ReaderView, context: Context) {
+        view.onChange = onChange
+        view.setNeedsLayout()
+    }
+
+    final class ReaderView: UIView {
+        var onChange: (CGFloat) -> Void = { _ in }
+        private var last: CGFloat = 0
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            guard let window else { return }
+            let bottom = window.bounds.height - window.safeAreaInsets.bottom
+            guard abs(bottom - last) > 0.5 else { return }
+            last = bottom
+            DispatchQueue.main.async { [onChange] in onChange(bottom) }
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            setNeedsLayout()
+        }
+    }
+}
+
+/// Present only while the trailer preview is fullscreen. It takes Escape ahead of the system's
+/// modal-dismiss behaviour so the key leaves fullscreen instead of closing the editor. It
+/// answers only when it lives in the topmost presented controller, so a share sheet, alert
+/// or picker above it still gets its own Escape.
+private struct TrailerFullscreenEscapeCatcher: UIViewControllerRepresentable {
+    let onEscape: () -> Void
+
+    func makeUIViewController(context: Context) -> EscapeController {
+        let controller = EscapeController()
+        controller.onEscape = onEscape
+        return controller
+    }
+
+    func updateUIViewController(_ controller: EscapeController, context: Context) {
+        controller.onEscape = onEscape
+        controller.claimFirstResponder()
+    }
+
+    final class EscapeController: UIViewController {
+        var onEscape: () -> Void = {}
+
+        override var canBecomeFirstResponder: Bool { true }
+
+        override var keyCommands: [UIKeyCommand]? {
+            guard ownsTopmostPresentation else { return [] }
+            let command = UIKeyCommand(input: UIKeyCommand.inputEscape, modifierFlags: [], action: #selector(escapePressed))
+            command.wantsPriorityOverSystemBehavior = true
+            return [command]
+        }
+
+        private var ownsTopmostPresentation: Bool {
+            guard var top = view.window?.rootViewController else { return false }
+            while let presented = top.presentedViewController { top = presented }
+            var current: UIViewController? = self
+            while let controller = current {
+                if controller === top { return true }
+                current = controller.parent
+            }
+            return false
+        }
+
+        override func viewDidAppear(_ animated: Bool) {
+            super.viewDidAppear(animated)
+            claimFirstResponder()
+        }
+
+        func claimFirstResponder() {
+            guard view.window != nil, !isFirstResponder else { return }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.view.window != nil, self.ownsTopmostPresentation else { return }
+                self.becomeFirstResponder()
+            }
+        }
+
+        @objc private func escapePressed() { onEscape() }
     }
 }
 

@@ -272,7 +272,8 @@ private struct MediaFolderEntry: Identifiable, Hashable {
 /// iOS는 전체 파일시스템을 열거할 수 없으므로 앱이 접근 권한을 받은 폴더만 나타낸다.
 /// 다른 Files 제공자의 파일은 보조 버튼(시스템 파일 선택기)으로 고른다.
 struct MediaFilesSourcePage: View {
-    private static let bookmarkKey = "mediaSourcePage.filesFolderBookmark.v1"
+    /// 기기 파일 화면(`DeviceFolderBookmark`)도 같은 폴더 권한을 쓴다.
+    static let bookmarkKey = "mediaSourcePage.filesFolderBookmark.v1"
     let selectedIDs: Set<String>
     var isActive = true
     var refreshToken = 0

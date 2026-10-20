@@ -37,6 +37,26 @@ enum GooglePhotosImportFlowPhase: Equatable, Sendable {
 /// 사전 고지 → 인증 → Picker 세션 생성 → 선택 대기(폴링) → 순차 가져오기 → 세션 삭제까지
 /// 전체 흐름을 관리하는 상태 모델. 모든 외부 효과(OAuth·Keychain·네트워크·외부 URL 열기)는
 /// 주입식이라 테스트에서 실제 시스템을 건드리지 않는다.
+/// 선택한 Google 포토 항목 하나의 처리 결과.
+struct GooglePhotosItemReport: Equatable, Sendable, Identifiable {
+    let itemID: String
+    let name: String
+    let isVideo: Bool
+    let status: GooglePhotosImportStatus
+    var id: String { itemID }
+
+    var failureText: String? {
+        switch status {
+        case .imported: nil
+        case .failed(.downloadFailed): "내려받지 못했습니다."
+        case .failed(.importFailed): "폰하드에 저장하지 못했습니다."
+        case .skipped(.videoNotReady): "Google에서 영상 처리가 아직 끝나지 않았습니다."
+        case .skipped(.unsupportedMediaType): "지원하지 않는 형식입니다."
+        case .skipped: "받을 수 있는 파일 정보가 없습니다."
+        }
+    }
+}
+
 @MainActor
 final class GooglePhotosImportFlowController: ObservableObject {
     struct Dependencies: Sendable {
@@ -130,6 +150,8 @@ final class GooglePhotosImportFlowController: ObservableObject {
     private static let maxPickerOpenAttempts = 3
 
     @Published private(set) var phase: GooglePhotosImportFlowPhase = .idle
+    /// 이번 선택에서 항목별로 어떻게 처리됐는지. 완료 화면이 가져온 것·건너뛴 것·실패한 것을 숨기지 않고 보여 준다.
+    @Published private(set) var itemReports: [GooglePhotosItemReport] = []
 
     private let dependencies: Dependencies
     private var forceAuthorization: Bool
@@ -167,6 +189,7 @@ final class GooglePhotosImportFlowController: ObservableObject {
         guard phase == .disclosure else { return }
         phase = .preparing
         importedCount = 0
+        itemReports = []
         activeFlowTask = Task { await run() }
     }
 
@@ -215,6 +238,14 @@ final class GooglePhotosImportFlowController: ObservableObject {
             let items = try await dependencies.listMediaItems(accessToken, session.id)
             phase = .importing(completed: 0, total: items.count)
             let summary = try await importItems(items, accessToken: accessToken)
+            itemReports = summary.outcomes.map { outcome in
+                let source = items.first { $0.id == outcome.itemID }
+                return GooglePhotosItemReport(
+                    itemID: outcome.itemID,
+                    name: source?.mediaFile?.filename ?? "Google 포토 항목",
+                    isVideo: source?.type == .video,
+                    status: outcome.status)
+            }
 
             await deleteActiveSession()
             phase = .finished(

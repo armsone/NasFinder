@@ -48,6 +48,8 @@ struct TrailerMusicSelection: Equatable {
     var fitCount = 1
     /// "배경음악 자동 조절": on follows the original sound, off keeps the music at its normal level.
     var autoDuck = true
+    /// 배경음악 음량 배율(0...1). 원본 소리 음량과 따로 정하고, 자동 조절 결과에 곱한다.
+    var level = 1.0
 
     /// The length a fitted video comes to: the music's own length times `fitCount`.
     var fittedDuration: Double { duration * Double(max(1, fitCount)) }

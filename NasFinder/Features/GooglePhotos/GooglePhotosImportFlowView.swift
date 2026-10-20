@@ -1,27 +1,101 @@
 import SwiftUI
 
 @MainActor
-private final class GooglePhotosImportedMedia: ObservableObject {
+final class GooglePhotosImportedMedia: ObservableObject {
     @Published var records: [SharedInboxRecord] = []
     @Published var pickerURL: URL?
     @Published var isPickerPresented = false
+}
+
+/// Standalone Google Photos import session that survives view disappearance (e.g. sidebar navigation).
+/// Only explicit user cancellation or reset cancels the flow and deletes the session.
+@MainActor
+final class GooglePhotosImportSession: ObservableObject {
+    static let shared = GooglePhotosImportSession()
+
+    @Published var controller: GooglePhotosImportFlowController?
+    @Published var importedMedia = GooglePhotosImportedMedia()
+    @Published var skippedReports: Set<String> = []
+    @Published var basketMessage: String?
+    @Published var isFilingBasket = false
+    @Published var filedReportIDs: Set<String> = []
+    var deliveredCount = 0
+
+    func resolveController(
+        inboxStore: SharedInboxStore,
+        forceAuthorization: Bool
+    ) -> GooglePhotosImportFlowController {
+        if let existing = controller {
+            return existing
+        }
+        let media = GooglePhotosImportedMedia()
+        self.importedMedia = media
+        self.skippedReports.removeAll()
+        self.basketMessage = nil
+        self.isFilingBasket = false
+        self.filedReportIDs.removeAll()
+        self.deliveredCount = 0
+        let newController = GooglePhotosImportFlowController(
+            dependencies: .live(
+                inboxStore: inboxStore,
+                onImported: { [weak media] record in
+                    media?.records.append(record)
+                },
+                openPicker: { [weak media] url in
+                    guard let media, !media.isPickerPresented else { return false }
+                    media.pickerURL = url
+                    media.isPickerPresented = true
+                    return true
+                },
+                closePicker: { [weak media] in
+                    media?.isPickerPresented = false
+                }
+            ),
+            forceAuthorization: forceAuthorization
+        )
+        self.controller = newController
+        return newController
+    }
+
+    func cancel() {
+        controller?.cancel()
+        reset()
+    }
+
+    func reset() {
+        controller = nil
+        importedMedia = GooglePhotosImportedMedia()
+        skippedReports.removeAll()
+        basketMessage = nil
+        isFilingBasket = false
+        filedReportIDs.removeAll()
+        deliveredCount = 0
+    }
 }
 
 /// 영상 만들기 부모 화면이 임베드한 Google 포토 흐름을 부모를 떠날 때만 취소하기 위한 연결 고리.
 /// 페이지 전환(스와이프)으로는 세션·웹 피커를 취소하지 않는다.
 @MainActor
 final class EmbeddedGooglePhotosLifecycle {
+    var session: GooglePhotosImportSession?
     fileprivate var cancelHandler: (() -> Void)?
-    func cancel() { cancelHandler?() }
+
+    func cancel() {
+        cancelHandler?()
+        session?.cancel()
+        session = nil
+    }
 }
 
 /// Google 포토 가져오기와 선택을 앱 탐색 경로의 페이지로 표시한다.
 /// 사전 고지 → 인증/세션 준비 → 선택 대기 → 가져오기 진행 → 결과 순으로 단계를 보여준다.
 struct GooglePhotosImportFlowView: View {
+    @Environment(\.trailerProjectSink) private var projectSink
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
-    @StateObject private var controller: GooglePhotosImportFlowController
-    @StateObject private var importedMedia: GooglePhotosImportedMedia
+    @ObservedObject private var controller: GooglePhotosImportFlowController
+    @ObservedObject private var importedMedia: GooglePhotosImportedMedia
+    @ObservedObject private var session: GooglePhotosImportSession
     @State private var trailerSelection: VideoTrailerSelection?
     @AppStorage("googlePhotosDisclosureAccepted.v1") private var disclosureAccepted = false
     /// 영상만들기 선택기에서만 지정한다. 이번에 가져온 항목만 돌려주며 기본 동작은 바뀌지 않는다.
@@ -29,41 +103,40 @@ struct GooglePhotosImportFlowView: View {
     /// 지정하면 부모 화면 안의 페이지로 동작한다: 자체 제목·dismiss 없이 끝난 기록을 바구니로 바로 넘긴다.
     private let lifecycle: EmbeddedGooglePhotosLifecycle?
     private var isEmbedded: Bool { lifecycle != nil }
-    @State private var deliveredCount = 0
 
     init(inboxStore: SharedInboxStore, forceAuthorization: Bool = false,
          lifecycle: EmbeddedGooglePhotosLifecycle? = nil,
          onImportedMedia: (([SharedInboxRecord]) -> Void)? = nil) {
         self.lifecycle = lifecycle
         self.onImportedMedia = onImportedMedia
-        let importedMedia = GooglePhotosImportedMedia()
-        _importedMedia = StateObject(wrappedValue: importedMedia)
-        _controller = StateObject(
-            wrappedValue: GooglePhotosImportFlowController(
-                dependencies: .live(
-                    inboxStore: inboxStore,
-                    onImported: { importedMedia.records.append($0) },
-                    openPicker: { url in
-                        guard !importedMedia.isPickerPresented else { return false }
-                        importedMedia.pickerURL = url
-                        importedMedia.isPickerPresented = true
-                        return true
-                    },
-                    closePicker: {
-                        importedMedia.isPickerPresented = false
-                    }
-                ),
-                forceAuthorization: forceAuthorization
-            )
-        )
+        let session: GooglePhotosImportSession
+        if let lifecycle {
+            if let existing = lifecycle.session {
+                session = existing
+            } else {
+                let fresh = GooglePhotosImportSession()
+                lifecycle.session = fresh
+                session = fresh
+            }
+        } else {
+            session = GooglePhotosImportSession.shared
+        }
+        let controller = session.resolveController(inboxStore: inboxStore, forceAuthorization: forceAuthorization)
+        self.session = session
+        self.controller = controller
+        self.importedMedia = session.importedMedia
     }
 
     /// 테스트·프리뷰용 주입 생성자.
     init(controller: @autoclosure @escaping () -> GooglePhotosImportFlowController) {
-        _controller = StateObject(wrappedValue: controller())
-        _importedMedia = StateObject(wrappedValue: GooglePhotosImportedMedia())
-        onImportedMedia = nil
-        lifecycle = nil
+        let resolved = controller()
+        let session = GooglePhotosImportSession()
+        session.controller = resolved
+        self.session = session
+        self.controller = resolved
+        self.importedMedia = session.importedMedia
+        self.onImportedMedia = nil
+        self.lifecycle = nil
     }
 
     private var themeRefresh = ThemeRefresh()
@@ -90,17 +163,15 @@ struct GooglePhotosImportFlowView: View {
             if controller.phase == .idle { beginImport() }
         }
         .onDisappear {
-            if !isEmbedded, trailerSelection == nil {
-                controller.cancel()
-            }
+            // Menu switch is not explicit user cancellation. Do not cancel the controller here.
         }
         .onChange(of: controller.phase) { _, phase in
             guard isEmbedded, let onImportedMedia else { return }
             switch phase {
             case .finished, .cancelled, .failed:
-                let fresh = Array(importedMedia.records.dropFirst(deliveredCount))
+                let fresh = Array(importedMedia.records.dropFirst(session.deliveredCount))
                 guard !fresh.isEmpty else { return }
-                deliveredCount = importedMedia.records.count
+                session.deliveredCount = importedMedia.records.count
                 onImportedMedia(fresh)
             default: break
             }
@@ -108,7 +179,8 @@ struct GooglePhotosImportFlowView: View {
         .onChange(of: scenePhase) { _, phase in
             controller.setScenePollingAllowed(phase == .active)
         }
-        .fullScreenCover(item: $trailerSelection) { selection in
+        .routesTrailerSelection($trailerSelection, service: { LocalInboxFileService(records: importedMedia.records) }, sink: projectSink)
+        .fullScreenCover(item: trailerCoverBinding($trailerSelection, sink: projectSink)) { selection in
             VideoTrailerView(items: selection.items, service: LocalInboxFileService(records: importedMedia.records), mode: selection.mode)
         }
     }
@@ -132,7 +204,10 @@ struct GooglePhotosImportFlowView: View {
                 },
                 onCancel: {
                     controller.declineDisclosure()
-                    if !isEmbedded { dismiss() }
+                    if !isEmbedded {
+                        session.reset()
+                        dismiss()
+                    }
                 }
             )
 
@@ -203,7 +278,10 @@ struct GooglePhotosImportFlowView: View {
             }
             Button("취소") {
                 controller.cancel()
-                if !isEmbedded { dismiss() }
+                if !isEmbedded {
+                    session.cancel()
+                    dismiss()
+                }
             }
             .buttonStyle(.bordered)
             .padding(.top, ui(10))
@@ -292,8 +370,16 @@ struct GooglePhotosImportFlowView: View {
                 }
                 .buttonStyle(PorcelainProminentButtonStyle())
             }
+            if case .finished = controller.phase, !controller.itemReports.isEmpty {
+                basketSection
+            }
             Button(isEmbedded ? "더 선택하기" : "완료") {
-                if isEmbedded { beginImport() } else { dismiss() }
+                if isEmbedded {
+                    beginImport()
+                } else {
+                    session.reset()
+                    dismiss()
+                }
             }
             .buttonStyle(PorcelainProminentButtonStyle())
             .controlSize(.large)
@@ -302,6 +388,103 @@ struct GooglePhotosImportFlowView: View {
         .padding(ui(24))
         .frame(maxWidth: ui(480))
         .modifier(ScrollsWhenTooTall())
+    }
+}
+
+extension GooglePhotosImportFlowView {
+    private var unresolvedReports: [GooglePhotosItemReport] {
+        controller.itemReports.filter { $0.status != .imported && !session.filedReportIDs.contains($0.itemID) }
+    }
+
+    private var pendingImportedReports: [GooglePhotosItemReport] {
+        controller.itemReports.filter { $0.status == .imported && !session.filedReportIDs.contains($0.itemID) }
+    }
+
+    /// 선택한 항목별 결과를 모두 보여 주고, 사용자가 확인한 뒤에만 재료함에 담는다.
+    /// 처리하지 못한 항목은 조용히 빠지지 않고 "사용 불가"로 남거나 사용자가 직접 건너뛴다.
+    /// 선택 세션은 가져오기가 끝나면 닫히므로 항목 하나만 다시 받을 수는 없고, 다시 선택해야 한다.
+    @ViewBuilder
+    var basketSection: some View {
+        VStack(alignment: .leading, spacing: ui(8)) {
+            ForEach(unresolvedReports) { report in
+                HStack(spacing: ui(8)) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(report.name).font(.ui(.subheadline)).lineLimit(1)
+                        Text((report.failureText ?? "") + (session.skippedReports.contains(report.itemID) ? " · 건너뜀" : ""))
+                            .font(.ui(.caption)).foregroundStyle(.orange)
+                    }
+                    Spacer(minLength: 0)
+                    Button(session.skippedReports.contains(report.itemID) ? "되돌리기" : "건너뛰기") {
+                        if session.skippedReports.contains(report.itemID) { session.skippedReports.remove(report.itemID) }
+                        else { session.skippedReports.insert(report.itemID) }
+                    }
+                    .buttonStyle(.bordered)
+                }
+            }
+            if !unresolvedReports.isEmpty {
+                Text("처리하지 못한 항목은 \"가져오기\"를 다시 열어 Google 포토에서 다시 선택하면 받을 수 있습니다. 담으면 재료함에 사용 불가 상태로 남습니다.")
+                    .font(.ui(.caption)).foregroundStyle(PorcelainMetrics.secondary)
+            }
+            if !pendingImportedReports.isEmpty || unresolvedReports.contains(where: { !session.skippedReports.contains($0.itemID) }) {
+                Button(session.isFilingBasket ? "담는 중…" : "재료함에 담기 (\(pendingImportedReports.count)개 준비됨)", systemImage: "tray.and.arrow.down") {
+                    fileToBasket()
+                }
+                .buttonStyle(PorcelainProminentButtonStyle())
+                .disabled(session.isFilingBasket)
+            }
+            if let basketMessage = session.basketMessage {
+                Text(basketMessage).font(.ui(.caption)).foregroundStyle(PorcelainMetrics.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// 가져온 파일을 열 수 있는지 확인한 뒤 담는다. 이번 선택의 파일은 가져온 순서대로 최근 기록과 짝지어진다.
+    func fileToBasket() {
+        let reports = controller.itemReports
+        let imported = pendingImportedReports
+        let recordSlice = Array(importedMedia.records.suffix(reports.filter { $0.status == .imported }.count))
+        let allImported = reports.filter { $0.status == .imported }
+        let skippedNow = session.skippedReports
+        let unresolved = unresolvedReports.filter { !skippedNow.contains($0.itemID) }
+        session.isFilingBasket = true
+        Task {
+            let basket = MaterialBasketStore.shared
+            var failures: [String] = []
+            var done: Set<String> = []
+            for report in imported {
+                guard let index = allImported.firstIndex(of: report), recordSlice.indices.contains(index),
+                      let url = try? SharedInbox.fileURL(for: recordSlice[index]) else {
+                    failures.append("\(report.name): 파일을 찾을 수 없습니다.")
+                    continue
+                }
+                switch await basket.addValidated(url: url, name: report.name, isVideo: report.isVideo,
+                                                 sourceKey: "google:\(report.itemID)", kind: .googlePhotos) {
+                case .added, .duplicate: done.insert(report.itemID)
+                case .failed(let reason):
+                    failures.append("\(report.name): \(reason)")
+                    // 사용 불가 항목이 인덱스에 기록된 경우에만 반영한 것으로 센다.
+                    if basket.addUnresolved(name: report.name, isVideo: report.isVideo,
+                                            sourceKey: "google:\(report.itemID)", kind: .googlePhotos, reason: reason) {
+                        done.insert(report.itemID)
+                    }
+                }
+            }
+            for report in unresolved {
+                if basket.addUnresolved(name: report.name, isVideo: report.isVideo,
+                                        sourceKey: "google:\(report.itemID)", kind: .googlePhotos,
+                                        reason: report.failureText ?? "받지 못했습니다.") {
+                    done.insert(report.itemID)
+                } else {
+                    failures.append("\(report.name): \(basket.persistenceError ?? "재료함에 기록하지 못했습니다.")")
+                }
+            }
+            session.filedReportIDs.formUnion(done)
+            session.isFilingBasket = false
+            session.basketMessage = failures.isEmpty
+                ? "재료함에 \(done.count)개를 반영했습니다."
+                : "일부는 담지 못했습니다. 재료함에서 사유를 확인하고 제외하거나 다시 선택하세요.\n" + failures.joined(separator: "\n")
+        }
     }
 }
 

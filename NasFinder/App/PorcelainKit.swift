@@ -16,6 +16,8 @@ enum PorcelainMetrics {
     /// 파일 열기와 영상 작업을 나란히 둘 때의 사이 간격.
     static let splitSpacing: CGFloat = 24
     static let rowIconSize: CGFloat = 26
+    /// Mac 셸 사이드바 한 줄 높이(포인터 기준).
+    static let shellSidebarRowHeight: CGFloat = 36
     /// 홈 파일 열기 2×2 칸의 앞 아이콘. 글 폭을 우선하도록 작게 둔다.
     static let openIconSize: CGFloat = 32
     static let corner: CGFloat = 14
@@ -405,23 +407,30 @@ struct PorcelainSidebarItem<Leading: View>: View {
     private var themeRefresh = ThemeRefresh()
     let title: String
     var isSelected = false
+    /// false면 접힌 Mac 사이드바처럼 아이콘만 가운데 둔다. 이름은 손쉬운 사용·도움말로 남는다.
+    var showsTitle = true
+    /// Mac 셸 사이드바는 포인터 기준 36pt로 줄여 한 화면에 세 묶음이 다 들어가게 한다.
+    var minHeight: CGFloat = 44
     @ViewBuilder let leading: () -> Leading
 
     var body: some View {
         let _ = themeRefresh.theme
         HStack(spacing: 10) {
             leading().frame(width: PorcelainMetrics.rowIconSize, height: PorcelainMetrics.rowIconSize)
-            Text(title)
-                .porcelainFont(.tile, weight: isSelected ? .semibold : .regular)
-                .foregroundStyle(PorcelainMetrics.graphite)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .layoutPriority(1)
-            Spacer(minLength: 0)
+            if showsTitle {
+                Text(title)
+                    .porcelainFont(.tile, weight: isSelected ? .semibold : .regular)
+                    .foregroundStyle(PorcelainMetrics.graphite)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(1)
+                Spacer(minLength: 0)
+            }
         }
         .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+        .padding(.vertical, minHeight < 44 ? 2 : 6)
+        .frame(maxWidth: .infinity, minHeight: minHeight, alignment: showsTitle ? .leading : .center)
+        .help(showsTitle ? "" : title)
         .background {
             // 선택 행은 selected 바탕 + 앞쪽 accent 표식. 글자는 항상 text 색이다.
             if isSelected {

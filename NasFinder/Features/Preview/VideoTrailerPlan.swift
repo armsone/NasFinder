@@ -5,6 +5,15 @@ struct VideoTrailerScene: Identifiable {
     let start: Double
     let length: Double
     var sourceID = 0
+    /// 직접 편집한 장면에서만 켜진다: 이 장면의 원본 소리를 넣지 않는다.
+    var muted = false
+    /// 직접 편집한 영상 장면에서만 켜진다: 화면을 채우지 않고 안에 맞춘다.
+    var fitsFrame = false
+    /// 직접 편집한 영상 장면의 원본 소리 음량(0...1).
+    var volume = 1.0
+    /// 직접 편집한 사진·영상 장면을 채울 때의 화면 위치(-1...1). 0이 가운데.
+    var offsetX = 0.0
+    var offsetY = 0.0
 }
 
 struct VideoTrailerPlan {
@@ -222,6 +231,11 @@ enum VideoTrailerBatchPlan {
             let length = min(ticks(scene.length), target - used)
             var fittedScene = VideoTrailerScene(id: result.count, start: scene.start, length: Double(length) / 600)
             fittedScene.sourceID = scene.sourceID
+            fittedScene.muted = scene.muted
+            fittedScene.fitsFrame = scene.fitsFrame
+            fittedScene.volume = scene.volume
+            fittedScene.offsetX = scene.offsetX
+            fittedScene.offsetY = scene.offsetY
             result.append(fittedScene)
             used += length
         }
@@ -242,6 +256,11 @@ enum VideoTrailerBatchPlan {
             let ticks = min(max(20, Int64((source.length * 600).rounded())), target - used)
             var repeated = VideoTrailerScene(id: result.count, start: source.start, length: Double(ticks) / 600)
             repeated.sourceID = source.sourceID
+            repeated.muted = source.muted
+            repeated.fitsFrame = source.fitsFrame
+            repeated.volume = source.volume
+            repeated.offsetX = source.offsetX
+            repeated.offsetY = source.offsetY
             result.append(repeated)
             used += ticks
         }

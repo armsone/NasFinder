@@ -254,6 +254,8 @@ struct FileBrowserView: View {
     @State private var previewItem: RemoteFileItem?
     @State private var inlineMusic = InlineMusicPlayback()
     @State private var trailerSelection: VideoTrailerSelection?
+    @State private var collectionNotice: String?
+    @Environment(\.trailerProjectSink) private var projectSink
     @State private var folderTrailerScopeChoice: RemoteFileItem?
     @State private var navigatedFolder: RemoteFileItem?
     @State private var isSelecting = false
@@ -309,8 +311,9 @@ struct FileBrowserView: View {
     ) {
         let tracker = trafficTracker ?? PageNetworkTrafficTracker()
         let measuredService: any RemoteFileService
-        // PhoneHard reads files already on the device; none of that is network traffic.
-        if service is TrafficMeasuringRemoteFileService || service is LocalInboxFileService {
+        // PhoneHard and 기기 파일 read files already on the device; none of that is network traffic.
+        if service is TrafficMeasuringRemoteFileService || service is LocalInboxFileService
+            || service is DeviceFolderFileService {
             measuredService = service
         } else {
             measuredService = TrafficMeasuringRemoteFileService(base: service, tracker: tracker)
@@ -394,6 +397,11 @@ struct FileBrowserView: View {
     /// PhoneHard, the storage on this device, opened in this same browser.
     private var isPhoneHard: Bool {
         viewModel.connection.id == LocalInboxFileService.connectionID
+    }
+
+    /// 기기 파일: 사용자가 허락한 Mac 폴더를 읽기만 하는 화면.
+    private var isDeviceFolder: Bool {
+        viewModel.isDeviceFolder
     }
 
     /// "서버 열기" belongs to PhoneHard as a whole, so it sits at its root only and
@@ -710,7 +718,11 @@ struct FileBrowserView: View {
         ) { preparedShare in
             RemoteFileActivityView(fileURLs: preparedShare.fileURLs)
         }
-        .fullScreenCover(item: gated($trailerSelection, isActive)) { selection in
+        .alert("알림", isPresented: Binding(get: { collectionNotice != nil }, set: { if !$0 { collectionNotice = nil } })) {
+            Button("확인", role: .cancel) { collectionNotice = nil }
+        } message: { Text(collectionNotice ?? "") }
+        .routesTrailerSelection($trailerSelection, service: { viewModel.service }, sink: projectSink)
+        .fullScreenCover(item: gated(trailerCoverBinding($trailerSelection, sink: projectSink), isActive)) { selection in
             VideoTrailerView(items: selection.items, service: viewModel.service, mode: selection.mode)
         }
         .sheet(
@@ -2162,7 +2174,8 @@ struct FileBrowserView: View {
                             favoriteActionHost.unfavorite()
                         }
                     }
-                } else {
+                } else if !isDeviceFolder {
+                    // 기기 파일 위치는 홈 즐겨찾기로 저장하지 않는다(폴더 권한을 다시 열 수 없는 곳에 경로만 남는다).
                     CompactPanelButton(
                         title: favoriteStore.contains(item) ? "별 해제" : "즐겨찾기",
                         systemImage: favoriteStore.contains(item) ? "star.slash" : "star"
@@ -2545,7 +2558,44 @@ struct FileBrowserView: View {
                         }
                     }
 
-                    selectionActionButton("예고편 보기", systemImage: "film") {
+                    selectionActionButton("재료함에 담기", systemImage: "photo.on.rectangle.angled") {
+                        let picked = selectedItems.filter { !$0.isDirectory && $0.isTrailerEligible }
+                        guard !picked.isEmpty else { return }
+                        let basket = MaterialBasketStore.shared
+                        let alreadyIn = picked.filter { basket.contains(sourceKey: $0.id) }.count
+                        let added = basket.addRemote(
+                            picked, service: viewModel.service,
+                            kind: isPhoneHard ? .phoneHard : isDeviceFolder ? .systemFile : .nas)
+                        if added == 0, alreadyIn < picked.count {
+                            collectionNotice = basket.persistenceError ?? "재료함에 기록하지 못했습니다. 다시 시도해 주세요."
+                        } else {
+                            collectionNotice = "재료함에 \(added)개를 담고 받는 중입니다."
+                                + (alreadyIn > 0 ? " 이미 담긴 \(alreadyIn)개는 건너뛰었습니다." : "")
+                        }
+                        endSelection()
+                    }
+                    .disabled(selectedItems.allSatisfy { $0.isDirectory || !$0.isTrailerEligible })
+
+                    selectionActionButton("컬렉션에 추가", systemImage: "photo.stack") {
+                        let videos = selectedItems.filter { !$0.isDirectory && $0.isVideo }
+                        guard !videos.isEmpty else { return }
+                        let service = viewModel.service
+                        collectionNotice = "컬렉션에 \(videos.count)편을 복사하는 중입니다."
+                        endSelection()
+                        Task { @MainActor in
+                            var added = 0
+                            for video in videos {
+                                guard let url = try? await service.download(video) else { continue }
+                                let title = (video.name as NSString).deletingPathExtension
+                                if await MovieCollectionStore.shared.add(from: url, title: title, isImported: true) != nil { added += 1 }
+                            }
+                            collectionNotice = "컬렉션에 \(added)편을 추가했습니다."
+                                + (added < videos.count ? " \(videos.count - added)편은 추가하지 못했습니다." : "")
+                        }
+                    }
+                    .disabled(selectedItems.isEmpty || !selectedItems.allSatisfy { !$0.isDirectory && $0.isVideo })
+
+                    selectionActionButton(projectSink == nil ? "바로 영상 제작" : "현재 프로젝트에 추가", systemImage: "film") {
                         guard canBeginUserPresentation else { return }
                         let clips = selectedItems.filter(\.isTrailerEligible)
                         guard !clips.isEmpty, clips.count == selectedItems.count else { return }

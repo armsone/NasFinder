@@ -271,6 +271,9 @@ final class FileBrowserViewModel: ObservableObject {
     let connection: RemoteConnection
     let path: String
     let service: any RemoteFileService
+    var isDeviceFolder: Bool {
+        service is DeviceFolderFileService
+    }
     private var searchQuery = ""
     private var sortOptions = FileBrowserSortOptions()
     private var loadCompletionWaiters: [CheckedContinuation<Void, Never>] = []
@@ -311,6 +314,9 @@ final class FileBrowserViewModel: ObservableObject {
             if connection.id == LocalInboxFileService.connectionID {
                 // PhoneHard is on this device; there is no server to diagnose.
                 errorMessage = "폰하드 파일 목록을 읽지 못했습니다: \(error.localizedDescription)"
+            } else if isDeviceFolder {
+                // 기기 파일도 이 기기의 폴더라 서버 진단이 없다.
+                errorMessage = "기기 파일 목록을 읽지 못했습니다: \(error.localizedDescription)"
             } else if connection.kind == .sftp {
                 let diagnostic = SFTPConnectionDiagnostics.diagnostic(
                     for: error,

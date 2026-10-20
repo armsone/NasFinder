@@ -10,6 +10,17 @@ struct BrowserDownloadedFile: Identifiable, Equatable {
     /// Started by the explicit "음악 다운로드" action, so it goes to PhoneHard's Music folder.
     var isMusic = false
     var mimeType: String?
+
+    /// 사진·영상 파일이면 영상 여부(true=영상), 그 밖의 파일이면 nil. 이름과 형식 정보만 본다.
+    var materialKind: Bool? {
+        let type = contentTypeIdentifier.flatMap { UTType($0) }
+            ?? mimeType.flatMap { UTType(mimeType: $0) }
+            ?? UTType(filenameExtension: (filename as NSString).pathExtension)
+        guard let type else { return nil }
+        if type.conforms(to: .movie) || type.conforms(to: .video) { return true }
+        if type.conforms(to: .image) { return false }
+        return nil
+    }
 }
 
 /// A music file found on the current page. Only its file name is ever shown; the
@@ -172,6 +183,7 @@ struct WebBrowserView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @EnvironmentObject private var favoritesStore: BrowserFavoritesStore
+    @Environment(\.trailerProjectSink) private var projectSink
 
     @FocusState private var isAddressFocused: Bool
     @State private var currentURLText = "https://www.google.com"
@@ -275,6 +287,12 @@ struct WebBrowserView: View {
             titleVisibility: .visible
         ) {
             Button("폰하드에 저장") { savePendingDownloadToInbox() }
+            if let file = pendingDownload, file.materialKind != nil {
+                Button("재료함에 담기") { addPendingDownloadToBasket(addToProject: false) }
+                if projectSink != nil {
+                    Button("현재 프로젝트에 추가") { addPendingDownloadToBasket(addToProject: true) }
+                }
+            }
             if let file = pendingDownload,
                BrowserURLPolicy.isAudio(filename: file.filename, mimeType: file.mimeType) {
                 Button("폰하드 Music 폴더에 저장") { savePendingDownloadToMusic() }
@@ -684,6 +702,39 @@ struct WebBrowserView: View {
                 statusMessage = "폰하드에 저장했습니다."
             } catch {
                 errorMessage = error.localizedDescription
+            }
+        }
+    }
+
+    /// 받은 파일이 실제 사진·영상일 때만 재료함에 담는다. 열리지 않는 파일은 담지 않고 사유를 알린다.
+    /// 웹 페이지 주소나 스트리밍 주소를 영상으로 만들지 않고, 이미 받은 로컬 파일만 대상으로 한다.
+    private func addPendingDownloadToBasket(addToProject: Bool) {
+        guard let file = pendingDownload, let isVideo = file.materialKind else { return }
+        pendingDownload = nil
+        isSaveDialogPresented = false
+        Task {
+            defer { removeTemporaryDownload(file) }
+            let basket = MaterialBasketStore.shared
+            let key = "web:\(file.id.uuidString)"
+            let result = await basket.addValidated(
+                url: file.temporaryURL, name: file.filename, isVideo: isVideo, sourceKey: key,
+                kind: .browserDownload)
+            switch result {
+            case .failed(let reason):
+                errorMessage = "재료함에 담지 못했습니다. \(reason)"
+            case .duplicate, .added:
+                guard addToProject, let sink = projectSink,
+                      let item = basket.items.first(where: { $0.sourceKey == key }),
+                      let url = basket.fileURL(for: item) else {
+                    statusMessage = "재료함에 담았습니다."
+                    return
+                }
+                let remote = RemoteFileItem(
+                    connectionID: LocalPhotoLibraryFileService.connectionID, path: url.path, name: item.name,
+                    kind: .file, size: item.byteCount, modifiedAt: nil,
+                    contentTypeIdentifier: UTType(filenameExtension: url.pathExtension)?.identifier)
+                sink.add([remote], LocalPhotoLibraryFileService(entries: [(remote, url)]))
+                statusMessage = "재료함에 담고 현재 프로젝트에 추가했습니다."
             }
         }
     }

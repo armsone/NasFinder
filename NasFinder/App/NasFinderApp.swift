@@ -66,7 +66,7 @@ struct NasFinderApp: App {
     }
 
     private var configuredRootView: some View {
-        ConnectionListView()
+        AppShellView()
                 .environmentObject(connectionStore)
                 .environmentObject(inboxStore)
                 .environmentObject(favoriteStore)

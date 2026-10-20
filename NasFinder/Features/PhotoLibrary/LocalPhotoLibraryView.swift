@@ -6,6 +6,7 @@ import UniformTypeIdentifiers
 
 /// 사진과 달력은 같은 PHAsset 바스켓을 사용하며 실제 작업을 시작할 때만 원본을 복사한다.
 struct LocalPhotoLibraryView: View {
+    @Environment(\.trailerProjectSink) private var projectSink
     private enum EntryOrigin { case photoPicker, calendar, file, network, phoneHard, googlePhotos }
     private struct Entry: Identifiable {
         let id: String
@@ -176,7 +177,8 @@ struct LocalPhotoLibraryView: View {
                 .ignoresSafeArea()
             }
         }
-        .fullScreenCover(item: $trailerSelection) { selection in
+        .routesTrailerSelection($trailerSelection, service: { editingService ?? service }, sink: projectSink)
+        .fullScreenCover(item: trailerCoverBinding($trailerSelection, sink: projectSink)) { selection in
             VideoTrailerView(items: selection.items, service: editingService ?? service, mode: selection.mode,
                              keepsSelectionOrder: selection.keepsSelectionOrder)
         }
@@ -308,8 +310,11 @@ struct LocalPhotoLibraryView: View {
                         isChoosingPhoneHardDestination = true
                     } label: { Text("폰하드 복사").padding(.horizontal, ui(8)).frame(minHeight: ui(30)) }
                     Button {
+                        startPreparation { await addSelectionToBasket() }
+                    } label: { Text("재료함에 담기").padding(.horizontal, ui(8)).frame(minHeight: ui(30)) }
+                    Button {
                         startPreparation { await beginTrailer(mode: initialMode ?? .trailer) }
-                    } label: { Text("영상 편집").padding(.horizontal, ui(8)).frame(minHeight: ui(30)) }
+                    } label: { Text(projectSink == nil ? "바로 영상 제작" : "현재 프로젝트에 추가").padding(.horizontal, ui(8)).frame(minHeight: ui(30)) }
                 }
                 .font(PorcelainTypeface.font(size: 14, weight: .medium))
                 .buttonStyle(PorcelainProminentButtonStyle())
@@ -490,6 +495,34 @@ struct LocalPhotoLibraryView: View {
             errorMessage = "\(failedNames.count)개 항목을 준비하지 못했습니다: \(names). 선택은 유지됩니다. iCloud 다운로드와 사진 접근 권한을 확인하고 다시 시도해 주세요."
         }
         return Task.isCancelled ? [] : result
+    }
+    /// 고른 항목을 준비해 재료함에 복사해 담는다. 선택은 그대로 두고, 같은 출처 식별자는 건너뛴다.
+    private func addSelectionToBasket() async {
+        let prepared = await prepare(entries)
+        guard !Task.isCancelled else { return }
+        var added = 0
+        var duplicates = 0
+        var failures: [String] = []
+        for (entry, url) in prepared {
+            let kind: MaterialSourceKind = switch entry.origin {
+            case .photoPicker, .calendar: .photoLibrary
+            case .file: .systemFile
+            case .network, .googlePhotos: .nas
+            case .phoneHard: .phoneHard
+            }
+            // 준비된 파일은 원본일 수 있으므로 재료함이 검증한 자기 복사본만 만든다.
+            switch await MaterialBasketStore.shared.addValidated(
+                url: url, name: entry.item.name, isVideo: entry.isVideo,
+                sourceKey: "\(entry.origin):\(entry.id)", kind: kind) {
+            case .added: added += 1
+            case .duplicate: duplicates += 1
+            case .failed(let reason): failures.append("\(entry.item.name): \(reason)")
+            }
+        }
+        var summary = "재료함에 \(added)개를 담았습니다."
+        if duplicates > 0 { summary += " 이미 담긴 \(duplicates)개는 건너뛰었습니다." }
+        if !failures.isEmpty { summary += " 담지 못한 \(failures.count)개: " + failures.joined(separator: ", ") }
+        showTemporaryImportSummary(summary)
     }
     private func beginTrailer(mode: VideoTrailerMode) async {
         let originals = await prepare(entries)
