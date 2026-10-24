@@ -315,7 +315,8 @@ final class DocumentPickerModel: ObservableObject {
         }
 
         let stored = try JSONDecoder().decode([ProviderConnection].self, from: data)
-        return try stored.compactMap { connection in
+        // 앱에서 비공개로 지정한 연결은 문서 선택기에도 내지 않는다(확장은 항상 일반 모드 기준).
+        return try stored.filter { $0.isPrivate != true }.compactMap { connection in
             let backend: any ProviderRemoteBackend
             switch connection.kind {
             case .synology:
@@ -689,27 +690,17 @@ private struct DocumentPickerThumbnailView: View {
     }
 }
 
+/// 선택된 앱 테마(`UserDefaults.standard`)는 이 확장에서 읽을 수 없고 접근 범위를 넓히지도 않는다.
+/// 그래서 자체 청록/하늘색 대신 플랫폼 의미색을 써서 Files 호스트·앱의 중립 카드 문법에 맞춘다.
 private enum DocumentPickerAppearance {
-    static let backgroundUIColor = UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.018, green: 0.070, blue: 0.067, alpha: 1)
-            : UIColor(red: 0.957, green: 0.984, blue: 0.996, alpha: 1)
-    }
-    static let surfaceUIColor = UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.052, green: 0.115, blue: 0.110, alpha: 1)
-            : UIColor(white: 1, alpha: 0.94)
-    }
-    static let borderUIColor = UIColor { traits in
-        traits.userInterfaceStyle == .dark
-            ? UIColor(red: 0.18, green: 0.35, blue: 0.32, alpha: 0.72)
-            : UIColor(red: 0.72, green: 0.86, blue: 0.92, alpha: 0.66)
-    }
+    static let backgroundUIColor = UIColor.systemGroupedBackground
+    static let surfaceUIColor = UIColor.secondarySystemGroupedBackground
+    static let borderUIColor = UIColor.separator
 
     static let background = Color(uiColor: backgroundUIColor)
     static let surface = Color(uiColor: surfaceUIColor)
     static let border = Color(uiColor: borderUIColor)
-    static let accent = Color(uiColor: .systemTeal)
+    static let accent = Color.accentColor
     static let placeholder = Color(uiColor: .secondaryLabel)
 }
 

@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		A10000000000000000000017 /* NasFinderFileProvider.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* NasFinderFileProvider.appex */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		9A0000000000000000000003 /* HanAIApple in Frameworks */ = {isa = PBXBuildFile; productRef = 9A0000000000000000000002 /* HanAIApple */; };
+		9A0000000000000000000013 /* HanAI in Frameworks */ = {isa = PBXBuildFile; productRef = 9A0000000000000000000012 /* HanAI */; };
 		A1000000000000000000002A /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000002B /* Citadel */; };
 		A1000000000000000000002D /* Citadel in Frameworks */ = {isa = PBXBuildFile; productRef = A1000000000000000000002E /* Citadel */; };
 		D40000000000000000000001 /* VLCKit in Frameworks */ = {isa = PBXBuildFile; platformFilter = ios; productRef = D40000000000000000000003 /* VLCKit */; };
@@ -28,6 +29,13 @@
 			remoteInfo = NasFinderFileProvider;
 		};
 		A1000000000000000000001A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A10000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1000000000000000000000A;
+			remoteInfo = NasFinder;
+		};
+		AB0000000000000000000007 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = A10000000000000000000001 /* Project object */;
 			proxyType = 1;
@@ -78,6 +86,7 @@
 		A10000000000000000000007 /* NasFinder.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NasFinder.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000008 /* NasFinderFileProvider.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NasFinderFileProvider.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000009 /* NasFinderTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NasFinderTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		AB0000000000000000000001 /* NasFinderUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NasFinderUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		B20000000000000000000003 /* NasFinderShare.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NasFinderShare.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C30000000000000000000003 /* NasFinderWidget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NasFinderWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		F60000000000000000000004 /* NasFinderDocumentPicker.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NasFinderDocumentPicker.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -164,6 +173,15 @@
 			path = NasFinderTests;
 			sourceTree = "<group>";
 		};
+		AB0000000000000000000002 /* NasFinderUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+			};
+			explicitFolders = (
+			);
+			path = NasFinderUITests;
+			sourceTree = "<group>";
+		};
 		B20000000000000000000005 /* NasFinderShared */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			explicitFileTypes = {
@@ -212,6 +230,13 @@
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		AB0000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A1000000000000000000000E /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -220,6 +245,7 @@
 				D40000000000000000000001 /* VLCKit in Frameworks */,
 				E50000000000000000000001 /* SMBClient in Frameworks */,
 				9A0000000000000000000003 /* HanAIApple in Frameworks */,
+				9A0000000000000000000013 /* HanAI in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -273,6 +299,7 @@
 				A10000000000000000000005 /* NasFinderFileProvider */,
 				F60000000000000000000007 /* NasFinderDocumentPicker */,
 				A10000000000000000000006 /* NasFinderTests */,
+				AB0000000000000000000002 /* NasFinderUITests */,
 				A10000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -283,6 +310,7 @@
 				A10000000000000000000007 /* NasFinder.app */,
 				A10000000000000000000008 /* NasFinderFileProvider.appex */,
 				A10000000000000000000009 /* NasFinderTests.xctest */,
+				AB0000000000000000000001 /* NasFinderUITests.xctest */,
 				B20000000000000000000003 /* NasFinderShare.appex */,
 				C30000000000000000000003 /* NasFinderWidget.appex */,
 				F60000000000000000000004 /* NasFinderDocumentPicker.appex */,
@@ -320,6 +348,7 @@
 				D40000000000000000000003 /* VLCKit */,
 				E50000000000000000000003 /* SMBClient */,
 				9A0000000000000000000002 /* HanAIApple */,
+				9A0000000000000000000012 /* HanAI */,
 			);
 			productName = NasFinder;
 			productReference = A10000000000000000000007 /* NasFinder.app */;
@@ -370,6 +399,29 @@
 			productName = NasFinderTests;
 			productReference = A10000000000000000000009 /* NasFinderTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		AB0000000000000000000003 /* NasFinderUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AB000000000000000000000B /* Build configuration list for PBXNativeTarget "NasFinderUITests" */;
+			buildPhases = (
+				AB0000000000000000000004 /* Sources */,
+				AB0000000000000000000005 /* Frameworks */,
+				AB0000000000000000000006 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AB0000000000000000000008 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AB0000000000000000000002 /* NasFinderUITests */,
+			);
+			name = NasFinderUITests;
+			packageProductDependencies = (
+			);
+			productName = NasFinderUITests;
+			productReference = AB0000000000000000000001 /* NasFinderUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
 		};
 		B20000000000000000000010 /* NasFinderShare */ = {
 			isa = PBXNativeTarget;
@@ -460,6 +512,10 @@
 						CreatedOnToolsVersion = 26.0;
 						TestTargetID = A1000000000000000000000A;
 					};
+					AB0000000000000000000003 = {
+						CreatedOnToolsVersion = 26.0;
+						TestTargetID = A1000000000000000000000A;
+					};
 					B20000000000000000000010 = {
 						CreatedOnToolsVersion = 26.0;
 					};
@@ -494,6 +550,7 @@
 				A1000000000000000000000A /* NasFinder */,
 				A1000000000000000000000B /* NasFinderFileProvider */,
 				A1000000000000000000000C /* NasFinderTests */,
+				AB0000000000000000000003 /* NasFinderUITests */,
 				B20000000000000000000010 /* NasFinderShare */,
 				C30000000000000000000009 /* NasFinderWidget */,
 				F60000000000000000000010 /* NasFinderDocumentPicker */,
@@ -502,6 +559,13 @@
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		AB0000000000000000000006 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A1000000000000000000000F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -547,6 +611,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		AB0000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A1000000000000000000000D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -603,6 +674,11 @@
 			target = A1000000000000000000000A /* NasFinder */;
 			targetProxy = A1000000000000000000001A /* PBXContainerItemProxy */;
 		};
+		AB0000000000000000000008 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1000000000000000000000A /* NasFinder */;
+			targetProxy = AB0000000000000000000007 /* PBXContainerItemProxy */;
+		};
 		B20000000000000000000014 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			platformFilter = ios;
@@ -624,6 +700,56 @@
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
+		AB0000000000000000000009 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 202610230004;
+				DEVELOPMENT_TEAM = T7B4EPLHPK;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 2.28.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = NasFinder;
+			};
+			name = Debug;
+		};
+		AB000000000000000000000A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 202610230004;
+				DEVELOPMENT_TEAM = T7B4EPLHPK;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				MARKETING_VERSION = 2.28.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = NasFinder;
+			};
+			name = Release;
+		};
 		A1000000000000000000001C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -748,7 +874,7 @@
 				CODE_SIGN_ENTITLEMENTS = NasFinder/NasFinder.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "NasFinder/NasFinder-Mac.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -768,7 +894,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -796,7 +922,7 @@
 				CODE_SIGN_ENTITLEMENTS = NasFinder/NasFinder.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "NasFinder/NasFinder-Mac.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -816,7 +942,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -835,7 +961,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderFileProvider/NasFinderFileProvider.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderFileProvider/Info.plist;
@@ -844,7 +970,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.fileprovider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -862,7 +988,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderFileProvider/NasFinderFileProvider.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderFileProvider/Info.plist;
@@ -871,7 +997,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.fileprovider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -888,7 +1014,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -897,7 +1023,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -913,7 +1039,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -922,7 +1048,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -939,7 +1065,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderShare/NasFinderShare.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderShare/Info.plist;
@@ -948,7 +1074,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -966,7 +1092,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderShare/NasFinderShare.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderShare/Info.plist;
@@ -975,7 +1101,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -992,7 +1118,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1002,7 +1128,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1019,7 +1145,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1029,7 +1155,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1047,7 +1173,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderDocumentPicker/NasFinderDocumentPicker.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderDocumentPicker/Info.plist;
@@ -1056,7 +1182,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.documentpicker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1074,7 +1200,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderDocumentPicker/NasFinderDocumentPicker.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610210051;
+				CURRENT_PROJECT_VERSION = 202610230004;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderDocumentPicker/Info.plist;
@@ -1083,7 +1209,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.21.2;
+				MARKETING_VERSION = 2.28.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.documentpicker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1098,6 +1224,15 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		AB000000000000000000000B /* Build configuration list for PBXNativeTarget "NasFinderUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AB0000000000000000000009 /* Debug */,
+				AB000000000000000000000A /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		A10000000000000000000024 /* Build configuration list for PBXProject "NasFinder" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
@@ -1227,6 +1362,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 9A0000000000000000000001 /* XCLocalSwiftPackageReference "../HanAI" */;
 			productName = HanAIApple;
+		};
+		9A0000000000000000000012 /* HanAI */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 9A0000000000000000000001 /* XCLocalSwiftPackageReference "../HanAI" */;
+			productName = HanAI;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

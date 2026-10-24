@@ -134,6 +134,8 @@ enum PhotoTransferHandshake {
     static let groupedCapability = "grouped-v1"
     static let acceptResponse = "OK\n"
     static let rejectResponse = "ERROR\n"
+    /// v4 hello에 대한 응답: 이 QR의 비밀이 이미 평문으로 노출됐다(계약 개정 3·4). 발신은 v3로 내려가지 않는다.
+    static let taintedResponse = "ERROR tainted\n"
     /// 개행 없이 이 길이를 넘는 요청은 즉시 거부한다.
     static let maximumLineLength = 512
 
@@ -255,4 +257,22 @@ enum PhotoTransferMediaPipelineRoute: Equatable {
             ? .preserveOriginal
             : .crossPlatformConversion(source: source, destination: destination)
     }
+}
+
+/// 사용자에게 보이는 오류 문구(전송·작업대 공용). 시스템이 영어로 돌려주는 설명(`Network.NWError …` 등)은
+/// 화면에 내지 않고, 한글 설명이 있을 때만 괄호로 덧붙인다. 원인 진단은 `lastConnectionErrorDescription` 등 내부 값에 남는다.
+enum UserErrorText {
+    static func koreanDetail(_ error: Error) -> String? {
+        let text = error.localizedDescription
+        let hasHangul = text.unicodeScalars.contains { (0xAC00...0xD7A3).contains($0.value) }
+        return hasHangul ? text : nil
+    }
+
+    static func message(_ base: String, _ error: Error, recovery: String) -> String {
+        let detail = koreanDetail(error).map { " (\($0))" } ?? ""
+        return "\(base)\(detail). \(recovery)"
+    }
+
+    static let networkRecovery = "두 기기가 같은 Wi-Fi에 있는지 확인한 뒤 다시 시도해 주세요."
+    static let retryRecovery = "잠시 후 다시 시도해 주세요."
 }

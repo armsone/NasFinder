@@ -127,7 +127,7 @@ private struct NasFinderPhotoDurationFilterEditor: View {
                     )
                 }
 
-                Label(resultText, systemImage: "video.fill")
+                Label(resultText, interfaceSystemImage: "video.fill")
                     .font(.system(size: 14, weight: .bold))
                     .foregroundStyle(NasFinderPhotoPickerTheme.primary)
                     .frame(maxWidth: .infinity)
@@ -192,7 +192,7 @@ private struct NasFinderPhotoDurationFilterEditor: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "clock.badge.checkmark.fill")
+            Image(interfaceSystemName: "clock.badge.checkmark.fill", pointSize: 21)
                 .font(.system(size: 21, weight: .bold))
                 .foregroundStyle(NasFinderPhotoPickerTheme.primary)
                 .frame(width: 42, height: 42)
@@ -655,7 +655,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
         private func updateFilterMenu() {
             let allAction = UIAction(
                 title: videoOnly ? "전체 영상" : "전체",
-                image: UIImage(systemName: "square.grid.2x2.fill"),
+                image: InterfaceDesignArtwork.uiImage(systemName: "square.grid.2x2.fill"),
                 state: (videoOnly
                     ? selectedMediaFilters == [.video]
                     : selectedMediaFilters.count == 3)
@@ -674,7 +674,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
                 actions = [
                     UIAction(
                         title: "영상만",
-                        image: UIImage(systemName: "video.fill"),
+                        image: InterfaceDesignArtwork.uiImage(systemName: "video.fill"),
                         attributes: [.disabled],
                         state: .on
                     ) { _ in }
@@ -687,7 +687,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
                 ].map { filter in
                     UIAction(
                         title: filter.title,
-                        image: UIImage(systemName: filter.symbolName),
+                        image: InterfaceDesignArtwork.uiImage(systemName: filter.symbolName),
                         state: selectedMediaFilters.contains(filter) ? .on : .off
                     ) { [weak self] _ in
                         self?.toggleMediaFilter(filter)
@@ -696,7 +696,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
             }
             let durationAction = UIAction(
                 title: durationFilterMenuTitle,
-                image: UIImage(systemName: "clock.badge.checkmark"),
+                image: InterfaceDesignArtwork.uiImage(systemName: "clock.badge.checkmark"),
                 state: durationFilterSeconds == nil ? .off : .on
             ) { [weak self] _ in
                 DispatchQueue.main.async {
@@ -711,7 +711,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
                 let arrow = isSelected && !isMediaSortAscending ? "↓" : "↑"
                 return UIAction(
                     title: "\(mode.title) \(arrow)",
-                    image: UIImage(systemName: mode.symbolName),
+                    image: InterfaceDesignArtwork.uiImage(systemName: mode.symbolName),
                     state: isSelected ? .on : .off
                 ) { [weak self] _ in
                     self?.selectMediaSort(mode)
@@ -1842,7 +1842,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
             let closeButton = UIButton(type: .system)
             closeButton.preferredBehavioralStyle = .pad
             closeButton.setImage(
-                UIImage(systemName: "xmark.circle.fill"),
+                InterfaceDesignArtwork.uiImage(systemName: "xmark.circle.fill"),
                 for: .normal
             )
             closeButton.tintColor = .white
@@ -1921,7 +1921,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
                 for: [.touchUpInside, .touchUpOutside, .touchCancel]
             )
 
-            loopButton.setImage(UIImage(systemName: "infinity"), for: .normal)
+            loopButton.setImage(InterfaceDesignArtwork.uiImage(systemName: "infinity"), for: .normal)
             loopButton.accessibilityLabel = "무한 재생"
             loopButton.addTarget(
                 self,
@@ -2098,7 +2098,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
         private func updatePlayPauseButton() {
             let isPlaying = videoPlayer?.timeControlStatus == .playing
             let symbol = isPlaying ? "pause.fill" : "play.fill"
-            playPauseButton.setImage(UIImage(systemName: symbol), for: .normal)
+            playPauseButton.setImage(InterfaceDesignArtwork.uiImage(systemName: symbol), for: .normal)
             playPauseButton.accessibilityLabel = isPlaying ? "일시 정지" : "재생"
         }
 
@@ -2162,7 +2162,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
 
             playPauseButton.tintColor = NasFinderPhotoPickerTheme.secondaryUIColor
             playPauseButton.setImage(
-                UIImage(systemName: "play.fill"),
+                InterfaceDesignArtwork.uiImage(systemName: "play.fill"),
                 for: .normal
             )
             playPauseButton.accessibilityLabel = "라이브 포토 재생"
@@ -2375,7 +2375,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
         private let checkLabel = UILabel()
         var onAccessibilityActivate: (() -> Void)?
         private let mediaKindBadge = UIImageView(
-            image: UIImage(systemName: "photo.fill")
+            image: InterfaceDesignArtwork.uiImage(systemName: "photo.fill")
         )
 
         override init(frame: CGRect) {
@@ -2494,7 +2494,7 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
         }
 
         func updateMediaKind(_ mediaKind: MediaKind) {
-            mediaKindBadge.image = UIImage(systemName: mediaKind.symbolName)
+            mediaKindBadge.image = InterfaceDesignArtwork.uiImage(systemName: mediaKind.symbolName)
             mediaKindBadge.isHidden = false
         }
 

@@ -80,8 +80,20 @@ actor CloudDriveFileService: RemoteFileService {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try JSONSerialization.data(withJSONObject: ["path": directory == "/" ? "" : directory])
-        let object = try await json(request)
-        let entries = object["entries"] as? [[String: Any]] ?? []
+        var object = try await json(request)
+        var entries = object["entries"] as? [[String: Any]] ?? []
+        // 한 번에 다 오지 않은 폴더는 cursor로 다음 묶음을 끝까지 이어 받는다(files/list_folder/continue).
+        var pages = 1
+        while object["has_more"] as? Bool == true,
+              let cursor = object["cursor"] as? String, !cursor.isEmpty {
+            try Self.checkNextPage(&pages)
+            var next = authorizedRequest(URL(string: "https://api.dropboxapi.com/2/files/list_folder/continue")!)
+            next.httpMethod = "POST"
+            next.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            next.httpBody = try JSONSerialization.data(withJSONObject: ["cursor": cursor])
+            object = try await json(next)
+            entries += object["entries"] as? [[String: Any]] ?? []
+        }
         return entries.compactMap { entry in
             guard let name = entry["name"] as? String,
                   let tag = entry[".tag"] as? String else { return nil }
@@ -103,8 +115,16 @@ actor CloudDriveFileService: RemoteFileService {
         let endpoint = directory == "/"
             ? "https://graph.microsoft.com/v1.0/me/drive/root/children"
             : "https://graph.microsoft.com/v1.0/me/drive/root:\(encodedPath(directory)):/children"
-        let object = try await json(authorizedRequest(URL(string: endpoint)!))
-        let entries = object["value"] as? [[String: Any]] ?? []
+        var object = try await json(authorizedRequest(URL(string: endpoint)!))
+        var entries = object["value"] as? [[String: Any]] ?? []
+        // 다음 쪽 주소(@odata.nextLink)가 있으면 같은 인증으로 끝까지 이어 받는다.
+        var pages = 1
+        while let nextLink = object["@odata.nextLink"] as? String,
+              let nextURL = URL(string: nextLink), nextURL.host == "graph.microsoft.com" {
+            try Self.checkNextPage(&pages)
+            object = try await json(authorizedRequest(nextURL))
+            entries += object["value"] as? [[String: Any]] ?? []
+        }
         return entries.compactMap { entry in
             guard let name = entry["name"] as? String else { return nil }
             let file = entry["file"] as? [String: Any]
@@ -124,13 +144,22 @@ actor CloudDriveFileService: RemoteFileService {
     private func listGoogleDrive(directory: String) async throws -> [RemoteFileItem] {
         let parentID = try await googleFolderID(for: directory)
         var components = URLComponents(string: "https://www.googleapis.com/drive/v3/files")!
-        components.queryItems = [
+        let baseQuery = [
             URLQueryItem(name: "q", value: "'\(parentID)' in parents and trashed = false"),
-            URLQueryItem(name: "fields", value: "files(id,name,mimeType,size,modifiedTime,md5Checksum,parents)"),
+            URLQueryItem(name: "fields", value: "nextPageToken,files(id,name,mimeType,size,modifiedTime,md5Checksum,parents)"),
             URLQueryItem(name: "pageSize", value: "1000")
         ]
-        let object = try await json(authorizedRequest(components.url!))
-        let entries = object["files"] as? [[String: Any]] ?? []
+        components.queryItems = baseQuery
+        var object = try await json(authorizedRequest(components.url!))
+        var entries = object["files"] as? [[String: Any]] ?? []
+        // nextPageToken이 있으면 같은 조건으로 다음 쪽을 끝까지 이어 받는다.
+        var pages = 1
+        while let token = object["nextPageToken"] as? String, !token.isEmpty {
+            try Self.checkNextPage(&pages)
+            components.queryItems = baseQuery + [URLQueryItem(name: "pageToken", value: token)]
+            object = try await json(authorizedRequest(components.url!))
+            entries += object["files"] as? [[String: Any]] ?? []
+        }
         return entries.compactMap { entry in
             guard let id = entry["id"] as? String, let name = entry["name"] as? String else { return nil }
             let path = childPath(directory, name)
@@ -147,6 +176,15 @@ actor CloudDriveFileService: RemoteFileService {
                 mimeType: entry["mimeType"] as? String
             )
         }
+    }
+
+    /// 다음 쪽을 받기 전에 취소를 확인하고, 서버가 같은 쪽을 계속 돌려주는 경우를 막는 상한을 둔다.
+    private static let maximumListPages = 500
+
+    private static func checkNextPage(_ pages: inout Int) throws {
+        try Task.checkCancellation()
+        pages += 1
+        guard pages <= maximumListPages else { throw CloudDriveError.tooManyPages }
     }
 
     private func googleFolderID(for path: String) async throws -> String {
@@ -249,8 +287,9 @@ actor CloudDriveFileService: RemoteFileService {
 
     private func validate(_ response: URLResponse, data: Data = Data()) throws {
         guard let http = response as? HTTPURLResponse, 200..<300 ~= http.statusCode else {
-            let message = String(data: data, encoding: .utf8) ?? "클라우드 서비스가 요청을 거부했습니다."
-            throw CloudDriveError.http(message)
+            // 서버 응답 본문(계정·내부 정보가 섞일 수 있음)은 화면에 보이지 않고 상태 코드만 알린다.
+            let status = (response as? HTTPURLResponse)?.statusCode
+            throw CloudDriveError.http(CloudDriveError.message(forStatus: status))
         }
     }
 
@@ -273,9 +312,16 @@ actor CloudDriveFileService: RemoteFileService {
             name: name,
             kind: isFolder ? .folder : .file,
             size: size,
-            modifiedAt: modified.flatMap { ISO8601DateFormatter().date(from: $0) },
+            modifiedAt: modified.flatMap(Self.parseDate),
             contentTypeIdentifier: mimeType.flatMap { UTType(mimeType: $0)?.identifier }
         )
+    }
+
+    /// 소수 초가 붙은 시각(예: 2026-10-22T01:02:03.456Z)과 붙지 않은 시각을 모두 읽는다.
+    private static func parseDate(_ text: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractional.date(from: text) ?? ISO8601DateFormatter().date(from: text)
     }
 
     private func normalized(_ path: String?) -> String {
@@ -306,6 +352,18 @@ enum CloudDriveError: LocalizedError, Sendable {
     case folderNotFound(String)
     case http(String)
     case signInRequired
+    case tooManyPages
+
+    static func message(forStatus status: Int?) -> String {
+        switch status {
+        case 401: "클라우드 서비스가 로그인을 받아들이지 않았습니다. 연결 설정에서 이 계정을 다시 연결해 주세요. (HTTP 401)"
+        case 403: "클라우드 서비스가 이 요청을 허용하지 않았습니다. 권한을 확인해 주세요. (HTTP 403)"
+        case 404: "클라우드에서 항목을 찾지 못했습니다. (HTTP 404)"
+        case 429: "클라우드 서비스 요청이 많아 잠시 거부되었습니다. 잠시 후 다시 시도해 주세요. (HTTP 429)"
+        case let code?: "클라우드 서비스가 요청을 거부했습니다. (HTTP \(code))"
+        case nil: "클라우드 서비스가 올바른 응답을 보내지 않았습니다."
+        }
+    }
 
     var errorDescription: String? {
         switch self {
@@ -315,6 +373,7 @@ enum CloudDriveError: LocalizedError, Sendable {
         case let .folderNotFound(path): "폴더를 찾지 못했습니다: \(path)"
         case let .http(message): message
         case .signInRequired: "로그인이 만료되었습니다. 연결 설정에서 이 계정을 다시 연결해 주세요."
+        case .tooManyPages: "폴더 항목이 너무 많아 목록을 끝까지 받지 못했습니다."
         }
     }
 }

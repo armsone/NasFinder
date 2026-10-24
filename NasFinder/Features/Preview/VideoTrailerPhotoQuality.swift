@@ -16,6 +16,10 @@ enum VideoTrailerPhotoQuality {
         let aspectRatio: Double
         let sharpnessScore: Double
         let exposureScore: Double
+        /// 원본 해상도(가로×세로). 사진 선별의 해상도 항에 쓴다.
+        var pixelCount: Int = 0
+        /// Vision 미적 점수 원값(-1...1). 없으면 nil. 사진 선별은 (raw+1)/2로 0...1로 바꿔 쓴다.
+        var rawAestheticsScore: Double? = nil
     }
 
     /// Photos look alike enough to shorten the later one's own scene, within [0, 1]: 0 at
@@ -40,6 +44,12 @@ enum VideoTrailerPhotoQuality {
         guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, thumbnailOptions) else { return nil }
         let pixelCount = originalPixelCount(source)
         guard pixelCount > 0 else { return nil }
+        return await measure(cgImage: cgImage, originalPixelCount: pixelCount, includeAesthetics: includeAesthetics)
+    }
+
+    /// 이미 디코드한 축소 이미지로 같은 지표를 계산한다. `originalPixelCount`는 원본 해상도(가로×세로)다.
+    static func measure(cgImage: CGImage, originalPixelCount pixelCount: Int, includeAesthetics: Bool = true) async -> Measurement? {
+        guard pixelCount > 0 else { return nil }
         let ciImage = CIImage(cgImage: cgImage)
         let context = CIContext(options: [.useSoftwareRenderer: false])
         let sharpness = sharpnessScore(for: ciImage, context: context)
@@ -51,7 +61,20 @@ enum VideoTrailerPhotoQuality {
         let quality = aesthetics.map { base * 0.4 + $0 * 0.6 } ?? base
         let aspectRatio = Double(cgImage.width) / Double(max(1, cgImage.height))
         return Measurement(qualityScore: quality, fingerprint: PhotoFingerprint.make(from: cgImage), aspectRatio: aspectRatio,
-            sharpnessScore: sharpness, exposureScore: exposure)
+            sharpnessScore: sharpness, exposureScore: exposure, pixelCount: pixelCount, rawAestheticsScore: aesthetics)
+    }
+
+    /// 사진 선별용: 두 측정이 "비슷한 장면"인지 0...1 근접도로 돌려준다. 기존 가로세로비·지문 통과 조건을 그대로 쓰고,
+    /// 하나라도 넘기면 nil(비슷하지 않음). 1에 가까울수록 거의 같은 사진이다.
+    static func closeness(_ lhs: Measurement, _ rhs: Measurement) -> Double? {
+        guard abs(lhs.aspectRatio - rhs.aspectRatio) <= 0.06 else { return nil }
+        return PhotoFingerprint.similarityCloseness(lhs.fingerprint, rhs.fingerprint)
+    }
+
+    /// 지문의 평균 휘도(0...255). 비슷한 후보만 비교하도록 정렬 창을 만들 때 쓴다.
+    static func meanLuminance(of measurement: Measurement) -> Double {
+        guard !measurement.fingerprint.isEmpty else { return 0 }
+        return measurement.fingerprint.reduce(0.0) { $0 + Double($1) } / Double(measurement.fingerprint.count)
     }
 
     /// The scene-duration ratio (fraction of the configured clip length) for every photo

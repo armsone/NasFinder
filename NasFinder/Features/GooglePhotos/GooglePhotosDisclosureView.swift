@@ -59,7 +59,7 @@ struct GooglePhotosDisclosureView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: ui(8)) {
-            Image(systemName: "photo.on.rectangle.angled")
+            Image(interfaceSystemName: "photo.on.rectangle.angled", pointSize: 34)
                 .font(.ui(.largeTitle))
                 .foregroundStyle(SkyBreezeTheme.accent)
                 .accessibilityHidden(true)
@@ -77,7 +77,7 @@ struct GooglePhotosDisclosureView: View {
 
     private func disclosureRow(systemImage: String, title: String, detail: String) -> some View {
         HStack(alignment: .top, spacing: ui(12)) {
-            Image(systemName: systemImage)
+            Image(interfaceSystemName: systemImage, pointSize: 20)
                 .font(.ui(.title3))
                 .foregroundStyle(SkyBreezeTheme.accent)
                 .frame(width: ui(30))

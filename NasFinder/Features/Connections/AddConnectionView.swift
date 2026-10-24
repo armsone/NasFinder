@@ -111,7 +111,7 @@ struct AddConnectionView: View {
                 applyRememberedKindIfNeeded()
                 loadStoredCredentialIfNeeded()
             }
-            .alert("연결 오류", isPresented: errorBinding) {
+            .alert("연결 알림", isPresented: errorBinding) {
                 Button("확인", role: .cancel) { errorMessage = nil }
             } message: {
                 Text(currentErrorMessage)
@@ -196,7 +196,7 @@ struct AddConnectionView: View {
                 Task { await connectCloud() }
             } label: {
                 HStack {
-                    Label("\(kind.title)로 계속", systemImage: kind.systemImage)
+                    Label("\(kind.title)로 계속", interfaceSystemImage: kind.systemImage)
                     Spacer()
                     if isSaving { ProgressView() }
                 }
@@ -206,7 +206,7 @@ struct AddConnectionView: View {
             Text("계정")
                 .font(MacUIScale.sectionNoteFont)
         } footer: {
-            Text("로그인 토큰은 이 iPhone의 키체인에만 저장됩니다. NasFinder는 계정 비밀번호를 보거나 저장하지 않습니다.")
+            Text("로그인 토큰은 이 기기의 키체인에만 저장됩니다. NasFinder는 계정 비밀번호를 보거나 저장하지 않습니다.")
                 .font(MacUIScale.sectionNoteFont)
         }
     }
@@ -222,9 +222,9 @@ struct AddConnectionView: View {
                 .autocorrectionDisabled()
                 .keyboardType(.URL)
             if let addressValidationMessage {
-                Label(addressValidationMessage, systemImage: "exclamationmark.triangle.fill")
+                Label(addressValidationMessage, interfaceSystemImage: "exclamationmark.triangle.fill")
                     .font(.ui(.caption))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(PorcelainMetrics.danger)
             }
             LabeledContent("포트 · 필수") {
                 TextField(String(kind.defaultPort), value: $port, format: .number.grouping(.never))
@@ -247,10 +247,10 @@ struct AddConnectionView: View {
                (parsedServerAddress?.explicitPort ?? port) == ConnectionKind.sftp.defaultPort {
                 Label(
                     "22번은 SFTP 포트입니다. Synology 연결에는 DSM HTTPS 5001, HTTP 5000 또는 DSM에서 지정한 웹 포트를 입력하세요.",
-                    systemImage: "exclamationmark.triangle.fill"
+                    interfaceSystemImage: "exclamationmark.triangle.fill"
                 )
                 .font(.ui(.caption))
-                .foregroundStyle(.orange)
+                .foregroundStyle(PorcelainMetrics.warn)
             }
 
             if kind == .synology || kind == .webDAV {
@@ -304,9 +304,9 @@ struct AddConnectionView: View {
             .disabled(!isValid || isTesting || isSaving)
 
             if let testMessage {
-                Label(testMessage, systemImage: "checkmark.circle.fill")
+                Label(testMessage, interfaceSystemImage: "checkmark.circle.fill")
                     .font(.ui(.footnote))
-                    .foregroundStyle(.green)
+                    .foregroundStyle(PorcelainMetrics.accent)
             }
         } footer: {
             Text(securityFootnote)
@@ -356,7 +356,7 @@ struct AddConnectionView: View {
         case .ftp:
             return "ipTIME 공유기 USB 저장장치와 ipDISK는 FTP를 사용합니다. FTP 암호화가 없으므로 로컬 네트워크나 VPN 안에서만 사용하세요."
         case .dropbox, .oneDrive, .googleDrive:
-            return "로그인 토큰은 iPhone 키체인에 저장됩니다."
+            return "로그인 토큰은 이 기기의 키체인에 저장됩니다."
         }
     }
 

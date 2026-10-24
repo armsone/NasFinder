@@ -8,8 +8,10 @@ actor SMBFileService: RemoteFileService {
     nonisolated let connection: RemoteConnection
     private let credential: RemoteCredential
 
+    /// SMB 업로드는 같은 이름이 있으면 새로 만들기에 실패하므로 덮어쓰기(replaceFile)는 광고하지 않는다.
+    /// 폴더 삭제는 비어 있는 폴더만 가능하므로 재귀 삭제도 광고하지 않는다.
     nonisolated var capabilities: RemoteFileServiceCapabilities {
-        [.createFolder, .rename, .delete, .upload, .replaceFile, .serverSideMove]
+        [.createFolder, .rename, .delete, .upload, .serverSideMove]
     }
     nonisolated var supportsRangeStreaming: Bool { true }
     nonisolated var permitsFullDownloadForVideoThumbnail: Bool { false }
@@ -179,16 +181,27 @@ actor SMBFileService: RemoteFileService {
         recursive: Bool,
         context: RemoteOperationContext
     ) async throws -> RemoteOperationResult {
+        try context.checkCancellation()
         let location = try split(item.path)
         let client = try await loggedInClient()
-        try await client.connectShare(location.share)
-        if item.isDirectory {
-            try await client.deleteDirectory(path: location.relativePath)
-        } else {
-            try await client.deleteFile(path: location.relativePath)
+        do {
+            try await client.connectShare(location.share)
+            if item.isDirectory {
+                // 하위 항목까지 지우는 기능은 없다. 안에 항목이 있으면 아무것도 지우지 않고 알린다.
+                let children = try await client.listDirectory(path: location.relativePath)
+                    .filter { $0.name != "." && $0.name != ".." }
+                guard children.isEmpty else {
+                    throw RemoteFileOperationError.directoryNotEmpty(path: item.path)
+                }
+                try await client.deleteDirectory(path: location.relativePath)
+            } else {
+                try await client.deleteFile(path: location.relativePath)
+            }
+        } catch {
+            await close(client)
+            throw error
         }
-        _ = try? await client.disconnectShare()
-        _ = try? await client.logoff()
+        await close(client)
         return RemoteOperationResult(
             operationID: context.operationID,
             operation: .delete,
@@ -203,19 +216,162 @@ actor SMBFileService: RemoteFileService {
         conflictPolicy: RemoteConflictPolicy,
         context: RemoteOperationContext
     ) async throws -> RemoteOperationResult {
-        let name = preferredName ?? localURL.lastPathComponent
+        try context.checkCancellation()
+        let requestedName = preferredName ?? localURL.lastPathComponent
+        // 충돌 정책을 대상 폴더의 현재 목록으로 먼저 적용한다(FTP와 같은 방식).
+        let siblings = try await list(directory: directoryPath)
+        let decision = try RemotePath.conflictDecision(
+            for: requestedName,
+            sourceIsDirectory: false,
+            siblings: siblings,
+            policy: conflictPolicy,
+            sourcePath: localURL.path,
+            destinationPath: appending(requestedName, to: directoryPath),
+            caseSensitive: false
+        )
+        let name: String
+        switch decision {
+        case .skip(let existingPath):
+            return RemoteOperationResult(
+                operationID: context.operationID,
+                operation: .upload,
+                outcomes: [.skipped(
+                    sourcePath: localURL.path,
+                    destinationPath: existingPath,
+                    issue: .init(code: .conflict, message: "같은 이름의 파일이 이미 있습니다.")
+                )]
+            )
+        case .proceed(let resolvedName, let replacesExisting):
+            // SMB 새 파일 만들기는 기존 파일을 덮어쓰지 않는다. 덮어쓰기는 기존 파일을 지우지 않고 충돌로 알린다.
+            guard !replacesExisting else {
+                throw RemoteFileOperationError.conflict(
+                    sourcePath: localURL.path,
+                    destinationPath: appending(resolvedName, to: directoryPath)
+                )
+            }
+            name = resolvedName
+        }
         let destination = appending(name, to: directoryPath)
         let location = try split(destination)
         let client = try await loggedInClient()
-        try await client.connectShare(location.share)
-        try await client.upload(localPath: localURL, remotePath: location.relativePath)
-        _ = try? await client.disconnectShare()
-        _ = try? await client.logoff()
+        do {
+            try await client.connectShare(location.share)
+            try await client.upload(localPath: localURL, remotePath: location.relativePath)
+        } catch {
+            await close(client)
+            throw error
+        }
+        await close(client)
         return RemoteOperationResult(
             operationID: context.operationID,
             operation: .upload,
             outcomes: [.succeeded(sourcePath: localURL.path, destinationPath: destination)]
         )
+    }
+
+    /// 같은 공유 폴더 안에서 서버의 이름 바꾸기(SMB2 FileRenameInformation, 기존 항목 대체 안 함)로 옮긴다.
+    /// 다른 공유 폴더로는 옮기지 않는다. 내용을 내려받아 다시 올리는 이동은 하지 않는다.
+    func move(
+        _ item: RemoteFileItem,
+        to directoryPath: String,
+        conflictPolicy: RemoteConflictPolicy,
+        strategy: RemoteTransferStrategy,
+        context: RemoteOperationContext
+    ) async throws -> RemoteOperationResult {
+        try context.checkCancellation()
+        guard strategy != .streaming else {
+            throw RemoteFileOperationError.unsupported(operation: .move)
+        }
+        try conflictPolicy.validate(for: item, destinationPath: directoryPath)
+        let sourcePath = normalized(item.path)
+        let targetDirectory = normalized(directoryPath)
+        if normalized((sourcePath as NSString).deletingLastPathComponent) == targetDirectory {
+            // 이미 그 폴더에 있다. 아무것도 바꾸지 않는다.
+            return RemoteOperationResult(
+                operationID: context.operationID,
+                operation: .move,
+                outcomes: [.succeeded(sourcePath: item.path, destinationPath: item.path, resultingItem: item)]
+            )
+        }
+        if item.isDirectory, RemotePath.isSameOrDescendant(targetDirectory, of: sourcePath) {
+            return RemoteOperationResult(
+                operationID: context.operationID,
+                operation: .move,
+                outcomes: [.failed(
+                    sourcePath: item.path,
+                    destinationPath: targetDirectory,
+                    issue: .init(code: .unsupported, message: "\(item.name): 폴더를 자기 자신이나 하위 폴더로 옮길 수 없습니다.")
+                )]
+            )
+        }
+        let siblings = try await list(directory: targetDirectory)
+        let decision = try RemotePath.conflictDecision(
+            for: item.name,
+            sourceIsDirectory: item.isDirectory,
+            siblings: siblings,
+            policy: conflictPolicy,
+            sourcePath: item.path,
+            destinationPath: appending(item.name, to: targetDirectory),
+            caseSensitive: false
+        )
+        let name: String
+        switch decision {
+        case .skip(let existingPath):
+            return RemoteOperationResult(
+                operationID: context.operationID,
+                operation: .move,
+                outcomes: [.skipped(
+                    sourcePath: item.path,
+                    destinationPath: existingPath,
+                    issue: .init(code: .conflict, message: "같은 이름의 항목이 이미 있습니다.")
+                )]
+            )
+        case .proceed(let resolvedName, let replacesExisting):
+            guard !replacesExisting else {
+                throw RemoteFileOperationError.conflict(
+                    sourcePath: item.path,
+                    destinationPath: appending(resolvedName, to: targetDirectory)
+                )
+            }
+            name = resolvedName
+        }
+        let destination = appending(name, to: targetDirectory)
+        let source = try split(sourcePath)
+        let target = try split(destination)
+        guard source.share == target.share,
+              !source.relativePath.isEmpty,
+              !target.relativePath.isEmpty else {
+            throw RemoteFileOperationError.unsupported(operation: .move)
+        }
+        let client = try await loggedInClient()
+        do {
+            try await client.connectShare(source.share)
+            try await client.move(from: source.relativePath, to: target.relativePath)
+        } catch {
+            await close(client)
+            throw error
+        }
+        await close(client)
+        let moved = RemoteFileItem(
+            connectionID: item.connectionID,
+            path: destination,
+            name: name,
+            kind: item.kind,
+            size: item.size,
+            modifiedAt: item.modifiedAt,
+            contentTypeIdentifier: item.contentTypeIdentifier
+        )
+        return RemoteOperationResult(
+            operationID: context.operationID,
+            operation: .move,
+            outcomes: [.succeeded(sourcePath: item.path, destinationPath: destination, resultingItem: moved)]
+        )
+    }
+
+    /// 실패한 경우에도 공유 연결과 로그인 세션을 닫는다.
+    private func close(_ client: SMBClient) async {
+        _ = try? await client.disconnectShare()
+        _ = try? await client.logoff()
     }
 
     private func loggedInClient() async throws -> SMBClient {

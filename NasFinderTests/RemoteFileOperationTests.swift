@@ -125,6 +125,81 @@ final class RemoteFileOperationTests: XCTestCase {
         }
     }
 
+    func testConflictDecisionAppliesPolicyWithoutTouchingDifferentCaseFiles() throws {
+        let siblings = [
+            makeItem(path: "/photo/Clip.MOV", name: "Clip.MOV", kind: .file),
+            makeItem(path: "/photo/album", name: "album", kind: .folder)
+        ]
+
+        func decide(
+            _ name: String,
+            _ policy: RemoteConflictPolicy,
+            isDirectory: Bool = false,
+            caseSensitive: Bool = false
+        ) throws -> RemoteConflictDecision {
+            try RemotePath.conflictDecision(
+                for: name,
+                sourceIsDirectory: isDirectory,
+                siblings: siblings,
+                policy: policy,
+                sourcePath: "/inbox/\(name)",
+                destinationPath: "/photo/\(name)",
+                caseSensitive: caseSensitive
+            )
+        }
+
+        XCTAssertEqual(try decide("new.jpg", .fail), .proceed(name: "new.jpg", replacesExisting: false))
+        XCTAssertEqual(try decide("clip.mov", .skip), .skip(existingPath: "/photo/Clip.MOV"))
+        XCTAssertEqual(try decide("clip.mov", .keepBoth), .proceed(name: "clip (1).mov", replacesExisting: false))
+        XCTAssertEqual(try decide("Clip.MOV", .replace), .proceed(name: "Clip.MOV", replacesExisting: true))
+        XCTAssertEqual(
+            try decide("clip.mov", .fail, caseSensitive: true),
+            .proceed(name: "clip.mov", replacesExisting: false)
+        )
+        XCTAssertThrowsError(try decide("clip.mov", .fail)) { error in
+            XCTAssertEqual(
+                error as? RemoteFileOperationError,
+                .conflict(sourcePath: "/inbox/clip.mov", destinationPath: "/photo/clip.mov")
+            )
+        }
+        XCTAssertThrowsError(try decide("Album", .replace, isDirectory: true)) { error in
+            XCTAssertEqual(
+                error as? RemoteFileOperationError,
+                .folderReplacementNotAllowed(path: "/photo/album")
+            )
+        }
+    }
+
+    func testMoveIntoItselfIsDetectedIgnoringCase() {
+        XCTAssertTrue(RemotePath.isSameOrDescendant("/photo/album", of: "/photo/album"))
+        XCTAssertTrue(RemotePath.isSameOrDescendant("/photo/album/2026", of: "/photo/album"))
+        XCTAssertTrue(RemotePath.isSameOrDescendant("/Photo/Album/2026", of: "/photo/album/"))
+        XCTAssertFalse(RemotePath.isSameOrDescendant("/photo/albums", of: "/photo/album"))
+        XCTAssertFalse(RemotePath.isSameOrDescendant("/photo", of: "/photo/album"))
+    }
+
+    func testServicesAdvertiseOnlySupportedMutations() {
+        let credential = RemoteCredential(password: "test")
+        func service(_ kind: ConnectionKind) -> any RemoteFileService {
+            RemoteFileServiceFactory.make(
+                connection: RemoteConnection(name: "Test", kind: kind, host: "nas.local", username: "user"),
+                credential: credential
+            )
+        }
+
+        let smb = service(.smb).capabilities
+        XCTAssertTrue(smb.contains([.upload, .serverSideMove]))
+        XCTAssertFalse(smb.contains(.replaceFile), "SMB 업로드는 기존 파일을 덮어쓰지 않습니다.")
+        XCTAssertFalse(smb.contains(.recursiveDelete))
+
+        let ftp = service(.ftp).capabilities
+        XCTAssertTrue(ftp.contains([.upload, .replaceFile, .serverSideMove]))
+        XCTAssertFalse(ftp.contains(.recursiveDelete))
+
+        let webDAV = service(.webDAV).capabilities
+        XCTAssertTrue(webDAV.contains([.upload, .replaceFile, .serverSideMove, .recursiveDelete]))
+    }
+
     func testReadOnlyServiceHasNoMutationCapabilitiesAndThrowsUnsupported() async {
         let service: any RemoteFileService = ReadOnlyService()
         let item = makeItem(path: "/photo/image.jpg", name: "image.jpg", kind: .file)

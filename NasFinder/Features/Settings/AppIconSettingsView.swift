@@ -161,7 +161,7 @@ struct AppIconPickerSection: View {
                                         if pendingIcon == icon {
                                             ProgressView().controlSize(.mini)
                                         } else if selectedIcon == icon {
-                                            Image(systemName: "checkmark.circle.fill")
+                                            Image(interfaceSystemName: "checkmark.circle.fill")
                                                 .foregroundStyle(.tint)
                                         }
                                     }
@@ -266,9 +266,10 @@ struct SettingsSectionHeader: View {
             Text(title)
             Spacer(minLength: 0)
         }
-        .porcelainFont(.tile, weight: .medium)
-        .foregroundStyle(PorcelainMetrics.secondary)
+        .font(.ui(.headline))
+        .foregroundStyle(PorcelainMetrics.graphite)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -283,7 +284,7 @@ struct SettingsPanelDescription: View {
     var body: some View {
         let _ = themeRefresh.theme
         Text(text)
-            .porcelainFont(.body, weight: .regular)
+            .font(.ui(.footnote))
             .foregroundStyle(PorcelainMetrics.secondary)
             .frame(maxWidth: .infinity, alignment: .leading)
     }

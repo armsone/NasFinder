@@ -174,7 +174,7 @@ private struct FileBrowserPageTitle: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
         } icon: {
-            Image(systemName: symbol)
+            Image(interfaceSystemName: symbol)
                 .uiBarFont(.caption2)
                 .imageScale(.small)
         }
@@ -255,6 +255,8 @@ struct FileBrowserView: View {
     @State private var inlineMusic = InlineMusicPlayback()
     @State private var trailerSelection: VideoTrailerSelection?
     @State private var collectionNotice: String?
+    /// '작업대에 담기'가 만든 참조 요청. 대상 포켓은 사용자가 시트에서 직접 고른다.
+    @State private var workbenchRequest: WorkbenchAddRequest?
     @Environment(\.trailerProjectSink) private var projectSink
     @State private var folderTrailerScopeChoice: RemoteFileItem?
     @State private var navigatedFolder: RemoteFileItem?
@@ -430,6 +432,7 @@ struct FileBrowserView: View {
                     }
                     if inlineLayoutStyle != .coverFlow {
                         currentPathBar
+                        if showsLayoutStyleBar { layoutStyleBar }
                         thumbnailProgressLine
                     }
                     browserContent(for: inlineLayoutStyle)
@@ -718,11 +721,12 @@ struct FileBrowserView: View {
         ) { preparedShare in
             RemoteFileActivityView(fileURLs: preparedShare.fileURLs)
         }
-        .alert("알림", isPresented: Binding(get: { collectionNotice != nil }, set: { if !$0 { collectionNotice = nil } })) {
+        .alert("컬렉션 알림", isPresented: Binding(get: { collectionNotice != nil }, set: { if !$0 { collectionNotice = nil } })) {
             Button("확인", role: .cancel) { collectionNotice = nil }
         } message: { Text(collectionNotice ?? "") }
+        .workbenchAddSheet(gated($workbenchRequest, isActive))
         .routesTrailerSelection($trailerSelection, service: { viewModel.service }, sink: projectSink)
-        .fullScreenCover(item: gated(trailerCoverBinding($trailerSelection, sink: projectSink), isActive)) { selection in
+        .trailerEditorCover(item: gated(trailerCoverBinding($trailerSelection, sink: projectSink), isActive)) { selection in
             VideoTrailerView(items: selection.items, service: viewModel.service, mode: selection.mode)
         }
         .sheet(
@@ -759,7 +763,7 @@ struct FileBrowserView: View {
                 pendingDeleteItems = []
             }
         } message: {
-            Text("폴더를 선택한 경우 안의 파일도 함께 삭제됩니다. 이 작업은 되돌릴 수 없습니다.")
+            Text(deleteConfirmationMessage)
         }
         .confirmationDialog(
             folderTrailerScopeMode == .mediaMusic ? "음악을 입힐 범위" : "예고편에 포함할 범위",
@@ -851,6 +855,7 @@ struct FileBrowserView: View {
             }
             .uiBarFont()
         }
+        .porcelainFlatItemBackground()
 
         ToolbarItem(placement: .principal) {
             Group {
@@ -875,17 +880,21 @@ struct FileBrowserView: View {
                     if isSelecting && onPickMedia != nil {
                         selectionLayoutMenu
                     } else if isSelecting {
+                        // 고르기 → 작업대 → 만들기/보내기 흐름: 폴더 안에서도 작업대 입구를 둔다(좁은 창에서만 보인다).
+                        ShellWorkbenchToolbarButton()
                         Button("완료") {
                             endSelection()
                         }
                         .disabled(shareCoordinator.isPreparing)
                     } else {
+                        ShellWorkbenchToolbarButton()
                         regularMoreButton
                     }
                 }
             }
             .uiBarFont()
         }
+        .porcelainFlatItemBackground()
     }
 
     /// 영상 만들기 선택 브라우저의 보기 메뉴: 자세히 · 썸네일 · 포스터.
@@ -896,7 +905,7 @@ struct FileBrowserView: View {
                     storedSelectionLayoutStyle = style.rawValue
                 } label: {
                     if layoutStyle == style {
-                        Label(selectionTitle(for: style), systemImage: "checkmark")
+                        Label(selectionTitle(for: style), interfaceSystemImage: "checkmark")
                     } else {
                         Text(selectionTitle(for: style))
                     }
@@ -971,7 +980,7 @@ struct FileBrowserView: View {
         Button {
             interactionCoordinator.showBrowserPanel()
         } label: {
-            Image(systemName: "ellipsis")
+            Image(interfaceSystemName: "ellipsis", pointSize: ui(15))
                 .font(.system(size: ui(15), weight: .bold))
                 .foregroundStyle(SkyBreezeTheme.accent)
                 .frame(width: ui(32), height: ui(32))
@@ -1121,18 +1130,39 @@ struct FileBrowserView: View {
         if viewModel.isLoading && viewModel.items.isEmpty {
             ProgressView("불러오는 중…")
         } else if let error = viewModel.errorMessage, viewModel.items.isEmpty {
-            ContentUnavailableView {
-                Label("폴더를 열 수 없습니다", systemImage: "wifi.exclamationmark")
-            } description: {
-                Text(error)
-            } actions: {
-                Button("다시 시도") {
-                    Task { await viewModel.load() }
+            if isDeviceFolder {
+                // 기기 파일: 읽기 실패는 "빈 폴더"가 아니다. 권한·연결 문제로 안내하고 다시 시도할 수 있게 한다.
+                ContentUnavailableView {
+                    Label("폴더를 읽지 못했습니다", interfaceSystemImage: "exclamationmark.triangle")
+                } description: {
+                    Text("이 폴더를 읽을 권한이 없거나 접근이 끊겼을 수 있습니다. 폴더 내용을 확인하지 못했습니다. 다시 시도하거나 위의 ‘폴더 변경’으로 폴더를 다시 선택해 주세요.\n\(error)")
+                } actions: {
+                    Button("다시 시도") {
+                        Task { await viewModel.load() }
+                    }
+                    .buttonStyle(PorcelainProminentButtonStyle())
                 }
-                .buttonStyle(PorcelainProminentButtonStyle())
+            } else {
+                ContentUnavailableView {
+                    Label("폴더를 열 수 없습니다", interfaceSystemImage: "wifi.exclamationmark")
+                } description: {
+                    Text(error)
+                } actions: {
+                    Button("다시 시도") {
+                        Task { await viewModel.load() }
+                    }
+                    .buttonStyle(PorcelainProminentButtonStyle())
+                }
             }
         } else if viewModel.items.isEmpty {
-            if showsPhoneHardServerPanel {
+            if isDeviceFolder {
+                // 읽기는 성공했지만 보이는 항목이 없다: 숨김 파일·링크·패키지는 목록에서 빼는 기존 정책 때문일 수 있다.
+                ContentUnavailableView {
+                    Label("표시할 항목이 없습니다", interfaceSystemImage: "folder")
+                } description: {
+                    Text("폴더가 비어 있거나, 숨김 파일·바로가기(링크)·패키지(사진 보관함, 앱 등)만 들어 있으면 목록에 나타나지 않습니다. 다른 폴더를 보려면 위의 ‘폴더 변경’을 누르세요.")
+                }
+            } else if showsPhoneHardServerPanel {
                 ScrollView {
                     VStack(spacing: 0) {
                         phoneHardServerPanel
@@ -1541,16 +1571,7 @@ struct FileBrowserView: View {
                             isSelected: layoutStyle == style
                         ) {
                             performMorePanelAction {
-                                coverFlowEnteredFromPoster = false
-                                suppressAutomaticCoverFlow = true
-                                if style == .coverFlow {
-                                    if layoutStyle != .coverFlow {
-                                        explicitCoverFlowReturnStyle = layoutStyle
-                                    }
-                                } else {
-                                    explicitCoverFlowReturnStyle = nil
-                                }
-                                storedLayoutStyle = style.rawValue
+                                selectLayoutStyle(style)
                             }
                         }
                     }
@@ -1645,6 +1666,75 @@ struct FileBrowserView: View {
         .accessibilityLabel("파일 작업과 보기 설정")
     }
 
+    /// 보기 방식 바꾸기. 경로 막대 아래 보기 줄과 `…` 패널이 같은 길로 바꾼다.
+    private func selectLayoutStyle(_ style: LayoutStyle) {
+        coverFlowEnteredFromPoster = false
+        suppressAutomaticCoverFlow = true
+        if style == .coverFlow {
+            if layoutStyle != .coverFlow {
+                explicitCoverFlowReturnStyle = layoutStyle
+            }
+        } else {
+            explicitCoverFlowReturnStyle = nil
+        }
+        storedLayoutStyle = style.rawValue
+    }
+
+    /// 일반 파일 목록에서만 보기 줄을 둔다. 미디어 고르기·출처 페이지는 자기 보기 메뉴를 쓴다.
+    private var showsLayoutStyleBar: Bool {
+        onPickMedia == nil && !isEmbeddedSourceRoot && !isFavoriteActionHost && !isSelecting
+    }
+
+    /// 자세히·썸네일·포스터·플로잉을 바로 고르는 보기 줄(Jarvis 셸). 정렬 등 나머지는 `…` 패널에 그대로 있다.
+    private var layoutStyleBar: some View {
+        HStack(spacing: ui(6)) {
+            Text("보기")
+                .font(.ui(.caption))
+                .foregroundStyle(PorcelainMetrics.secondary)
+                .accessibilityHidden(true)
+            HStack(spacing: 0) {
+                ForEach(availableLayoutStyles) { style in
+                    let isSelected = layoutStyle == style
+                    Button {
+                        selectLayoutStyle(style)
+                    } label: {
+                        HStack(spacing: ui(4)) {
+                            Image(interfaceSystemName: style.systemImage, pointSize: ui(13))
+                                .font(.system(size: ui(13), weight: .medium))
+                            Text(style.title)
+                                .font(PorcelainTypeface.font(size: ui(12), weight: isSelected ? .semibold : .regular))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(isSelected ? PorcelainMetrics.onAccent : PorcelainMetrics.graphite)
+                        .padding(.horizontal, ui(10))
+                        .frame(minHeight: ui(30))
+                        .background(isSelected ? PorcelainMetrics.solidAction : Color.clear)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("\(style.title) 보기")
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                }
+            }
+            .background(PorcelainMetrics.card)
+            .clipShape(RoundedRectangle(cornerRadius: ui(8), style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: ui(8), style: .continuous)
+                    .stroke(PorcelainMetrics.line, lineWidth: 0.75)
+            }
+            .fixedSize()
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, ui(12))
+        .padding(.vertical, ui(6))
+        .background(PorcelainMetrics.paper)
+        .overlay(alignment: .bottom) {
+            PorcelainMetrics.line.frame(height: 0.5)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("보기 방식")
+    }
+
     private func performMorePanelAction(
         _ action: @escaping @MainActor () -> Void
     ) {
@@ -1705,7 +1795,7 @@ struct FileBrowserView: View {
                             path: parentPathComponent.path,
                             title: parentPathTitle(parentPathComponent)
                         ) {
-                            Image(systemName: "arrow.up")
+                            Image(interfaceSystemName: "arrow.up", pointSize: 12)
                                 .font(.ui(.caption).weight(.bold))
                                 .foregroundStyle(SkyBreezeTheme.accent)
                                 .frame(width: ui(36), height: ui(28))
@@ -1720,7 +1810,7 @@ struct FileBrowserView: View {
                         .accessibilityHint("\(parentPathComponent.title) 폴더로 이동합니다.")
                     }
 
-                    Image(systemName: "externaldrive.fill")
+                    Image(interfaceSystemName: "externaldrive.fill")
                         .foregroundStyle(.tint)
 
                     pathLink(
@@ -1734,13 +1824,13 @@ struct FileBrowserView: View {
                     .buttonStyle(.plain)
                     .disabled(viewModel.path == viewModel.connection.normalizedRootPath)
 
-                    Image(systemName: "chevron.right")
+                    Image(interfaceSystemName: "chevron.right", pointSize: 11)
                         .font(.ui(.caption2).weight(.bold))
                         .foregroundStyle(.tertiary)
 
                     ForEach(Array(pathComponents.enumerated()), id: \.element.id) { index, component in
                         if index > 0 {
-                            Image(systemName: "chevron.right")
+                            Image(interfaceSystemName: "chevron.right", pointSize: ui(8))
                                 .font(.system(size: ui(8), weight: .bold))
                                 .foregroundStyle(.tertiary)
                         }
@@ -2084,7 +2174,7 @@ struct FileBrowserView: View {
     }
 
     private func selectionIndicator(isSelected: Bool) -> some View {
-        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+        Image(interfaceSystemName: isSelected ? "checkmark.circle.fill" : "circle", pointSize: 22)
             .font(.ui(.title2).weight(.semibold))
             .foregroundStyle(isSelected ? Color.accentColor : .secondary)
             .background(.regularMaterial, in: Circle())
@@ -2153,7 +2243,7 @@ struct FileBrowserView: View {
                 CompactPanelButton(
                     title: "삭제",
                     systemImage: "trash",
-                    tint: .red
+                    tint: PorcelainMetrics.danger
                 ) {
                     performContextPanelAction {
                         guard canBeginUserPresentation else { return }
@@ -2182,6 +2272,21 @@ struct FileBrowserView: View {
                     ) {
                         performContextPanelAction {
                             favoriteStore.toggle(item)
+                        }
+                    }
+                }
+
+                // 폰하드 항목의 공개 범위(이 앱의 목록에서만 숨김). 상위 폴더가 비공개여서 숨겨진 하위 항목은 폴더 쪽에서 바꾼다.
+                if isPhoneHard, let record = inboxStore.allRecords.first(where: {
+                    LocalInboxFileService.browserItem(for: $0).path == item.path
+                }) {
+                    if record.isPrivate == true {
+                        CompactPanelButton(title: "공개로 전환", systemImage: "eye") {
+                            performContextPanelAction { inboxStore.setPrivate(record, false) }
+                        }
+                    } else if !PrivateScope(records: inboxStore.allRecords).inheritsPrivate(storedFilename: record.storedFilename) {
+                        CompactPanelButton(title: "비공개로 전환", systemImage: "eye.slash") {
+                            performContextPanelAction { inboxStore.setPrivate(record, true) }
                         }
                     }
                 }
@@ -2236,7 +2341,7 @@ struct FileBrowserView: View {
                 )
 
                 if thumbnailPreheater.isRunning {
-                    CompactPanelButton(title: "생성 중지", systemImage: "stop.circle", tint: .red) {
+                    CompactPanelButton(title: "생성 중지", systemImage: "stop.circle", tint: PorcelainMetrics.danger) {
                         performContextPanelAction {
                             thumbnailPreheater.cancel()
                         }
@@ -2273,6 +2378,18 @@ struct FileBrowserView: View {
         .buttonStyle(.plain)
     }
 
+    /// 삭제 확인 문구. 하위 항목까지 지우는 연결만 '안의 파일도 함께 삭제'라고 안내하고,
+    /// 비어 있는 폴더만 지우는 연결(SMB·FTP 등)은 그 사실을 그대로 알린다.
+    private var deleteConfirmationMessage: String {
+        let includesFolder = pendingDeleteItems.contains(where: \.isDirectory)
+        if includesFolder, !viewModel.service.capabilities.contains(.recursiveDelete) {
+            return "이 연결은 비어 있는 폴더만 삭제할 수 있습니다. 안에 항목이 있는 폴더는 지우지 않고 남겨 둡니다. 이 작업은 되돌릴 수 없습니다."
+        }
+        return includesFolder
+            ? "폴더를 선택한 경우 안의 파일도 함께 삭제됩니다. 이 작업은 되돌릴 수 없습니다."
+            : "이 작업은 되돌릴 수 없습니다."
+    }
+
     /// Why an action in the panel is dimmed or missing for this item, so an unavailable
     /// action never looks like one that simply did nothing.
     private func unavailableActionNotes(for item: RemoteFileItem) -> [String] {
@@ -2285,6 +2402,9 @@ struct FileBrowserView: View {
         if !capabilities.contains(.delete) { unsupported.append("삭제") }
         if !unsupported.isEmpty {
             notes.append("이 연결은 \(unsupported.joined(separator: "·"))을(를) 지원하지 않습니다.")
+        }
+        if item.isDirectory, capabilities.contains(.delete), !capabilities.contains(.recursiveDelete) {
+            notes.append("이 연결은 비어 있는 폴더만 삭제할 수 있습니다.")
         }
         if !acceptsMediaActions(item) {
             notes.append("예고편 보기와 뮤직비디오는 사진, 영상과 폴더에서 쓸 수 있습니다.")
@@ -2504,7 +2624,7 @@ struct FileBrowserView: View {
     private var selectionBar: some View {
         VStack(spacing: ui(8)) {
             HStack(spacing: ui(12)) {
-                Label("\(selectedItemIDs.count)개 선택", systemImage: "checkmark.circle.fill")
+                Label("\(selectedItemIDs.count)개 선택", interfaceSystemImage: "checkmark.circle.fill")
                     .font(.ui(.subheadline).weight(.semibold))
                     .monospacedDigit()
                     .foregroundStyle(selectedItemIDs.isEmpty ? .secondary : .primary)
@@ -2531,6 +2651,13 @@ struct FileBrowserView: View {
                 }
                 .buttonStyle(PorcelainProminentButtonStyle())
                 .disabled(selectedItems.allSatisfy { $0.isDirectory || !$0.isTrailerEligible })
+                Button {
+                    presentWorkbenchAdd(keepsSelection: true)
+                } label: {
+                    Text("작업대에 담기").frame(maxWidth: .infinity, minHeight: ui(32))
+                }
+                .buttonStyle(.bordered)
+                .disabled(selectedItems.isEmpty)
                 Text("폴더를 열어 사진·영상을 고르세요. 선택한 항목만 가져오며 원본은 바뀌지 않습니다.")
                     .font(.ui(.caption2)).foregroundStyle(PorcelainMetrics.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -2558,23 +2685,10 @@ struct FileBrowserView: View {
                         }
                     }
 
-                    selectionActionButton("재료함에 담기", systemImage: "photo.on.rectangle.angled") {
-                        let picked = selectedItems.filter { !$0.isDirectory && $0.isTrailerEligible }
-                        guard !picked.isEmpty else { return }
-                        let basket = MaterialBasketStore.shared
-                        let alreadyIn = picked.filter { basket.contains(sourceKey: $0.id) }.count
-                        let added = basket.addRemote(
-                            picked, service: viewModel.service,
-                            kind: isPhoneHard ? .phoneHard : isDeviceFolder ? .systemFile : .nas)
-                        if added == 0, alreadyIn < picked.count {
-                            collectionNotice = basket.persistenceError ?? "재료함에 기록하지 못했습니다. 다시 시도해 주세요."
-                        } else {
-                            collectionNotice = "재료함에 \(added)개를 담고 받는 중입니다."
-                                + (alreadyIn > 0 ? " 이미 담긴 \(alreadyIn)개는 건너뛰었습니다." : "")
-                        }
-                        endSelection()
+                    selectionActionButton("작업대에 담기", systemImage: "tray.2") {
+                        presentWorkbenchAdd()
                     }
-                    .disabled(selectedItems.allSatisfy { $0.isDirectory || !$0.isTrailerEligible })
+                    .disabled(selectedItems.isEmpty)
 
                     selectionActionButton("컬렉션에 추가", systemImage: "photo.stack") {
                         let videos = selectedItems.filter { !$0.isDirectory && $0.isVideo }
@@ -2652,6 +2766,22 @@ struct FileBrowserView: View {
         .overlay(alignment: .top) { PorcelainMetrics.line.frame(height: 0.5) }
     }
 
+    /// 선택한 파일·폴더를 복사하지 않고 위치(참조)만 담는다. 폴더는 펼치지 않은 채 폴더 참조로 담고,
+    /// 실행할 때 그 시점의 사진·영상으로 펼친다. 사진·영상이 아닌 파일도 참조로는 담을 수 있다.
+    private func presentWorkbenchAdd(keepsSelection: Bool = false) {
+        guard canBeginUserPresentation, !selectedItems.isEmpty else { return }
+        let label = isPhoneHard ? WorkbenchSourceLabel.phoneHard : isDeviceFolder ? WorkbenchSourceLabel.deviceFiles : WorkbenchSourceLabel.nas
+        // 선택한 폴더 안의 항목을 또 선택했다면 폴더 하나로 충분하다(같은 원본을 두 번 가리키지 않는다).
+        let tops = RemoteDownloadCoordinator.topLevelItems(selectedItems)
+        let entries = tops.map { WorkbenchEntryFactory.entry(remote: $0, sourceLabel: label) }
+        let folders = tops.filter(\.isDirectory).count
+        workbenchRequest = WorkbenchAddRequest(
+            title: folders > 0 ? "선택한 항목 \(entries.count)개(폴더 \(folders)개 포함)" : "선택한 항목 \(entries.count)개",
+            entries: entries,
+            notices: folders > 0 ? ["폴더는 펼치거나 내려받지 않고 폴더로 담습니다. 영상 제작·미디어 전송을 시작할 때 그 시점의 사진·영상으로 펼칩니다."] : [])
+        if !keepsSelection { endSelection() }
+    }
+
     /// Why an action in the selection bar is dimmed for what is selected now.
     private var selectionUnavailableNote: String? {
         guard !selectedItems.isEmpty else { return nil }
@@ -2704,7 +2834,7 @@ struct FileBrowserView: View {
     ) -> some View {
         Button(role: role, action: action) {
             VStack(spacing: ui(2)) {
-                Image(systemName: systemImage)
+                Image(interfaceSystemName: systemImage, pointSize: 17)
                     .font(.ui(.body).weight(.semibold))
                 Text(title)
                     .font(.ui(.caption2))
@@ -3132,7 +3262,7 @@ private struct RemoteFileMetadataView: View {
             if !item.isDirectory {
                 if compact {
                     HStack(spacing: ui(4)) {
-                        Image(systemName: item.systemImage)
+                        Image(interfaceSystemName: item.systemImage, pointSize: ui(9))
                             .font(.system(size: ui(9), weight: .semibold))
                             .accessibilityLabel(item.browserKindLabel)
 
@@ -3668,7 +3798,7 @@ private struct CompactPanelButton: View {
         let _ = themeRefresh.theme
         Button(action: action) {
             VStack(spacing: ui(3)) {
-                Image(systemName: systemImage)
+                Image(interfaceSystemName: systemImage, pointSize: ui(19))
                     .font(.system(size: ui(19), weight: .medium))
                     .frame(width: ui(24), height: ui(24))
 
@@ -3797,7 +3927,7 @@ private struct MorePanelRow: View {
     var body: some View {
         let _ = themeRefresh.theme
         HStack(spacing: ui(12)) {
-            Image(systemName: systemImage)
+            Image(interfaceSystemName: systemImage)
                 .frame(width: ui(22))
                 .foregroundStyle(PorcelainMetrics.accent)
 
@@ -3807,7 +3937,7 @@ private struct MorePanelRow: View {
             Spacer(minLength: ui(8))
 
             if showsDisclosure {
-                Image(systemName: "chevron.right")
+                Image(interfaceSystemName: "chevron.right", pointSize: 12)
                     .font(.ui(.caption).weight(.semibold))
                     .foregroundStyle(PorcelainMetrics.secondary)
             }
@@ -3978,7 +4108,7 @@ struct FileOperationStatusBanner: View {
     var body: some View {
         let _ = themeRefresh.theme
         HStack(spacing: ui(10)) {
-            Image(systemName: "checkmark.circle.fill")
+            Image(interfaceSystemName: "checkmark.circle.fill")
                 .foregroundStyle(PorcelainMetrics.accent)
             Text(message)
                 .font(.ui(.subheadline).weight(.medium))
@@ -3986,7 +4116,7 @@ struct FileOperationStatusBanner: View {
                 .lineLimit(2)
             Spacer(minLength: ui(8))
             Button(action: onDismiss) {
-                Image(systemName: "xmark")
+                Image(interfaceSystemName: "xmark")
                     .foregroundStyle(PorcelainMetrics.secondary)
             }
             .buttonStyle(.plain)

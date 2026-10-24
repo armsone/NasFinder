@@ -107,6 +107,9 @@ actor SuperThumbnailQueueStore {
         var vaultItems: [String: VaultItemState]? = nil
         var vaultLastVerifiedAt: Date? = nil
         var mediaScope: SuperThumbnailMediaScope? = nil
+        /// 프라이버시 모드나 비공개 입력으로 시작한 작업이 한 번이라도 쓴 세션이면 true(풀리지 않는다).
+        /// 공개 연결을 프라이버시 모드에서 쓴 경우에도 일반 모드의 보고·재개 목록에서 가린다. 없으면 공개.
+        var originPrivate: Bool? = nil
     }
 
     private typealias Sessions = [String: SessionState]
@@ -355,8 +358,26 @@ actor SuperThumbnailQueueStore {
         }
     }
 
-    func report(sessionKey: String) -> SuperThumbnailSessionReport? {
-        guard let session = load()[sessionKey] else { return nil }
+    /// 작업이 시작될 때 고정한 출처가 비공개이면 이 세션을 영구히 비공개 출처로 표시한다(원본 기록은 지우지 않는다).
+    func markPrivateOrigin(sessionKey: String) {
+        updateSession(sessionKey) { $0.originPrivate = true }
+    }
+
+    /// 일반 모드 화면에는 비공개 출처 세션(연결이 비공개이거나 세션에 비공개 표시가 있음)의 보고를 내놓지 않는다.
+    /// 작업 자신이 이어받을 때는 시작 때 고정한 출처로 `includingPrivate`를 넘긴다.
+    private func isHiddenInCurrentMode(_ session: SessionState, sessionKey: String) -> Bool {
+        guard !PrivacyMode.currentlyActive else { return false }
+        if session.originPrivate == true { return true }
+        if let prefix = sessionKey.split(separator: "|", maxSplits: 1).first,
+           let connectionID = UUID(uuidString: String(prefix)) {
+            return PrivacyMode.isPrivateOrigin(connectionID: connectionID)
+        }
+        return false
+    }
+
+    func report(sessionKey: String, includingPrivate: Bool = false) -> SuperThumbnailSessionReport? {
+        guard let session = load()[sessionKey],
+              includingPrivate || !isHiddenInCurrentMode(session, sessionKey: sessionKey) else { return nil }
         var counts = [0, 0, 0]
         var photoSuccessCount = 0
         var failures: [SuperThumbnailFailureRecord] = []
@@ -410,7 +431,10 @@ actor SuperThumbnailQueueStore {
         sessionKey: String,
         connectionID: UUID
     ) -> [RemoteFileItem] {
-        guard let session = load()[sessionKey] else { return [] }
+        // 일반 모드에서는 비공개 연결·폰하드 세션의 대기/실패 기록(파일 이름 포함)을 내놓지 않는다.
+        guard !PrivacyMode.hides(connectionID: connectionID),
+              let session = load()[sessionKey],
+              !isHiddenInCurrentMode(session, sessionKey: sessionKey) else { return [] }
         var itemIDs = Set(session.queue.keys)
         itemIDs.formUnion(session.results.compactMap { itemID, state in
             state.failure == nil ? nil : itemID

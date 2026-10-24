@@ -128,6 +128,10 @@ final class RemoteDownloadCoordinator: ObservableObject {
         completedCount = 0
         totalCount = roots.filter { !$0.isDirectory }.count
 
+        // 시작하는 순간의 출처를 한 번 고정한다: 프라이버시 모드이거나 비공개 출처(연결·폰하드 경로)의 항목.
+        // 이후 모드가 바뀌어도 폰하드에 저장되는 결과의 공개 범위는 바뀌지 않는다.
+        let jobPrivate = PrivacyMode.capturedOrigin(
+            inputPrivate: roots.contains { PrivacyMode.isPrivateOrigin(connectionID: $0.connectionID, path: $0.path) })
         task = Task {
             let stagingRootURL = FileManager.default.temporaryDirectory
                 .appending(path: "NasFinderDownloads", directoryHint: .isDirectory)
@@ -215,7 +219,8 @@ final class RemoteDownloadCoordinator: ObservableObject {
                                 contentTypeIdentifier: root.isDirectory
                                     ? nil
                                     : root.contentTypeIdentifier,
-                                intoFolder: folderPath
+                                intoFolder: folderPath,
+                                isPrivate: jobPrivate
                             )
                         case .externalFolder(let folderURL):
                             try await Self.export(stagedURL, named: name, into: folderURL)

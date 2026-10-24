@@ -74,7 +74,7 @@ private struct ThumbnailCacheSettingsView: View {
             }
 
             Section {
-                Button("지금 캐시 비우기", systemImage: "trash", role: .destructive) {
+                Button("지금 캐시 비우기", interfaceSystemImage: "trash", role: .destructive) {
                     isConfirmingRemoval = true
                 }
                 .disabled(statistics.fileCount == 0)

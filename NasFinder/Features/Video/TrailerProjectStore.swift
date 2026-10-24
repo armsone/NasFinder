@@ -107,6 +107,9 @@ struct TrailerProjectRecord: Codable, Sendable {
     var outputMode: String?
     var showedSettings: Bool
     var linkedCollectionVideoIDs: [UUID]
+    /// 비공개 편집본(nil = 공개, 예전 데이터와 같다). 비공개 입력이 한 번 들어오면 풀리지 않는 오염 플래그이며,
+    /// 공개로 되돌리는 것은 사용자의 명시적 전환뿐이다. 이 편집본의 출력·컬렉션 영상·폰하드 파일에 이어진다.
+    var isPrivate: Bool? = nil
 }
 
 /// 저장 요청 한 번에 필요한 값. 메인 액터에서 만들고 디스크 작업은 백그라운드에서 한다.
@@ -521,6 +524,8 @@ final class TrailerProjectStore: ObservableObject {
                 var links = current.linkedCollectionVideoIDs
                 for link in snapshot.record.linkedCollectionVideoIDs where !links.contains(link) { links.append(link) }
                 snapshot.record.linkedCollectionVideoIDs = links
+                // 오염은 저장 중에도 풀리지 않는다(공개 전환은 `setPrivate`만).
+                snapshot.record.isPrivate = (snapshot.record.isPrivate == true || current.isPrivate == true) ? true : nil
             }
             self.states[id] = .saving
             let merged = snapshot
@@ -547,6 +552,13 @@ final class TrailerProjectStore: ObservableObject {
         guard !deleted.contains(id) else { return false }
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         return await updateMetadata(id) { $0.customTitle = trimmed.isEmpty ? nil : trimmed }
+    }
+
+    /// 명시적인 공개/비공개 전환. 편집본 내용은 건드리지 않고 플래그만 기록한다.
+    @discardableResult
+    func setPrivate(_ id: UUID, _ isPrivate: Bool) async -> Bool {
+        guard !deleted.contains(id) else { return false }
+        return await updateMetadata(id) { $0.isPrivate = isPrivate ? true : nil }
     }
 
     /// 컬렉션 영상과의 연결을 기록한다. 기록에 성공했을 때만 목록을 바꾼다.

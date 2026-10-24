@@ -6,6 +6,7 @@ enum FTPServiceError: LocalizedError, Sendable {
     case rejected(Int, String)
     case invalidPassiveResponse
     case invalidListing
+    case invalidArgument
 
     var errorDescription: String? {
         switch self {
@@ -13,6 +14,7 @@ enum FTPServiceError: LocalizedError, Sendable {
         case .rejected(let code, let message): "FTP 서버가 요청을 거부했습니다. (\(code) \(message))"
         case .invalidPassiveResponse: "FTP 서버의 Passive 응답을 해석하지 못했습니다."
         case .invalidListing: "FTP 폴더 목록을 해석하지 못했습니다."
+        case .invalidArgument: "이름이나 경로에 FTP 명령에 쓸 수 없는 줄바꿈 문자가 있어 요청을 보내지 않았습니다."
         }
     }
 }
@@ -26,6 +28,7 @@ actor FTPFileService: RemoteFileService {
 
     nonisolated var supportsRangeStreaming: Bool { true }
     nonisolated var permitsFullDownloadForVideoThumbnail: Bool { false }
+    /// 폴더 삭제는 RMD 한 번(비어 있는 폴더만)이므로 재귀 삭제는 광고하지 않는다.
     nonisolated var capabilities: RemoteFileServiceCapabilities {
         [.createFolder, .rename, .delete, .upload, .replaceFile, .serverSideMove]
     }
@@ -159,16 +162,119 @@ actor FTPFileService: RemoteFileService {
         recursive: Bool,
         context: RemoteOperationContext
     ) async throws -> RemoteOperationResult {
+        try context.checkCancellation()
+        if item.isDirectory {
+            // 하위 항목까지 지우는 기능은 없다. 안에 항목이 있으면 아무것도 지우지 않고 알린다.
+            guard try await list(directory: item.path).isEmpty else {
+                throw RemoteFileOperationError.directoryNotEmpty(path: item.path)
+            }
+        }
         let session = try await loggedInSession()
-        _ = try await session.command(
-            "\(item.isDirectory ? "RMD" : "DELE") \(item.path)",
-            accepting: 200..<300
-        )
+        do {
+            _ = try await session.command(
+                "\(item.isDirectory ? "RMD" : "DELE") \(item.path)",
+                accepting: 200..<300
+            )
+        } catch {
+            await session.close()
+            throw error
+        }
         await session.close()
         return .init(
             operationID: context.operationID,
             operation: .delete,
             outcomes: [.succeeded(sourcePath: item.path)]
+        )
+    }
+
+    /// 같은 서버 안에서 RNFR/RNTO(서버 이름 바꾸기)로 다른 폴더에 옮긴다. 내용을 내려받아 다시 올리지 않는다.
+    /// 기존 항목을 덮어쓰는 이동은 서버마다 결과가 달라 하지 않고 충돌로 알린다.
+    func move(
+        _ item: RemoteFileItem,
+        to directoryPath: String,
+        conflictPolicy: RemoteConflictPolicy,
+        strategy: RemoteTransferStrategy,
+        context: RemoteOperationContext
+    ) async throws -> RemoteOperationResult {
+        try context.checkCancellation()
+        guard strategy != .streaming else {
+            throw RemoteFileOperationError.unsupported(operation: .move)
+        }
+        try conflictPolicy.validate(for: item, destinationPath: directoryPath)
+        let sourcePath = normalized(item.path)
+        let targetDirectory = normalized(directoryPath)
+        if normalized((sourcePath as NSString).deletingLastPathComponent) == targetDirectory {
+            return .init(
+                operationID: context.operationID,
+                operation: .move,
+                outcomes: [.succeeded(sourcePath: item.path, destinationPath: item.path, resultingItem: item)]
+            )
+        }
+        if item.isDirectory, RemotePath.isSameOrDescendant(targetDirectory, of: sourcePath) {
+            return .init(
+                operationID: context.operationID,
+                operation: .move,
+                outcomes: [.failed(
+                    sourcePath: item.path,
+                    destinationPath: targetDirectory,
+                    issue: .init(code: .unsupported, message: "\(item.name): 폴더를 자기 자신이나 하위 폴더로 옮길 수 없습니다.")
+                )]
+            )
+        }
+        let siblings = try await list(directory: targetDirectory)
+        let decision = try RemotePath.conflictDecision(
+            for: item.name,
+            sourceIsDirectory: item.isDirectory,
+            siblings: siblings,
+            policy: conflictPolicy,
+            sourcePath: item.path,
+            destinationPath: appending(item.name, to: targetDirectory),
+            caseSensitive: false
+        )
+        let name: String
+        switch decision {
+        case .skip(let existingPath):
+            return .init(
+                operationID: context.operationID,
+                operation: .move,
+                outcomes: [.skipped(
+                    sourcePath: item.path,
+                    destinationPath: existingPath,
+                    issue: .init(code: .conflict, message: "같은 이름의 항목이 이미 있습니다.")
+                )]
+            )
+        case .proceed(let resolvedName, let replacesExisting):
+            guard !replacesExisting else {
+                throw RemoteFileOperationError.conflict(
+                    sourcePath: item.path,
+                    destinationPath: appending(resolvedName, to: targetDirectory)
+                )
+            }
+            name = resolvedName
+        }
+        let destination = appending(name, to: targetDirectory)
+        let session = try await loggedInSession()
+        do {
+            _ = try await session.command("RNFR \(sourcePath)", accepting: 300..<400)
+            _ = try await session.command("RNTO \(destination)", accepting: 200..<300)
+        } catch {
+            await session.close()
+            throw error
+        }
+        await session.close()
+        let moved = RemoteFileItem(
+            connectionID: item.connectionID,
+            path: destination,
+            name: name,
+            kind: item.kind,
+            size: item.size,
+            modifiedAt: item.modifiedAt,
+            contentTypeIdentifier: item.contentTypeIdentifier
+        )
+        return .init(
+            operationID: context.operationID,
+            operation: .move,
+            outcomes: [.succeeded(sourcePath: item.path, destinationPath: destination, resultingItem: moved)]
         )
     }
 
@@ -179,53 +285,60 @@ actor FTPFileService: RemoteFileService {
         conflictPolicy: RemoteConflictPolicy,
         context: RemoteOperationContext
     ) async throws -> RemoteOperationResult {
+        try context.checkCancellation()
         let requestedName = try RemotePath.validatedName(
             preferredName ?? localURL.lastPathComponent
         )
+        // 이동·SMB·WebDAV와 같은 공통 규칙. 대소문자만 다른 기존 파일도 충돌로 보아, 대소문자를 구분하지 않는
+        // 서버에서 건너뛰기·둘 다 보관이 기존 파일을 덮어쓰지 않게 한다.
         let siblings = try await list(directory: directoryPath)
-        let existing = siblings.first { $0.name == requestedName }
+        let decision = try RemotePath.conflictDecision(
+            for: requestedName,
+            sourceIsDirectory: false,
+            siblings: siblings,
+            policy: conflictPolicy,
+            sourcePath: localURL.path,
+            destinationPath: appending(requestedName, to: directoryPath),
+            caseSensitive: false
+        )
         let finalName: String
-        switch conflictPolicy {
-        case .fail:
-            guard existing == nil else {
+        switch decision {
+        case .skip(let existingPath):
+            return .init(
+                operationID: context.operationID,
+                operation: .upload,
+                outcomes: [.skipped(
+                    sourcePath: localURL.path,
+                    destinationPath: existingPath,
+                    issue: .init(
+                        code: .conflict,
+                        message: "같은 이름의 파일이 이미 있습니다."
+                    )
+                )]
+            )
+        case .proceed(let resolvedName, let replacesExisting):
+            // 덮어쓰기는 사용자가 고른 정확히 같은 이름일 때만 기존처럼 STOR로 바꾼다.
+            // 대소문자만 다른 파일은 서버마다 결과가 달라 덮어쓰지 않고 충돌로 알린다.
+            guard !replacesExisting || resolvedName == requestedName else {
                 throw RemoteFileOperationError.conflict(
                     sourcePath: localURL.path,
-                    destinationPath: appending(requestedName, to: directoryPath)
+                    destinationPath: appending(resolvedName, to: directoryPath)
                 )
             }
-            finalName = requestedName
-        case .skip:
-            if let existing {
-                return .init(
-                    operationID: context.operationID,
-                    operation: .upload,
-                    outcomes: [.skipped(
-                        sourcePath: localURL.path,
-                        destinationPath: existing.path,
-                        issue: .init(
-                            code: .conflict,
-                            message: "같은 이름의 파일이 이미 있습니다."
-                        )
-                    )]
-                )
-            }
-            finalName = requestedName
-        case .replace:
-            guard existing?.isDirectory != true else {
-                throw RemoteFileOperationError.folderReplacementNotAllowed(
-                    path: existing?.path ?? requestedName
-                )
-            }
-            finalName = requestedName
-        case .keepBoth:
-            finalName = try RemotePath.keepBothName(
-                for: requestedName,
-                existingNames: siblings.map(\.name)
-            )
+            finalName = resolvedName
         }
         let destination = appending(finalName, to: directoryPath)
+        try context.checkCancellation()
         let session = try await loggedInSession()
-        let dataConnection = try await session.openPassiveDataConnection()
+        let dataConnection: FTPDataConnection
+        do {
+            // 로그인을 기다리는 동안 취소됐으면 STOR를 보내지 않는다.
+            try context.checkCancellation()
+            dataConnection = try await session.openPassiveDataConnection()
+        } catch {
+            await session.close()
+            throw error
+        }
         _ = try await session.command("STOR \(destination)", accepting: 100..<200)
         try await dataConnection.sendFile(at: localURL)
         _ = try await session.readReply(accepting: 200..<300)
@@ -361,6 +474,11 @@ private final class FTPControlSession: @unchecked Sendable {
     }
 
     func command(_ command: String, accepting range: Range<Int>) async throws -> FTPReply {
+        // 서버가 내려준 이름 등에 CR/LF/NUL이 섞이면 한 줄이 여러 FTP 명령으로 해석될 수 있으므로 보내지 않는다.
+        // Character 단위로는 "\r\n"이 한 글자라 놓치므로 유니코드 스칼라로 검사한다.
+        guard !command.unicodeScalars.contains(where: { $0 == "\r" || $0 == "\n" || $0 == "\0" }) else {
+            throw FTPServiceError.invalidArgument
+        }
         try await connection.sendData(Data("\(command)\r\n".utf8))
         return try await readReply(accepting: range)
     }

@@ -62,6 +62,8 @@ struct ProviderConnection: Codable, Sendable {
     let usesTLS: Bool
     let trustedHostKey: String?
     let createdAt: Date
+    /// 앱에서 비공개로 지정한 연결(없으면 공개). 확장은 앱 모드를 모르므로 항상 일반 모드 기준으로 숨긴다.
+    let isPrivate: Bool?
 
     var normalizedRootPath: String {
         let trimmed = rootPath.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -428,7 +430,8 @@ actor NasFinderFileProviderStorage {
         }
 
         let connections = try JSONDecoder().decode([ProviderConnection].self, from: data)
-        guard let connection = connections.first(where: { $0.id == connectionID }) else {
+        guard let connection = connections.first(where: { $0.id == connectionID }),
+              connection.isPrivate != true else {
             throw NasFinderFileProviderErrors.connectionMissing
         }
         guard !connection.host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,

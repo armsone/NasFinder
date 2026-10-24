@@ -111,6 +111,8 @@ struct ReceivedFilesView: View {
     @State private var previewItem: RemoteFileItem?
     @State private var inlineMusic = InlineMusicPlayback()
     @State private var trailerSelection: VideoTrailerSelection?
+    /// '작업대에 담기'가 만든 참조 요청. 대상 포켓은 사용자가 시트에서 직접 고른다.
+    @State private var workbenchRequest: WorkbenchAddRequest?
     /// `nil` is the PhoneHard root; otherwise a folder's `storedFilename`, including the
     /// physical Music folder, which now navigates through this same mechanism.
     @State private var currentPath: String?
@@ -133,6 +135,7 @@ struct ReceivedFilesView: View {
     // compiler type-checks them separately. Modifier order is body's original order.
     var body: some View {
         alertingContent
+            .workbenchAddSheet($workbenchRequest)
             .sheet(item: $pendingFileOperation) { operation in
                 InboxDestinationPickerView(
                     inboxStore: inboxStore,
@@ -141,7 +144,7 @@ struct ReceivedFilesView: View {
                 )
             }
             .routesTrailerSelection($trailerSelection, service: { LocalInboxFileService(records: inboxStore.records) }, sink: projectSink)
-            .fullScreenCover(item: trailerCoverBinding($trailerSelection, sink: projectSink), onDismiss: { reloadInbox() }) { selection in
+            .trailerEditorCover(item: trailerCoverBinding($trailerSelection, sink: projectSink), onDismiss: { reloadInbox() }) { selection in
                 VideoTrailerView(items: selection.items, service: LocalInboxFileService(records: inboxStore.records),
                                  mode: selection.mode)
             }
@@ -180,16 +183,16 @@ struct ReceivedFilesView: View {
                 connectionPanel
 
                 ContentUnavailableView {
-                    Label("폰하드가 비어 있습니다", systemImage: "tray")
+                    Label("폰하드가 비어 있습니다", interfaceSystemImage: "tray")
                 } description: {
                     Text("내가 저장하거나 다른 기기에서 보낸 파일이 이곳에 모입니다.")
                 } actions: {
-                    Button("파일 가져오기", systemImage: "doc.badge.plus") {
+                    Button("파일 가져오기", interfaceSystemImage: "nf.import") {
                         isImportingFromFiles = true
                     }
                     .buttonStyle(PorcelainProminentButtonStyle())
 
-                    Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
+                    Button("Google 포토에서 가져오기", interfaceSystemImage: "photo.badge.arrow.down") {
                         isImportingFromGooglePhotos = true
                     }
                     .buttonStyle(.bordered)
@@ -292,7 +295,7 @@ struct ReceivedFilesView: View {
                 Text(inlineMusic.failure ?? "")
             }
             .onDisappear { inlineMusic.stop() }
-            .alert("폰하드 오류", isPresented: errorBinding) {
+            .alert("폰하드 알림", isPresented: errorBinding) {
                 Button("확인", role: .cancel) {
                     inboxStore.errorMessage = nil
                 }
@@ -396,17 +399,17 @@ struct ReceivedFilesView: View {
     private var selectionTrailingToolbarItems: some ToolbarContent {
         ToolbarItemGroup(placement: .topBarTrailing) {
             Group {
-                Button("이동", systemImage: "folder") {
+                Button("이동", interfaceSystemImage: "folder") {
                     pendingFileOperation = InboxFileOperation(kind: .move, records: selectedRecords)
                 }
                 .disabled(selectedRecords.isEmpty)
 
-                Button("복사", systemImage: "doc.on.doc") {
+                Button("복사", interfaceSystemImage: "doc.on.doc") {
                     pendingFileOperation = InboxFileOperation(kind: .copy, records: selectedRecords)
                 }
                 .disabled(selectedRecords.isEmpty)
 
-                Button("지우기", systemImage: "trash", role: .destructive) {
+                Button("지우기", interfaceSystemImage: "trash", role: .destructive) {
                     requestDeletion(of: selectedRecords)
                 }
                 .disabled(selectedRecords.isEmpty)
@@ -427,7 +430,7 @@ struct ReceivedFilesView: View {
                     Button {
                         navigateUp()
                     } label: {
-                        Label("위로", systemImage: "chevron.left")
+                        Label("위로", interfaceSystemImage: "chevron.left")
                     }
                     .accessibilityLabel("\(parentFolderDisplayName) 폴더로 이동")
                 }
@@ -487,33 +490,33 @@ struct ReceivedFilesView: View {
                 }
             }
         } label: {
-            Image(systemName: layoutStyle.systemImage)
+            Image(interfaceSystemName: layoutStyle.systemImage)
         }
         .accessibilityLabel("보기")
     }
 
     @ViewBuilder
     private func layoutMenuRowLabel(for style: ReceivedFilesLayoutStyle) -> some View {
-        Label(style.title, systemImage: style.systemImage)
+        Label(style.title, interfaceSystemImage: style.systemImage)
         if layoutStyle == style {
-            Image(systemName: "checkmark")
+            Image(interfaceSystemName: "checkmark")
         }
     }
 
     private var newItemMenu: some View {
         Menu {
-            Button("새 폴더", systemImage: "folder.badge.plus") {
+            Button("새 폴더", interfaceSystemImage: "nf.folder_add") {
                 newFolderName = ""
                 isCreatingFolder = true
             }
-            Button("파일에서 가져오기", systemImage: "doc.badge.plus") {
+            Button("파일에서 가져오기", interfaceSystemImage: "nf.import") {
                 isImportingFromFiles = true
             }
-            Button("Google 포토에서 가져오기", systemImage: "photo.badge.arrow.down") {
+            Button("Google 포토에서 가져오기", interfaceSystemImage: "photo.badge.arrow.down") {
                 isImportingFromGooglePhotos = true
             }
         } label: {
-            Image(systemName: "ellipsis.circle")
+            Image(interfaceSystemName: "ellipsis.circle")
         }
         .accessibilityLabel("폰하드 메뉴")
     }
@@ -542,7 +545,7 @@ struct ReceivedFilesView: View {
                     folderRow(folder)
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             if !isSelecting {
-                                Button("삭제", systemImage: "trash", role: .destructive) {
+                                Button("삭제", interfaceSystemImage: "trash", role: .destructive) {
                                     requestDeletion(of: [folder])
                                 }
                             }
@@ -555,7 +558,7 @@ struct ReceivedFilesView: View {
                     receivedFileRow(record)
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                             if !isSelecting {
-                                Button("삭제", systemImage: "trash", role: .destructive) {
+                                Button("삭제", interfaceSystemImage: "trash", role: .destructive) {
                                     requestDeletion(of: [record])
                                 }
                             }
@@ -706,7 +709,7 @@ struct ReceivedFilesView: View {
                             } label: {
                                 Text(background.title)
                                 if background.usesDarkBackground == overflowUsesDarkBackground {
-                                    Image(systemName: "checkmark")
+                                    Image(interfaceSystemName: "checkmark")
                                 }
                             }
                         }
@@ -825,7 +828,7 @@ struct ReceivedFilesView: View {
 
     private func folderRowLabel(name: String, childCount: Int, isSelected: Bool) -> some View {
         HStack(spacing: ui(12)) {
-            Image(systemName: "folder.fill")
+            Image(interfaceSystemName: "folder.fill", pointSize: 20)
                 .font(.ui(.title3))
                 .foregroundStyle(Color.accentColor)
                 .frame(width: ui(56), height: ui(44))
@@ -837,7 +840,7 @@ struct ReceivedFilesView: View {
                     .foregroundStyle(PorcelainMetrics.secondary)
             }
             Spacer(minLength: 0)
-            Image(systemName: "chevron.right")
+            Image(interfaceSystemName: "chevron.right", pointSize: 12)
                 .font(.ui(.caption))
                 .foregroundStyle(.tertiary)
         }
@@ -896,34 +899,34 @@ struct ReceivedFilesView: View {
             if !record.isDirectory {
                 let item = LocalInboxFileService.remoteItem(for: record)
                 if item.isTrailerEligible {
-                    Button("예고편 보기", systemImage: "film") { trailerSelection = VideoTrailerSelection(items: [item]) }
+                    Button("예고편 보기", interfaceSystemImage: "film") { trailerSelection = VideoTrailerSelection(items: [item]) }
                 }
                 if item.isVideo {
-                    Button("뮤직비디오", systemImage: "music.note") {
+                    Button("뮤직비디오", interfaceSystemImage: "music.note") {
                         trailerSelection = VideoTrailerSelection(items: [item], mode: .mediaMusic)
                     }
                 }
                 if isUploadableFile(record) {
-                    Button("NAS로 보내기", systemImage: "arrow.up.doc") {
+                    Button("NAS로 보내기", interfaceSystemImage: "arrow.up.doc") {
                         beginUpload(of: [record])
                     }
                 }
 
                 if let fileURL = try? SharedInbox.fileURL(for: record) {
                     ShareLink(item: fileURL) {
-                        Label("공유", systemImage: "square.and.arrow.up")
+                        Label("공유", interfaceSystemImage: "square.and.arrow.up")
                     }
                 }
             }
 
-            Button("이동", systemImage: "folder") {
+            Button("이동", interfaceSystemImage: "folder") {
                 pendingFileOperation = InboxFileOperation(kind: .move, records: [record])
             }
-            Button("복사", systemImage: "doc.on.doc") {
+            Button("복사", interfaceSystemImage: "doc.on.doc") {
                 pendingFileOperation = InboxFileOperation(kind: .copy, records: [record])
             }
 
-            Button("삭제", systemImage: "trash", role: .destructive) {
+            Button("삭제", interfaceSystemImage: "trash", role: .destructive) {
                 requestDeletion(of: [record])
             }
         }
@@ -966,7 +969,7 @@ struct ReceivedFilesView: View {
                 .clipShape(RoundedRectangle(cornerRadius: ui(poster ? 15 : 11)))
                 .overlay(alignment: .topTrailing) {
                     if isSelecting {
-                        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                        Image(interfaceSystemName: selected ? "checkmark.circle.fill" : "circle", pointSize: 22)
                             .font(.ui(.title2))
                             .foregroundStyle(selected ? Color.accentColor : .secondary)
                             .padding(ui(8))
@@ -1068,13 +1071,13 @@ struct ReceivedFilesView: View {
     private var uploadSelectionBar: some View {
         VStack(spacing: ui(10)) {
             HStack(spacing: ui(10)) {
-                Button("예고편 보기", systemImage: "film") {
+                Button("예고편 보기", interfaceSystemImage: "film") {
                     let clips = selectedRecords.map { LocalInboxFileService.remoteItem(for: $0) }
                     guard !clips.isEmpty, clips.allSatisfy(\.isTrailerEligible) else { return }
                     trailerSelection = VideoTrailerSelection(items: clips)
                     endSelection()
                 }
-                Button("뮤직비디오", systemImage: "music.note") {
+                Button("뮤직비디오", interfaceSystemImage: "music.note") {
                     let clips = selectedRecords.map { LocalInboxFileService.remoteItem(for: $0) }
                     guard !clips.isEmpty, clips.allSatisfy(\.isTrailerEligible) else { return }
                     trailerSelection = VideoTrailerSelection(items: clips, mode: .mediaMusic)
@@ -1083,7 +1086,19 @@ struct ReceivedFilesView: View {
             }
             .buttonStyle(.bordered)
             .disabled(selectedRecords.isEmpty || !selectedRecords.allSatisfy { LocalInboxFileService.remoteItem(for: $0).isTrailerEligible })
-            Button("NAS로 보내기", systemImage: "arrow.up.doc") {
+            Button("작업대에 담기", interfaceSystemImage: "tray.2") {
+                // 복사하지 않고 폰하드 안의 위치(저장 경로)만 담는다. 폴더는 폴더 참조로 담는다.
+                let entries = selectedRecords.map {
+                    WorkbenchEntryFactory.entry(remote: LocalInboxFileService.browserItem(for: $0),
+                                                sourceLabel: WorkbenchSourceLabel.phoneHard)
+                }
+                guard !entries.isEmpty else { return }
+                workbenchRequest = WorkbenchAddRequest(title: "폰하드 항목 \(entries.count)개", entries: entries)
+                endSelection()
+            }
+            .buttonStyle(.bordered)
+            .disabled(selectedRecords.isEmpty)
+            Button("NAS로 보내기", interfaceSystemImage: "arrow.up.doc") {
                 beginUpload(of: selectedUploadableRecords)
             }
             .buttonStyle(PorcelainProminentButtonStyle())
@@ -1328,7 +1343,7 @@ struct ReceivedFilesView: View {
         if item.isImage || item.isVideo || item.contentType.conforms(to: .pdf) {
             LocalInboxThumbnailView(record: record, item: item, size: requestSize)
         } else {
-            Image(systemName: item.systemImage)
+            Image(interfaceSystemName: item.systemImage, pointSize: ui(min(requestSize.width, requestSize.height) * 0.42))
                 .font(.system(size: ui(min(requestSize.width, requestSize.height) * 0.42)))
                 .foregroundStyle(iconColor(for: item))
         }
@@ -1498,13 +1513,13 @@ private struct LocalInboxThumbnailView: View {
                     .resizable()
                     .scaledToFill()
             } else {
-                Image(systemName: item.systemImage)
+                Image(interfaceSystemName: item.systemImage, pointSize: 22)
                     .font(.ui(.title2))
                     .foregroundStyle(PorcelainMetrics.secondary)
             }
 
             if item.isVideo {
-                Image(systemName: "play.circle.fill")
+                Image(interfaceSystemName: "play.circle.fill", pointSize: 20)
                     .font(.ui(.title3))
                     .foregroundStyle(.white)
                     .shadow(radius: 2)
@@ -1669,6 +1684,15 @@ struct LocalInboxFileService: RemoteFileService {
 
     let connection = LocalInboxFileService.phoneHardConnection
 
+    /// 이 서비스를 만든 시점의 모드. 프라이버시 모드에서 시작한 작업은 모드가 바뀐 뒤에도 자기 파일을 계속 읽는다
+    /// (화면은 모드 전환 때 새 서비스로 다시 만들어지므로 일반 모드 화면은 비공개를 읽지 못한다).
+    private let startedInPrivacyMode = PrivacyMode.currentlyActive
+    private var newRecordFlag: Bool? { startedInPrivacyMode ? true : nil }
+    private func isHidden(connectionID: UUID, path: String) -> Bool {
+        // 생성 시점 모드만 따른다: 일반 모드에서 만든 서비스는 전역 모드가 나중에 켜져도 비공개를 읽지 못한다.
+        !startedInPrivacyMode && PrivacyMode.isPrivateOrigin(connectionID: connectionID, path: path)
+    }
+
     /// Copy and move are done in place on the device by `SharedInbox`, which is what the
     /// "server side" options mean for a service with no transfer of its own.
     let capabilities: RemoteFileServiceCapabilities = [
@@ -1695,17 +1719,25 @@ struct LocalInboxFileService: RemoteFileService {
     func list(directory path: String?) async throws -> [RemoteFileItem] {
         guard let path else {
             return recordsByPath.values
+                .filter { !isHidden(connectionID: Self.connectionID, path: $0.id.uuidString) }
                 .sorted { $0.importedAt > $1.importedAt }
                 .map { Self.remoteItem(for: $0) }
         }
         let parent = Self.storedPath(forBrowserPath: path)
-        return try SharedInbox.records()
+        let all = try SharedInbox.records()
+        let scope = PrivateScope(records: all)
+        let showsPrivate = startedInPrivacyMode
+        return all
             .filter { Self.parentStoredPath(of: $0.storedFilename) == parent }
+            .filter { showsPrivate || !scope.contains($0) }
             .map { Self.browserItem(for: $0) }
     }
 
     /// The stored file itself, never a copy: callers only read it.
     func download(_ item: RemoteFileItem) async throws -> URL {
+        guard !isHidden(connectionID: item.connectionID, path: item.path) else {
+            throw LocalInboxFileError.recordNotFound
+        }
         let record = try storedRecord(for: item)
         guard !record.isDirectory else { throw LocalInboxFileError.recordNotFound }
         let url = try SharedInbox.fileURL(for: record)
@@ -1759,7 +1791,8 @@ struct LocalInboxFileService: RemoteFileService {
         try context.checkCancellation()
         let record = try SharedInbox.createFolder(
             named: name,
-            in: Self.storedPath(forBrowserPath: directoryPath)
+            in: Self.storedPath(forBrowserPath: directoryPath),
+            isPrivate: newRecordFlag
         )
         return Self.browserItem(for: record)
     }
@@ -1821,7 +1854,8 @@ struct LocalInboxFileService: RemoteFileService {
                     at: coordinatedURL,
                     originalFilename: name,
                     contentTypeIdentifier: contentTypeIdentifier,
-                    intoFolder: folderPath
+                    intoFolder: folderPath,
+                    isPrivate: newRecordFlag
                 )
             }
         }

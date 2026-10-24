@@ -67,7 +67,7 @@ struct LocalPhotoLibraryCalendarView: View {
     }
     private var notDeterminedContent: some View {
         ContentUnavailableView {
-            Label("달력에서 사진 보기", systemImage: "calendar")
+            Label("달력에서 사진 보기", interfaceSystemImage: "calendar")
         } description: {
             Text("날짜별로 사진과 영상을 확인하려면 사진 보관함 접근을 허용해 주세요. 달력은 사진 보관함에서 허용한 항목을 표시합니다.")
         } actions: {
@@ -84,7 +84,7 @@ struct LocalPhotoLibraryCalendarView: View {
 
     private var deniedContent: some View {
         ContentUnavailableView {
-            Label("사진 보관함 접근이 꺼져 있습니다", systemImage: "lock")
+            Label("사진 보관함 접근이 꺼져 있습니다", interfaceSystemImage: "lock")
         } description: {
             Text("설정 앱에서 사진 보관함 접근을 허용하면 달력으로 사진을 찾을 수 있습니다.")
         } actions: {
@@ -211,7 +211,7 @@ struct LocalPhotoLibraryCalendarView: View {
     }
     private var monthControls: some View {
         HStack {
-            Button { moveMonth(by: -1) } label: { Image(systemName: "chevron.left").frame(width: ui(40), height: ui(36)) }
+            Button { moveMonth(by: -1) } label: { Image(interfaceSystemName: "chevron.left").frame(width: ui(40), height: ui(36)) }
                 .accessibilityLabel("이전 달")
             Spacer()
             Button {
@@ -225,7 +225,7 @@ struct LocalPhotoLibraryCalendarView: View {
                 }
             }.accessibilityHint("연도와 월을 선택해 이동합니다.")
             Spacer()
-            Button { moveMonth(by: 1) } label: { Image(systemName: "chevron.right").frame(width: ui(40), height: ui(36)) }
+            Button { moveMonth(by: 1) } label: { Image(interfaceSystemName: "chevron.right").frame(width: ui(40), height: ui(36)) }
                 .accessibilityLabel("다음 달")
         }.padding(.horizontal, ui(12))
     }
@@ -321,7 +321,7 @@ struct LocalPhotoLibraryCalendarView: View {
                                     )
                                     .accessibilityAction(named: "미리보기") { onPreview(asset) }
                                     .overlay(alignment: .bottomTrailing) {
-                                        Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                                        Image(interfaceSystemName: isSelected ? "checkmark.circle.fill" : "circle", pointSize: ui(17))
                                             .font(.system(size: ui(17), weight: .semibold))
                                             .foregroundStyle(.white, isSelected ? Color.accentColor : Color.black.opacity(0.4))
                                             .frame(width: ui(44), height: ui(44))
@@ -347,11 +347,11 @@ struct LocalPhotoLibraryCalendarView: View {
                     if canScroll && scrollButtonsVisible {
                         VStack {
                             Button { withAnimation { proxy.scrollTo("calendarTop", anchor: .top) } } label: {
-                                Image(systemName: "chevron.up.circle.fill").font(.ui(.title)).padding(ui(6))
+                                Image(interfaceSystemName: "chevron.up.circle.fill", pointSize: 28).font(.ui(.title)).padding(ui(6))
                             }
                             Spacer()
                             Button { withAnimation { proxy.scrollTo("calendarBottom", anchor: .bottom) } } label: {
-                                Image(systemName: "chevron.down.circle.fill").font(.ui(.title)).padding(ui(6))
+                                Image(interfaceSystemName: "chevron.down.circle.fill", pointSize: 28).font(.ui(.title)).padding(ui(6))
                             }
                         }.padding(ui(4)).transition(.opacity)
                     }

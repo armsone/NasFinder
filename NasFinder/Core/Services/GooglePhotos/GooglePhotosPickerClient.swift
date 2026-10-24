@@ -9,9 +9,9 @@ enum GooglePhotosPickerError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .invalidResponse:
-            "Google Photos 응답을 해석하지 못했습니다."
+            "Google 포토 응답을 해석하지 못했습니다."
         case .invalidContentURL:
-            "Google Photos 콘텐츠 주소를 구성하지 못했습니다."
+            "Google 포토 콘텐츠 주소를 구성하지 못했습니다."
         case let .http(statusCode, category):
             "\(category.localizedMessage) (HTTP \(statusCode))"
         }
@@ -54,13 +54,13 @@ enum GooglePhotosHTTPErrorCategory: String, Equatable, Sendable {
 
     var localizedMessage: String {
         switch self {
-        case .badRequest: "Google Photos 요청이 올바르지 않습니다."
-        case .unauthorized: "Google Photos 인증이 필요합니다. 다시 로그인해 주세요."
-        case .forbidden: "Google Photos 접근 권한이 없습니다."
-        case .notFound: "Google Photos에서 요청한 항목을 찾을 수 없습니다."
-        case .rateLimited: "Google Photos 요청 한도를 초과했습니다. 잠시 후 다시 시도해 주세요."
-        case .serverError: "Google Photos 서버 오류가 발생했습니다."
-        case .other: "Google Photos 요청이 실패했습니다."
+        case .badRequest: "Google 포토 요청이 올바르지 않습니다."
+        case .unauthorized: "Google 포토 인증이 필요합니다. 다시 로그인해 주세요."
+        case .forbidden: "Google 포토 접근 권한이 없습니다."
+        case .notFound: "Google 포토에서 요청한 항목을 찾을 수 없습니다."
+        case .rateLimited: "Google 포토 요청 한도를 초과했습니다. 잠시 후 다시 시도해 주세요."
+        case .serverError: "Google 포토 서버 오류가 발생했습니다."
+        case .other: "Google 포토 요청이 실패했습니다."
         }
     }
 }

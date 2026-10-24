@@ -108,7 +108,7 @@
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Google 로그인 인증을 완료하기 위해 시스템 인증 브라우저와 통신합니다.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>다른 기기의 QR 코드를 스캔해 사진 전송을 연결하려면 카메라 접근이 필요합니다.</string>
+	<string>다른 기기의 QR 코드를 스캔해 미디어 전송을 연결하려면 카메라 접근이 필요합니다.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>네트워크 저장공간과 폰하드를 사용하려면 로컬 네트워크 접근이 필요합니다.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
@@ -127,6 +127,11 @@
 		<string>Pretendard-Medium.otf</string>
 		<string>Pretendard-SemiBold.otf</string>
 		<string>Pretendard-Bold.otf</string>
+	</array>
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>iina</string>
+		<string>movistpro</string>
 	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>

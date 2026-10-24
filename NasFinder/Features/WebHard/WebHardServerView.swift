@@ -125,10 +125,15 @@ final class WebHardServerController: ObservableObject {
     }
 
     func exportURL(for item: WebHardFileItem) -> URL? {
-        if item.isDirectory {
-            return try? store?.directoryURL(path: item.path)
+        do {
+            if item.isDirectory {
+                return try store?.directoryURL(path: item.path)
+            }
+            return try store?.fileURL(path: item.path)
+        } catch {
+            fileErrorMessage = error.localizedDescription
+            return nil
         }
-        return try? store?.fileURL(path: item.path)
     }
 
     func delete(_ item: WebHardFileItem) {
@@ -228,16 +233,16 @@ struct WebHardConnectionPanel: View {
                         .foregroundStyle(isEnamel ? bkCharcoal : Color.primary)
 
                     if !isExpanded, controller.isRunning {
-                        Label("실행 중", systemImage: "circle.fill")
+                        Label("실행 중", interfaceSystemImage: "circle.fill")
                             .labelStyle(.iconOnly)
                             .font(.ui(.caption2))
-                            .foregroundStyle(.green)
+                            .foregroundStyle(PorcelainMetrics.accent)
                             .accessibilityHidden(true)
                     }
 
                     Spacer(minLength: ui(8))
 
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                    Image(interfaceSystemName: isExpanded ? "chevron.up" : "chevron.down", pointSize: 12)
                         .font(.ui(.caption).weight(.semibold))
                         .foregroundStyle(PorcelainMetrics.secondary)
                 }
@@ -285,7 +290,6 @@ struct WebHardConnectionPanel: View {
                     .padding(.top, ui(2))
             }
         }
-        .shadow(color: .black.opacity(isEnamel ? 0.14 : 0.06), radius: 8, y: 4)
         .onAppear {
             if !controller.isRunning { controller.refreshAddresses() }
         }
@@ -366,9 +370,9 @@ private struct WebHardConnectionControls: View {
             }
 
             if case let .failed(message) = controller.state {
-                Label(message, systemImage: "exclamationmark.triangle.fill")
+                Label(message, interfaceSystemImage: "exclamationmark.triangle.fill")
                     .font(.ui(.caption))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(PorcelainMetrics.danger)
             }
         }
         .animation(.easeInOut(duration: 0.18), value: isPasswordExpanded)
@@ -377,7 +381,7 @@ private struct WebHardConnectionControls: View {
     @ViewBuilder
     private var addressInfoRow: some View {
         if controller.selectedAddress == nil {
-            Label("사용 가능한 접속 주소가 없습니다", systemImage: "network.slash")
+            Label("사용 가능한 접속 주소가 없습니다", interfaceSystemImage: "network.slash")
                 .font(.ui(.subheadline))
                 .foregroundStyle(PorcelainMetrics.secondary)
         } else {
@@ -450,7 +454,7 @@ private struct WebHardConnectionControls: View {
         } label: {
             HStack(spacing: ui(6)) {
                 Text("비밀번호")
-                Image(systemName: isPasswordExpanded ? "chevron.up" : "chevron.down")
+                Image(interfaceSystemName: isPasswordExpanded ? "chevron.up" : "chevron.down", pointSize: 12)
                     .font(.ui(.caption).weight(.semibold))
             }
             .frame(maxWidth: .infinity)
@@ -652,7 +656,7 @@ struct WebHardServerView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Group {
-                        Button("주소 새로고침", systemImage: "arrow.clockwise") {
+                        Button("주소 새로고침", interfaceSystemImage: "arrow.clockwise") {
                             controller.refreshAddresses()
                         }
                         .disabled(controller.isRunning)
@@ -751,7 +755,7 @@ struct WebHardServerView: View {
                             controller.navigateUp()
                         }
                     } label: {
-                        Image(systemName: "chevron.left")
+                        Image(interfaceSystemName: "chevron.left", pointSize: ui(22))
                             .font(.system(size: ui(22), weight: .semibold))
                             .frame(width: ui(44), height: ui(44))
                             .contentShape(Circle())
@@ -788,7 +792,7 @@ struct WebHardServerView: View {
                         Button("흰색") { coverFlowUsesDarkBackground = false }
                         Button("검정") { coverFlowUsesDarkBackground = true }
                     } label: {
-                        Image(systemName: "ellipsis")
+                        Image(interfaceSystemName: "ellipsis", pointSize: ui(16))
                             .font(.system(size: ui(16), weight: .bold))
                             .frame(width: ui(44), height: ui(44))
                             .contentShape(Circle())
@@ -851,7 +855,7 @@ struct WebHardServerView: View {
                 Button {
                     controller.navigateUp()
                 } label: {
-                    Label("상위 폴더", systemImage: "arrow.up.folder")
+                    Label("상위 폴더", interfaceSystemImage: "arrow.up.folder")
                 }
             }
 
@@ -878,7 +882,7 @@ struct WebHardServerView: View {
             if let message = controller.fileErrorMessage {
                 Text(message)
                     .font(.ui(.caption))
-                    .foregroundStyle(.red)
+                    .foregroundStyle(PorcelainMetrics.danger)
             } else if controller.files.isEmpty && controller.uploads.isEmpty {
                 ContentUnavailableView(
                     "파일이 없습니다",
@@ -900,7 +904,7 @@ struct WebHardServerView: View {
                             coverFlowReturnStyle = style == .coverFlow ? layoutStyle : nil
                             storedLayoutStyle = style.rawValue
                         } label: {
-                            Image(systemName: style.systemImage)
+                            Image(interfaceSystemName: style.systemImage)
                                 .frame(width: ui(24), height: ui(24))
                                 .foregroundStyle(layoutStyle == style ? serviceColor : .secondary)
                                 .background(
@@ -937,7 +941,7 @@ struct WebHardServerView: View {
                         fileMetadata(item)
                         Spacer()
                         if item.isDirectory {
-                            Image(systemName: "chevron.right")
+                            Image(interfaceSystemName: "chevron.right")
                                 .foregroundStyle(.tertiary)
                         }
                     }
@@ -1041,13 +1045,13 @@ struct WebHardServerView: View {
                 shareItem = WebHardShareItem(url: url)
             }
         } label: {
-            Label("받기", systemImage: "square.and.arrow.down")
+            Label("받기", interfaceSystemImage: "nf.receive")
         }
 
         Button(role: .destructive) {
             deleteCandidate = item
         } label: {
-            Label("삭제", systemImage: "trash")
+            Label("삭제", interfaceSystemImage: "trash")
         }
     }
 
@@ -1089,7 +1093,7 @@ private struct WebHardThumbnailView: View {
                         .frame(width: proxy.size.width, height: proxy.size.height)
                         .clipped()
                 } else {
-                    Image(systemName: item.isDirectory ? "folder.fill" : "doc.fill")
+                    Image(interfaceSystemName: item.isDirectory ? "folder.fill" : "doc.fill")
                         .resizable()
                         .scaledToFit()
                         .foregroundStyle(item.isDirectory ? Color.accentColor : Color.secondary)

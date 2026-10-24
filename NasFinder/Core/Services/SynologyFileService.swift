@@ -208,6 +208,53 @@ actor SynologyFileService: RemoteFileService {
         }
     }
 
+    /// Authenticated original File Station download address for a player the user just chose.
+    /// The session id (never the password) is the only secret in it; the caller keeps it in memory only.
+    /// A cheap authenticated call first, so an expired stored session is refreshed before the player uses it.
+    func authenticatedOriginalHandoff(for item: RemoteFileItem) async throws -> NASSessionHandoff? {
+        _ = try validatedItemPath(item, allowConnectionRoot: false)
+        let path = item.path
+        let _: SynologyEmptyData? = try await apiRequest(
+            api: "SYNO.FileStation.Info",
+            version: "2",
+            method: "get",
+            parameters: [:]
+        )
+        guard let sid = sessionID else { throw NasFinderError.authenticationFailed }
+
+        var unreserved = CharacterSet.alphanumerics
+        unreserved.insert(charactersIn: "-._~")
+        func encoded(_ value: String) throws -> String {
+            guard let text = value.addingPercentEncoding(withAllowedCharacters: unreserved) else {
+                throw URLError(.badURL)
+            }
+            return text
+        }
+        let query: [(String, String)] = [
+            ("api", "SYNO.FileStation.Download"),
+            ("version", "2"),
+            ("method", "download"),
+            ("path", path),
+            ("mode", "download"),
+            ("_sid", sid)
+        ]
+        var components = URLComponents(url: try endpointURL(script: "entry.cgi"), resolvingAgainstBaseURL: false)
+        components?.percentEncodedQuery = try query
+            .map { "\(try encoded($0.0))=\(try encoded($0.1))" }
+            .joined(separator: "&")
+        guard let url = components?.url else { throw URLError(.badURL) }
+        let handoff = NASSessionHandoff(
+            url: url,
+            connectionID: connection.id,
+            host: connection.host,
+            port: connection.port,
+            usesTLS: connection.usesTLS,
+            itemPath: path
+        )
+        guard handoff.isValid(for: item, connection: connection) else { throw URLError(.badURL) }
+        return handoff
+    }
+
     func thumbnailData(
         for item: RemoteFileItem,
         size: RemoteThumbnailSize

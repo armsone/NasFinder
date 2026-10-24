@@ -112,15 +112,28 @@ struct WebDAVFileService: RemoteFileService, @unchecked Sendable {
         length: Int
     ) async throws -> Data {
         guard offset >= 0, length > 0 else { return Data() }
+        let requestedEnd = offset.addingReportingOverflow(Int64(length - 1))
+        guard !requestedEnd.overflow else { throw WebDAVServiceError.unexpectedResponse }
         var request = try authorizedRequest(path: item.path, method: "GET")
         request.setValue(
-            "bytes=\(offset)-\(offset + Int64(length) - 1)",
+            "bytes=\(offset)-\(requestedEnd.partialValue)",
             forHTTPHeaderField: "Range"
         )
-        let (data, response) = try await session.data(for: request)
-        try validate(response, allowing: [206])
-        guard data.count <= length else { throw RemoteThumbnailError.responseTooLarge }
-        return data
+        // The bounded reader rejects a server that ignores Range (200) and stops
+        // buffering at `length`, so a range read never pulls the whole body.
+        let reader = URLSessionBoundedRangeReader(
+            configuration: session.configuration,
+            expectedOffset: offset,
+            maximumByteCount: length,
+            authenticationCredential: URLCredential(
+                user: connection.username,
+                password: credential.password,
+                persistence: .forSession
+            )
+        )
+        let result = try await reader.read(request)
+        try validate(result.response, allowing: [206])
+        return result.data
     }
 
     func createFolder(
@@ -188,11 +201,56 @@ struct WebDAVFileService: RemoteFileService, @unchecked Sendable {
         conflictPolicy: RemoteConflictPolicy,
         context: RemoteOperationContext
     ) async throws -> RemoteOperationResult {
-        let name = preferredName ?? localURL.lastPathComponent
+        try context.checkCancellation()
+        let requestedName = preferredName ?? localURL.lastPathComponent
+        // PUT은 같은 이름의 파일을 대체하므로 충돌 정책을 대상 폴더의 현재 목록으로 먼저 적용한다(FTP와 같은 방식).
+        let siblings = try await list(directory: directoryPath)
+        let decision = try RemotePath.conflictDecision(
+            for: requestedName,
+            sourceIsDirectory: false,
+            siblings: siblings,
+            policy: conflictPolicy,
+            sourcePath: localURL.path,
+            destinationPath: appending(requestedName, to: directoryPath),
+            caseSensitive: false
+        )
+        let name: String
+        let replacesExisting: Bool
+        switch decision {
+        case .skip(let existingPath):
+            return .init(
+                operationID: context.operationID,
+                operation: .upload,
+                outcomes: [.skipped(
+                    sourcePath: localURL.path,
+                    destinationPath: existingPath,
+                    issue: .init(code: .conflict, message: "같은 이름의 파일이 이미 있습니다.")
+                )]
+            )
+        case .proceed(let resolvedName, let replaces):
+            // 덮어쓰기(replace)를 고른 경우에만 기존 파일 이름 그대로 PUT한다.
+            // 대소문자만 다른 파일은 서버마다 결과가 달라 덮어쓰지 않고 충돌로 알린다.
+            guard !replaces || resolvedName == requestedName else {
+                throw RemoteFileOperationError.conflict(
+                    sourcePath: localURL.path,
+                    destinationPath: appending(resolvedName, to: directoryPath)
+                )
+            }
+            name = resolvedName
+            replacesExisting = replaces
+        }
         let destination = appending(name, to: directoryPath)
         var request = try authorizedRequest(path: destination, method: "PUT")
+        if !replacesExisting {
+            // 목록 확인 뒤 다른 곳에서 같은 이름이 생겼다면 이 조건을 지키는 서버는 412로 거절하고 기존 파일을 그대로 둔다(RFC 9110).
+            request.setValue("*", forHTTPHeaderField: "If-None-Match")
+        }
         request.httpBody = try Data(contentsOf: localURL, options: .mappedIfSafe)
+        try context.checkCancellation()
         let (_, response) = try await session.data(for: request)
+        if !replacesExisting, (response as? HTTPURLResponse)?.statusCode == 412 {
+            throw RemoteFileOperationError.conflict(sourcePath: localURL.path, destinationPath: destination)
+        }
         try validate(response, allowing: [200, 201, 204])
         return .init(
             operationID: context.operationID,
@@ -201,12 +259,109 @@ struct WebDAVFileService: RemoteFileService, @unchecked Sendable {
         )
     }
 
-    private func moveRequest(from source: String, to destination: String) async throws {
+    private func moveRequest(from source: String, to destination: String, overwrite: Bool = false) async throws {
         var request = try authorizedRequest(path: source, method: "MOVE")
         request.setValue(try url(for: destination).absoluteString, forHTTPHeaderField: "Destination")
-        request.setValue("F", forHTTPHeaderField: "Overwrite")
+        request.setValue(overwrite ? "T" : "F", forHTTPHeaderField: "Overwrite")
         let (_, response) = try await session.data(for: request)
+        if (response as? HTTPURLResponse)?.statusCode == 412 {
+            // Overwrite: F인데 대상이 이미 있다(RFC 4918). 기존 항목은 그대로다.
+            throw RemoteFileOperationError.conflict(sourcePath: source, destinationPath: destination)
+        }
         try validate(response, allowing: [201, 204])
+    }
+
+    /// 같은 서버 안에서 WebDAV MOVE로 옮긴다. 내용을 내려받아 다시 올리지 않는다.
+    func move(
+        _ item: RemoteFileItem,
+        to directoryPath: String,
+        conflictPolicy: RemoteConflictPolicy,
+        strategy: RemoteTransferStrategy,
+        context: RemoteOperationContext
+    ) async throws -> RemoteOperationResult {
+        try context.checkCancellation()
+        guard strategy != .streaming else {
+            throw RemoteFileOperationError.unsupported(operation: .move)
+        }
+        try conflictPolicy.validate(for: item, destinationPath: directoryPath)
+        let sourcePath = normalized(item.path)
+        let targetDirectory = normalized(directoryPath)
+        if normalized((sourcePath as NSString).deletingLastPathComponent) == targetDirectory {
+            return .init(
+                operationID: context.operationID,
+                operation: .move,
+                outcomes: [.succeeded(sourcePath: item.path, destinationPath: item.path, resultingItem: item)]
+            )
+        }
+        if item.isDirectory, RemotePath.isSameOrDescendant(targetDirectory, of: sourcePath) {
+            return .init(
+                operationID: context.operationID,
+                operation: .move,
+                outcomes: [.failed(
+                    sourcePath: item.path,
+                    destinationPath: targetDirectory,
+                    issue: .init(code: .unsupported, message: "\(item.name): 폴더를 자기 자신이나 하위 폴더로 옮길 수 없습니다.")
+                )]
+            )
+        }
+        let siblings = try await list(directory: targetDirectory)
+        let decision = try RemotePath.conflictDecision(
+            for: item.name,
+            sourceIsDirectory: item.isDirectory,
+            siblings: siblings,
+            policy: conflictPolicy,
+            sourcePath: item.path,
+            destinationPath: appending(item.name, to: targetDirectory),
+            caseSensitive: false
+        )
+        switch decision {
+        case .skip(let existingPath):
+            return .init(
+                operationID: context.operationID,
+                operation: .move,
+                outcomes: [.skipped(
+                    sourcePath: item.path,
+                    destinationPath: existingPath,
+                    issue: .init(code: .conflict, message: "같은 이름의 항목이 이미 있습니다.")
+                )]
+            )
+        case .proceed(let name, let replacesExisting):
+            let destination = appending(name, to: targetDirectory)
+            // 대소문자만 다른 항목을 Overwrite: T로 대체하지 않는다. 기존 항목은 그대로 두고 충돌로 알린다.
+            guard !replacesExisting || name == item.name else {
+                throw RemoteFileOperationError.conflict(sourcePath: item.path, destinationPath: destination)
+            }
+            try context.checkCancellation()
+            try await moveRequest(from: sourcePath, to: destination, overwrite: replacesExisting)
+            let moved = RemoteFileItem(
+                connectionID: item.connectionID,
+                path: destination,
+                name: name,
+                kind: item.kind,
+                size: item.size,
+                modifiedAt: item.modifiedAt,
+                contentTypeIdentifier: item.contentTypeIdentifier
+            )
+            return .init(
+                operationID: context.operationID,
+                operation: .move,
+                outcomes: [.succeeded(sourcePath: item.path, destinationPath: destination, resultingItem: moved)]
+            )
+        }
+    }
+
+    /// Credential-free original address (no user info, no app headers); read-only, no download.
+    func externalPlaybackTarget(for item: RemoteFileItem) -> RemoteExternalPlaybackTarget {
+        guard item.connectionID == connection.id else {
+            return .unavailable(reason: ExternalPlayerHandoff.unsafeAddressReason)
+        }
+        guard let address = try? url(for: item.path),
+              let safe = ExternalPlayerHandoff.safeOriginalURL(address) else {
+            return .unavailable(reason: ExternalPlayerHandoff.unsafeAddressReason)
+        }
+        // 로그인이 필요한 서버도 주소에는 계정·비밀번호를 넣지 않는다. 플레이어가 직접 로그인을 묻게 한다.
+        let needsLogin = !(connection.username.isEmpty && credential.password.isEmpty)
+        return needsLogin ? .remoteURLRequiresPlayerLogin(safe) : .remoteURL(safe)
     }
 
     private func authorizedRequest(path: String, method: String) throws -> URLRequest {

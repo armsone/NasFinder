@@ -198,6 +198,7 @@ struct WebBrowserView: View {
     @State private var cancelDownloadTrigger = 0
     @State private var isDownloading = false
     @State private var pendingDownload: BrowserDownloadedFile?
+    @State private var workbenchRequest: WorkbenchAddRequest?
     @State private var isSaveDialogPresented = false
     @State private var networkUploadFile: BrowserDownloadedFile?
     @State private var lastNetworkUploadFile: BrowserDownloadedFile?
@@ -288,9 +289,10 @@ struct WebBrowserView: View {
         ) {
             Button("폰하드에 저장") { savePendingDownloadToInbox() }
             if let file = pendingDownload, file.materialKind != nil {
-                Button("재료함에 담기") { addPendingDownloadToBasket(addToProject: false) }
+                // 웹에서 받은 파일은 나중에 다시 가리킬 원본 위치가 없으므로, 먼저 폰하드에 저장한 뒤 그 폰하드 파일을 참조한다.
+                Button("폰하드에 저장하고 작업대에 담기") { addPendingDownloadToWorkbench(addToProject: false) }
                 if projectSink != nil {
-                    Button("현재 프로젝트에 추가") { addPendingDownloadToBasket(addToProject: true) }
+                    Button("폰하드에 저장하고 현재 프로젝트에 추가") { addPendingDownloadToWorkbench(addToProject: true) }
                 }
             }
             if let file = pendingDownload,
@@ -313,7 +315,8 @@ struct WebBrowserView: View {
                 onUploadCompleted: completeNetworkUpload
             )
         }
-        .alert("브라우저 오류", isPresented: errorBinding) {
+        .workbenchAddSheet($workbenchRequest)
+        .alert("브라우저 알림", isPresented: errorBinding) {
             Button("확인", role: .cancel) { errorMessage = nil }
         } message: {
             Text(errorMessage ?? "")
@@ -326,7 +329,7 @@ struct WebBrowserView: View {
 
     private var addressBar: some View {
         HStack(spacing: ui(7)) {
-            Image(systemName: canGoBack ? "chevron.left" : "xmark")
+            Image(interfaceSystemName: canGoBack ? "chevron.left" : "xmark", pointSize: ui(13))
                 .font(.system(size: ui(13), weight: .semibold))
                 .foregroundStyle(Color.primary.opacity(0.68))
                 .frame(width: ui(32), height: ui(32))
@@ -351,7 +354,7 @@ struct WebBrowserView: View {
                     Button {
                         addressText = ""
                     } label: {
-                        Image(systemName: "xmark.circle.fill")
+                        Image(interfaceSystemName: "xmark.circle.fill", pointSize: ui(14))
                             .font(.system(size: ui(14)))
                             .foregroundStyle(.tertiary)
                     }
@@ -376,7 +379,7 @@ struct WebBrowserView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("새로고침")
 
-            Image(systemName: isCurrentFavorite ? "bookmark.fill" : "bookmark")
+            Image(interfaceSystemName: isCurrentFavorite ? "bookmark.fill" : "bookmark", pointSize: ui(13))
                 .font(.system(size: ui(13), weight: .semibold))
                 .foregroundStyle(isCurrentFavorite ? SkyBreezeTheme.accent : Color.primary.opacity(0.68))
                 .frame(width: ui(32), height: ui(32))
@@ -399,7 +402,7 @@ struct WebBrowserView: View {
     }
 
     private func browserIcon(_ systemName: String, primary: Bool = false) -> some View {
-        Image(systemName: systemName)
+        Image(interfaceSystemName: systemName, pointSize: ui(13))
             .font(.system(size: ui(13), weight: .semibold))
             .foregroundStyle(primary ? Color.white : Color.primary.opacity(0.68))
             .frame(width: ui(32), height: ui(32))
@@ -436,7 +439,7 @@ struct WebBrowserView: View {
     /// the user taps it.
     private var musicDownloadBar: some View {
         HStack(spacing: ui(8)) {
-            Image(systemName: "music.note")
+            Image(interfaceSystemName: "music.note")
             if musicCandidates.isEmpty {
                 Text("음악 파일이 있는 페이지를 열면 받을 수 있어요")
                     .font(.ui(.caption))
@@ -457,7 +460,7 @@ struct WebBrowserView: View {
                 }
             }
             Button(action: closeMusicNotice) {
-                Image(systemName: "xmark.circle.fill")
+                Image(interfaceSystemName: "xmark.circle.fill")
                     .foregroundStyle(PorcelainMetrics.secondary)
             }
             .buttonStyle(.plain)
@@ -503,6 +506,7 @@ struct WebBrowserView: View {
     /// The Music folder takes anything recognized as audio; whether it can really be
     /// decoded is checked when it is picked for a video.
     private func saveMusicDownload(_ file: BrowserDownloadedFile) {
+        let jobPrivate = PrivacyMode.currentlyActive
         Task {
             defer { removeTemporaryDownload(file) }
             guard BrowserURLPolicy.isAudio(filename: file.filename, mimeType: file.mimeType) else {
@@ -513,7 +517,8 @@ struct WebBrowserView: View {
                 let record = try await inboxStore.importMusicFile(
                     at: file.temporaryURL,
                     originalFilename: file.filename,
-                    contentTypeIdentifier: file.contentTypeIdentifier
+                    contentTypeIdentifier: file.contentTypeIdentifier,
+                    isPrivate: jobPrivate
                 )
                 if let onMusicSaved {
                     onMusicSaved(record)
@@ -528,7 +533,7 @@ struct WebBrowserView: View {
     }
 
     private var initialURL: URL {
-        favoritesStore.favorites.compactMap(BrowserURLPolicy.normalizedURL).first
+        favoritesStore.publicFavorites.compactMap(BrowserURLPolicy.normalizedURL).first
             ?? URL(string: "https://www.google.com")!
     }
 
@@ -599,14 +604,14 @@ struct WebBrowserView: View {
     private var favoritePanel: some View {
         VStack(spacing: 0) {
             HStack {
-                Label("즐겨찾기", systemImage: "bookmark.fill")
+                Label("즐겨찾기", interfaceSystemImage: "bookmark.fill")
                     .font(.ui(.subheadline).weight(.semibold))
                 Spacer()
                 Button {
                     showFavoritePanel = false
                     showFavoriteEditor = true
                 } label: {
-                    Image(systemName: "slider.horizontal.3")
+                    Image(interfaceSystemName: "slider.horizontal.3")
                         .frame(width: ui(32), height: ui(32))
                 }
                 .buttonStyle(.plain)
@@ -672,8 +677,8 @@ struct WebBrowserView: View {
                             .lineLimit(1)
                     }
                     Spacer(minLength: ui(4))
-                    if favorite == favoritesStore.favorites.first {
-                        Image(systemName: "house.fill")
+                    if favorite == favoritesStore.publicFavorites.first {
+                        Image(interfaceSystemName: "house.fill", pointSize: 11)
                             .font(.ui(.caption2).weight(.bold))
                             .foregroundStyle(SkyBreezeTheme.accent)
                     }
@@ -691,13 +696,15 @@ struct WebBrowserView: View {
         guard let file = pendingDownload else { return }
         pendingDownload = nil
         isSaveDialogPresented = false
+        let jobPrivate = PrivacyMode.currentlyActive
         Task {
             defer { removeTemporaryDownload(file) }
             do {
                 try await inboxStore.importDownloadedFile(
                     at: file.temporaryURL,
                     originalFilename: file.filename,
-                    contentTypeIdentifier: file.contentTypeIdentifier
+                    contentTypeIdentifier: file.contentTypeIdentifier,
+                    isPrivate: jobPrivate
                 )
                 statusMessage = "폰하드에 저장했습니다."
             } catch {
@@ -706,35 +713,32 @@ struct WebBrowserView: View {
         }
     }
 
-    /// 받은 파일이 실제 사진·영상일 때만 재료함에 담는다. 열리지 않는 파일은 담지 않고 사유를 알린다.
-    /// 웹 페이지 주소나 스트리밍 주소를 영상으로 만들지 않고, 이미 받은 로컬 파일만 대상으로 한다.
-    private func addPendingDownloadToBasket(addToProject: Bool) {
-        guard let file = pendingDownload, let isVideo = file.materialKind else { return }
+    /// 받은 파일이 실제 사진·영상일 때만 다룬다. 웹 다운로드는 임시 파일뿐이라 나중에 다시 가리킬 원본 위치가 없다.
+    /// 그래서 사용자가 고른 "폰하드에 저장"으로 먼저 보관한 뒤, 그 폰하드 파일의 위치만 작업대에 참조로 담는다
+    /// (작업대가 몰래 복사하지 않는다). 웹 페이지 주소나 스트리밍 주소는 영상으로 만들지 않는다.
+    private func addPendingDownloadToWorkbench(addToProject: Bool) {
+        guard let file = pendingDownload, file.materialKind != nil else { return }
         pendingDownload = nil
         isSaveDialogPresented = false
+        let jobPrivate = PrivacyMode.currentlyActive
         Task {
             defer { removeTemporaryDownload(file) }
-            let basket = MaterialBasketStore.shared
-            let key = "web:\(file.id.uuidString)"
-            let result = await basket.addValidated(
-                url: file.temporaryURL, name: file.filename, isVideo: isVideo, sourceKey: key,
-                kind: .browserDownload)
-            switch result {
-            case .failed(let reason):
-                errorMessage = "재료함에 담지 못했습니다. \(reason)"
-            case .duplicate, .added:
-                guard addToProject, let sink = projectSink,
-                      let item = basket.items.first(where: { $0.sourceKey == key }),
-                      let url = basket.fileURL(for: item) else {
-                    statusMessage = "재료함에 담았습니다."
-                    return
+            do {
+                let record = try await inboxStore.importDownloadedFile(
+                    at: file.temporaryURL, originalFilename: file.filename, contentTypeIdentifier: file.contentTypeIdentifier,
+                    isPrivate: jobPrivate)
+                if addToProject, let sink = projectSink {
+                    let remote = LocalInboxFileService.remoteItem(for: record)
+                    sink.add([remote], LocalInboxFileService(records: [record]))
+                    statusMessage = "폰하드에 저장하고 현재 프로젝트에 추가했습니다."
+                } else {
+                    let entry = WorkbenchEntryFactory.entry(
+                        remote: LocalInboxFileService.browserItem(for: record), sourceLabel: WorkbenchSourceLabel.phoneHard)
+                    workbenchRequest = WorkbenchAddRequest(title: "폰하드에 저장한 \(file.filename)", entries: [entry])
+                    statusMessage = "폰하드에 저장했습니다."
                 }
-                let remote = RemoteFileItem(
-                    connectionID: LocalPhotoLibraryFileService.connectionID, path: url.path, name: item.name,
-                    kind: .file, size: item.byteCount, modifiedAt: nil,
-                    contentTypeIdentifier: UTType(filenameExtension: url.pathExtension)?.identifier)
-                sink.add([remote], LocalPhotoLibraryFileService(entries: [(remote, url)]))
-                statusMessage = "재료함에 담고 현재 프로젝트에 추가했습니다."
+            } catch {
+                errorMessage = "폰하드에 저장하지 못해 작업대에 담지 않았습니다. \(error.localizedDescription)"
             }
         }
     }

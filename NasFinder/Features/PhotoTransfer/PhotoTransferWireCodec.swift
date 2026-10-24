@@ -308,8 +308,12 @@ struct PhotoTransferStreamingWireDecoder {
     enum Event {
         case file(PhotoTransferWireHeader, URL)
         case completed
+        /// v4 협상 뒤에만 허용되는 begin 제어 프레임.
+        case begin(PhotoTransferBeginFrame)
     }
 
+    /// v4(receipt-v1)가 협상된 연결에서만 true. 아니면 begin 프레임은 잘못된 헤더로 거부한다.
+    var acceptsControlFrames = false
     private var buffer = Data()
     private var pendingHeader: PhotoTransferWireHeader?
     private var pendingURL: URL?
@@ -336,6 +340,15 @@ struct PhotoTransferStreamingWireDecoder {
                 guard buffer.count >= frameLength else { break }
                 let headerData = buffer.subdata(in: 4..<frameLength)
                 buffer.removeSubrange(0..<frameLength)
+                if let object = PhotoTransferControlCodec.jsonObject(headerData),
+                   PhotoTransferControlCodec.isBeginObject(object) || PhotoTransferControlCodec.isReceiptObject(object) {
+                    guard acceptsControlFrames, PhotoTransferControlCodec.isBeginObject(object),
+                          let begin = PhotoTransferControlCodec.decodeBegin(object) else {
+                        throw PhotoTransferWireCodec.CodecError.invalidHeader
+                    }
+                    events.append(.begin(begin))
+                    continue
+                }
                 let header: PhotoTransferWireHeader
                 do { header = try JSONDecoder().decode(PhotoTransferWireHeader.self, from: headerData) }
                 catch { throw PhotoTransferWireCodec.CodecError.invalidHeader }

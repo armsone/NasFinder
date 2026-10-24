@@ -236,7 +236,7 @@ struct LocalPhotoLibraryAssetCell: View {
                         .padding(ui(3))
                 }
                 if showsSelectionIndicator {
-                    Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
+                    Image(interfaceSystemName: isSelected ? "checkmark.circle.fill" : "circle")
                         .foregroundStyle(.white, isSelected ? Color.accentColor : Color.black.opacity(0.3))
                         .padding(ui(4))
                 }

@@ -560,7 +560,7 @@ struct TrailerMusicPickerView: View {
                 .font(MacUIScale.sectionNoteFont)
         }
         Section {
-            Button("브라우저에서 음악 받기", systemImage: "globe") {
+            Button("브라우저에서 음악 받기", interfaceSystemImage: "globe") {
                 audition.stop()
                 showingBrowser = true
             }
@@ -580,7 +580,7 @@ struct TrailerMusicPickerView: View {
                 audition.fail("이 음악 파일을 찾을 수 없습니다.", error: nil)
             }
         } label: {
-            Image(systemName: isPlaying ? "stop.circle.fill" : "play.circle")
+            Image(interfaceSystemName: isPlaying ? "stop.circle.fill" : "play.circle", pointSize: 20)
                 .font(.ui(.title3))
                 .foregroundStyle(durations[record.id] == nil ? Color.secondary : Color.accentColor)
         }
@@ -598,7 +598,7 @@ struct TrailerMusicPickerView: View {
                 }
             }
             Spacer(minLength: ui(8))
-            if selected { Image(systemName: "checkmark").foregroundStyle(Color.accentColor) }
+            if selected { Image(interfaceSystemName: "checkmark").foregroundStyle(Color.accentColor) }
         }
         .contentShape(Rectangle())
     }

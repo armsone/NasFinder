@@ -23,6 +23,7 @@ struct NasFinderApp: App {
 
     init() {
         PorcelainActivation.applyOnce()
+        JarvisShellActivation.applyOnce()
         MacUIScale.applyBarAppearance()
     }
 
@@ -84,14 +85,21 @@ struct NasFinderApp: App {
                     Text(themeIconError ?? "잠시 후 다시 시도해 주세요.")
                 }
                 .task {
+                    // 작업대를 먼저 열어 예전 영상 재료 메타데이터가 '기존 재료' 포켓으로 한 번 옮겨지게 한다(파일은 건드리지 않는다).
+                    _ = WorkbenchStore.shared
                     await FileProviderThumbnailCache.shared.migrateExistingCachesIfNeeded()
                     browserFavoritesStore.importPendingSharedArchives()
                     inboxStore.reload()
+                    ShareIntentCoordinator.shared.consumeOnForeground(router: AppShellRouter.shared)
                     #if targetEnvironment(macCatalyst)
                     MacDirectUpdateManager.shared.checkAtStartupIfNeeded()
                     #endif
                 }
                 .onOpenURL { url in
+                    if ShareIntentCoordinator.parse(url) != nil {
+                        ShareIntentCoordinator.shared.handle(url, router: AppShellRouter.shared)
+                        return
+                    }
                     Task {
                         if BrowserFavoritesStore.isFavoritesFile(url) {
                             do {
@@ -118,6 +126,7 @@ struct NasFinderApp: App {
                     guard phase == .active else { return }
                     browserFavoritesStore.importPendingSharedArchives()
                     inboxStore.sceneDidBecomeActive()
+                    ShareIntentCoordinator.shared.consumeOnForeground(router: AppShellRouter.shared)
                 }
                 .onChange(of: scenePhase, initial: true) { _, phase in
                     screenAwakeController.updateAppIsActive(phase == .active)

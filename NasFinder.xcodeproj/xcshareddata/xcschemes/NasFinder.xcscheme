@@ -69,6 +69,17 @@
                ReferencedContainer = "container:NasFinder.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "YES"
+            parallelizable = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "AB0000000000000000000003"
+               BuildableName = "NasFinderUITests.xctest"
+               BlueprintName = "NasFinderUITests"
+               ReferencedContainer = "container:NasFinder.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

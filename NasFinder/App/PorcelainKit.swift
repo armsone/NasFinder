@@ -43,6 +43,8 @@ enum PorcelainMetrics {
     static var selected: Color { palette.selected }
     static var pressed: Color { palette.pressed }
     static var danger: Color { palette.danger }
+    /// 주의 표시 색(기호·문구와 함께 사용).
+    static var warn: Color { palette.warn }
 
     /// 넓은 화면 사이드바 폭: 가용 폭의 약 21%, 200–280pt(승인 보드 01 PAD 비율의 구현 제안).
     static func sidebarWidth(for width: CGFloat) -> CGFloat {
@@ -55,8 +57,9 @@ enum PorcelainMetrics {
 /// `let _ = themeRefresh.theme`로 반드시 읽는다. 읽지 않으면 입력이 같은 하위 뷰가 예전 테마 색에 머문다.
 struct ThemeRefresh: DynamicProperty {
     @AppStorage(AppThemePreference.storageKey) private var rawValue = AppThemePreference.light.rawValue
+    @AppStorage(InterfaceIconStyle.storageKey) private var iconStyleRawValue = ""
 
-    var theme: AppThemePreference { .resolved(rawValue) }
+    var theme: AppThemePreference { let _ = iconStyleRawValue; return .resolved(rawValue) }
 }
 
 /// 승인안 공통 글자 역할. 폰·패드·Mac이 같은 기본 크기를 쓰고, 기본 크기는 Dynamic Type에 따라 함께 커진다.
@@ -161,7 +164,7 @@ struct PorcelainMoreMenuLabel: View {
 
     var body: some View {
         let _ = themeRefresh.theme
-        Image(systemName: "ellipsis")
+        Image(interfaceSystemName: "ellipsis", pointSize: 13)
             .font(.footnote.weight(.semibold))
             .foregroundStyle(PorcelainMetrics.secondary)
             .frame(width: width, height: height)
@@ -180,15 +183,23 @@ extension View {
 }
 
 /// 앱 소유 브랜드 글자: `Nas` 그래파이트 + `Finder` 강조색(승인 보드 01/02/03/06).
+/// 프라이버시 모드가 켜져 있는 동안에는 글자만 `프라이버시`로 바뀐다(로고 제스처는 그대로).
 struct PorcelainBrandText: View {
     private var themeRefresh = ThemeRefresh()
+    @ObservedObject private var privacy = PrivacyMode.shared
     var body: some View {
         let _ = themeRefresh.theme
-        Text("\(Text("Nas").foregroundColor(PorcelainMetrics.graphite))\(Text("Finder").foregroundColor(PorcelainMetrics.accent))")
-            .porcelainFont(.brand)
-            .lineLimit(1)
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityLabel("NasFinder")
+        Group {
+            if privacy.isActive {
+                Text(PrivacyMode.brandName).foregroundColor(PorcelainMetrics.accent)
+            } else {
+                Text("\(Text("Nas").foregroundColor(PorcelainMetrics.graphite))\(Text("Finder").foregroundColor(PorcelainMetrics.accent))")
+            }
+        }
+        .porcelainFont(.brand)
+        .lineLimit(1)
+        .fixedSize(horizontal: true, vertical: false)
+        .accessibilityLabel(privacy.isActive ? PrivacyMode.brandName : "NasFinder")
     }
 }
 
@@ -304,7 +315,7 @@ struct PorcelainInlineAction<Leading: View>: View {
                 .foregroundStyle(PorcelainMetrics.graphite)
                 .lineLimit(2)
             Spacer(minLength: 0)
-            Image(systemName: "chevron.right")
+            Image(interfaceSystemName: "chevron.right", pointSize: 12)
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(PorcelainMetrics.secondary)
                 .accessibilityHidden(true)
@@ -331,7 +342,7 @@ struct PorcelainVideoCTA: View {
                 .foregroundStyle(PorcelainMetrics.onAccent)
                 .lineLimit(2)
             Spacer(minLength: 0)
-            Image(systemName: "chevron.right")
+            Image(interfaceSystemName: "chevron.right", pointSize: 16)
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundStyle(PorcelainMetrics.onAccent)
                 .accessibilityHidden(true)
@@ -569,7 +580,7 @@ struct PorcelainRow<Leading: View, Trailing: View>: View {
             Spacer(minLength: 0)
             trailing
             if showsChevron {
-                Image(systemName: "chevron.right")
+                Image(interfaceSystemName: "chevron.right", pointSize: 12)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(PorcelainMetrics.secondary)
                     .accessibilityHidden(true)
@@ -601,12 +612,20 @@ extension PorcelainRow where Trailing == EmptyView {
     }
 }
 
-/// 로딩·빈 상태·오류에 쓰는 Porcelain 중앙 안내.
-struct PorcelainStateView: View {
+/// 로딩·빈 상태·오류에 쓰는 Porcelain 중앙 안내. 해결 행동이 있으면 `actions`에 최대 하나만 둔다.
+struct PorcelainStateView<Actions: View>: View {
     private var themeRefresh = ThemeRefresh()
     let systemImage: String
     let title: String
     var message: String? = nil
+    @ViewBuilder let actions: () -> Actions
+
+    init(systemImage: String, title: String, message: String? = nil, @ViewBuilder actions: @escaping () -> Actions) {
+        self.systemImage = systemImage
+        self.title = title
+        self.message = message
+        self.actions = actions
+    }
 
     var body: some View {
         let _ = themeRefresh.theme
@@ -621,8 +640,94 @@ struct PorcelainStateView: View {
                 Text(message).porcelainFont(.body).foregroundStyle(PorcelainMetrics.secondary)
                     .multilineTextAlignment(.center)
             }
+            actions()
         }
         .padding(24)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+extension PorcelainStateView where Actions == EmptyView {
+    init(systemImage: String, title: String, message: String? = nil) {
+        self.init(systemImage: systemImage, title: title, message: message, actions: { EmptyView() })
+    }
+}
+
+/// 앱 안의 빈 상태·오류 안내가 시스템 기본 모양 대신 `PorcelainStateView`와 같은 모양(아이콘 → 20pt 제목 → 12pt 설명 → 행동)을
+/// 쓰도록, 모듈 안에서 `ContentUnavailableView` 이름을 이 구현으로 대신한다. 호출부의 문구·행동은 그대로 쓴다.
+struct ContentUnavailableView<Label: View, Description: View, Actions: View>: View {
+    private var themeRefresh = ThemeRefresh()
+    private let label: Label
+    private let description: Description
+    private let actions: Actions
+
+    init(
+        @ViewBuilder label: () -> Label,
+        @ViewBuilder description: () -> Description = { EmptyView() },
+        @ViewBuilder actions: () -> Actions = { EmptyView() }
+    ) {
+        self.label = label()
+        self.description = description()
+        self.actions = actions()
+    }
+
+    var body: some View {
+        let _ = themeRefresh.theme
+        VStack(spacing: 10) {
+            label.labelStyle(PorcelainStateLabelStyle())
+            description
+                .porcelainFont(.body)
+                .foregroundStyle(PorcelainMetrics.secondary)
+                .multilineTextAlignment(.center)
+            VStack(spacing: 8) { actions }
+                .padding(.top, 4)
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+extension ContentUnavailableView where Label == SwiftUI.Label<Text, Image>, Description == Text?, Actions == EmptyView {
+    init(_ title: String, systemImage: String, description: Text? = nil) {
+        self.init(
+            label: { SwiftUI.Label(title, interfaceSystemImage: systemImage, pointSize: 40) },
+            description: { description },
+            actions: { EmptyView() }
+        )
+    }
+
+    /// 검색 결과가 없을 때의 안내.
+    static func search(text: String) -> ContentUnavailableView {
+        ContentUnavailableView(
+            "검색 결과가 없습니다",
+            systemImage: "magnifyingglass",
+            description: text.isEmpty ? nil : Text("‘\(text)’에 해당하는 항목이 없습니다.")
+        )
+    }
+}
+
+private struct PorcelainStateLabelStyle: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(spacing: 10) {
+            configuration.icon
+                .font(.system(size: 40))
+                .foregroundStyle(PorcelainMetrics.secondary)
+            configuration.title
+                .porcelainFont(.bigTitle, weight: .semibold)
+                .foregroundStyle(PorcelainMetrics.graphite)
+                .multilineTextAlignment(.center)
+        }
+    }
+}
+
+extension ToolbarContent {
+    /// iOS 26 시스템 막대가 항목 뒤에 두껍게 띄우는 공유 배경을 숨겨, 홈 루트와 같은 평평한 크롬으로 맞춘다.
+    @ToolbarContentBuilder
+    func porcelainFlatItemBackground() -> some ToolbarContent {
+        if #available(iOS 26.0, *) {
+            self.sharedBackgroundVisibility(.hidden)
+        } else {
+            self
+        }
     }
 }

@@ -1,0 +1,407 @@
+import SwiftUI
+import UIKit
+
+/// Shared canonical contract for all 136 app-owned icons. Third-party marks and system chrome are separate.
+enum InterfaceDesignArtwork {
+    static let symbolToCanonical: [String: String] = [
+        "antenna.radiowaves.left.and.right": "antenna",
+        "app.badge": "app_icon",
+        "archivebox.fill": "file_archive",
+        "arrow.clockwise": "refresh",
+        "arrow.counterclockwise": "undo",
+        "arrow.down": "download",
+        "arrow.down.circle": "download",
+        "arrow.down.right.and.arrow.up.left": "fullscreen_exit",
+        "arrow.left": "arrow_left",
+        "arrow.left.arrow.right": "transfer",
+        "arrow.right": "arrow_right",
+        "arrow.triangle.2.circlepath": "refresh",
+        "arrow.up": "upload",
+        "arrow.up.arrow.down": "sort",
+        "arrow.up.arrow.down.square": "transfer",
+        "arrow.up.doc": "upload",
+        "arrow.up.doc.fill": "upload",
+        "arrow.up.folder": "folder_upload",
+        "arrow.up.left": "external_link",
+        "arrow.up.left.and.arrow.down.right": "fullscreen",
+        "arrow.uturn.backward": "undo",
+        "arrow.uturn.forward": "redo",
+        "backward.end.fill": "previous",
+        "bookmark": "favorites",
+        "bookmark.fill": "favorites",
+        "cable.connector": "cable",
+        "calendar": "calendar",
+        "checkmark": "check",
+        "checkmark.circle": "check",
+        "checkmark.circle.fill": "check",
+        "chevron.backward": "back",
+        "chevron.down": "expand_down",
+        "chevron.down.circle.fill": "expand_down",
+        "chevron.left": "back",
+        "chevron.left.forwardslash.chevron.right": "open_source",
+        "chevron.right": "forward",
+        "chevron.up": "collapse_up",
+        "chevron.up.chevron.down": "expand_collapse",
+        "chevron.up.circle.fill": "collapse_up",
+        "circle": "unselected",
+        "circle.dashed": "unselected",
+        "circle.fill": "selected",
+        "circle.righthalf.filled": "theme_half",
+        "clock": "history",
+        "clock.badge.checkmark": "history_done",
+        "clock.badge.checkmark.fill": "history_done",
+        "clock.fill": "history",
+        "cloud": "cloud",
+        "cloud.fill": "cloud",
+        "doc": "file",
+        "doc.badge.plus": "file_add",
+        "doc.fill": "file",
+        "doc.on.clipboard": "paste",
+        "doc.on.doc": "copy",
+        "doc.richtext.fill": "file_text",
+        "doc.text.magnifyingglass": "search_file",
+        "ellipsis": "more",
+        "ellipsis.circle": "more",
+        "exclamationmark.triangle": "warning",
+        "exclamationmark.triangle.fill": "warning",
+        "externaldrive": "device_files",
+        "externaldrive.badge.plus": "connection_add",
+        "externaldrive.badge.questionmark": "connection_unknown",
+        "externaldrive.badge.wifi": "nas",
+        "externaldrive.badge.xmark": "connection_error",
+        "externaldrive.connected.to.line.below": "nas",
+        "externaldrive.connected.to.line.below.fill": "nas",
+        "externaldrive.fill": "device_files",
+        "externaldrive.fill.badge.wifi": "nas",
+        "eye": "visibility",
+        "eye.slash": "privacy",
+        "eye.slash.fill": "privacy",
+        "film": "video",
+        "film.stack": "drafts",
+        "folder": "folder",
+        "folder.badge.checkmark": "folder_selected",
+        "folder.badge.gearshape": "folder_settings",
+        "folder.badge.plus": "folder_add",
+        "folder.fill": "folder",
+        "folder.fill.badge.gearshape": "folder_settings",
+        "forward.end.fill": "next",
+        "gearshape": "settings",
+        "gearshape.fill": "settings",
+        "globe": "browser",
+        "globe.badge.chevron.backward": "browser_back",
+        "hand.tap": "hand_tap",
+        "hexagon": "theme_hexagon",
+        "house": "home",
+        "house.fill": "home",
+        "infinity": "infinity",
+        "info.circle": "info",
+        "info.circle.fill": "info",
+        "internaldrive": "device_files",
+        "internaldrive.fill": "device_files",
+        "iphone": "phonehard",
+        "iphone.gen3": "phonehard",
+        "key": "key",
+        "key.slash": "key_unavailable",
+        "largecircle.fill.circle": "selected",
+        "link": "link",
+        "list.bullet": "list",
+        "livephoto": "live_photo",
+        "lock": "lock",
+        "magnifyingglass": "search",
+        "message": "info",
+        "moon": "display_dark",
+        "music.note": "music",
+        "network": "nas",
+        "network.badge.shield.half.filled": "network_secure",
+        "network.slash": "network_off",
+        "numbers": "statistics",
+        "paintpalette": "theme",
+        "paperplane": "send",
+        "pause": "pause",
+        "pause.fill": "pause",
+        "pencil": "edit",
+        "person.badge.key": "user_key",
+        "person.crop.circle": "profile",
+        "phone": "phonehard",
+        "photo": "photos",
+        "photo.badge.arrow.down": "download",
+        "photo.badge.plus": "photos",
+        "photo.fill": "photos",
+        "photo.on.rectangle": "photos",
+        "photo.on.rectangle.angled": "photos",
+        "photo.stack": "photos",
+        "pin": "pin",
+        "pin.fill": "pin",
+        "play": "play",
+        "play.circle": "play",
+        "play.circle.fill": "play",
+        "play.fill": "play",
+        "play.rectangle": "external_player",
+        "play.rectangle.fill": "external_player",
+        "play.slash": "unsupported_video",
+        "plus": "add",
+        "plus.circle": "add",
+        "plus.circle.fill": "add",
+        "plus.square.on.square": "duplicate",
+        "point.3.connected.trianglepath.dotted": "connections",
+        "qrcode": "qr_code",
+        "qrcode.viewfinder": "qr_scan",
+        "questionmark.circle": "help",
+        "receipt": "file_text",
+        "rectangle.stack": "stack",
+        "rectangle.stack.fill": "stack",
+        "repeat": "repeat",
+        "repeat.1": "repeat_one",
+        "scope": "search",
+        "shield": "shield",
+        "shuffle": "shuffle",
+        "signature": "edit",
+        "slider.horizontal.3": "sliders",
+        "sparkles": "sparkles",
+        "sparkles.rectangle.stack.fill": "super_thumbnail",
+        "speaker.slash.fill": "mute",
+        "speaker.wave.2.fill": "volume",
+        "square.and.arrow.down": "workbench",
+        "square.and.arrow.up": "share",
+        "square.and.pencil": "edit",
+        "square.grid.2x2": "grid",
+        "square.grid.2x2.fill": "grid",
+        "square.grid.3x3": "grid",
+        "star": "favorites",
+        "star.fill": "favorites",
+        "star.slash": "unfavorite",
+        "stop": "stop",
+        "stop.circle": "stop",
+        "stop.circle.fill": "stop",
+        "sum": "statistics",
+        "sun.max": "display_light",
+        "ticket": "file",
+        "timer": "history",
+        "trash": "trash",
+        "trash.fill": "trash",
+        "tray": "empty",
+        "tray.2": "workbench",
+        "tray.and.arrow.down": "download",
+        "tray.and.arrow.down.fill": "transfer",
+        "tray.full.fill": "phonehard",
+        "video": "video",
+        "video.fill": "video",
+        "waveform": "waveform",
+        "wifi": "wifi",
+        "wifi.exclamationmark": "wifi_error",
+        "xmark": "close",
+        "xmark.bin": "auto_delete",
+        "xmark.circle": "close",
+        "xmark.circle.fill": "close",
+    ]
+    private static let originalSymbols: [String: String] = [
+        "add": "plus",
+        "antenna": "antenna.radiowaves.left.and.right",
+        "app_icon": "app.badge",
+        "arrow_left": "arrow.left",
+        "arrow_right": "arrow.right",
+        "auto_delete": "xmark.bin",
+        "back": "chevron.left",
+        "brand": "externaldrive.connected.to.line.below",
+        "browser": "globe",
+        "browser_back": "globe.badge.chevron.backward",
+        "cable": "cable.connector",
+        "calendar": "calendar",
+        "check": "checkmark",
+        "close": "xmark",
+        "cloud": "cloud",
+        "collapse_up": "chevron.up",
+        "collection": "play",
+        "compress": "square.grid.2x2",
+        "connection_add": "externaldrive.badge.plus",
+        "connection_error": "externaldrive.badge.xmark",
+        "connection_unknown": "externaldrive.badge.questionmark",
+        "connections": "externaldrive.connected.to.line.below",
+        "copy": "doc.on.doc",
+        "deselect_all": "square.grid.2x2",
+        "device_files": "internaldrive",
+        "display_dark": "moon",
+        "display_light": "sun.max",
+        "download": "arrow.down",
+        "drafts": "film.stack",
+        "duplicate": "plus.square.on.square",
+        "edit": "pencil",
+        "empty": "tray",
+        "error": "square.grid.2x2",
+        "expand_collapse": "chevron.up.chevron.down",
+        "expand_down": "chevron.down",
+        "export": "square.grid.2x2",
+        "external_link": "arrow.up.left",
+        "external_player": "play.rectangle",
+        "favorites": "star",
+        "file": "doc",
+        "file_add": "doc.badge.plus",
+        "file_archive": "archivebox.fill",
+        "file_pdf": "square.grid.2x2",
+        "file_text": "doc.richtext.fill",
+        "folder": "folder",
+        "folder_add": "folder.badge.plus",
+        "folder_selected": "folder.badge.checkmark",
+        "folder_settings": "folder.badge.gearshape",
+        "folder_shared": "square.grid.2x2",
+        "folder_upload": "arrow.up.folder",
+        "forward": "chevron.right",
+        "fullscreen": "square.grid.2x2",
+        "fullscreen_exit": "arrow.down.right.and.arrow.up.left",
+        "grid": "square.grid.2x2",
+        "hand_tap": "hand.tap",
+        "help": "questionmark.circle",
+        "history": "clock",
+        "history_done": "clock.badge.checkmark",
+        "home": "house",
+        "import": "square.grid.2x2",
+        "infinity": "infinity",
+        "info": "info.circle",
+        "key": "square.grid.2x2",
+        "key_unavailable": "key.slash",
+        "link": "link",
+        "list": "list.bullet",
+        "live_photo": "livephoto",
+        "lock": "lock",
+        "menu": "square.grid.2x2",
+        "more": "ellipsis",
+        "move": "square.grid.2x2",
+        "music": "music.note",
+        "mute": "speaker.slash.fill",
+        "nas": "externaldrive.badge.wifi",
+        "network": "square.grid.2x2",
+        "network_off": "network.slash",
+        "network_secure": "network.badge.shield.half.filled",
+        "next": "forward.end.fill",
+        "open_source": "chevron.left.forwardslash.chevron.right",
+        "paste": "square.grid.2x2",
+        "pause": "pause",
+        "phonehard": "tray.full.fill",
+        "photo_selection": "photo.stack",
+        "photos": "photo",
+        "pin": "pin",
+        "play": "play",
+        "pocket": "folder",
+        "previous": "backward.end.fill",
+        "privacy": "eye.slash",
+        "profile": "person.crop.circle",
+        "progress": "square.grid.2x2",
+        "qr_code": "qrcode",
+        "qr_scan": "qrcode.viewfinder",
+        "receive": "square.grid.2x2",
+        "redo": "arrow.uturn.forward",
+        "refresh": "arrow.clockwise",
+        "repeat": "repeat",
+        "repeat_one": "repeat.1",
+        "search": "magnifyingglass",
+        "search_file": "doc.text.magnifyingglass",
+        "select_all": "square.grid.2x2",
+        "selected": "circle.fill",
+        "send": "paperplane",
+        "settings": "gearshape",
+        "share": "square.and.arrow.up",
+        "shield": "shield",
+        "shuffle": "shuffle",
+        "sliders": "slider.horizontal.3",
+        "sort": "arrow.up.arrow.down",
+        "sparkles": "sparkles",
+        "stack": "rectangle.stack",
+        "statistics": "sum",
+        "stop": "stop.circle",
+        "storage": "internaldrive",
+        "super_thumbnail": "photo.on.rectangle.angled",
+        "theme": "paintpalette",
+        "theme_half": "circle.righthalf.filled",
+        "theme_hexagon": "hexagon",
+        "thumbnail_cache": "photo.stack",
+        "thumbnail_storage": "photo.stack",
+        "transfer": "arrow.left.arrow.right",
+        "trash": "trash",
+        "undo": "arrow.uturn.backward",
+        "unfavorite": "star.slash",
+        "unselected": "circle.dashed",
+        "unsupported_video": "play.slash",
+        "upload": "arrow.up",
+        "user_key": "person.badge.key",
+        "video": "film",
+        "visibility": "eye",
+        "volume": "speaker.wave.2.fill",
+        "warning": "exclamationmark.triangle",
+        "waveform": "waveform",
+        "wifi": "wifi",
+        "wifi_error": "wifi.exclamationmark",
+        "workbench": "tray.2",
+    ]
+    nonisolated(unsafe) private static let fittedCache = NSCache<NSString, UIImage>()
+
+    static var selectedStyle: InterfaceIconStyle {
+        InterfaceIconStyle(rawValue: UserDefaults.standard.string(forKey: InterfaceIconStyle.storageKey) ?? "simple") ?? .simple
+    }
+    static func canonical(_ name: String) -> String? {
+        if name.hasPrefix("nf.") { return String(name.dropFirst(3)) }
+        return symbolToCanonical[name]
+    }
+    static func originalSymbol(_ name: String) -> String {
+        guard name.hasPrefix("nf.") else { return name }
+        return originalSymbols[String(name.dropFirst(3))] ?? "square.grid.2x2"
+    }
+    static func asset(_ canonical: String, style: InterfaceIconStyle) -> UIImage? {
+        UIImage(named: "ThemeIconDesign-\(style.rawValue)-\(canonical)")?.withRenderingMode(.alwaysOriginal)
+    }
+    static func uiImage(systemName name: String, pointSize: CGFloat = 20) -> UIImage? {
+        let style = selectedStyle
+        guard let id = canonical(name), let artwork = asset(id, style: style) else {
+            return UIImage(systemName: originalSymbol(name))
+        }
+        let cacheKey = "\(style.rawValue)-\(id)-\(pointSize)-\(AppThemePreference.current.rawValue)" as NSString
+        if let cached = fittedCache.object(forKey: cacheKey) { return cached }
+        let size = max(1, pointSize)
+        let format = UIGraphicsImageRendererFormat.preferred()
+        format.opaque = false
+        let displayed = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format).image { renderer in
+            let bounds = CGRect(x: 0, y: 0, width: size, height: size)
+            artwork.draw(in: bounds)
+            if style == .simple {
+                // Bake monochrome pixels, rather than UIImage tint metadata which SwiftUI can ignore.
+                renderer.cgContext.setBlendMode(.sourceIn)
+                (AppThemePreference.current.isDark ? UIColor.white : UIColor.black).setFill()
+                renderer.cgContext.fill(bounds)
+            }
+        }.withRenderingMode(.alwaysOriginal)
+        fittedCache.setObject(displayed, forKey: cacheKey)
+        return displayed
+    }
+}
+
+extension Image {
+    /// An Image (not a replacement View), preserving resizable/rotation/Label APIs and original SF behaviour in other packs.
+    init(interfaceSystemName name: String, pointSize: CGFloat = 20, fallbackNamed: String? = nil) {
+        if let canonical = InterfaceDesignArtwork.canonical(name),
+           InterfaceDesignArtwork.asset(canonical, style: InterfaceDesignArtwork.selectedStyle) != nil,
+           let image = InterfaceDesignArtwork.uiImage(systemName: name, pointSize: pointSize) {
+            self.init(uiImage: image)
+        } else if let fallbackNamed {
+            self.init(fallbackNamed)
+        } else {
+            self.init(systemName: InterfaceDesignArtwork.originalSymbol(name))
+        }
+    }
+}
+
+extension Label where Title == Text, Icon == Image {
+    init(_ title: LocalizedStringKey, interfaceSystemImage name: String, pointSize: CGFloat = 18) {
+        self.init { Text(title) } icon: { Image(interfaceSystemName: name, pointSize: pointSize) }
+    }
+    init<S: StringProtocol>(_ title: S, interfaceSystemImage name: String, pointSize: CGFloat = 18) {
+        self.init { Text(String(title)) } icon: { Image(interfaceSystemName: name, pointSize: pointSize) }
+    }
+}
+
+extension Button where Label == SwiftUI.Label<Text, Image> {
+    init(_ title: LocalizedStringKey, interfaceSystemImage name: String, role: ButtonRole? = nil, action: @escaping () -> Void) {
+        self.init(role: role, action: action) { SwiftUI.Label(title, interfaceSystemImage: name) }
+    }
+    init<S: StringProtocol>(_ title: S, interfaceSystemImage name: String, role: ButtonRole? = nil, action: @escaping () -> Void) {
+        self.init(role: role, action: action) { SwiftUI.Label(title, interfaceSystemImage: name) }
+    }
+}

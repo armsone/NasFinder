@@ -27,6 +27,7 @@ struct MovieCollectionView: View {
         let id = UUID()
         let items: [RemoteFileItem]
         let service: LocalPhotoLibraryFileService
+        var originPrivate = false
     }
 
     private let columns = [GridItem(.adaptive(minimum: 110, maximum: 160), spacing: 12)]
@@ -37,7 +38,7 @@ struct MovieCollectionView: View {
                 Text("\(store.videos.count)편").porcelainFont(.meta).foregroundStyle(PorcelainMetrics.secondary)
                 Spacer()
                 Button { isImporting = true } label: {
-                    Label("영상 가져오기", systemImage: "plus").porcelainFont(.tile)
+                    Label("영상 가져오기", interfaceSystemImage: "nf.import").porcelainFont(.tile)
                 }
                 .frame(minHeight: 44)
             }
@@ -98,14 +99,14 @@ struct MovieCollectionView: View {
             CollectionPlayerView(url: store.playbackURL(video) ?? store.videoURL(video), title: video.title) { playing = nil }
         }
         .sheet(item: $posterTarget) { video in CollectionPosterPicker(video: video) }
-        .fullScreenCover(item: $openingEntry) { entry in
+        .trailerEditorCover(item: $openingEntry) { entry in
             VideoTrailerView(items: entry.items, service: entry.service, mode: entry.mode, resuming: entry)
         }
-        .fullScreenCover(item: $newClip) { presentation in
+        .trailerEditorCover(item: $newClip) { presentation in
             VideoTrailerView(items: presentation.items, service: presentation.service, mode: .trailer,
-                             keepsSelectionOrder: true)
+                             keepsSelectionOrder: true, originPrivate: presentation.originPrivate)
         }
-        .alert("알림", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
+        .alert("컬렉션 알림", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
             Button("확인", role: .cancel) { notice = nil }
         } message: { Text(notice ?? "") }
         .alert("이름 변경", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
@@ -147,7 +148,7 @@ struct MovieCollectionView: View {
     private func openProject(_ id: UUID) {
         if let entry = drafts.entries.first(where: { $0.id == id }) {
             openingEntry = entry
-        } else if let record = projects.records[id] {
+        } else if let record = projects.records[id], PrivacyMode.isVisible(record.isPrivate) {
             openingEntry = TrailerDraftStore.entry(from: record)
         } else {
             notice = "이 영상을 만든 편집본이 지워졌거나 지금 다른 화면에서 편집 중입니다. 컬렉션 영상은 그대로 남아 있습니다."
@@ -164,7 +165,8 @@ struct MovieCollectionView: View {
             connectionID: LocalPhotoLibraryFileService.connectionID, path: url.path, name: video.title + ".mp4",
             kind: .file, size: video.byteCount, modifiedAt: nil,
             contentTypeIdentifier: UTType(filenameExtension: url.pathExtension)?.identifier)
-        newClip = ClipEditorPresentation(items: [item], service: LocalPhotoLibraryFileService(entries: [(item, url)]))
+        newClip = ClipEditorPresentation(items: [item], service: LocalPhotoLibraryFileService(entries: [(item, url)]),
+                                         originPrivate: video.isPrivate == true)
     }
 
     private func poster(_ video: CollectedVideo) -> some View {
@@ -177,12 +179,20 @@ struct MovieCollectionView: View {
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 ZStack(alignment: .topTrailing) {
-                    PosterImage(url: store.posterURL(video))
-                        .aspectRatio(2.0 / 3.0, contentMode: .fill)
+                    Color.clear
+                        .aspectRatio(2.0 / 3.0, contentMode: .fit)
+                        .overlay { PosterImage(url: store.posterURL(video)) }
                         .frame(maxWidth: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: PorcelainMetrics.coverCorner, style: .continuous))
+                    if video.isPrivate == true {
+                        Image(interfaceSystemName: "eye.slash", pointSize: 12).font(.caption).padding(5)
+                            .foregroundStyle(PorcelainMetrics.onAccent)
+                            .background(PorcelainMetrics.graphite, in: Circle()).padding(4)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                            .accessibilityLabel("비공개")
+                    }
                     if video.isPinned {
-                        Image(systemName: "pin.fill").font(.caption).padding(5)
+                        Image(interfaceSystemName: "pin.fill", pointSize: 12).font(.caption).padding(5)
                             .foregroundStyle(PorcelainMetrics.onAccent)
                             .background(PorcelainMetrics.accent, in: Circle()).padding(4)
                     }
@@ -200,27 +210,33 @@ struct MovieCollectionView: View {
         .buttonStyle(.plain)
         .contextMenu {
             if video.isImported {
-                Button("이 영상으로 새 편집 시작", systemImage: "film") { startClip(from: video) }
-            } else if let projectID = video.sourceProjectID {
-                // 이 영상을 만든 편집본이 남아 있을 때만 연다. 지워졌다면 사실대로 알린다.
-                Button("만든 편집본 열기", systemImage: "square.and.pencil") { openProject(projectID) }
+                Button("이 영상으로 새 편집 시작", interfaceSystemImage: "film") { startClip(from: video) }
+            } else if let projectID = video.sourceProjectID,
+                      let project = TrailerProjectStore.shared.records[projectID], PrivacyMode.isVisible(project.isPrivate) {
+                // 이 영상을 만든 편집본이 실제로 남아 있을 때만 보여 준다. 지워진 편집본을 가리키는 가짜 동작은 만들지 않는다.
+                Button("만든 편집본 열기", interfaceSystemImage: "square.and.pencil") { openProject(projectID) }
             }
-            Button("이름 변경", systemImage: "pencil") { renameText = video.title; renaming = video }
-            Button(video.isPinned ? "고정 해제" : "고정", systemImage: "pin") { store.togglePin(video.id) }
-            Button("앞으로 이동", systemImage: "arrow.up") { store.move(video.id, by: -1) }
-            Button("뒤로 이동", systemImage: "arrow.down") { store.move(video.id, by: 1) }
-            Button("포스터 선택", systemImage: "photo") { posterTarget = video }
+            Button("이름 변경", interfaceSystemImage: "pencil") { renameText = video.title; renaming = video }
+            if video.isPrivate == true {
+                Button("공개로 전환", interfaceSystemImage: "eye") { store.setPrivate(video.id, false) }
+            } else {
+                Button("비공개로 전환", interfaceSystemImage: "eye.slash") { store.setPrivate(video.id, true) }
+            }
+            Button(video.isPinned ? "고정 해제" : "고정", interfaceSystemImage: "pin") { store.togglePin(video.id) }
+            Button("앞으로 이동", interfaceSystemImage: "arrow.up") { store.move(video.id, by: -1) }
+            Button("뒤로 이동", interfaceSystemImage: "arrow.down") { store.move(video.id, by: 1) }
+            Button("포스터 선택", interfaceSystemImage: "photo") { posterTarget = video }
             if video.isReference {
-                Button("연결 다시 확인", systemImage: "arrow.clockwise") { Task { await store.refreshReferences(ids: [video.id]) } }
-                Button("원본 다시 선택", systemImage: "folder") { reselectTarget = video }
-                Button("앱 안에 복사본 만들기", systemImage: "doc.on.doc") { convertTarget = video }
+                Button("연결 다시 확인", interfaceSystemImage: "arrow.clockwise") { Task { await store.refreshReferences(ids: [video.id]) } }
+                Button("원본 다시 선택", interfaceSystemImage: "folder") { reselectTarget = video }
+                Button("앱 안에 복사본 만들기", interfaceSystemImage: "doc.on.doc") { convertTarget = video }
             }
-            Button(video.isReference ? "압축본 만들기" : "파일 압축", systemImage: "arrow.down.right.and.arrow.up.left") { compressTarget = video }
+            Button(video.isReference ? "압축본 만들기" : "파일 압축", interfaceSystemImage: "arrow.down.right.and.arrow.up.left") { compressTarget = video }
                 .disabled(store.playbackURL(video) == nil)
             if let shareURL = store.playbackURL(video) {
-                ShareLink(item: shareURL) { Label("공유", systemImage: "square.and.arrow.up") }
+                ShareLink(item: shareURL) { Label("공유", interfaceSystemImage: "square.and.arrow.up") }
             }
-            Button(video.isReference ? "컬렉션 목록에서 제거" : "컬렉션에서 제거", systemImage: "trash", role: .destructive) { removeTarget = video }
+            Button(video.isReference ? "컬렉션 목록에서 제거" : "컬렉션에서 제거", interfaceSystemImage: "trash", role: .destructive) { removeTarget = video }
         }
         .accessibilityLabel(video.title)
         .accessibilityAction(named: "앞으로 이동") { store.move(video.id, by: -1) }
@@ -232,7 +248,7 @@ private struct PosterImage: View {
     let url: URL
     var body: some View {
         if let image = UIImage(contentsOfFile: url.path) {
-            Image(uiImage: image).resizable()
+            Image(uiImage: image).resizable().scaledToFill()
         } else {
             Rectangle().fill(PorcelainMetrics.line)
         }
@@ -381,7 +397,7 @@ private struct CollectionPosterPicker: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("닫기") { dismiss() } }
                 ToolbarItem(placement: .primaryAction) {
-                    Button("다시 만들기", systemImage: "arrow.clockwise") { generation += 1; Task { await load() } }
+                    Button("다시 만들기", interfaceSystemImage: "arrow.clockwise") { generation += 1; Task { await load() } }
                         .disabled(isLoading)
                 }
             }
@@ -416,7 +432,7 @@ struct CollectionAddSheet: View {
                 HStack {
                     Text("추천 썸네일").porcelainFont(.section)
                     Spacer()
-                    Button("다시 만들기", systemImage: "arrow.clockwise") { generation += 1; Task { await loadPosters() } }
+                    Button("다시 만들기", interfaceSystemImage: "arrow.clockwise") { generation += 1; Task { await loadPosters() } }
                         .disabled(isLoadingPosters)
                 }
                 ScrollView(.horizontal) {

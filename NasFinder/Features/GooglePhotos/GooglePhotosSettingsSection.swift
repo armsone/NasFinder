@@ -108,7 +108,7 @@ struct GooglePhotosSettingsSection: View {
                 } message: {
                     Text("이 기기에 저장된 Google 포토 인증 정보만 삭제됩니다. 이미 폰하드에 저장된 항목과 Google Drive 연결은 그대로 유지됩니다.")
                 }
-                .alert("Google 포토", isPresented: resultMessageBinding) {
+                .alert("Google 포토 알림", isPresented: resultMessageBinding) {
                     Button("확인", role: .cancel) {
                         model.resultMessage = nil
                     }

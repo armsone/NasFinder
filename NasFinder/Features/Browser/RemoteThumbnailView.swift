@@ -327,7 +327,7 @@ private struct RemoteThumbnailRenderedContent: View {
                                 : 0
                         )
                 } else {
-                    Image(systemName: item.systemImage)
+                    Image(interfaceSystemName: item.systemImage, pointSize: min(geometry.size.width, geometry.size.height) * 0.38)
                         .font(.system(size: min(geometry.size.width, geometry.size.height) * 0.38))
                         .foregroundStyle(
                             item.isDirectory

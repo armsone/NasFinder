@@ -3,6 +3,7 @@ import SwiftUI
 struct AppSettingsView: View {
     let connectionCount: Int
     @ObservedObject private var screenAwakeController = ScreenAwakeController.shared
+    @ObservedObject private var privacy = PrivacyMode.shared
     @AppStorage(InterfaceIconStyle.storageKey) private var iconStyleRawValue = ""
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.light.rawValue
@@ -41,6 +42,7 @@ struct AppSettingsView: View {
     }
 
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.usesShellSidebar) private var usesShellSidebar
     @State private var selectedPane: Pane = .appearance
 
     private var panes: [Pane] {
@@ -52,8 +54,10 @@ struct AppSettingsView: View {
     }
 
     /// 실제 사용 가능한 너비로 판단한다. 좁은 Mac 창이나 분할 화면에서는 단일 목록으로 돌아간다.
+    /// Mac과 앱 셸 사이드바가 있는 창은 왼쪽 사이드바 + 오른쪽 설정 두 칸이다. 설정 안에 분류 칸을 또 두지 않고
+    /// 모든 분류를 오른쪽 한 페이지에 이어 보여 준다.
     private func isWide(width: CGFloat) -> Bool {
-        (isRunningOnMac || horizontalSizeClass == .regular) && width >= ui(560)
+        !isRunningOnMac && !usesShellSidebar && horizontalSizeClass == .regular && width >= ui(560)
     }
 
     var body: some View {
@@ -67,7 +71,7 @@ struct AppSettingsView: View {
                             Button {
                                 selectedPane = pane
                             } label: {
-                                Label(pane.rawValue, systemImage: pane.icon)
+                                Label(pane.rawValue, interfaceSystemImage: pane.icon)
                                     .font(PorcelainTypeface.font(size: 14, weight: .medium))
                                     .foregroundStyle(selectedPane == pane ? palette.onAccent : palette.text)
                                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -86,12 +90,17 @@ struct AppSettingsView: View {
                     .frame(width: ui(220))
                     .background(palette.surface)
                     Rectangle().fill(palette.border).frame(width: 1)
-                    settingsList(palette: palette, only: selectedPane)
+                    settingsList(palette: palette, showing: [selectedPane])
                         .frame(maxWidth: ui(800))
                         .frame(maxWidth: .infinity)
                 }
             } else {
-                settingsList(palette: palette, only: nil)
+                if isRunningOnMac {
+                    macSettingsColumns(palette: palette, width: proxy.size.width)
+                } else {
+                    settingsList(palette: palette, showing: panes)
+                        .frame(maxWidth: .infinity)
+                }
             }
         }
         .background(SkyBreezeBackground())
@@ -101,31 +110,59 @@ struct AppSettingsView: View {
         .tint(palette.accent)
     }
 
-    private func settingsList(palette: AppThemePalette, only pane: Pane?) -> some View {
+    /// Mac: 왼쪽 앱 사이드바는 그대로 두고 오른쪽 영역 전체 너비를 쓴다. 좁은 폭 중앙 정렬 대신 폭에 따라
+    /// 1~3열로 분류를 나눠 같은 설정 섹션을 그대로 보여 준다. 열마다 필요할 때만 세로로 스크롤한다.
+    @ViewBuilder
+    private func macSettingsColumns(palette: AppThemePalette, width: CGFloat) -> some View {
+        let groups: [[Pane]] = {
+            let available = panes
+            let columns = width >= ui(1500) ? 3 : (width >= ui(900) ? 2 : 1)
+            let layout: [[Pane]]
+            switch columns {
+            case 3: layout = [[.appearance], [.storage, .update], [.info]]
+            case 2: layout = [[.appearance, .update], [.storage, .info]]
+            default: layout = [[.appearance, .storage, .update, .info]]
+            }
+            return layout.map { $0.filter(available.contains) }.filter { !$0.isEmpty }
+        }()
+        HStack(spacing: 0) {
+            ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
+                if index > 0 { Rectangle().fill(palette.border).frame(width: 1) }
+                settingsList(palette: palette, showing: group)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private func settingsList(palette: AppThemePalette, showing panes: [Pane]) -> some View {
         List {
-            if pane == nil || pane == .appearance {
+            if panes.contains(.appearance) {
                 themePaletteSection
                     .listRowBackground(palette.surface)
                 interfaceIconStyleSection
                     .listRowBackground(palette.surface)
-                AppIconPickerSection(compact: true)
-                    .listRowBackground(palette.surface)
                 screenAwakeSection
                     .listRowBackground(palette.surface)
-            }
-            if pane == nil || pane == .storage {
-                filesAppIntegrationSection
+                privacySection
                     .listRowBackground(palette.surface)
+                AppIconPickerSection(compact: true)
+                    .listRowBackground(palette.surface)
+            }
+            if panes.contains(.storage) {
                 storageMaintenanceSection
+                    .listRowBackground(palette.surface)
+                filesAppIntegrationSection
                     .listRowBackground(palette.surface)
             }
             #if targetEnvironment(macCatalyst)
-            if pane == nil || pane == .update {
+            if panes.contains(.update) {
                 macUpdateSection
                     .listRowBackground(palette.surface)
             }
             #endif
-            if pane == nil || pane == .info {
+            if panes.contains(.info) {
+                appInfoSection
+                    .listRowBackground(palette.surface)
                 openSourceSection
                     .listRowBackground(palette.surface)
                 creatorSection
@@ -162,9 +199,9 @@ struct AppSettingsView: View {
         case .idle:
             SettingsPanelDescription("새 버전이 있는지 확인할 수 있습니다.")
         case .checking:
-            Label("업데이트 확인 중", systemImage: "arrow.triangle.2.circlepath")
+            Label("업데이트 확인 중", interfaceSystemImage: "arrow.triangle.2.circlepath")
         case .latest:
-            Label("최신 버전 사용 중", systemImage: "checkmark.circle")
+            Label("최신 버전 사용 중", interfaceSystemImage: "checkmark.circle")
                 .foregroundStyle(.secondary)
         case .available(let release):
             updateReleaseSummary(release, title: "새 버전 발견")
@@ -180,8 +217,8 @@ struct AppSettingsView: View {
                 SettingsPanelDescription("DMG를 열었습니다. Finder에서 NasFinder를 설치해 주세요.")
             }
         case .error(let message, _):
-            Label(message, systemImage: "exclamationmark.triangle")
-                .foregroundStyle(.red)
+            Label(message, interfaceSystemImage: "exclamationmark.triangle")
+                .foregroundStyle(PorcelainMetrics.danger)
         }
     }
 
@@ -243,6 +280,22 @@ struct AppSettingsView: View {
     }
     #endif
 
+    /// 프라이버시 모드 스위치. 도구 탭/사이드바 길게 누르기와 같은 동작을 키보드·포인터·손쉬운 사용으로도 쓰게 한다.
+    private var privacySection: some View {
+        Section {
+            Toggle("프라이버시 모드", isOn: Binding(
+                get: { privacy.isActive },
+                set: { if $0 != privacy.isActive { PrivacyModeFeedback.toggle() } }
+            ))
+            SettingsPanelDescription(
+                "켜면 평소 기록에 더해 비공개로 지정한 기록도 함께 보입니다. 끄면 비공개 기록이 목록에서 숨겨집니다. 앱을 다시 열면 항상 꺼진 상태로 시작합니다. 도구 탭을 길게 눌러도 바꿀 수 있습니다. "
+                    + PrivacyMode.honestNote
+            )
+        } header: {
+            SettingsSectionHeader(title: "프라이버시", systemImage: "eye.slash")
+        }
+    }
+
     private var screenAwakeSection: some View {
         Section {
             Picker("화면 동작", selection: $screenAwakeController.mode) {
@@ -282,7 +335,7 @@ struct AppSettingsView: View {
             )
 
         } header: {
-            SettingsSectionHeader(title: "병기스타일 테마", systemImage: "paintpalette")
+            SettingsSectionHeader(title: "테마", systemImage: "paintpalette")
         }
     }
 
@@ -307,17 +360,17 @@ struct AppSettingsView: View {
             iconStyleRawValue = style.rawValue
         } label: {
             HStack(alignment: .center, spacing: 12) {
-                Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
+                Image(interfaceSystemName: isSelected ? "largecircle.fill.circle" : "circle", pointSize: 20)
                     .font(.title3)
-                    .foregroundStyle(isSelected ? PorcelainMetrics.accent : Color.secondary)
+                    .foregroundStyle(isSelected ? PorcelainMetrics.accent : PorcelainMetrics.secondary)
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(style.title)
-                        .porcelainFont(.tile)
+                        .font(.ui(.body).weight(.semibold))
                         .foregroundStyle(PorcelainMetrics.graphite)
                     Text(Self.interfaceIconStyleDescription(style))
-                        .porcelainFont(.body)
-                        .foregroundStyle(.secondary)
+                        .font(.ui(.footnote))
+                        .foregroundStyle(PorcelainMetrics.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer(minLength: 8)
@@ -359,7 +412,7 @@ struct AppSettingsView: View {
                     ByungkiThemeGlyph(theme: theme, size: ui(18), tintColor: themePreviewForeground(theme))
                     Spacer(minLength: 0)
                     if isSelected {
-                        Image(systemName: "checkmark.circle.fill")
+                        Image(interfaceSystemName: "checkmark.circle.fill", pointSize: 12)
                             .font(.ui(.caption))
                     }
                 }
@@ -409,8 +462,8 @@ struct AppSettingsView: View {
                     ? "먼저 NAS 또는 SFTP 연결을 추가해 주세요."
                     : "현재 저장된 원격 위치 \(connectionCount)개를 Apple 파일 앱에서도 열 수 있습니다."
             )
-            .font(.ui(.subheadline))
-            .foregroundStyle(.secondary)
+            .font(.ui(.body))
+            .foregroundStyle(PorcelainMetrics.graphite)
 
             SettingsIntegrationStep(number: 1, text: "Apple 파일 앱을 열고 ‘탐색’을 선택합니다.")
             SettingsIntegrationStep(number: 2, text: "오른쪽 위의 더 보기(…)에서 ‘편집’을 선택합니다.")
@@ -430,18 +483,60 @@ struct AppSettingsView: View {
             ThumbnailCacheSettingsLink()
             SuperThumbnailLink()
         } header: {
-            SettingsSectionHeader(title: "썸네일 저장공간", systemImage: "photo.stack")
+            SettingsSectionHeader(title: "썸네일 저장공간", systemImage: "nf.thumbnail_storage")
         }
+    }
+
+    private var appInfoSection: some View {
+        Section {
+            LabeledContent {
+                Text(appVersion)
+                    .font(.ui(.body))
+                    .foregroundStyle(.secondary)
+            } label: {
+                Text("버전")
+                    .font(.ui(.body))
+                    .foregroundStyle(selectedTheme.palette.text)
+            }
+
+            LabeledContent {
+                Text(appBuild)
+                    .font(.ui(.body))
+                    .foregroundStyle(.secondary)
+            } label: {
+                Text("빌드")
+                    .font(.ui(.body))
+                    .foregroundStyle(selectedTheme.palette.text)
+            }
+        } header: {
+            SettingsSectionHeader(title: "앱 정보", systemImage: "info.circle")
+        }
+    }
+
+    private var appVersion: String {
+        if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String,
+           !version.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return version
+        }
+        return "-"
+    }
+
+    private var appBuild: String {
+        if let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+           !build.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return build
+        }
+        return "-"
     }
 
     private var openSourceSection: some View {
         Section {
             VStack(alignment: .leading, spacing: ui(5)) {
                 Text("VLCKit 4.0.0a23")
-                    .font(.ui(.subheadline))
+                    .font(.ui(.body))
                 Text("일부 호환 영상 재생에 VideoLAN의 VLCKit을 사용합니다. VLCKit은 GNU LGPL 2.1 이상으로 제공됩니다.")
                     .font(.ui(.caption))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(PorcelainMetrics.secondary)
             }
 
             Link(
@@ -462,7 +557,7 @@ struct AppSettingsView: View {
             Link(
                 destination: URL(string: "https://github.com/armsone")!
             ) {
-                Label("GitHub · armsone", systemImage: "link")
+                Label("GitHub · armsone", interfaceSystemImage: "link")
             }
             .accessibilityLabel("만든 사람 GitHub, armsone")
 
@@ -509,7 +604,7 @@ private struct SettingsIntegrationStep: View {
                 .background(PorcelainMetrics.solidAction, in: Circle())
 
             Text(text)
-                .porcelainFont(.tile, weight: .regular)
+                .font(.ui(.body))
                 .foregroundStyle(PorcelainMetrics.graphite)
         }
         .accessibilityElement(children: .combine)

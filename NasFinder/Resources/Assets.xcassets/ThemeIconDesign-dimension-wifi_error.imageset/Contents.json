@@ -1,0 +1,12 @@
+{
+  "images": [
+    {
+      "filename": "wifi_error.png",
+      "idiom": "universal"
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
+}

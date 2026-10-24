@@ -48,24 +48,24 @@ enum GooglePhotosOAuthError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case .configurationMissing:
-            "Google Photos OAuth 클라이언트 ID가 아직 설정되지 않았습니다."
+            "Google 포토 OAuth 클라이언트 ID가 아직 설정되지 않았습니다."
         case .invalidCallback:
-            "Google Photos 로그인 결과를 확인하지 못했습니다. 다시 시도해 주세요."
+            "Google 포토 로그인 결과를 확인하지 못했습니다. 다시 시도해 주세요."
         case .authorizationFailed:
-            "Google Photos 로그인 화면을 열지 못했습니다."
+            "Google 포토 로그인 화면을 열지 못했습니다."
         case let .tokenExchangeFailed(statusCode):
             if let statusCode {
-                "Google Photos 인증 토큰을 발급받지 못했습니다. (HTTP \(statusCode))"
+                "Google 포토 인증 토큰을 발급받지 못했습니다. (HTTP \(statusCode))"
             } else {
-                "Google Photos 인증 토큰을 발급받지 못했습니다."
+                "Google 포토 인증 토큰을 발급받지 못했습니다."
             }
         case .reauthorizationRequired:
-            "Google Photos 인증이 만료되었습니다. 다시 로그인해 주세요."
+            "Google 포토 인증이 만료되었습니다. 다시 로그인해 주세요."
         case let .revocationFailed(statusCode):
             if let statusCode {
-                "Google Photos 인증 해제 요청이 실패했습니다. (HTTP \(statusCode))"
+                "Google 포토 인증 해제 요청이 실패했습니다. (HTTP \(statusCode))"
             } else {
-                "Google Photos 인증 해제 요청이 실패했습니다."
+                "Google 포토 인증 해제 요청이 실패했습니다."
             }
         }
     }

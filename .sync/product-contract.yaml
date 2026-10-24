@@ -894,6 +894,151 @@ capabilities:
     dependencies: [photo_transfer.pairing_transport]
     parity_row_ids: [photo-transfer-media]
 
+  - id: photo_transfer.pending_review_basket
+    status: superseded_requirement_revised
+    superseded_by: [workbench.pockets, workbench.ref_sources, workbench.materialize]
+    revision_note: "2026-10-22 user replaced this copy-based architecture (cost: app-private copies at add time). The pending list is now the user-selected workbench pocket holding references only; bytes are fetched into a per-execution temporary workspace at explicit send. The entry below is kept as history of the superseded requirement; its source files (PhotoTransferPendingStore.swift, PhotoTransferGooglePhotosPage.swift) were removed and nothing implements the copy semantics any more. No user data was deleted."
+    purpose: "[SUPERSEDED/REVISED by workbench.*] Let the sender gather photos/videos from exactly three entries (사진·동영상 / Google 포토 / 파일) into one app-private temporary pending list, review it, and explicitly send it; the list survives cancel, navigation, partial preparation failure and failed transfer."
+    source_refs: ["NasFinder/Features/PhotoTransfer/PhotoTransferPendingStore.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferView.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferGooglePhotosPage.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferPairingViews.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferSenderSession.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferSelectionLoader.swift", "NasFinder/Features/GooglePhotos/GooglePhotosImportFlowController.swift"]
+    entry_points: ["Tools > photo/video transfer > send > three source entries", "pending review list > connect and send"]
+    preconditions: ["user explicitly picks items per source", "Google Photos entry reuses the existing disclosure/OAuth/picker session (no extra scope or login)"]
+    inputs: ["system photo picker items (PHAsset resources, Live Photo pairs)", "Google Photos picker downloads", "Files-app security-scoped URLs"]
+    normal_result: "Every chosen item is copied into an app-private staging area before its source scope/provider URL ends, appended to a combined list with thumbnail, name, type, source, count and progress/errors; removing one item or clearing the list deletes only staging-owned copies; send uses staged files with the unchanged wire/receipt contract and keeps the list for retry."
+    states: [empty, preparing, ready, partial_failure, connecting, sending, completed_retained, failed_retained]
+    algorithms_and_thresholds: ["no hard item-count cap and no eviction", "append-only from any source; picker cancel adds nothing and removes nothing", "duplicate skipped only by stable source identity (photo-library asset id); never by hash or cloud download", "per-item failures are listed and do not stop later items", "stable per-item identity keeps retry on the same transfer/item ids"]
+    data_contracts: ["manifest.json (atomic write) of entries {id, source, sourceKey?, displayName, wireKind, component headers + staged file names, local-only source snapshot}", "staging layout PhotoTransferPending/{items/<id>, partial/<id>}", "wire headers rebuilt per send with the plan's itemId; no wire/protocol change"]
+    producer_consumer_routes: ["picker/Google/Files -> copy to staging partial -> atomic move + manifest -> review list -> sender session loader (retains staged files) -> existing v4 wire/receipts"]
+    persistence_relaunch: "Pending list and staged copies persist across relaunch (excluded from backup). Interrupted partial/ folders and unreferenced item folders owned by this namespace are removed at launch; other app storage, PhoneHard and inbox are never touched."
+    permissions_privacy_security: ["originals are never modified or deleted implicitly; optional original deletion stays the existing explicit receipt-gated feature", "security-scoped access starts/ends around the copy only", "no Google token or session data is stored in the list", "staging excluded from backup"]
+    background_lifecycle: "Preparation continues in a store-owned queue when the screen is left; leaving the Google page cancels only the live picker session while already copied items stay; sending success retains the list until the user clears it."
+    gestures_accessibility: ["each tile announces index, source, type, name, duration", "remove has its own labelled button; clear-all asks for confirmation and states that only app copies are removed"]
+    supported_devices_layouts: ["iPhone compact list/grid", "iPad and Mac full content width beside the permanent sidebar"]
+    visual_reference: "PhotoTransferView pending section; rendered capture pending"
+    platform_adaptations: {ios: ["PhotosPicker, fileImporter with security-scoped URLs, existing Google Photos picker flow, ApplicationSupport staging"], android: ["Photo Picker/SAF/Google Photos entry with app-private cache staging; wire bytes and receipt contract unchanged"]}
+    intentional_differences: ["Platform pickers differ; the three labels and append/retain/explicit-clear semantics are shared."]
+    implementations:
+      ios: {status: superseded, source_refs: ["NasFinder/Features/PhotoTransfer/PhotoTransferView.swift", "NasFinder/Features/Workbench/WorkbenchStore.swift"], tests: [], evidence: ["2026-10-22 2.24.4 copy-based source was installed on Mac only for minutes before the user replaced the architecture; replaced in 2.25.0 source by workbench.*; no tests run; rendered and device behavior not observed"]}
+      android: {status: superseded_pending_root, source_refs: [], tests: [], evidence: ["Android counterpart is reconciled by root against workbench.*; not claimed here"]}
+    dependencies: [photo_transfer.pairing_transport, photo_transfer.media_preparation_import, google_photos.picker_import]
+    parity_row_ids: [photo-transfer-pending-basket]
+
+  - id: app.shell.phone_tablet_adaptations
+    purpose: "Scoped record of 2026-10-22 improvements applied as device-native adaptations on iPhone and iPad; not a whole-product sync claim."
+    source_refs: ["NasFinder/App/AppShellView.swift", "NasFinder/Features/Connections/ConnectionListView.swift", "NasFinder/Features/PhotoLibrary/LocalPhotoLibraryView.swift", "NasFinder/Features/Preview/RemotePreviewView.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferPairingViews.swift"]
+    entry_points: ["sidebar logo", "home", "my photos/videos", "unplayable video preview", "photo/video transfer receive"]
+    normal_result: "iPad: sidebar logo tap=home, long press=last network folder; touch-drag grip reorders sidebar groups with saved order; home shows Finder/Video/Tools sections; my-photos hides source tabs the sidebar already opens (video-production picker keeps all 7 sources and its basket). iPhone: home shows Video/Tools sections beside the bottom bar; unplayable video offers the system share/open sheet after VLC compatibility fails (file only, no NAS session egress); receive QR stays while waiting and stops on exit."
+    algorithms_and_thresholds: ["long press threshold 0.6s; release after long press never also goes home", "duplicate-source hiding only when the shell sidebar is present and only in ordinary browsing"]
+    permissions_privacy_security: ["NAS login session/password handoff exists only for the Mac IINA/Movist chooser the user authorized; iPhone/iPad never receive a session or password", "no public share links"]
+    supported_devices_layouts: ["iPhone", "iPad wide and narrow", "Mac Catalyst unchanged"]
+    visual_reference: "pending paired captures"
+    platform_adaptations: {ios: ["touch targets, bottom bar on narrow, sidebar on wide, system share sheet"], android: ["status pending; Android worker records its own adaptation"]}
+    intentional_differences: ["Mac-only IINA/Movist chooser stays Mac-only; iPhone has no sidebar logo or groups (N/A there, bottom bar instead); square 3-rack NAS icon (ThemeIconMac simple/solid nas) is now shared by iPhone/iPad; atlas icon styles and all other icons keep their existing assets."]
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/App/AppShellView.swift", "NasFinder/Features/Connections/ConnectionListView.swift", "NasFinder/Features/PhotoLibrary/LocalPhotoLibraryView.swift", "NasFinder/Features/Preview/RemotePreviewView.swift"], tests: [], evidence: ["2026-10-22 2.24.4 source change; no tests run; rendered not observed"]}
+      android: {status: pending, source_refs: [], tests: [], evidence: ["not claimed"]}
+    dependencies: [app.shell.routes_lifecycle, preview.compatibility_video]
+    parity_row_ids: [phone-tablet-adaptations-20261022]
+
+  - id: workbench.pockets
+    purpose: "One top-level 작업대 menu (immediately below 홈, outside the Finder/Video/Tools groups) holding any number of user-named 포켓. This single workbench is the unified successor of the former 영상 재료 basket and the media-transfer temporary space; no second visible basket or menu exists."
+    source_refs: ["NasFinder/Features/Workbench/WorkbenchModels.swift", "NasFinder/Features/Workbench/WorkbenchStore.swift", "NasFinder/Features/Workbench/WorkbenchView.swift", "NasFinder/Features/Workbench/WorkbenchAddSheet.swift", "NasFinder/App/AppShellView.swift", "NasFinder/Features/Connections/ConnectionListView.swift", "NasFinder/Features/Video/VideoHubView.swift", "NasFinder/Features/Video/TrailerWorkspace.swift", "NasFinder/Features/Video/MaterialBasketStore.swift"]
+    entry_points: ["Mac/iPad wide sidebar row 작업대 under 홈", "iPhone/narrow bottom bar tab 작업대 after 홈", "home launch row 작업대", "editor rail 작업대", "Video > 영상 제작 > 작업대에서 시작", "legacy route alias VideoDestination.basket(재료함) -> 작업대"]
+    preconditions: ["none; works without any connection until an execution needs one"]
+    inputs: ["pocket name", "ordered reference entries added by workbench.ref_sources routes"]
+    normal_result: "User creates, renames, reorders (drag in edit mode), clears and deletes named pockets with no count cap and no eviction. Each pocket owns an ordered list of reference entries; the same source may be referenced in several pockets (duplicates are suppressed only inside one pocket by stable source identity, never by file name or hash). Removing an entry, clearing a pocket or deleting a pocket removes references only; clearing and deleting ask for confirmation; originals and legacy copies are never deleted implicitly."
+    states: [empty, populated, relink_needed, read_only_locked, persistence_error]
+    algorithms_and_thresholds: ["pocket names unique case/diacritic-insensitively; empty names rejected", "unreadable or undecodable store file locks every mutation (no overwrite, no delete) until reload or the user explicitly chooses to start fresh, which only moves the old file aside", "clear/delete bump a per-pocket epoch so late asynchronous adds are rejected", "metadata writes are atomic; a failed write leaves memory and disk unchanged"]
+    data_contracts: ["Application Support/Workbench/workbench.json: {version, pockets[{id,name,createdAt,entries[WorkbenchEntry]}], legacyBridgeDone}", "WorkbenchEntry carries identifiers/locations only (connectionID+path, PhotoKit id, security-scoped bookmark, Google item id + session id + expiry, share staging ids, legacy copy file name); never file bytes, tokens, baseUrl, passwords", "raw enum values and persisted keys of legacy types are unchanged"]
+    producer_consumer_routes: ["every add route (workbench.ref_sources) -> WorkbenchAddRequest -> user-chosen pocket -> workbench.json", "pocket -> workbench.materialize (영상 제작, 미디어 전송, editor finder panel)"]
+    persistence_relaunch: "Pockets and order persist across relaunch. On first launch with a readable legacy MaterialBasket/index.json, metadata is bridged once into a '기존 재료' pocket (exact items and order, item ids preserved, existing copies referenced in place, no new copying, no deletion); an unreadable legacy index is left untouched and retried next launch. The legacy store is read-only. The 2.24.4 copy-based transfer pending list (Application Support/PhotoTransferPending/manifest.json + items/<id>/*) is bridged the same way, once, read-only, into a '기존 전송 대기' pocket as legacyCopy references to the existing copy files (Live/Motion pairs keep image+video as one group; the original-deletion snapshot is not carried, so those items are not deletion candidates); an unreadable manifest is left untouched and retried next launch; absent on this Mac; other-device migration is source-covered and runtime-unverified. No startup cleanup deletes data."
+    permissions_privacy_security: ["no NAS authentication session, password or Google bearer token in JSON, logs, clipboard or notices; Google Picker session identifier/expiry are reference metadata", "bookmark access start/stop is balanced", "obsolete copy-based pending store removed; no user data removed"]
+    background_lifecycle: "Store is loaded at app task start; in-flight executions hold their own temporary workspace and generation token."
+    gestures_accessibility: ["rows expose labelled select/menu buttons; pocket menu has rename, edit order, select all, 뮤직비디오로 제작, clear, delete", "destructive confirmations state that only references are removed"]
+    supported_devices_layouts: ["iPhone compact list and bottom bar", "iPad/Mac wide sidebar + content", "native layouts per device; no literal pixel clone required"]
+    visual_reference: "WorkbenchView / WorkbenchPocketView; no rendered capture yet"
+    platform_adaptations: {ios: ["SwiftUI NavigationStack list; sidebar row below 홈 on wide windows, bottom-bar tab on narrow", "Application Support JSON"], android: ["Compose native phone/tab or wide sidebar navigation; existing DurableMaterialStore metadata with per-pocket references"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Workbench/WorkbenchStore.swift", "NasFinder/Features/Workbench/WorkbenchView.swift", "NasFinder/App/AppShellView.swift"], tests: [], evidence: ["2026-10-22 2.25.0 source change; Mac Catalyst Debug and generic iOS Debug builds succeeded (build 202610221200); no tests run; no rendered capture or device UI observation (iPhone installed 2.25.0 but launch was blocked by device lock)"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/DurableMaterialStore.kt", "app/src/main/java/com/armsone/nasfinder/ui/MaterialBasketScreen.kt"], tests: [], evidence: ["2026-10-22 source implemented; assembleReleaseQa exit0; version2.25.0/425001 installed on SM-F968N and SM-F956N; pulled APK hashes equal candidate; devices locked so UI/runtime unverified"]}
+    dependencies: [app.shell.routes_lifecycle]
+    parity_row_ids: [workbench-pockets, workbench-legacy-bridge, workbench-terminology]
+
+  - id: workbench.ref_sources
+    purpose: "Every selectable content route offers 작업대에 담기: pick a target pocket (or create one in place) and record references only (ids/locations/bookmarks/safe metadata), never original bytes."
+    source_refs: ["NasFinder/Features/Workbench/WorkbenchEntryFactory.swift", "NasFinder/Features/Workbench/WorkbenchAddSheet.swift", "NasFinder/Features/Workbench/WorkbenchAddSourceControls.swift", "NasFinder/Features/Workbench/WorkbenchGooglePhotosPage.swift", "NasFinder/Features/Browser/FileBrowserView.swift", "NasFinder/Features/Inbox/ReceivedFilesView.swift", "NasFinder/Features/PhotoLibrary/LocalPhotoLibraryView.swift", "NasFinder/Features/PhotoLibrary/LocalPhotoLibrarySelectionStore.swift", "NasFinder/Features/GooglePhotos/GooglePhotosImportFlowView.swift", "NasFinder/Features/GooglePhotos/GooglePhotosImportFlowController.swift", "NasFinder/Features/Browser/WebBrowserView.swift", "NasFinder/Features/PhotoSelection/PhotoSelectionActions.swift", "NasFinder/Features/PhotoSelection/PhotoSelectionView.swift", "NasFinder/Features/PhotoSelection/ShareIntentCoordinator.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferView.swift"]
+    entry_points: ["NAS/cloud/phoneHard/device-folder browser multi-select (files and folders)", "favorites folder browsing and the video-production media picker (all source tabs)", "phoneHard received files selection", "내 미디어 / library / calendar picker footer", "Google 포토 reference-only page", "browser download dialog (explicit save to phoneHard, then reference)", "사진 선별 result sheet", "share-extension pending banner", "미디어 전송 three sources (미디어 / Google 포토 / 파일)", "pocket + menu"]
+    preconditions: ["the user selected items", "target pocket chosen by the user; no silent default pocket"]
+    inputs: ["RemoteFileItem files and folders", "PHAsset local identifiers", "security-scoped file/folder URLs", "Google Picker items + session", "ShareIntentItem ids"]
+    normal_result: "Selected files and folders become reference entries in the chosen pocket in selection order. Folders are stored as folder references and are not enumerated or downloaded at add time. Non-media files may be referenced but are reported unsupported at execution with a next action. Items that cannot yield a durable reference (e.g. photo access denied, no bookmark) are listed and are NOT silently copied. In the video-production media picker, selecting network/device-folder items or files only records metadata + reference (deferred source); the original is fetched/copied only when the user starts production, preview or phoneHard copy, so 작업대에 담기 from any picker source never fetches the original (phoneHard/Google-imported items are read in place and never copied)."
+    states: [chooser, created_pocket, added, duplicate_skipped, relinked, reference_unavailable, persistence_failed]
+    algorithms_and_thresholds: ["selection ancestors/descendants collapse to the top-level folder", "same identity inside one pocket is skipped; relink-needed items are revived instead of duplicated", "Google items relink by persistent item id across all pockets when the same id is picked again", "Google Picker max 50 per session is the existing app value, not an API limit; no new cap is added"]
+    data_contracts: ["WorkbenchEntryFactory.entry(...) per source kind", "GooglePhotosReferenceBatch{sessionID, expiresAt, items} delivered through Dependencies.referenceSink; no downloadItem; session kept after successful record"]
+    producer_consumer_routes: ["route -> WorkbenchAddRequest -> WorkbenchTargetSheet -> WorkbenchStore.add -> workbench.json", "Google reference page -> controller.referenceSink -> WorkbenchStore.add(expectedEpoch)"]
+    persistence_relaunch: "References persist; Google session id + expiry persist, baseUrl/token never."
+    permissions_privacy_security: ["Google: existing OAuth scope/login only, no new scope; raw token and baseUrl are never persisted; session is not deleted while references may use it; expired/revoked => explicit re-selection with persistent id relink; no Library API get-by-id fallback; never infer by file name or hash", "PhotoKit: only stable identifier recorded; authorization requested natively at execution", "files: security-scoped bookmark created with balanced access", "browser downloads: user explicitly saves to phoneHard first, then the phoneHard path is referenced"]
+    background_lifecycle: "Leaving the Google reference page cancels only a still-running picker session; completed references and their session stay."
+    gestures_accessibility: ["target sheet rows labelled '<pocket> 포켓에 담기'", "add sources have accessibility hints that no copy is made"]
+    supported_devices_layouts: ["all iPhone/iPad/Mac layouts"]
+    visual_reference: "WorkbenchTargetSheet; no rendered capture yet"
+    platform_adaptations: {ios: ["PhotosPicker itemIdentifier, fileImporter bookmarks, PHAsset", "Google Picker through the existing in-app web page"], android: ["Android uses Google Photos provider content URI and persistable grants where offered; explicit user replacement when no stable ID; no filename/hash identity inference"]}
+    intentional_differences: ["Settings, storage, theme and connection-edit screens have no selectable content and are N/A; the 즐겨찾기 list itself has no selection UI (its folders open the common browser selection)."]
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Workbench/WorkbenchEntryFactory.swift", "NasFinder/Features/Browser/FileBrowserView.swift", "NasFinder/Features/PhotoLibrary/LocalPhotoLibraryView.swift", "NasFinder/Features/GooglePhotos/GooglePhotosImportFlowController.swift"], tests: [], evidence: ["2026-10-22 2.25.0 source change; Mac Catalyst Debug and generic iOS Debug builds succeeded (build 202610221200); no tests run; no rendered capture or device UI observation (iPhone installed 2.25.0 but launch was blocked by device lock)"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/NasFinderViewModel.kt", "app/src/main/java/com/armsone/nasfinder/ui/MaterialBasketScreen.kt", "app/src/main/java/com/armsone/nasfinder/ui/LocalPhotoLibraryScreen.kt"], tests: [], evidence: ["2026-10-22 source implemented; assembleReleaseQa exit0; version2.25.0/425001 installed on SM-F968N and SM-F956N; pulled APK hashes equal candidate; devices locked so UI/runtime unverified"]}
+    dependencies: [workbench.pockets, google_photos.picker_import, google_photos.account_oauth]
+    parity_row_ids: [workbench-add-routes, workbench-google-reference]
+
+  - id: workbench.materialize
+    purpose: "Fetch/materialize pocket references only when the user explicitly starts 영상 제작 or 미디어 전송, into a per-execution temporary workspace, reusing the existing prepared-material pipelines."
+    source_refs: ["NasFinder/Features/Workbench/WorkbenchRun.swift", "NasFinder/Features/Workbench/WorkbenchView.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferView.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferSelectionLoader.swift", "NasFinder/Features/Video/VideoHubView.swift", "NasFinder/Features/Video/TrailerWorkspace.swift"]
+    entry_points: ["pocket 영상 제작 / 뮤직비디오로 제작", "pocket 미디어 전송 -> Tools 미디어 전송 -> QR 스캔해서 연결", "editor finder panel 작업대 포켓 추가"]
+    preconditions: ["user taps start", "native permissions (PhotoKit, security-scoped access, Keychain login) are checked at execution"]
+    inputs: ["selected entries (or the whole pocket) in pocket order"]
+    normal_result: "Folders are enumerated at execution time with current supported media in stable name order, with progress, cycle/symlink/depth protection and skipped/failed entries reported. If anything is unusable the user chooses '가능한 N개로 계속' or cancel; the run never silently produces or sends fewer than selected. Production gets materialized clips (Live Photo choice via the existing LivePhotoEditingSelection). Transfer fetches each item at send time through the existing sender session; Live Photo stays image+paired video, source snapshot for the explicit original-deletion feature is unchanged, wire/receipts untouched."
+    states: [idle, planning, decision, materializing, ready, failed, cancelled]
+    algorithms_and_thresholds: ["folder walk depth <= 48, visited path/id sets; remote children must be on the same connection, free of '.'/'..' components and inside the selected folder by path components, otherwise reported and skipped; local walk uses the symlink-resolved root, skips symlinks and aliases, requires resolved children inside the root, checks cancellation (propagated into the detached traversal), unsafe names skipped; fetched artifacts are adopted only while the run generation is current (also for the sender-driven send fetch)", "duplicates across entries collapse by stable identity", "download progress per item; cancel removes only this execution's temp files", "stale tasks (generation token) cannot repopulate a cancelled/restarted run"]
+    data_contracts: ["WorkbenchPlanItem{entryID,name,identity,source}", "PhotoTransferSendSource{id=identity}", "temp workspace tmp/NasFinderWorkbench/<uuid>"]
+    producer_consumer_routes: ["entries -> plan (resolve/enumerate) -> fetch (service.download / PhotoKit export / bookmark copy / Google session list+match+download / in-place read) -> editor clips or PhotoTransferPreparedItem"]
+    persistence_relaunch: "Temp workspace is not persisted. Failure or cancel keeps all pocket references; missing/moved/revoked sources become 다시 연결 state, never auto-removed."
+    permissions_privacy_security: ["originals are read only; ownsFile=false files (phoneHard originals, legacy copies, share staging) are never deleted", "NAS session/password are not transmitted to other apps by this feature", "Google baseUrl is requested fresh per execution and held in memory only"]
+    background_lifecycle: "Leaving the transfer/sender screen finishes the run and removes its temp files."
+    gestures_accessibility: ["progress panel with cancel and decision list (name, reason, relink badge)"]
+    supported_devices_layouts: ["all iPhone/iPad/Mac layouts"]
+    visual_reference: "WorkbenchRunPanel; no rendered capture yet"
+    platform_adaptations: {ios: ["PhotoKit PHAssetResource export, NSFileCoordinator copy, URLSession Google download"], android: ["Provider URI/SAF streaming and execution-owned NAS downloads; partial fetch requires continue/cancel decision; no NAS auth handoff to Android players"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/Features/Workbench/WorkbenchRun.swift", "NasFinder/Features/PhotoTransfer/PhotoTransferSelectionLoader.swift"], tests: [], evidence: ["2026-10-22 2.25.0 source change; Mac Catalyst Debug and generic iOS Debug builds succeeded (build 202610221200); no tests run; no rendered capture or device UI observation (iPhone installed 2.25.0 but launch was blocked by device lock)"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/NasFinderViewModel.kt", "app/src/main/java/com/armsone/nasfinder/ui/WorkbenchSupport.kt", "app/src/main/java/com/armsone/nasfinder/ui/PhotoTransferScreen.kt"], tests: [], evidence: ["2026-10-22 source implemented; assembleReleaseQa exit0; version2.25.0/425001 installed on SM-F968N and SM-F956N; pulled APK hashes equal candidate; devices locked so UI/runtime unverified"]}
+    dependencies: [workbench.pockets, workbench.ref_sources, photo_transfer.pairing_transport, photo_transfer.media_preparation_import]
+    parity_row_ids: [workbench-materialize-production, workbench-materialize-transfer]
+
+  - id: workbench.routes
+    purpose: "Terminology and route compatibility for the unified workbench: combined photos+video is 미디어 in UI only; old route aliases and persistence keys stay usable."
+    source_refs: ["NasFinder/App/AppShellView.swift", "NasFinder/Features/Video/VideoHubView.swift", "NasFinder/Features/Video/TrailerWorkspace.swift", "NasFinder/Features/Video/MaterialBasketStore.swift", "NasFinder/Features/PhotoLibrary/LocalPhotoLibrarySourcePages.swift", "NasFinder/Features/PhotoLibrary/LocalPhotoLibraryView.swift", "NasFinder/Features/Connections/ConnectionListView.swift"]
+    entry_points: ["sidebar/home/tabs", "media picker source tabs"]
+    preconditions: []
+    inputs: []
+    normal_result: "UI names: 내 미디어, 미디어 전송, source 미디어; 사진 선별 (photo only), 영상 제작 (video), Google 포토, 파일 unchanged. Wire fields and persisted raw enum values/keys are not renamed (VideoDestination.basket='재료함', ToolsDestination.transfer='사진 전송', MaterialSourceKind raws, MediaSourcePage.photos='사진' keep their raw values; display titles are computed)."
+    states: [n/a]
+    algorithms_and_thresholds: ["VideoDestination.allCases excludes basket so no duplicate menu; assigning basket opens the workbench"]
+    data_contracts: ["unchanged persisted keys: appShell.sidebarOrder.*.v1 values, MaterialBasket/index.json, ToolsDestination/VideoDestination raw values"]
+    producer_consumer_routes: ["router.videoDestination=.basket -> router.request=.workbench"]
+    persistence_relaunch: "Stored sidebar orders containing 재료함 are normalized in memory only."
+    permissions_privacy_security: []
+    background_lifecycle: ""
+    gestures_accessibility: ["labels use the new display names; accessibility hints unchanged in meaning"]
+    supported_devices_layouts: ["all"]
+    visual_reference: ""
+    platform_adaptations: {ios: [], android: ["Android display labels use 내 미디어/미디어 전송/작업대; persistence and wire keys retained"]}
+    intentional_differences: ["Info.plist permission strings other than the camera 미디어 전송 wording are not edited."]
+    implementations:
+      ios: {status: source_implemented_runtime_unverified, source_refs: ["NasFinder/App/AppShellView.swift", "NasFinder/Features/Video/VideoHubView.swift"], tests: [], evidence: ["2026-10-22 2.25.0 source change; Mac Catalyst Debug and generic iOS Debug builds succeeded; no tests run"]}
+      android: {status: source_implemented_runtime_unverified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/NasFinderApp.kt", "app/src/main/java/com/armsone/nasfinder/ui/PorcelainHome.kt"], tests: [], evidence: ["2026-10-22 source implemented; assembleReleaseQa exit0; version2.25.0/425001 installed on SM-F968N and SM-F956N; pulled APK hashes equal candidate; devices locked so UI/runtime unverified"]}
+    dependencies: [workbench.pockets]
+    parity_row_ids: [workbench-terminology]
+
   - id: google_photos.account_oauth
     purpose: "Connect/disconnect Google Photos with PKCE, secure credential storage, refresh/re-auth and safe error disclosure."
     source_refs: ["NasFinder/Core/Services/GooglePhotos/GooglePhotosOAuthConfiguration.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosOAuthAuthorizer.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosTokenClient.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosCredentialStore.swift", "NasFinder/Core/Services/GooglePhotos/GooglePhotosHTTPClient.swift", "NasFinder/Features/GooglePhotos/GooglePhotosSettingsSection.swift", "NasFinder/Info.plist:Google Photos client ID/callback"]

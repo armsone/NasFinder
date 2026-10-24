@@ -10,7 +10,11 @@ private struct FilesImportResult: Sendable {
 
 @MainActor
 final class SharedInboxStore: ObservableObject {
+    /// 지금 모드에서 보이는 폰하드 기록. 목록·개수·용량·선택지는 이 값을 쓴다.
     @Published private(set) var records: [SharedInboxRecord] = []
+    /// 비공개를 포함한 전체 기록. 삭제·이동·정리 같은 변경 동작은 항상 전체 매니페스트가 대상이다.
+    private(set) var allRecords: [SharedInboxRecord] = []
+    nonisolated(unsafe) private var modeObserver: NSObjectProtocol?
     @Published var errorMessage: String?
     @Published var shouldPresentInbox = false
     @Published private(set) var pendingPreviewRecordID: UUID?
@@ -19,25 +23,71 @@ final class SharedInboxStore: ObservableObject {
 
     init() {
         reload()
+        modeObserver = NotificationCenter.default.addObserver(
+            forName: PrivacyMode.didChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshVisible() }
+        }
+    }
+
+    deinit {
+        if let modeObserver { NotificationCenter.default.removeObserver(modeObserver) }
+    }
+
+    private func refreshVisible() {
+        let scope = PrivateScope(records: allRecords)
+        PrivacyMode.shared.setPrivatePhoneHard(scope)
+        records = PrivacyMode.currentlyActive ? allRecords : allRecords.filter { !scope.contains($0) }
+    }
+
+    /// 사용자가 직접 고른 공개/비공개 전환. 같은 레코드의 플래그만 바꾼다(id·위치·순서 불변).
+    @discardableResult
+    func setPrivate(_ record: SharedInboxRecord, _ isPrivate: Bool) -> Bool {
+        do {
+            try SharedInbox.setPrivate(record, isPrivate)
+            reload()
+            errorMessage = nil
+            return true
+        } catch {
+            reload()
+            errorMessage = "공개 범위를 바꾸지 못했습니다: \(error.localizedDescription)"
+            return false
+        }
     }
 
     func reload() {
         musicFolderExists = SharedInbox.musicDirectoryExists()
         do {
-            records = try SharedInbox.records().sorted {
+            allRecords = try SharedInbox.records().sorted {
                 if $0.importedAt == $1.importedAt {
                     return $0.originalFilename.localizedStandardCompare($1.originalFilename)
                         == .orderedAscending
                 }
                 return $0.importedAt > $1.importedAt
             }
+            refreshVisible()
             errorMessage = nil
         } catch {
             errorMessage = "폰하드 파일 목록을 읽지 못했습니다: \(error.localizedDescription)"
         }
     }
 
+    /// 일반 모드에서 폴더를 지우면 지금 보이지 않는 비공개 항목까지 함께 지워진다 → 그 경우 지우지 않는다.
+    private func hasHiddenDescendants(_ record: SharedInboxRecord) -> Bool {
+        guard record.isDirectory, !PrivacyMode.currentlyActive else { return false }
+        let scope = PrivateScope(records: allRecords)
+        return allRecords.contains {
+            $0.storedFilename.hasPrefix(record.storedFilename + "/") && scope.contains($0)
+        }
+    }
+
+    private static let hiddenDescendantMessage = "폴더 안에 이 모드에서 보이지 않는 항목이 있어 삭제하지 않았습니다."
+
     func delete(_ record: SharedInboxRecord) {
+        guard !hasHiddenDescendants(record) else {
+            errorMessage = Self.hiddenDescendantMessage
+            return
+        }
         do {
             try SharedInbox.delete(record)
             reload()
@@ -57,6 +107,10 @@ final class SharedInboxStore: ObservableObject {
 
         var failedFilenames: [String] = []
         for record in recordsToDelete {
+            if hasHiddenDescendants(record) {
+                failedFilenames.append(record.originalFilename)
+                continue
+            }
             do {
                 try SharedInbox.delete(record)
             } catch {
@@ -93,10 +147,11 @@ final class SharedInboxStore: ObservableObject {
     }
 
     @discardableResult
-    func createFolder(named name: String, in parentPath: String?) async -> Bool {
+    func createFolder(named name: String, in parentPath: String?, isPrivate: Bool? = nil) async -> Bool {
+        let flag = isPrivate == true ? true : PrivacyMode.shared.newRecordFlag
         do {
             try await Task.detached(priority: .userInitiated) {
-                try SharedInbox.createFolder(named: name, in: parentPath)
+                try SharedInbox.createFolder(named: name, in: parentPath, isPrivate: flag)
             }.value
             reload()
             errorMessage = nil
@@ -162,6 +217,7 @@ final class SharedInboxStore: ObservableObject {
         }
 
         guard url.isFileURL else { return }
+        let flag = PrivacyMode.shared.newRecordFlag
         do {
             let record = try await Task.detached(priority: .userInitiated) {
                 let accessed = url.startAccessingSecurityScopedResource()
@@ -172,9 +228,10 @@ final class SharedInboxStore: ObservableObject {
                 let record = try SharedInbox.importTemporaryFile(
                     at: url,
                     originalFilename: url.lastPathComponent,
-                    contentTypeIdentifier: values.contentType?.identifier
+                    contentTypeIdentifier: values.contentType?.identifier,
+                    isPrivate: flag
                 )
-                try SharedInbox.append(records: [record])
+                // importTemporaryFile가 숨김 스테이징 → 이름 확정 → 매니페스트 기록(비공개 표시 포함)을 한 번에 끝낸다.
                 return record
             }.value
             reload()
@@ -188,6 +245,7 @@ final class SharedInboxStore: ObservableObject {
     @discardableResult
     func importFromFiles(_ urls: [URL]) async -> Int {
         guard !urls.isEmpty else { return 0 }
+        let flag = PrivacyMode.shared.newRecordFlag
 
         let result = await Task.detached(priority: .userInitiated) {
             var importedRecords: [SharedInboxRecord] = []
@@ -204,7 +262,8 @@ final class SharedInboxStore: ObservableObject {
                     let record = try SharedInbox.importTemporaryFile(
                         at: url,
                         originalFilename: url.lastPathComponent,
-                        contentTypeIdentifier: values.contentType?.identifier
+                        contentTypeIdentifier: values.contentType?.identifier,
+                        isPrivate: flag
                     )
                     importedRecords.append(record)
                 } catch {
@@ -212,31 +271,12 @@ final class SharedInboxStore: ObservableObject {
                 }
             }
 
-            guard !importedRecords.isEmpty else {
-                return FilesImportResult(
-                    records: importedRecords,
-                    failedFilenames: failedFilenames,
-                    saveError: nil
-                )
-            }
-
-            do {
-                try SharedInbox.append(records: importedRecords)
-                return FilesImportResult(
-                    records: importedRecords,
-                    failedFilenames: failedFilenames,
-                    saveError: nil
-                )
-            } catch {
-                for record in importedRecords {
-                    try? SharedInbox.delete(record)
-                }
-                return FilesImportResult(
-                    records: [],
-                    failedFilenames: failedFilenames,
-                    saveError: error.localizedDescription
-                )
-            }
+            // 파일마다 가져오기와 기록이 한 번에 끝나므로(실패한 파일은 failedFilenames) 따로 묶어서 기록하지 않는다.
+            return FilesImportResult(
+                records: importedRecords,
+                failedFilenames: failedFilenames,
+                saveError: nil
+            )
         }.value
 
         reload()
@@ -253,25 +293,30 @@ final class SharedInboxStore: ObservableObject {
         return result.records.count
     }
 
+    /// `nil`은 "지정 안 함"이라 호출 시점의 모드를 따르고, 명시한 `false`는 실제로 고정된 공개 출처라 모드를 다시 읽지 않는다.
+    /// 비동기 작업은 시작할 때 고정한 값을 항상 명시해서 넘긴다.
+    private static func resolvedFlag(_ isPrivate: Bool?) -> Bool? {
+        guard let isPrivate else { return PrivacyMode.shared.newRecordFlag }
+        return isPrivate ? true : nil
+    }
+
     @discardableResult
     func importDownloadedFile(
         at url: URL,
         originalFilename: String,
-        contentTypeIdentifier: String?
+        contentTypeIdentifier: String?,
+        isPrivate: Bool? = nil
     ) async throws -> SharedInboxRecord {
+        // 작업 시작 시점의 출처를 한 번 잡는다. 이후 모드가 바뀌어도 이 파일의 공개 범위는 바뀌지 않는다.
+        let flag = Self.resolvedFlag(isPrivate)
         let record = try await Task.detached(priority: .userInitiated) {
             let record = try SharedInbox.importTemporaryFile(
                 at: url,
                 originalFilename: originalFilename,
-                contentTypeIdentifier: contentTypeIdentifier
+                contentTypeIdentifier: contentTypeIdentifier,
+                isPrivate: flag
             )
-            do {
-                try SharedInbox.append(records: [record])
-                return record
-            } catch {
-                try? SharedInbox.delete(record)
-                throw error
-            }
+            return record
         }.value
         reload()
         return record
@@ -290,9 +335,11 @@ final class SharedInboxStore: ObservableObject {
         at url: URL,
         originalName: String,
         contentTypeIdentifier: String?,
-        intoFolder folderPath: String?
+        intoFolder folderPath: String?,
+        isPrivate: Bool? = nil
     ) async throws -> SharedInboxRecord {
         defer { reload() }
+        let flag = Self.resolvedFlag(isPrivate)
         return try await Task.detached(priority: .userInitiated) {
             // `manifest.json` is reserved at the PhoneHard root only and would drop out
             // of the list there; inside a folder it is an ordinary name.
@@ -304,7 +351,8 @@ final class SharedInboxStore: ObservableObject {
                 at: url,
                 originalFilename: preferredName,
                 contentTypeIdentifier: contentTypeIdentifier,
-                intoFolder: folderPath
+                intoFolder: folderPath,
+                isPrivate: flag
             )
         }.value
     }
@@ -315,21 +363,18 @@ final class SharedInboxStore: ObservableObject {
     func importMusicFile(
         at url: URL,
         originalFilename: String,
-        contentTypeIdentifier: String?
+        contentTypeIdentifier: String?,
+        isPrivate: Bool? = nil
     ) async throws -> SharedInboxRecord {
+        let flag = Self.resolvedFlag(isPrivate)
         let record = try await Task.detached(priority: .userInitiated) {
             let record = try SharedInbox.importTemporaryMusicFile(
                 at: url,
                 originalFilename: originalFilename,
-                contentTypeIdentifier: contentTypeIdentifier
+                contentTypeIdentifier: contentTypeIdentifier,
+                isPrivate: flag
             )
-            do {
-                try SharedInbox.append(records: [record])
-                return record
-            } catch {
-                try? SharedInbox.delete(record)
-                throw error
-            }
+            return record
         }.value
         reload()
         return record

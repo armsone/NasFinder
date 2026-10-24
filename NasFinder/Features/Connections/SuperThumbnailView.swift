@@ -3,56 +3,9 @@ import UIKit
 
 struct SuperThumbnailMark: View {
     var compact = false
-    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
-        AppThemePreference.light.rawValue
-
-    private var isEnamel: Bool {
-        false // 예전 에나멜 장식은 6개 테마에 없다.
-    }
-
     var body: some View {
-        if isEnamel {
-            ThemedSymbol(
-                systemName: "photo.on.rectangle.angled",
-                size: ui(compact ? 32 : 82),
-                symbolSize: ui(compact ? 17 : 40)
-            )
-        } else {
-            originalMark
-        }
-    }
-
-    private var originalMark: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: ui(compact ? 8 : 20), style: .continuous)
-                .fill(
-                    LinearGradient(
-                        colors: [Color.indigo, Color.blue, Color.cyan],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-
-            RoundedRectangle(cornerRadius: ui(compact ? 3 : 8), style: .continuous)
-                .fill(.white.opacity(0.16))
-                .stroke(.white.opacity(0.88), lineWidth: compact ? 1.1 : 2.4)
-                .frame(width: ui(compact ? 19 : 52), height: ui(compact ? 15 : 40))
-                .offset(x: ui(compact ? -2 : -6), y: ui(compact ? 2 : 6))
-
-            Image(systemName: "photo.fill")
-                .font(.system(size: ui(compact ? 11 : 29), weight: .medium))
-                .foregroundStyle(.white.opacity(0.94))
-                .offset(x: ui(compact ? -2 : -6), y: ui(compact ? 2 : 6))
-
-            Image(systemName: "wand.and.stars")
-                .font(.system(size: ui(compact ? 11 : 28), weight: .bold))
-                .foregroundStyle(.white, Color.yellow)
-                .rotationEffect(.degrees(-14))
-                .offset(x: ui(compact ? 7 : 19), y: ui(compact ? -7 : -19))
-        }
-        .frame(width: ui(compact ? 30 : 82), height: ui(compact ? 30 : 82))
-        .shadow(color: Color.blue.opacity(compact ? 0.12 : 0.28), radius: compact ? 3 : 14)
-        .accessibilityHidden(true)
+        InterfaceIcon(systemName: "nf.super_thumbnail", size: ui(compact ? 30 : 82))
+            .accessibilityHidden(true)
     }
 }
 
@@ -363,12 +316,12 @@ struct SuperThumbnailView: View {
         HStack(spacing: ui(16)) {
             Label(
                 "네트워크 \(formatted(statistics.lifetimeNetworkBytes))",
-                systemImage: "network"
+                interfaceSystemImage: "network"
             )
             Spacer()
             Label(
                 "캐시 \(formatted(statistics.cacheBytes))",
-                systemImage: "internaldrive"
+                interfaceSystemImage: "internaldrive"
             )
         }
         .font(.ui(.caption2))
@@ -379,7 +332,7 @@ struct SuperThumbnailView: View {
     private var vaultOptions: some View {
         VStack(alignment: .leading, spacing: ui(10)) {
             Toggle(isOn: $nasVaultEnabled) {
-                Label("NAS에도 보관", systemImage: "externaldrive.fill")
+                Label("NAS에도 보관", interfaceSystemImage: "externaldrive.fill")
                     .font(.ui(.subheadline).weight(.regular))
                     .foregroundStyle(.primary.opacity(0.82))
             }
@@ -433,7 +386,7 @@ struct SuperThumbnailView: View {
         } label: {
             VStack(alignment: .leading, spacing: ui(7)) {
                 HStack(spacing: ui(12)) {
-                    Image(systemName: "folder.fill")
+                    Image(interfaceSystemName: "folder.fill")
                         .foregroundStyle(SkyBreezeTheme.folderBlue)
                     VStack(alignment: .leading, spacing: ui(2)) {
                         Text(selection?.title ?? "처리할 폴더 선택")
@@ -445,7 +398,7 @@ struct SuperThumbnailView: View {
                             .lineLimit(1)
                     }
                     Spacer()
-                    Image(systemName: "chevron.right")
+                    Image(interfaceSystemName: "chevron.right", pointSize: 12)
                         .font(.ui(.caption).bold())
                         .foregroundStyle(PorcelainMetrics.secondary)
                 }
@@ -475,7 +428,7 @@ struct SuperThumbnailView: View {
                     index, previous in
                     historyRow(previous, index: index)
                         .swipeActions(edge: .trailing, allowsFullSwipe: true) {
-                            Button("삭제", systemImage: "trash", role: .destructive) {
+                            Button("삭제", interfaceSystemImage: "trash", role: .destructive) {
                                 removeHistorySelection(previous)
                             }
                         }
@@ -514,7 +467,7 @@ struct SuperThumbnailView: View {
             isShowingReport = true
         } label: {
             HStack(spacing: ui(11)) {
-                Image(systemName: index == 0 ? "clock.fill" : "clock")
+                Image(interfaceSystemName: index == 0 ? "clock.fill" : "clock", pointSize: 12)
                     .font(.ui(.caption))
                     .foregroundStyle(PorcelainMetrics.secondary)
                     .frame(width: ui(24), height: ui(24))
@@ -533,7 +486,7 @@ struct SuperThumbnailView: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: ui(8))
-                Image(systemName: "chevron.right")
+                Image(interfaceSystemName: "chevron.right", pointSize: 12)
                     .font(.ui(.caption).bold())
                     .foregroundStyle(.tertiary)
             }
@@ -553,8 +506,8 @@ struct SuperThumbnailView: View {
 
     private var requirements: some View {
         HStack(spacing: ui(7)) {
-            Image(systemName: canStart ? "checkmark.circle.fill" : "clock")
-                .foregroundStyle(canStart ? Color.green : Color.secondary)
+            Image(interfaceSystemName: canStart ? "checkmark.circle.fill" : "clock")
+                .foregroundStyle(canStart ? PorcelainMetrics.accent : Color.secondary)
             Text(requirementSummary)
                 .foregroundStyle(PorcelainMetrics.secondary)
         }
@@ -569,7 +522,7 @@ struct SuperThumbnailView: View {
                 isPreparing
                     ? "준비 중…"
                     : startButtonTitle,
-                systemImage: "sparkles.rectangle.stack.fill"
+                interfaceSystemImage: "sparkles.rectangle.stack.fill"
             )
             .frame(maxWidth: .infinity)
             .frame(height: ui(54))
@@ -591,7 +544,7 @@ struct SuperThumbnailView: View {
         Button {
             isConfirmingReset = true
         } label: {
-            Label("Super Cache 초기화", systemImage: "arrow.counterclockwise")
+            Label("Super Cache 초기화", interfaceSystemImage: "arrow.counterclockwise")
                 .frame(maxWidth: .infinity)
         }
         .font(.ui(.footnote))
@@ -609,7 +562,7 @@ struct SuperThumbnailView: View {
                 ProgressView()
                     .frame(maxWidth: .infinity)
             } else {
-                Label("선택 폴더 NAS Vault 삭제", systemImage: "trash")
+                Label("선택 폴더 NAS Vault 삭제", interfaceSystemImage: "trash")
                     .frame(maxWidth: .infinity)
             }
         }
@@ -837,6 +790,8 @@ struct SuperThumbnailView: View {
     }
 
     private func saveSelection(_ selection: SuperThumbnailSelection) {
+        // 프라이버시 모드이거나 비공개 연결이면 마지막/최근 위치를 새로 기록하지 않는다(기존 값은 그대로 둔다).
+        guard !PrivacyMode.currentlyActive, selection.connection.isPrivate != true else { return }
         let isDifferent = lastConnectionID != selection.connection.id.uuidString
             || lastPath != selection.path
         if isDifferent, !lastConnectionID.isEmpty, !lastPath.isEmpty {
@@ -1018,7 +973,7 @@ private struct SuperThumbnailReportView: View {
                     VStack(alignment: .leading, spacing: ui(2)) {
                         Text("작업 보고서")
                             .font(.ui(.headline).weight(.medium))
-                        Label(selection.title, systemImage: "folder.fill")
+                        Label(selection.title, interfaceSystemImage: "folder.fill")
                             .font(.ui(.caption))
                             .foregroundStyle(PorcelainMetrics.secondary)
                             .lineLimit(1)
@@ -1083,7 +1038,7 @@ private struct SuperThumbnailReportView: View {
                     dismiss()
                     onResume()
                 } label: {
-                    Label("미완료 작업 이어서 하기", systemImage: "arrow.clockwise")
+                    Label("미완료 작업 이어서 하기", interfaceSystemImage: "arrow.clockwise")
                         .frame(maxWidth: .infinity)
                         .frame(height: ui(54))
                 }
@@ -1098,7 +1053,7 @@ private struct SuperThumbnailReportView: View {
             dismiss()
             onSelect()
         } label: {
-            Label("이 폴더 다시 선택", systemImage: "folder.badge.checkmark")
+            Label("이 폴더 다시 선택", interfaceSystemImage: "folder.badge.checkmark")
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
@@ -1208,7 +1163,7 @@ private struct SuperThumbnailReportView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: ui(11)) {
             HStack {
-                Label("NAS Vault", systemImage: "externaldrive.fill")
+                Label("NAS Vault", interfaceSystemImage: "externaldrive.fill")
                     .font(.ui(.subheadline).weight(.medium))
                 Spacer()
                 Text("보관 \(report.vaultUploadedCount) · 대기 \(report.vaultPendingCount) · 실패 \(report.vaultFailedCount)")
@@ -1346,7 +1301,7 @@ private struct SuperThumbnailProgressView: View {
                     .frame(maxWidth: .infinity, alignment: .center)
 
                     HStack(spacing: ui(7)) {
-                        Image(systemName: "folder.fill")
+                        Image(interfaceSystemName: "folder.fill", pointSize: 12)
                             .font(.ui(.caption))
                             .foregroundStyle(SkyBreezeTheme.folderBlue.opacity(0.78))
                         Text(folderTitle)
@@ -1360,19 +1315,19 @@ private struct SuperThumbnailProgressView: View {
                     if let pauseReason = preheater.pauseReason {
                         Text(pauseReason)
                             .font(.ui(.caption))
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(PorcelainMetrics.warn)
                             .multilineTextAlignment(.center)
                     }
 
                     if let errorMessage = preheater.errorMessage {
-                        Label(errorMessage, systemImage: "exclamationmark.triangle.fill")
+                        Label(errorMessage, interfaceSystemImage: "exclamationmark.triangle.fill")
                             .font(.ui(.callout))
-                            .foregroundStyle(.red)
+                            .foregroundStyle(PorcelainMetrics.danger)
                             .multilineTextAlignment(.center)
                             .padding(ui(14))
                             .frame(maxWidth: .infinity)
                             .background(
-                                Color.red.opacity(0.08),
+                                PorcelainMetrics.danger.opacity(0.08),
                                 in: RoundedRectangle(cornerRadius: ui(14), style: .continuous)
                             )
                     }
@@ -1396,7 +1351,7 @@ private struct SuperThumbnailProgressView: View {
                     if let vaultErrorMessage = preheater.vaultErrorMessage {
                         Text("NAS 보관 대기 · \(vaultErrorMessage)")
                             .font(.ui(.caption))
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(PorcelainMetrics.warn)
                             .multilineTextAlignment(.center)
                     }
                     DisclosureGroup("세부 정보", isExpanded: $isDetailsExpanded) {
@@ -1496,7 +1451,7 @@ private struct SuperThumbnailProgressView: View {
                 .foregroundStyle(.primary)
             ProgressView(value: preheater.fractionCompleted ?? 0)
                 .progressViewStyle(.linear)
-                .tint(Color.blue.opacity(0.72))
+                .tint(PorcelainMetrics.accent.opacity(0.72))
                 .frame(height: ui(6))
         }
         .padding(ui(16))
@@ -1540,8 +1495,8 @@ private struct SuperThumbnailProgressView: View {
 
     private var etaPanel: some View {
         HStack(spacing: ui(12)) {
-            Image(systemName: "clock")
-                .foregroundStyle(.blue)
+            Image(interfaceSystemName: "clock")
+                .foregroundStyle(PorcelainMetrics.accent)
             Text("남은 시간")
                 .font(.ui(.subheadline))
                 .foregroundStyle(PorcelainMetrics.secondary)
@@ -1591,7 +1546,7 @@ private struct SuperThumbnailProgressView: View {
     private var overflowPanel: some View {
         VStack(spacing: ui(6)) {
             HStack(spacing: ui(7)) {
-                Image(systemName: "rectangle.stack")
+                Image(interfaceSystemName: "rectangle.stack")
                 Text("미리보기")
                 Spacer()
                 Image(
@@ -1636,7 +1591,7 @@ private struct SuperThumbnailProgressView: View {
     private var failurePanel: some View {
         VStack(alignment: .leading, spacing: ui(7)) {
             HStack(spacing: ui(7)) {
-                Image(systemName: "exclamationmark.triangle")
+                Image(interfaceSystemName: "exclamationmark.triangle")
                 Text("실패 \(preheater.failedCount)건")
                 Spacer()
                 Image(
@@ -1646,7 +1601,7 @@ private struct SuperThumbnailProgressView: View {
                 )
             }
             .font(.ui(.caption).weight(.medium))
-            .foregroundStyle(.orange)
+            .foregroundStyle(PorcelainMetrics.warn)
 
             if isFailurePanelExpanded {
                 ForEach(preheater.failedItemNames, id: \.self) { detail in
@@ -1660,7 +1615,7 @@ private struct SuperThumbnailProgressView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(ui(11))
         .background(
-            Color.orange.opacity(0.07),
+            PorcelainMetrics.warn.opacity(0.07),
             in: RoundedRectangle(cornerRadius: ui(13), style: .continuous)
         )
         .contentShape(Rectangle())
@@ -1736,7 +1691,7 @@ private struct SuperThumbnailProgressView: View {
                     value: preheater.isRunning ? min(elapsed / limit, 1) : 1
                 )
                     .progressViewStyle(.linear)
-                    .tint(.indigo.opacity(0.72))
+                    .tint(PorcelainMetrics.accent.opacity(0.72))
                 Text(currentItemTransferText)
                     .font(.ui(.caption2).monospacedDigit())
                     .foregroundStyle(PorcelainMetrics.secondary)
@@ -1746,7 +1701,7 @@ private struct SuperThumbnailProgressView: View {
             .padding(.vertical, ui(10))
             .frame(maxWidth: .infinity, minHeight: ui(76), maxHeight: ui(76))
             .background(
-                Color.indigo.opacity(0.045),
+                PorcelainMetrics.accent.opacity(0.045),
                 in: RoundedRectangle(cornerRadius: ui(12), style: .continuous)
             )
         }
@@ -1808,7 +1763,7 @@ private struct SuperThumbnailProgressView: View {
             }
             .padding(ui(12))
             .background(
-                Color.blue.opacity(0.035),
+                PorcelainMetrics.accent.opacity(0.035),
                 in: RoundedRectangle(cornerRadius: ui(12), style: .continuous)
             )
 
@@ -1816,7 +1771,7 @@ private struct SuperThumbnailProgressView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: ui(9)) {
                     HStack {
-                        Label("NAS Vault", systemImage: "externaldrive.fill")
+                        Label("NAS Vault", interfaceSystemImage: "externaldrive.fill")
                             .font(.ui(.caption).weight(.medium))
                         Spacer()
                         Text(
@@ -2077,7 +2032,7 @@ private struct SuperThumbnailCoverCard: View {
     }
 
     private var borderColor: Color {
-        index == 0 ? Color.blue.opacity(0.5) : Color.white.opacity(0.72)
+        index == 0 ? PorcelainMetrics.accent.opacity(0.5) : Color.white.opacity(0.72)
     }
 
     private var widthFactor: CGFloat {
@@ -2127,7 +2082,7 @@ private struct SuperThumbnailFolderPickerView: View {
                                         .foregroundStyle(PorcelainMetrics.secondary)
                                 }
                             } icon: {
-                                Image(systemName: connection.kind.systemImage)
+                                Image(interfaceSystemName: connection.kind.systemImage)
                                     .foregroundStyle(.tint)
                             }
                         }
@@ -2231,7 +2186,7 @@ private struct SuperThumbnailFolderBrowser: View {
                             onSelect: onSelect
                         )
                     } label: {
-                        Label(folder.name, systemImage: "folder.fill")
+                        Label(folder.name, interfaceSystemImage: "folder.fill")
                             .foregroundStyle(.primary)
                     }
                 }
@@ -2251,7 +2206,7 @@ private struct SuperThumbnailFolderBrowser: View {
                     )
                 )
             } label: {
-                Label("이 폴더 선택", systemImage: "checkmark.circle.fill")
+                Label("이 폴더 선택", interfaceSystemImage: "checkmark.circle.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(PorcelainProminentButtonStyle())

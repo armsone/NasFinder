@@ -14,6 +14,7 @@ final class URLSessionBoundedRangeReader: NSObject,
     private let configuration: URLSessionConfiguration
     private let expectedOffset: Int64
     private let maximumByteCount: Int
+    private let authenticationCredential: URLCredential?
     private let lock = NSLock()
 
     private var continuation: CheckedContinuation<URLSessionBoundedRangeRead, Error>?
@@ -28,8 +29,10 @@ final class URLSessionBoundedRangeReader: NSObject,
     init(
         configuration: URLSessionConfiguration,
         expectedOffset: Int64,
-        maximumByteCount: Int
+        maximumByteCount: Int,
+        authenticationCredential: URLCredential? = nil
     ) {
+        self.authenticationCredential = authenticationCredential
         self.configuration = configuration
         self.expectedOffset = expectedOffset
         self.maximumByteCount = max(maximumByteCount, 0)
@@ -67,6 +70,26 @@ final class URLSessionBoundedRangeReader: NSObject,
         let activeTask = task
         lock.unlock()
         activeTask?.cancel()
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        didReceive challenge: URLAuthenticationChallenge,
+        completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
+    ) {
+        switch challenge.protectionSpace.authenticationMethod {
+        case NSURLAuthenticationMethodHTTPBasic,
+             NSURLAuthenticationMethodHTTPDigest,
+             NSURLAuthenticationMethodDefault:
+            if let authenticationCredential, challenge.previousFailureCount == 0 {
+                completionHandler(.useCredential, authenticationCredential)
+            } else {
+                completionHandler(.performDefaultHandling, nil)
+            }
+        default:
+            completionHandler(.performDefaultHandling, nil)
+        }
     }
 
     func urlSession(
@@ -181,17 +204,27 @@ final class URLSessionBoundedRangeReader: NSObject,
         continuation?.resume(with: result)
     }
 
-    private static func parseContentRange(
+    static func parseContentRange(
         _ value: String
     ) -> ClosedRange<Int64>? {
         let components = value.lowercased().split(separator: " ", maxSplits: 1)
         guard components.count == 2, components[0] == "bytes" else { return nil }
         let rangeAndSize = components[1].split(separator: "/", maxSplits: 1)
         guard let rangeText = rangeAndSize.first else { return nil }
-        let bounds = rangeText.split(separator: "-", maxSplits: 1)
+        let bounds = rangeText.split(
+            separator: "-",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
         guard bounds.count == 2,
+              !bounds[0].isEmpty,
+              bounds[0].allSatisfy({ $0 >= "0" && $0 <= "9" }),
+              !bounds[1].isEmpty,
+              bounds[1].allSatisfy({ $0 >= "0" && $0 <= "9" }),
               let lowerBound = Int64(bounds[0]),
-              let upperBound = Int64(bounds[1]) else { return nil }
+              let upperBound = Int64(bounds[1]),
+              lowerBound >= 0,
+              lowerBound <= upperBound else { return nil }
         return lowerBound...upperBound
     }
 

@@ -276,7 +276,8 @@ struct VideoTrailerView: View {
     @State private var mode: VideoTrailerMode
     /// The mode the video currently shown was made in, for the name it is saved under.
     @State private var outputMode: VideoTrailerMode?
-    @Environment(\.dismiss) private var dismiss
+    @Environment(\.dismiss) private var systemDismiss
+    @Environment(\.trailerEditorClose) private var hostedClose
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @EnvironmentObject private var connectionStore: ConnectionStore
     @StateObject private var model: VideoTrailerModel
@@ -300,6 +301,9 @@ struct VideoTrailerView: View {
     @State private var pendingStage = false
     @State private var addNotice: String?
     @State private var persistedRecord: TrailerProjectRecord?
+    /// 이 편집의 비공개 오염 플래그. 프라이버시 모드에서 시작했거나 입력 중 하나라도 비공개 출처이면 켜지고,
+    /// 편집본·출력(폰하드 파일)·컬렉션 영상으로 이어진다. 한 번 켜지면 자동으로 풀리지 않는다.
+    @State private var originTaint: Bool
     private let keepsSelectionOrder: Bool
     private let isResumed: Bool
     private let reopensSettings: Bool
@@ -308,8 +312,11 @@ struct VideoTrailerView: View {
 
     /// With `resuming` the editor continues that suspended session instead of starting one.
     init(items: [RemoteFileItem], service: any RemoteFileService, mode: VideoTrailerMode = .trailer,
-         keepsSelectionOrder: Bool = false, resuming entry: TrailerDraftEntry? = nil) {
+         keepsSelectionOrder: Bool = false, resuming entry: TrailerDraftEntry? = nil, originPrivate: Bool = false) {
         self.keepsSelectionOrder = keepsSelectionOrder
+        _originTaint = State(initialValue: PrivacyMode.capturedOrigin(inputPrivate: originPrivate
+            || entry?.isPrivate == true
+            || items.contains { PrivacyMode.isPrivateOrigin(connectionID: $0.connectionID, path: $0.path) }))
         let suspended = entry?.session as? TrailerSuspendedSession
         let persisted = entry?.session as? TrailerPersistedSession
         isResumed = suspended != nil || persisted != nil
@@ -335,7 +342,7 @@ struct VideoTrailerView: View {
             .onChange(of: draft?.signature) { _, _ in if let draft { history.observe(draft) } }
             .onChange(of: model.sources.map(\.id)) { _, _ in absorbStagedSources() }
             .onChange(of: model.isBusy) { _, busy in if !busy, pendingStage { stageAdded() } }
-            .alert("알림", isPresented: Binding(get: { addNotice != nil }, set: { if !$0 { addNotice = nil } })) {
+            .alert("영상 편집 알림", isPresented: Binding(get: { addNotice != nil }, set: { if !$0 { addNotice = nil } })) {
                 Button("확인", role: .cancel) { addNotice = nil }
             } message: { Text(addNotice ?? "") }
             .sheet(isPresented: $showingAppSettings) {
@@ -396,6 +403,11 @@ struct VideoTrailerView: View {
         draft = next
     }
 
+    /// 전체 화면 커버면 시스템 dismiss, Mac 셸 내용 영역에 올린 편집기면 그 편집기를 내리는 동작.
+    private func dismiss() {
+        if let hostedClose { hostedClose.run() } else { systemDismiss() }
+    }
+
     private func leave(to tab: AppTab?) {
         requestExit()
         if let tab { AppShellRouter.shared.request = tab }
@@ -443,7 +455,7 @@ struct VideoTrailerView: View {
                 onDiscard: discardAndDismiss,
                 onSave: {
                     model.save(to: inboxStore, filename: items.count == 1 ? items[0].name : "모음-\(items.count)개영상",
-                               suffix: (outputMode ?? mode) == .mediaMusic ? "음악" : "예고편")
+                               suffix: (outputMode ?? mode) == .mediaMusic ? "음악" : "예고편", isPrivate: originTaint)
                 },
                 isSaved: model.isSaved,
                 apply: apply,
@@ -466,7 +478,7 @@ struct VideoTrailerView: View {
                 guard !exitHandled, model.hasResumableWork else { return }
                 suspendSession()
             }
-            .alert("보관한 편집 파일이 사라졌습니다", isPresented: $showingStalePrompt) {
+            .alert("편집본 파일이 사라졌습니다", isPresented: $showingStalePrompt) {
                 Button("다시 가져오기") {
                     resumeNotice = nil
                     model.restage(items: items, service: service, mode: mode)
@@ -477,7 +489,7 @@ struct VideoTrailerView: View {
                 Text(["이 편집을 위해 받아 둔 사진·영상이 기기에서 지워졌습니다. 순서와 설정은 그대로 두고 원본에서 다시 가져올 수 있습니다.",
                       resumeNotice].compactMap { $0 }.joined(separator: " "))
             }
-            .alert("보관한 편집을 다시 열었습니다", isPresented: Binding(
+            .alert("편집본을 다시 열었습니다", isPresented: Binding(
                 get: { resumeNotice != nil && !showingStalePrompt },
                 set: { if !$0 { resumeNotice = nil } })) {
                 Button("확인", role: .cancel) { continueResume() }
@@ -499,6 +511,9 @@ struct VideoTrailerView: View {
             return
         }
         routed.register(fresh, service: origin)
+        if fresh.contains(where: { PrivacyMode.isPrivateOrigin(connectionID: $0.connectionID, path: $0.path) }) {
+            originTaint = true
+        }
         items.append(contentsOf: fresh)
         finderCloseRequest += 1
         addNotice = "\(fresh.count)개를 현재 프로젝트에 추가합니다." + (fresh.count < added.count ? " 중복·미지원 \(added.count - fresh.count)개는 건너뛰었습니다." : "")
@@ -617,6 +632,7 @@ struct VideoTrailerView: View {
         }
         entry.suspendedAt = Date()
         entry.customTitle = projects.records[sessionID]?.customTitle
+        entry.isPrivate = originTaint ? true : nil
         TrailerDraftStore.shared.suspend(entry)
         // Leaving always saves what is on screen, without waiting for the autosave pause.
         scheduleSave(immediately: true)
@@ -641,7 +657,8 @@ struct VideoTrailerView: View {
     private func makeSnapshot() -> TrailerProjectSnapshot {
         model.projectSnapshot(id: sessionID, existing: projects.records[sessionID] ?? persistedRecord, mode: mode,
                               outputMode: outputMode, draft: currentDraft(), itemCount: items.count,
-                              selectedSceneID: selectedSceneID, showedSettings: showingSettings)
+                              selectedSceneID: selectedSceneID, showedSettings: showingSettings,
+                              isPrivate: originTaint)
     }
 
     private func suspendAndDismiss() {
@@ -756,7 +773,7 @@ struct VideoTrailerView: View {
             onDiscard: discardAndDismiss,
             onSave: {
                 model.save(to: inboxStore, filename: items.count == 1 ? items[0].name : "모음-\(items.count)개영상",
-                           suffix: (outputMode ?? mode) == .mediaMusic ? "음악" : "예고편")
+                           suffix: (outputMode ?? mode) == .mediaMusic ? "음악" : "예고편", isPrivate: originTaint)
             },
             isSaved: model.isSaved, apply: apply
         )
@@ -767,7 +784,7 @@ struct VideoTrailerView: View {
         HStack(spacing: ui(8)) {
             Button {
                 model.save(to: inboxStore, filename: items.count == 1 ? items[0].name : "모음-\(items.count)개영상",
-                           suffix: (outputMode ?? mode) == .mediaMusic ? "음악" : "예고편")
+                           suffix: (outputMode ?? mode) == .mediaMusic ? "음악" : "예고편", isPrivate: originTaint)
             } label: {
                 SharedPlayerCircleLabel(systemImage: model.isSaved ? "checkmark.circle" : "square.and.arrow.down")
             }
@@ -846,15 +863,22 @@ private struct TrailerWorkspacePreview: View {
         ZStack {
             if let outputURL {
                 let previewService = TrailerOutputFileService(url: outputURL)
-                RemotePreviewView(
-                    item: previewService.item,
-                    sequentialItems: [previewService.item],
-                    service: previewService,
-                    accessoryControls: accessoryControls,
-                    onClose: onClose,
-                    playbackSuspended: isBusy
-                )
-                .id(outputURL)
+                // RemotePreviewView is a greedy GeometryReader with no ideal height, so inside the
+                // editor's ScrollView it collapsed to a thin strip. Size it here with the same
+                // aspect rule as the pre-output placeholder; fullscreen (nil ratio) fills the frame.
+                Color.clear
+                    .aspectRatio(isFullscreen ? nil : aspectSize.width / aspectSize.height, contentMode: .fit)
+                    .overlay {
+                        RemotePreviewView(
+                            item: previewService.item,
+                            sequentialItems: [previewService.item],
+                            service: previewService,
+                            accessoryControls: accessoryControls,
+                            onClose: onClose,
+                            playbackSuspended: isBusy
+                        )
+                        .id(outputURL)
+                    }
             } else if let firstSource {
                 Color.black
                     .aspectRatio(aspectSize.width / aspectSize.height, contentMode: .fit)
@@ -864,7 +888,7 @@ private struct TrailerWorkspacePreview: View {
                                 .resizable()
                                 .scaledToFit()
                         } else {
-                            Image(systemName: firstSource.isImage ? "photo" : "film")
+                            Image(interfaceSystemName: firstSource.isImage ? "photo" : "film", pointSize: ui(36))
                                 .font(.system(size: ui(36)))
                                 .foregroundStyle(.white.opacity(0.6))
                         }
@@ -1306,7 +1330,7 @@ private struct VideoTrailerSettings: View {
             }
             if chrome.showsAdd {
                 ToolbarItem(placement: .primaryAction) {
-                    Button(action: chrome.onAdd) { Image(systemName: "plus.circle") }
+                    Button(action: chrome.onAdd) { Image(interfaceSystemName: "plus.circle") }
                         .accessibilityLabel("재료 추가")
                 }
             }
@@ -1316,7 +1340,7 @@ private struct VideoTrailerSettings: View {
             if let onSave {
                 ToolbarItem(placement: .primaryAction) {
                     Button(action: onSave) {
-                        Image(systemName: isSaved ? "checkmark.circle" : "square.and.arrow.down")
+                        Image(interfaceSystemName: isSaved ? "checkmark.circle" : "square.and.arrow.down")
                     }
                     .disabled(isBusy || isSaved || outputURL == nil)
                     .accessibilityLabel(isSaved ? "폰하드에 저장됨" : "폰하드에 저장")
@@ -1498,9 +1522,9 @@ private struct VideoTrailerSettings: View {
                     Button("다시 저장", action: chrome.onRetrySave).font(.ui(.caption2).weight(.semibold))
                 }
             }
-            Button(action: chrome.onUndo) { Image(systemName: "arrow.uturn.backward") }
+            Button(action: chrome.onUndo) { Image(interfaceSystemName: "arrow.uturn.backward") }
                 .disabled(!chrome.canUndo).accessibilityLabel("되돌리기")
-            Button(action: chrome.onRedo) { Image(systemName: "arrow.uturn.forward") }
+            Button(action: chrome.onRedo) { Image(interfaceSystemName: "arrow.uturn.forward") }
                 .disabled(!chrome.canRedo).accessibilityLabel("다시 실행")
         }
         .buttonStyle(.plain)
@@ -1742,7 +1766,7 @@ private struct VideoTrailerSettings: View {
                 Text("다른 길이")
                 Spacer()
                 Text(value).foregroundStyle(.secondary)
-                Image(systemName: expanded ? "chevron.up" : "chevron.down").font(.ui(.caption2))
+                Image(interfaceSystemName: expanded ? "chevron.up" : "chevron.down", pointSize: 11).font(.ui(.caption2))
             }
             .font(.ui(.caption)).frame(minHeight: ui(30)).contentShape(Rectangle())
         }
@@ -1949,7 +1973,7 @@ private struct TrailerChoiceButton: View {
         Button(action: action) {
             HStack(spacing: ui(3)) {
                 Text(title)
-                if selected { Image(systemName: "checkmark").font(.ui(.caption2)) }
+                if selected { Image(interfaceSystemName: "checkmark", pointSize: 11).font(.ui(.caption2)) }
             }
             .font(.ui(.footnote).weight(.medium))
             .frame(maxWidth: .infinity, minHeight: ui(height))
@@ -2033,12 +2057,12 @@ private struct TrailerSourceThumbnail: View {
                                 .frame(width: geometry.size.width, height: geometry.size.height).clipped()
                                 .allowsHitTesting(false)
                         } else {
-                            Image(systemName: "film").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+                            Image(interfaceSystemName: "film").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                         if isRevealed {
                             Color.black.opacity(0.35)
                             Button(action: onRemove) {
-                                Image(systemName: "trash.fill").font(.ui(.callout).weight(.semibold)).foregroundStyle(.white)
+                                Image(interfaceSystemName: "trash.fill", pointSize: 16).font(.ui(.callout).weight(.semibold)).foregroundStyle(.white)
                                     .padding(ui(8)).background(.black.opacity(0.65), in: Circle())
                             }
                             .buttonStyle(.plain)
@@ -2998,7 +3022,7 @@ final class VideoTrailerModel: ObservableObject {
     /// 편집기 상태를 저장 가능한 값으로 만든다. 파일 복사는 저장소가 백그라운드에서 한다.
     func projectSnapshot(id: UUID, existing: TrailerProjectRecord?, mode: VideoTrailerMode,
                          outputMode: VideoTrailerMode?, draft: TrailerSettingsDraft, itemCount: Int,
-                         selectedSceneID: Int?, showedSettings: Bool) -> TrailerProjectSnapshot {
+                         selectedSceneID: Int?, showedSettings: Bool, isPrivate: Bool = false) -> TrailerProjectSnapshot {
         let kept = Set(draft.sources.map(\.id))
         let removedByDraft = Set(sources.map(\.id)).subtracting(kept)
         var staged: [Int: URL] = [:]
@@ -3030,7 +3054,8 @@ final class VideoTrailerModel: ObservableObject {
             aspectRatio: draft.aspectRatio?.rawValue, music: musicRow, scenes: draft.scenes,
             nextSceneID: draft.nextSceneID, selectedSceneID: selectedSceneID,
             outputFile: nil, outputMode: outputURL == nil ? nil : (outputMode ?? mode) == .mediaMusic ? "mediaMusic" : "trailer",
-            showedSettings: showedSettings, linkedCollectionVideoIDs: existing?.linkedCollectionVideoIDs ?? [])
+            showedSettings: showedSettings, linkedCollectionVideoIDs: existing?.linkedCollectionVideoIDs ?? [],
+            isPrivate: (isPrivate || existing?.isPrivate == true) ? true : nil)
         return TrailerProjectSnapshot(record: record, stagedFiles: staged, musicFile: musicFile,
                                       outputFile: outputURL)
     }
@@ -3131,7 +3156,7 @@ final class VideoTrailerModel: ObservableObject {
         return draft
     }
 
-    func save(to store: SharedInboxStore, filename: String, suffix: String = "예고편") {
+    func save(to store: SharedInboxStore, filename: String, suffix: String = "예고편", isPrivate: Bool = false) {
         guard let outputURL, !isBusy, !isSaved else { return }
         isBusy = true
         isSaving = true
@@ -3141,7 +3166,8 @@ final class VideoTrailerModel: ObservableObject {
             do {
                 let base = (filename as NSString).deletingPathExtension
                 _ = try await store.importDownloadedFile(at: outputURL,
-                    originalFilename: "\(base)-\(suffix).mp4", contentTypeIdentifier: "public.mpeg-4")
+                    originalFilename: "\(base)-\(suffix).mp4", contentTypeIdentifier: "public.mpeg-4",
+                    isPrivate: isPrivate)
                 isSaved = true
                 status = "폰하드에 저장했습니다."
             } catch {

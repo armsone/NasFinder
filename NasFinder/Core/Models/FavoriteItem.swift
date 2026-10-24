@@ -12,8 +12,11 @@ struct FavoriteItem: Codable, Hashable, Identifiable, Sendable {
     let modifiedAt: Date?
     let contentTypeIdentifier: String?
     let addedAt: Date
+    /// 비공개 즐겨찾기(nil = 공개, 예전 데이터와 같다). 같은 id당 레코드는 하나이고 플래그만 바뀐다.
+    var isPrivate: Bool?
 
-    init(item: RemoteFileItem, addedAt: Date = .now) {
+    init(item: RemoteFileItem, addedAt: Date = .now, isPrivate: Bool? = nil) {
+        self.isPrivate = isPrivate == true ? true : nil
         connectionID = item.connectionID
         path = item.path
         remoteIdentifier = item.remoteIdentifier

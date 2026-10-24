@@ -84,8 +84,7 @@ struct RemotePreviewView: View {
     @State private var systemVolumeSlider: UISlider?
     @State private var screenAwakeActivityID = UUID()
     @State private var resumeAfterSuspension = false
-    @State private var defaultPlayerTask: Task<Void, Never>?
-    @State private var defaultPlayerMessage: String?
+    @State private var handedToPlayerChooser = false
     private let accessoryControls: AnyView?
     private let onClose: (() -> Void)?
     private let playbackSuspended: Bool
@@ -206,9 +205,10 @@ struct RemotePreviewView: View {
                 dimControlsForSlideshow()
             }
         }
+        .onChange(of: viewModel.errorMessage) { _, _ in
+            handOffUnplayableVideoIfNeeded()
+        }
         .onChange(of: viewModel.currentItem.id) { _, _ in
-            defaultPlayerTask?.cancel()
-            defaultPlayerMessage = nil
             resetVideoTransform()
             if !viewModel.currentItem.isImage || !viewModel.isPlaying {
                 revealControls()
@@ -233,7 +233,6 @@ struct RemotePreviewView: View {
         }
         .onDisappear {
             controlsHideTask?.cancel()
-            defaultPlayerTask?.cancel()
             ScreenAwakeController.shared.finishActivity(screenAwakeActivityID)
             viewModel.tearDown()
             shareCoordinator.cancelAndCleanUp()
@@ -273,11 +272,14 @@ struct RemotePreviewView: View {
             hasError: viewModel.errorMessage != nil
         ) {
         case .error:
-            if let errorMessage = viewModel.errorMessage {
+            if isRunningOnMac, viewModel.currentItem.isPlayerMedia {
+                // Mac: 재생할 수 없는 영상은 이 오류 화면을 남기지 않는다. 미리보기를 닫고 별도 선택창을 띄운다.
+                Color.black
+            } else if let errorMessage = viewModel.errorMessage {
                 ContentUnavailableView {
                     Label(
                         "미리보기를 열 수 없습니다",
-                        systemImage: "exclamationmark.triangle"
+                        interfaceSystemImage: "exclamationmark.triangle"
                     )
                 } description: {
                     Text(errorMessage)
@@ -359,61 +361,30 @@ struct RemotePreviewView: View {
         }
     }
 
-    /// Retry, the platform default player and close sit side by side and stack on narrow
-    /// widths, so a file this Mac cannot decode never leaves the user stuck on the error.
+    /// Retry and close sit side by side and stack on narrow widths.
     private var previewErrorActions: some View {
-        VStack(spacing: ui(12)) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: ui(10)) { previewErrorButtons }
-                VStack(spacing: ui(10)) { previewErrorButtons }
-            }
-
-            if viewModel.isPreparingDefaultPlayer {
-                VStack(spacing: ui(6)) {
-                    if let fraction = viewModel.defaultPlayerProgress?.fractionCompleted {
-                        ProgressView(value: fraction)
-                            .tint(.white)
-                            .frame(maxWidth: ui(260))
-                    } else {
-                        ProgressView()
-                            .tint(.white)
-                    }
-                    Text(
-                        viewModel.defaultPlayerProgress.map {
-                            "기본 플레이어용 사본을 받는 중… \(downloadProgressDescription($0))"
-                        } ?? "기본 플레이어용 사본을 준비하는 중…"
-                    )
-                    .font(.ui(.caption).monospacedDigit())
-                    .foregroundStyle(.white.opacity(0.72))
-                }
-                .accessibilityElement(children: .combine)
-            }
-
-            if let defaultPlayerMessage {
-                Text(defaultPlayerMessage)
-                    .font(.ui(.footnote))
-                    .foregroundStyle(.white.opacity(0.82))
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: ui(10)) { previewErrorButtons }
+            VStack(spacing: ui(10)) { previewErrorButtons }
         }
     }
 
     @ViewBuilder
     private var previewErrorButtons: some View {
         Button("다시 시도") {
-            defaultPlayerMessage = nil
             Task { await viewModel.retryCurrentItem() }
         }
         .buttonStyle(PorcelainProminentButtonStyle())
-        .disabled(viewModel.isPreparingDefaultPlayer)
 
-        if isRunningOnMac, viewModel.currentItem.isPlayerMedia {
-            Button("기본 플레이어로 열기") { openInDefaultPlayer() }
+        // iPhone·iPad: 이 앱(및 VLC 호환 재생)으로도 못 여는 영상은 시스템 공유 시트로 다른 앱에 넘길 수 있다.
+        // 전체 파일을 이 앱이 임시로 받아 파일 자체만 넘기며 NAS 로그인 세션·비밀번호는 어떤 앱에도 보내지 않는다.
+        // 시트를 닫거나 미리보기를 떠나면 `cancelAndCleanUp`/`shareSheetDidDismiss`가 임시 사본을 지운다.
+        if viewModel.currentItem.isPlayerMedia {
+            Button(shareCoordinator.isPreparing ? "준비 중…" : "다른 앱으로 열기·공유") { shareCurrentItem() }
                 .buttonStyle(.bordered)
                 .tint(.white)
-                .disabled(defaultPlayerTask != nil)
-                .accessibilityHint("이 Mac에서 이 형식에 지정된 앱으로 사본을 엽니다.")
+                .disabled(shareCoordinator.isPreparing)
+                .accessibilityHint("영상 파일을 내려받아 시스템 공유 시트를 엽니다.")
         }
 
         Button("닫기") { closePreview() }
@@ -423,37 +394,21 @@ struct RemotePreviewView: View {
             .accessibilityHint("미리보기를 닫고 목록으로 돌아갑니다.")
     }
 
-    /// Hands a local copy to the app macOS associates with the file. Only a `file://` URL
-    /// leaves the app, so no NAS address or credential is passed to the other app.
-    private func openInDefaultPlayer() {
-        guard defaultPlayerTask == nil else { return }
-        defaultPlayerMessage = nil
-        let item = viewModel.currentItem
-        defaultPlayerTask = Task {
-            defer { defaultPlayerTask = nil }
-            do {
-                let localURL = try await viewModel.prepareDefaultPlayerFile()
-                let stagedURL = try await PreviewDefaultPlayerStaging.stage(
-                    localURL: localURL,
-                    originalFilename: item.name
-                )
-                guard !Task.isCancelled, viewModel.currentItem.id == item.id else { return }
-                let opened = await withCheckedContinuation { continuation in
-                    UIApplication.shared.open(stagedURL, options: [:]) { opened in
-                        continuation.resume(returning: opened)
-                    }
-                }
-                guard !Task.isCancelled else { return }
-                defaultPlayerMessage = opened
-                    ? "기본 플레이어에서 열었습니다. 이 미리보기는 닫아도 됩니다."
-                    : "이 형식을 열 기본 앱이 Mac에 없거나 앱이 파일을 열지 못했습니다. 이 형식을 지원하는 플레이어를 설치하거나, 공유 버튼으로 다른 앱에 보내 주세요."
-            } catch is CancellationError {
-                return
-            } catch {
-                guard !Task.isCancelled else { return }
-                defaultPlayerMessage = "기본 플레이어용 사본을 준비하지 못했습니다: \(error.localizedDescription)"
-            }
-        }
+    /// Mac: a video this player cannot play closes this preview (black screen and error view included)
+    /// and the separate player chooser opens outside it. Every failure path (first prepare, audio-only
+    /// decode failure, streaming or runtime failure) ends in `viewModel.errorMessage`, so this is the one hook.
+    private func handOffUnplayableVideoIfNeeded() {
+        guard isRunningOnMac, !handedToPlayerChooser,
+              viewModel.errorMessage != nil, viewModel.currentItem.isPlayerMedia else { return }
+        handedToPlayerChooser = true
+        let request = ExternalPlayerRequest(
+            item: viewModel.currentItem,
+            service: viewModel.playbackService,
+            localFileURL: viewModel.existingLocalFileURL
+        )
+        viewModel.tearDown()
+        closePreview()
+        ExternalPlayerChooserPresenter.shared.present(request)
     }
 
     @ViewBuilder
@@ -612,7 +567,7 @@ struct RemotePreviewView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
+            Image(interfaceSystemName: systemImage, pointSize: ui(19))
                 .font(.system(size: ui(19), weight: .semibold))
                 .foregroundStyle(.white.opacity(0.86))
                 .frame(width: ui(46), height: ui(46))
@@ -850,7 +805,7 @@ struct RemotePreviewView: View {
                     } label: {
                         Label(
                             mode.title,
-                            systemImage: viewModel.playbackMode == mode
+                            interfaceSystemImage: viewModel.playbackMode == mode
                                 ? "checkmark"
                                 : mode.systemImage
                         )
@@ -866,7 +821,7 @@ struct RemotePreviewView: View {
                     } label: {
                         Label(
                             interval.title,
-                            systemImage: viewModel.photoAdvanceInterval == interval
+                            interfaceSystemImage: viewModel.photoAdvanceInterval == interval
                                 ? "checkmark"
                                 : "timer"
                         )
@@ -909,7 +864,7 @@ struct RemotePreviewView: View {
 
     private func volumeHUD(_ volume: Float) -> some View {
         HStack(spacing: ui(9)) {
-            Image(systemName: volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+            Image(interfaceSystemName: volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
             Text("\(Int((volume * 100).rounded()))%")
                 .monospacedDigit()
         }
@@ -1196,8 +1151,6 @@ final class RemotePreviewViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published private(set) var isPreparingVideo = false
     @Published private(set) var isPreparingExternalPlayback = false
-    @Published private(set) var isPreparingDefaultPlayer = false
-    @Published private(set) var defaultPlayerProgress: RemoteDownloadProgress?
     @Published private(set) var downloadProgress: RemoteDownloadProgress?
     @Published private(set) var streamedVideoByteCount: Int64 = 0
     @Published private(set) var videoPlaybackSource: RemoteVideoPlaybackSource?
@@ -1226,7 +1179,6 @@ final class RemotePreviewViewModel: ObservableObject {
     private var externalSubtitleTask: Task<Void, Never>?
     private var activeDownloadTask: Task<URL, Error>?
     private var activeDownloadGeneration: UUID?
-    private var defaultPlayerDownloadTask: Task<URL, Error>?
     private var downloadInactivityTask: Task<Void, Never>?
     private var downloadInactivityGeneration: UUID?
     private var lastDownloadActivity: ContinuousClock.Instant?
@@ -1555,57 +1507,11 @@ final class RemotePreviewViewModel: ObservableObject {
         return localURL
     }
 
-    /// Returns a complete local file for the platform default player without building
-    /// another in-app player: the file already prepared for this preview when there is one,
-    /// otherwise a fresh full download through the service. The service's own download
-    /// cache keeps its lifetime; this never touches the original on the source.
-    func prepareDefaultPlayerFile() async throws -> URL {
-        let item = currentItem
-        let fileManager = FileManager.default
-        if let localURL, fileManager.fileExists(atPath: localURL.path) {
-            return localURL
-        }
-        if let cachedURL = downloadedURLs[item.id],
-           fileManager.fileExists(atPath: cachedURL.path) {
-            return cachedURL
-        }
-        guard !isPreparingDefaultPlayer else {
-            throw PreviewExternalPlaybackError.preparationInProgress
-        }
+    var playbackService: any RemoteFileService { service }
 
-        isPreparingDefaultPlayer = true
-        defaultPlayerProgress = nil
-        defer {
-            isPreparingDefaultPlayer = false
-            defaultPlayerProgress = nil
-            defaultPlayerDownloadTask = nil
-        }
-        let service = service
-        let downloadTask = Task {
-            try await service.download(item) { [weak self] progress in
-                await self?.updateDefaultPlayerProgress(progress, itemID: item.id)
-            }
-        }
-        defaultPlayerDownloadTask = downloadTask
-        let url = try await withTaskCancellationHandler {
-            try await downloadTask.value
-        } onCancel: {
-            downloadTask.cancel()
-        }
-        guard currentItem.id == item.id else { throw CancellationError() }
-        guard url.isFileURL, fileManager.fileExists(atPath: url.path) else {
-            throw PreviewExternalPlaybackError.localFileUnavailable
-        }
-        downloadedURLs[item.id] = url
-        return url
-    }
-
-    private func updateDefaultPlayerProgress(
-        _ progress: RemoteDownloadProgress,
-        itemID: RemoteFileItem.ID
-    ) {
-        guard isPreparingDefaultPlayer, currentItem.id == itemID else { return }
-        defaultPlayerProgress = progress
+    var existingLocalFileURL: URL? {
+        guard let localURL, FileManager.default.fileExists(atPath: localURL.path) else { return nil }
+        return localURL
     }
 
     private func reportPlaybackFailure(for itemID: RemoteFileItem.ID) {
@@ -1774,7 +1680,6 @@ final class RemotePreviewViewModel: ObservableObject {
         externalSubtitleTask?.cancel()
         externalSubtitleTask = nil
         cancelActiveDownload()
-        defaultPlayerDownloadTask?.cancel()
         stopDownloadInactivityWatchdog()
         activeLoadGeneration = nil
         isLoading = false
@@ -1806,7 +1711,6 @@ final class RemotePreviewViewModel: ObservableObject {
         externalSubtitleTask?.cancel()
         externalSubtitleTask = nil
         cancelActiveDownload()
-        defaultPlayerDownloadTask?.cancel()
         stopDownloadInactivityWatchdog()
         isPreparingVideo = false
         streamingLoader?.cancel()
@@ -1864,6 +1768,7 @@ final class RemotePreviewViewModel: ObservableObject {
                     self.isPreparingVideo = false
                     self.videoPreparationTimeoutTask?.cancel()
                     self.videoPreparationTimeoutTask = nil
+                    self.verifyVideoTrackIsDecodable(of: playerItem, itemID: itemID)
                 case .failed:
                     let message = playerItem.error?.localizedDescription
                         ?? "지원하지 않는 영상 형식이거나 원격 데이터를 읽지 못했습니다."
@@ -1885,6 +1790,29 @@ final class RemotePreviewViewModel: ObservableObject {
                   self.isPreparingVideo else { return }
             self.handleVideoPreparationFailure(
                 "원격 영상 준비 시간이 너무 오래 걸립니다. 네트워크 상태를 확인한 뒤 다시 시도해 주세요.",
+                itemID: itemID
+            )
+        }
+    }
+
+    /// A container can reach readyToPlay while its only video track cannot be decoded, which plays
+    /// the sound over a black frame. Treat that as an unsupported format right away.
+    private func verifyVideoTrackIsDecodable(of playerItem: AVPlayerItem, itemID: RemoteFileItem.ID) {
+        guard currentItem.isVideo else { return }
+        let asset = playerItem.asset
+        Task { [weak self] in
+            guard let tracks = try? await asset.loadTracks(withMediaType: .video), !tracks.isEmpty else { return }
+            var hasDecodableTrack = false
+            for track in tracks where (try? await track.load(.isDecodable)) != false {
+                hasDecodableTrack = true
+                break
+            }
+            guard !hasDecodableTrack,
+                  let self,
+                  self.currentItem.id == itemID,
+                  self.player?.currentItem === playerItem else { return }
+            self.handleVideoPreparationFailure(
+                "이 영상의 화면 형식을 이 기기에서 재생할 수 없습니다.",
                 itemID: itemID
             )
         }
@@ -2013,8 +1941,20 @@ final class RemotePreviewViewModel: ObservableObject {
         itemID: RemoteFileItem.ID
     ) {
         guard currentItem.id == itemID else { return }
-        let wasRangeStreaming = streamingLoader != nil
 
+        #if targetEnvironment(macCatalyst)
+        // No compatibility player exists on the Mac, so a full download would only delay the same
+        // failure. Leave the black player now and show the installed-player choice.
+        videoPreparationTimeoutTask?.cancel()
+        videoPreparationTimeoutTask = nil
+        playerItemStatusObservation?.invalidate()
+        playerItemStatusObservation = nil
+        failVideoPreparation(message, itemID: itemID)
+        player = nil
+        activeLoadGeneration = nil
+        isLoading = false
+        #else
+        let wasRangeStreaming = streamingLoader != nil
         videoPreparationTimeoutTask?.cancel()
         videoPreparationTimeoutTask = nil
         playerItemStatusObservation?.invalidate()
@@ -2036,6 +1976,7 @@ final class RemotePreviewViewModel: ObservableObject {
                 forceCompatibilityPlayer: true
             )
         }
+        #endif
     }
 
     private func failCompatibilityVideoPreparation(
@@ -2517,76 +2458,6 @@ private enum PreviewExternalPlaybackError: LocalizedError {
     }
 }
 
-/// Copies the prepared local file into the app's own temporary folder under its original
-/// name, so the default app sees the right extension and keeps a file even when the
-/// service later removes its download (device-folder copies vanish with their access).
-/// `copyItem` clones on APFS and never links, so the other app cannot write into the
-/// source. Copies are not removed when the preview closes, because the other app may still
-/// be reading; folders older than the remote download cache age (7 days) are pruned on the
-/// next hand-off, and the system purges the temporary folder as usual.
-private enum PreviewDefaultPlayerStaging {
-    private static let maximumAge: TimeInterval = 7 * 24 * 60 * 60
-
-    static func stage(localURL: URL, originalFilename: String) async throws -> URL {
-        try await Task.detached(priority: .utility) {
-            let fileManager = FileManager.default
-            guard localURL.isFileURL,
-                  fileManager.fileExists(atPath: localURL.path) else {
-                throw PreviewExternalPlaybackError.localFileUnavailable
-            }
-            let root = fileManager.temporaryDirectory
-                .appending(path: "NasFinderDefaultPlayer", directoryHint: .isDirectory)
-            pruneExpiredFolders(in: root)
-
-            let directory = root.appending(path: UUID().uuidString, directoryHint: .isDirectory)
-            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
-            do {
-                let stagedURL = directory.appending(
-                    path: filename(originalFilename, fallbackURL: localURL),
-                    directoryHint: .notDirectory
-                )
-                try fileManager.copyItem(at: localURL, to: stagedURL)
-                return stagedURL
-            } catch {
-                try? fileManager.removeItem(at: directory)
-                throw error
-            }
-        }.value
-    }
-
-    private static func pruneExpiredFolders(in root: URL) {
-        let fileManager = FileManager.default
-        guard let folders = try? fileManager.contentsOfDirectory(
-            at: root,
-            includingPropertiesForKeys: [.creationDateKey, .isDirectoryKey],
-            options: [.skipsHiddenFiles]
-        ) else { return }
-        let now = Date()
-        for folder in folders {
-            guard let values = try? folder.resourceValues(
-                forKeys: [.creationDateKey, .isDirectoryKey]
-            ),
-                values.isDirectory == true,
-                let createdAt = values.creationDate,
-                now.timeIntervalSince(createdAt) > maximumAge else { continue }
-            try? fileManager.removeItem(at: folder)
-        }
-    }
-
-    private static func filename(_ filename: String, fallbackURL: URL) -> String {
-        let basename = (filename as NSString).lastPathComponent
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = basename.isEmpty || basename.hasPrefix(".")
-            ? (fallbackURL.lastPathComponent.isEmpty ? "NasFinder Video" : fallbackURL.lastPathComponent)
-            : basename
-        // Keep the extension the default app is chosen by, even if the source name lost it.
-        if (name as NSString).pathExtension.isEmpty, !fallbackURL.pathExtension.isEmpty {
-            return (name as NSString).appendingPathExtension(fallbackURL.pathExtension) ?? name
-        }
-        return name
-    }
-}
-
 private struct PreviewActivityView: UIViewControllerRepresentable {
     let fileURL: URL
 
@@ -2636,5 +2507,248 @@ private struct QuickLookPreview: UIViewControllerRepresentable {
         ) -> any QLPreviewItem {
             url as NSURL
         }
+    }
+}
+
+// MARK: - Mac external player chooser (separate from the preview)
+
+/// One unplayable video handed to the chooser after its preview was closed. The chooser works on this
+/// copy only, so a later preview or item change can never launch a stale item.
+struct ExternalPlayerRequest {
+    let item: RemoteFileItem
+    let service: any RemoteFileService
+    let localFileURL: URL?
+}
+
+/// Presents the player chooser as its own sheet on top of whatever is frontmost once the preview has
+/// finished dismissing, so it never lives inside the dismissed preview.
+@MainActor
+final class ExternalPlayerChooserPresenter {
+    static let shared = ExternalPlayerChooserPresenter()
+    private weak var presented: UIViewController?
+    private var presentTask: Task<Void, Never>?
+
+    func present(_ request: ExternalPlayerRequest) {
+        presentTask?.cancel()
+        presentTask = Task { [weak self] in
+            // Let the preview's own dismissal finish before presenting over the same stack.
+            try? await Task.sleep(for: .milliseconds(450))
+            for _ in 0..<20 {
+                guard !Task.isCancelled else { return }
+                if let top = Self.topViewController(), top.isBeingDismissed || top.transitionCoordinator != nil {
+                    try? await Task.sleep(for: .milliseconds(100))
+                } else {
+                    break
+                }
+            }
+            guard !Task.isCancelled, let self, let top = Self.topViewController() else { return }
+            if let old = self.presented, old.presentingViewController != nil { old.dismiss(animated: false) }
+            let host = UIHostingController(
+                rootView: ExternalPlayerChooserView(request: request) { [weak self] in
+                    self?.presented?.dismiss(animated: true)
+                }
+            )
+            host.modalPresentationStyle = .formSheet
+            host.preferredContentSize = CGSize(width: 520, height: 520)
+            self.presented = host
+            top.present(host, animated: true)
+        }
+    }
+
+    private static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let scene = scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
+        var top = scene?.windows.first(where: \.isKeyWindow)?.rootViewController
+        while let next = top?.presentedViewController, !next.isBeingDismissed { top = next }
+        return top
+    }
+}
+
+@MainActor
+private final class ExternalPlayerChooserModel: ObservableObject {
+    enum Route { case original, relay }
+
+    @Published var message: String?
+    @Published var isWorking = false
+    private var task: Task<Void, Never>?
+    let request: ExternalPlayerRequest
+
+    init(request: ExternalPlayerRequest) { self.request = request }
+
+    var installedPlayers: [ExternalPlayerHandoff.Player] {
+        var players = ExternalPlayerHandoff.Player.allCases.filter { player in
+            guard let probe = ExternalPlayerHandoff.installProbeURL(for: player) else { return false }
+            return UIApplication.shared.canOpenURL(probe)
+        }
+        if request.localFileURL != nil { players.append(.systemDefault) }
+        return players
+    }
+
+    var relayEligible: Bool {
+        request.localFileURL == nil
+            && LoopbackPlaybackRelayManager.eligibleSize(for: request.item, service: request.service) != nil
+    }
+
+    /// Address copy is offered only for a credential-free public original.
+    var copyableAddress: String? {
+        guard request.localFileURL == nil,
+              case let .remoteURL(url) = request.service.externalPlaybackTarget(for: request.item) else { return nil }
+        return ExternalPlayerHandoff.copyableText(for: url)
+    }
+
+    func cancel() { task?.cancel() }
+
+    func open(_ player: ExternalPlayerHandoff.Player, route: Route, finish: @escaping () -> Void) {
+        guard !isWorking else { return }
+        message = nil
+        isWorking = true
+        let request = request
+        task = Task { [weak self] in
+            // The handoff address (possibly session-bearing) lives only in this task's locals.
+            let result: (URL?, String?)
+            do {
+                result = try await Self.handoffURL(player: player, route: route, request: request)
+            } catch {
+                guard !Task.isCancelled, let self else { return }
+                self.isWorking = false
+                self.message = error.localizedDescription
+                return
+            }
+            guard !Task.isCancelled, let self else { return }
+            guard let handoff = result.0 else {
+                self.isWorking = false
+                self.message = result.1
+                return
+            }
+            let opened = await withCheckedContinuation { continuation in
+                UIApplication.shared.open(handoff, options: [:]) { continuation.resume(returning: $0) }
+            }
+            guard !Task.isCancelled else { return }
+            if opened {
+                finish()
+            } else {
+                self.isWorking = false
+                self.message = "\(player.title) 앱을 열지 못했습니다. 설치되어 있지 않거나 이 항목을 받을 수 없을 수 있습니다."
+            }
+        }
+    }
+
+    private static let localOnlyNotice = "시스템 기본 앱은 이 Mac에 있는 파일만 열 수 있습니다. IINA나 무비스트 Pro를 선택해 주세요."
+
+    /// Returns the URL to open, or nil plus the explanation to show.
+    private static func handoffURL(
+        player: ExternalPlayerHandoff.Player,
+        route: Route,
+        request: ExternalPlayerRequest
+    ) async throws -> (URL?, String?) {
+        if let local = request.localFileURL {
+            let url = ExternalPlayerHandoff.handoffURL(player: player, source: local)
+            return (url, url == nil ? ExternalPlayerHandoff.unsafeAddressReason : nil)
+        }
+        guard player != .systemDefault else { return (nil, localOnlyNotice) }
+
+        if route == .relay {
+            guard LoopbackPlaybackRelayManager.eligibleSize(for: request.item, service: request.service) != nil else {
+                return (nil, "이 항목은 임시 로컬 중계로 열 수 없습니다.")
+            }
+            let relay = try await LoopbackPlaybackRelayManager.shared.relayURL(for: request.item, service: request.service)
+            let url = ExternalPlayerHandoff.handoffURL(player: player, source: relay)
+            return (url, url == nil ? ExternalPlayerHandoff.unsafeAddressReason : nil)
+        }
+
+        switch request.service.externalPlaybackTarget(for: request.item) {
+        case let .localFile(file):
+            return (ExternalPlayerHandoff.handoffURL(player: player, source: file), nil)
+        case let .remoteURL(original), let .remoteURLRequiresPlayerLogin(original):
+            let url = ExternalPlayerHandoff.handoffURL(player: player, source: original)
+            return (url, url == nil ? ExternalPlayerHandoff.unsafeAddressReason : nil)
+        case let .unavailable(reason):
+            // NAS login-session original: only for the player the user just chose.
+            if let session = try await request.service.authenticatedOriginalHandoff(for: request.item) {
+                let url = ExternalPlayerHandoff.sessionHandoffURL(
+                    player: player,
+                    session: session,
+                    item: request.item,
+                    connection: request.service.connection
+                )
+                return (url, url == nil ? "NAS 원본 주소를 확인하지 못해 넘기지 않았습니다." : nil)
+            }
+            return (nil, reason)
+        }
+    }
+}
+
+private struct ExternalPlayerChooserView: View {
+    @StateObject private var model: ExternalPlayerChooserModel
+    let finish: () -> Void
+
+    init(request: ExternalPlayerRequest, finish: @escaping () -> Void) {
+        _model = StateObject(wrappedValue: ExternalPlayerChooserModel(request: request))
+        self.finish = finish
+    }
+
+    var body: some View {
+        let players = model.installedPlayers
+        VStack(alignment: .leading, spacing: 16) {
+            Label("이 앱에서 재생할 수 없는 영상입니다", interfaceSystemImage: "play.slash")
+                .porcelainFont(.section, weight: .semibold)
+            Text(model.request.item.name)
+                .porcelainFont(.tile)
+                .foregroundStyle(PorcelainMetrics.secondary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+            Text("이 Mac에 설치된 플레이어를 고르면 바로 넘겨 재생합니다.")
+                .porcelainFont(.tile)
+
+            if players.isEmpty {
+                Text("IINA나 무비스트 Pro를 찾지 못했습니다. 설치한 뒤 다시 열어 주세요.")
+                    .porcelainFont(.body)
+                    .foregroundStyle(PorcelainMetrics.secondary)
+            }
+            ForEach(players) { player in
+                Button("\(player.title)에서 열기") { model.open(player, route: .original, finish: finish) }
+                    .buttonStyle(PorcelainProminentButtonStyle())
+                    .disabled(model.isWorking)
+            }
+
+            if model.relayEligible, players.contains(where: { $0 != .systemDefault }) {
+                Divider()
+                Text("대체 방법: 이 Mac 안의 임시 중계 주소(원본 NAS 주소가 아닙니다)")
+                    .porcelainFont(.body)
+                    .foregroundStyle(PorcelainMetrics.secondary)
+                ForEach(players.filter { $0 != .systemDefault }) { player in
+                    Button("임시 중계로 \(player.title)에서 열기") { model.open(player, route: .relay, finish: finish) }
+                        .buttonStyle(.bordered)
+                        .disabled(model.isWorking)
+                }
+            }
+
+            if let address = model.copyableAddress {
+                Button("재생 주소 복사") {
+                    UIPasteboard.general.string = address
+                    model.message = "재생 주소를 복사했습니다. 로그인 정보는 포함되지 않습니다."
+                }
+                .buttonStyle(.bordered)
+            }
+
+            if model.isWorking { ProgressView() }
+            if let message = model.message {
+                Text(message)
+                    .porcelainFont(.body)
+                    .foregroundStyle(PorcelainMetrics.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 0)
+            HStack {
+                Spacer()
+                Button("닫기") { model.cancel(); finish() }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(PorcelainMetrics.paper)
+        .onDisappear { model.cancel() }
     }
 }

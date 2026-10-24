@@ -70,6 +70,27 @@ enum RemoteDownloadIntegrityError: LocalizedError, Sendable, Equatable {
     }
 }
 
+/// Where an external player can read an item from without the app copying it first.
+enum RemoteExternalPlaybackTarget: Sendable, Equatable {
+    /// A file that already exists on this device (read in place, never copied).
+    case localFile(URL)
+    /// A credential-free http(s) original address. The app's own headers/cookies are not sent;
+    /// the external player decides network access and any login.
+    case remoteURL(URL)
+    /// Same credential-free address, but the server asks for a login: the external player has to
+    /// authenticate by itself (the app never puts a password into the address).
+    case remoteURLRequiresPlayerLogin(URL)
+    /// No safe original address exists (private/auth-bound source). Never a credential URL.
+    case unavailable(reason: String)
+}
+
+/// 파일 일부만 읽는 범위 읽기(스트리밍)를 제공하지 않는 연결의 오류. 예전 기본 구현은 '복사' 미지원 문구를 잘못 보였다.
+struct RemoteRangeReadUnsupportedError: LocalizedError, Sendable, Equatable {
+    var errorDescription: String? {
+        "이 연결은 파일 일부만 읽는 스트리밍을 지원하지 않습니다. 파일을 내려받아 열어 주세요."
+    }
+}
+
 typealias RemoteDownloadProgressHandler = @Sendable (RemoteDownloadProgress) async -> Void
 
 protocol RemoteFileService: Sendable {
@@ -86,6 +107,13 @@ protocol RemoteFileService: Sendable {
         progress: @escaping RemoteDownloadProgressHandler
     ) async throws -> URL
     var supportsRangeStreaming: Bool { get }
+    /// Read-only lookup for handing the original to another app. Never downloads, copies or
+    /// builds a URL carrying credentials, session ids or user info.
+    func externalPlaybackTarget(for item: RemoteFileItem) -> RemoteExternalPlaybackTarget
+    /// The authenticated original file-stream address for one item, for a player the user just chose.
+    /// The address carries the NAS login session (never the password), so it must stay in transient
+    /// memory and go only to that player. nil when the backend has no such address.
+    func authenticatedOriginalHandoff(for item: RemoteFileItem) async throws -> NASSessionHandoff?
     func readRange(
         of item: RemoteFileItem,
         offset: Int64,
@@ -149,6 +177,10 @@ protocol RemoteFileService: Sendable {
 extension RemoteFileService {
     var capabilities: RemoteFileServiceCapabilities { [] }
     var supportsRangeStreaming: Bool { false }
+    func externalPlaybackTarget(for item: RemoteFileItem) -> RemoteExternalPlaybackTarget {
+        .unavailable(reason: "이 연결은 앱에 저장된 로그인으로만 열 수 있어 외부 플레이어에 주소를 넘기거나 복사할 수 없습니다. 앱 안의 플레이어로 재생해 주세요.")
+    }
+    func authenticatedOriginalHandoff(for item: RemoteFileItem) async throws -> NASSessionHandoff? { nil }
     var permitsFullDownloadForVideoThumbnail: Bool { true }
 
     func download(
@@ -179,7 +211,7 @@ extension RemoteFileService {
         offset: Int64,
         length: Int
     ) async throws -> Data {
-        throw RemoteFileOperationError.unsupported(operation: .copy)
+        throw RemoteRangeReadUnsupportedError()
     }
 
     func thumbnailData(

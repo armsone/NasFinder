@@ -74,8 +74,8 @@ struct AppIconAvailabilityPolicyTests {
 
     @Test func enteringEnamelThemeInstallsEnamelIconAndRemembersPrevious() {
         let sync = AppIconAvailabilityPolicy.themeSynchronization(
-            from: .day,
-            to: .skeuomorphism,
+            from: .resolved("day"),
+            to: .resolved("skeuomorphism"),
             currentIcon: .purpleNAS,
             iconBeforeEnamel: nil,
             isIOSAppOnMac: false
@@ -83,8 +83,8 @@ struct AppIconAvailabilityPolicyTests {
         #expect(sync == .init(icon: .enamelNAS, remembersCurrentIcon: true))
 
         let alreadyEnamel = AppIconAvailabilityPolicy.themeSynchronization(
-            from: .skeuomorphism,
-            to: .skeuomorphism,
+            from: .resolved("skeuomorphism"),
+            to: .resolved("skeuomorphism"),
             currentIcon: .enamelNAS,
             iconBeforeEnamel: .purpleNAS,
             isIOSAppOnMac: false
@@ -94,7 +94,7 @@ struct AppIconAvailabilityPolicyTests {
 
     @Test func leavingEnamelThemeRestoresRememberedIcon() {
         let restored = AppIconAvailabilityPolicy.themeSynchronization(
-            from: .skeuomorphism,
+            from: .resolved("skeuomorphism"),
             to: .night,
             currentIcon: .enamelNAS,
             iconBeforeEnamel: .cyberVault,
@@ -103,7 +103,7 @@ struct AppIconAvailabilityPolicyTests {
         #expect(restored == .init(icon: .cyberVault, remembersCurrentIcon: false))
 
         let fallback = AppIconAvailabilityPolicy.themeSynchronization(
-            from: .skeuomorphism,
+            from: .resolved("skeuomorphism"),
             to: .night,
             currentIcon: .enamelNAS,
             iconBeforeEnamel: nil,
@@ -115,8 +115,8 @@ struct AppIconAvailabilityPolicyTests {
     @Test func vibeCoderThemeInstallsVibeCoderIconAndOtherThemesLeaveIconAlone() {
         #expect(
             AppIconAvailabilityPolicy.themeSynchronization(
-                from: .system,
-                to: .digitalRain,
+                from: .resolved("system"),
+                to: .resolved("digitalRain"),
                 currentIcon: .blueNAS,
                 iconBeforeEnamel: nil,
                 isIOSAppOnMac: false
@@ -124,8 +124,8 @@ struct AppIconAvailabilityPolicyTests {
         )
         #expect(
             AppIconAvailabilityPolicy.themeSynchronization(
-                from: .day,
-                to: .workbench,
+                from: .resolved("day"),
+                to: .resolved("workbench"),
                 currentIcon: .purpleNAS,
                 iconBeforeEnamel: nil,
                 isIOSAppOnMac: false

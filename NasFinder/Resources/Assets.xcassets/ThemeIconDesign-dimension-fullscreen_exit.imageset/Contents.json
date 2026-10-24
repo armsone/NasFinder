@@ -1,0 +1,12 @@
+{
+  "images": [
+    {
+      "filename": "fullscreen_exit.png",
+      "idiom": "universal"
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
+}

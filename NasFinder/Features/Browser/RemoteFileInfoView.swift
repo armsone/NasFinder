@@ -13,7 +13,7 @@ struct RemoteFileInfoView: View {
             Form {
                 Section {
                     VStack(spacing: ui(12)) {
-                        Image(systemName: item.systemImage)
+                        Image(interfaceSystemName: item.systemImage, pointSize: ui(46))
                             .font(.system(size: ui(46)))
                             .foregroundStyle(item.isDirectory ? PorcelainMetrics.graphite : PorcelainMetrics.accent)
                             .accessibilityHidden(true)

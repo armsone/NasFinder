@@ -132,6 +132,49 @@ enum RemotePath {
         )
     }
 
+    /// `directory`가 `folder` 자신이거나 그 하위 폴더인지. 대소문자를 구분하지 않는 서버에서도 폴더를 자기 하위로
+    /// 옮기는 요청을 보내지 않도록 대소문자를 무시해 보수적으로 판정한다(대소문자만 다른 형제 폴더도 막힐 수 있다).
+    static func isSameOrDescendant(_ directory: String, of folder: String) -> Bool {
+        let target = directory.lowercased()
+        let source = folder.lowercased()
+        return target == source || target.hasPrefix(source.hasSuffix("/") ? source : source + "/")
+    }
+
+    /// 대상 폴더의 현재 항목과 충돌 정책으로 최종 이름을 정한다. 업로드·이동이 같은 규칙을 쓴다.
+    /// `caseSensitive`가 false면 대소문자만 다른 이름도 충돌로 보아, 대소문자를 구분하지 않는
+    /// 서버에서 기존 파일을 덮어쓰는 일이 없게 한다.
+    static func conflictDecision(
+        for requestedName: String,
+        sourceIsDirectory: Bool,
+        siblings: [RemoteFileItem],
+        policy: RemoteConflictPolicy,
+        sourcePath: String,
+        destinationPath: String,
+        caseSensitive: Bool = true
+    ) throws -> RemoteConflictDecision {
+        let name = try validatedName(requestedName)
+        let existing = siblings.first {
+            caseSensitive ? $0.name == name : $0.name.lowercased() == name.lowercased()
+        }
+        guard let existing else { return .proceed(name: name, replacesExisting: false) }
+        switch policy {
+        case .fail:
+            throw RemoteFileOperationError.conflict(sourcePath: sourcePath, destinationPath: destinationPath)
+        case .skip:
+            return .skip(existingPath: existing.path)
+        case .replace:
+            guard !existing.isDirectory, !sourceIsDirectory else {
+                throw RemoteFileOperationError.folderReplacementNotAllowed(path: existing.path)
+            }
+            return .proceed(name: existing.name, replacesExisting: true)
+        case .keepBoth:
+            return .proceed(
+                name: try keepBothName(for: name, existingNames: siblings.map(\.name), caseSensitive: caseSensitive),
+                replacesExisting: false
+            )
+        }
+    }
+
     private static func stemWithoutNumericCopySuffix(_ stem: String) -> String {
         guard stem.last == ")",
               let openingParenthesis = stem.lastIndex(of: "("),
@@ -151,6 +194,12 @@ enum RemotePath {
 
         return String(stem[..<spaceIndex])
     }
+}
+
+/// 충돌 정책을 적용한 결과. `replacesExisting`이면 같은 이름의 기존 파일을 대상으로 한다.
+enum RemoteConflictDecision: Equatable, Sendable {
+    case proceed(name: String, replacesExisting: Bool)
+    case skip(existingPath: String)
 }
 
 private extension RemotePath {

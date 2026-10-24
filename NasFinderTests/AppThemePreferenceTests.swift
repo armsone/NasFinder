@@ -4,12 +4,12 @@ import XCTest
 
 final class AppThemePreferenceTests: XCTestCase {
     func testUnknownStoredThemeFallsBackToSystem() {
-        XCTAssertEqual(AppThemePreference.resolved(nil), .system)
-        XCTAssertEqual(AppThemePreference.resolved("removed-theme"), .system)
+        XCTAssertEqual(AppThemePreference.resolved(nil), .resolved("system"))
+        XCTAssertEqual(AppThemePreference.resolved("removed-theme"), .resolved("system"))
     }
 
     func testAllSelectableThemesHaveStableUniqueValues() {
-        XCTAssertEqual(AppThemePreference.allCases.count, 7)
+        XCTAssertEqual(AppThemePreference.allCases.count, 6)
         XCTAssertEqual(
             Set(AppThemePreference.allCases.map(\.rawValue)).count,
             AppThemePreference.allCases.count
@@ -24,12 +24,13 @@ final class AppThemePreferenceTests: XCTestCase {
         XCTAssertEqual(themes.last?.next, themes.first)
     }
 
-    func testVibeCoderTitleAndExtensibleServicePalette() {
-        XCTAssertEqual(AppThemePreference.digitalRain.title, "Vibe Coder")
-        XCTAssertEqual(ThemeServicePalette.colors(for: .digitalRain).count, 4)
+    func testRemovedThemeTitleFallsBackAndServicePaletteStaysExtensible() {
+        XCTAssertEqual(AppThemePreference.resolved("digitalRain"), .light, "삭제된 테마 값은 밝은 테마로 읽습니다.")
+        XCTAssertEqual(AppThemePreference.resolved("digitalRain").title, "밝은")
+        XCTAssertEqual(ThemeServicePalette.colors(for: .resolved("digitalRain")).count, 4)
         _ = ThemeServicePalette.color(
             forServiceIdentifier: "future.cloud.provider",
-            theme: .digitalRain
+            theme: .resolved("digitalRain")
         )
     }
 
@@ -77,26 +78,45 @@ final class AppThemePreferenceTests: XCTestCase {
 
     func testBrandBaseColorsStayStableInDayTheme() {
         XCTAssertEqual(
-            ThemeServicePalette.style(forServiceIdentifier: "synology", theme: .day),
+            ThemeServicePalette.style(forServiceIdentifier: "synology", theme: .resolved("day")),
             ThemeServiceStyle(hex: 0x0067E6)
         )
         XCTAssertEqual(
-            ThemeServicePalette.style(forServiceIdentifier: "oneDrive", theme: .day),
+            ThemeServicePalette.style(forServiceIdentifier: "oneDrive", theme: .resolved("day")),
             ThemeServiceStyle(hex: 0x0078D4)
         )
         XCTAssertEqual(
-            ThemeServicePalette.style(forServiceIdentifier: "dropbox", theme: .day),
+            ThemeServicePalette.style(forServiceIdentifier: "dropbox", theme: .resolved("day")),
             ThemeServiceStyle(hex: 0x0061FF)
         )
     }
 
     func testThemeColorSchemesMatchTheirIntendedContrast() {
-        XCTAssertNil(AppThemePreference.system.preferredColorScheme)
-        XCTAssertEqual(AppThemePreference.day.preferredColorScheme, .light)
+        XCTAssertEqual(AppThemePreference.light.preferredColorScheme, .light)
+        XCTAssertEqual(AppThemePreference.bkstyle.preferredColorScheme, .light)
+        XCTAssertEqual(AppThemePreference.friday.preferredColorScheme, .light)
         XCTAssertEqual(AppThemePreference.night.preferredColorScheme, .dark)
-        XCTAssertEqual(AppThemePreference.digitalRain.preferredColorScheme, .dark)
-        XCTAssertEqual(AppThemePreference.windyMeadow.preferredColorScheme, .light)
-        XCTAssertEqual(AppThemePreference.workbench.preferredColorScheme, .dark)
-        XCTAssertEqual(AppThemePreference.skeuomorphism.preferredColorScheme, .light)
+        XCTAssertEqual(AppThemePreference.jarvis.preferredColorScheme, .dark)
+        XCTAssertEqual(AppThemePreference.ultron.preferredColorScheme, .dark)
+        XCTAssertEqual(AppThemePreference.resolved("night").preferredColorScheme, .dark, "예전 night 값은 어두운 테마로 읽습니다.")
+        XCTAssertEqual(AppThemePreference.resolved("system").preferredColorScheme, .light)
+    }
+
+    func testJarvisShellActivationAppliesOnceAndKeepsLaterChoice() throws {
+        let suiteName = "AppThemePreferenceTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(AppThemePreference.night.rawValue, forKey: AppThemePreference.storageKey)
+
+        JarvisShellActivation.applyOnce(defaults: defaults)
+        XCTAssertEqual(defaults.string(forKey: AppThemePreference.storageKey), AppThemePreference.jarvis.rawValue)
+
+        defaults.set(AppThemePreference.night.rawValue, forKey: AppThemePreference.storageKey)
+        JarvisShellActivation.applyOnce(defaults: defaults)
+        XCTAssertEqual(
+            defaults.string(forKey: AppThemePreference.storageKey),
+            AppThemePreference.night.rawValue,
+            "첫 적용 뒤 사용자가 고른 테마는 다시 덮어쓰지 않습니다."
+        )
     }
 }

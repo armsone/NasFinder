@@ -185,6 +185,8 @@ struct RemoteConnection: Identifiable, Codable, Hashable, Sendable {
     var usesTLS: Bool
     var trustedHostKey: String?
     var createdAt: Date
+    /// 비공개 연결(nil = 공개, 예전 데이터와 같다). 일반 모드의 목록·선택지·Files 앱 위치에서만 숨긴다.
+    var isPrivate: Bool?
 
     init(
         id: UUID = UUID(),

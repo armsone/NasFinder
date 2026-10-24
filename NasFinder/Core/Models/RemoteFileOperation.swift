@@ -380,7 +380,7 @@ enum RemoteFileOperationError: LocalizedError, Sendable, Hashable {
         case .notFound:
             "항목을 찾을 수 없습니다."
         case .directoryNotEmpty:
-            "폴더가 비어 있지 않습니다. 재귀 삭제를 선택해 주세요."
+            "폴더가 비어 있지 않아 삭제하지 않았습니다. 이 연결은 비어 있는 폴더만 삭제할 수 있으니 안의 항목을 먼저 삭제해 주세요."
         }
     }
 }

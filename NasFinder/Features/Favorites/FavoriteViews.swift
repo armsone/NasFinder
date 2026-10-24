@@ -704,7 +704,7 @@ private struct FavoriteHomeActionHost: View {
                             favoriteStore.remove(id: favorite.id)
                             showsFailure = false
                         } label: {
-                            Label("즐겨찾기 해제", systemImage: "star.slash")
+                            Label("즐겨찾기 해제", interfaceSystemImage: "star.slash")
                         }
                         Spacer(minLength: 0)
                         Button("닫기") { showsFailure = false }
@@ -765,7 +765,23 @@ struct FavoriteListView: View {
                             }
                             .buttonStyle(.plain)
                             .contextMenu {
-                                Button("즐겨찾기에서 제거…", systemImage: "star.slash", role: .destructive) {
+                                let position = favoriteStore.items.firstIndex { $0.id == favorite.id }
+                                Section("순서") {
+                                    Button("앞으로 이동", interfaceSystemImage: "arrow.up") {
+                                        if let position { favoriteStore.move(id: favorite.id, to: position - 1) }
+                                    }
+                                    .disabled((position ?? 0) == 0)
+                                    Button("뒤로 이동", interfaceSystemImage: "arrow.down") {
+                                        if let position { favoriteStore.move(id: favorite.id, to: position + 1) }
+                                    }
+                                    .disabled(position == nil || position == favoriteStore.items.count - 1)
+                                }
+                                if favorite.isPrivate == true {
+                                    Button("공개로 전환", interfaceSystemImage: "eye") { favoriteStore.setPrivate(id: favorite.id, false) }
+                                } else {
+                                    Button("비공개로 전환", interfaceSystemImage: "eye.slash") { favoriteStore.setPrivate(id: favorite.id, true) }
+                                }
+                                Button("즐겨찾기에서 제거…", interfaceSystemImage: "star.slash", role: .destructive) {
                                     favoritePendingRemoval = favorite
                                 }
                             }
@@ -871,7 +887,7 @@ private struct FavoriteCell: View {
                 )
             }
         } else {
-            Image(systemName: favorite.remoteItem.systemImage)
+            Image(interfaceSystemName: favorite.remoteItem.systemImage, pointSize: side * 0.38)
                 .font(.system(size: side * 0.38))
                 .foregroundStyle(.secondary)
         }
@@ -895,7 +911,7 @@ private struct FavoriteCell: View {
                         )
                     }
                 } else {
-                    Image(systemName: favorite.remoteItem.systemImage)
+                    Image(interfaceSystemName: favorite.remoteItem.systemImage, pointSize: side * 0.38)
                         .font(.system(size: side * 0.38))
                         .foregroundStyle(.secondary)
                 }
@@ -994,7 +1010,7 @@ private struct FavoriteFolderThumbnailView: View {
                     side: side
                 )
             case .loadingPlaceholder:
-                Image(systemName: "folder.fill")
+                Image(interfaceSystemName: "folder.fill")
                     .resizable()
                     .scaledToFit()
                     .padding(side * 0.06)
@@ -1036,7 +1052,7 @@ private struct FavoriteFolderMosaicView: View {
         let _ = themeRefresh.theme
         Group {
             if items.isEmpty {
-                Image(systemName: "folder.fill")
+                Image(interfaceSystemName: "folder.fill")
                     .resizable()
                     .scaledToFit()
                     .padding(side * 0.06)
@@ -1266,7 +1282,7 @@ struct MediaFavoritePickerView: View {
         }
         .navigationTitle("즐겨찾기")
         .navigationBarTitleDisplayMode(.inline)
-        .alert("알림", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+        .alert("즐겨찾기 알림", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("확인", role: .cancel) { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
     }

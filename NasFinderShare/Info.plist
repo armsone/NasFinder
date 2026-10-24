@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>CFBundleDisplayName</key>
-	<string>NasFinder로 저장</string>
+	<string>NasFinder</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -23,16 +23,17 @@
 		<key>NSExtensionAttributes</key>
 		<dict>
 			<key>NSExtensionActivationRule</key>
-			<dict>
-				<key>NSExtensionActivationSupportsFileWithMaxCount</key>
-				<integer>50</integer>
-				<key>NSExtensionActivationSupportsImageWithMaxCount</key>
-				<integer>50</integer>
-				<key>NSExtensionActivationSupportsLivePhotoWithMaxCount</key>
-				<integer>50</integer>
-				<key>NSExtensionActivationSupportsMovieWithMaxCount</key>
-				<integer>50</integer>
-			</dict>
+			<string>SUBQUERY (
+					extensionItems,
+					$extensionItem,
+					SUBQUERY (
+						$extensionItem.attachments,
+						$attachment,
+						ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.image"
+						|| ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.movie"
+						|| ANY $attachment.registeredTypeIdentifiers UTI-CONFORMS-TO "public.file-url"
+					).@count &gt;= 1
+				).@count &gt;= 1</string>
 		</dict>
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.share-services</string>

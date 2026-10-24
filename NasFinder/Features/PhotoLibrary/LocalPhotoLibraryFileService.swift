@@ -7,7 +7,7 @@ struct LocalPhotoLibraryFileService: RemoteFileService {
 
     let connection = RemoteConnection(
         id: connectionID,
-        name: "내 사진·영상",
+        name: "내 미디어",
         kind: .synology,
         host: "localhost",
         username: ""

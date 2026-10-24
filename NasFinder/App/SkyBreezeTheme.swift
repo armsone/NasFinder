@@ -157,6 +157,12 @@ struct AppThemePalette: Sendable {
     var onAccent: Color { Self.color(onAccentHex) }
     /// 채운 CTA 바탕. 병기스타일만 accent와 다르다(#C93629).
     var solidAction: Color { Self.color(solidActionHex) }
+    /// 주의 글자·글리프 색. 항상 기호와 문구를 함께 쓰며 색만으로 전하지 않는다. 어두운 테마는 밝은 호박색, 밝은 테마는 짙은 호박색.
+    var warn: Color { Self.color(Self.isDark(backgroundHex) ? 0xE5B85C : 0x8A5A00) }
+    private static func isDark(_ hex: Int) -> Bool {
+        let r = Double((hex >> 16) & 0xFF), g = Double((hex >> 8) & 0xFF), b = Double(hex & 0xFF)
+        return (0.299 * r + 0.587 * g + 0.114 * b) < 128
+    }
     var textUIColor: UIColor { Self.uiColor(textHex) }
 
     static func uiColor(_ hex: Int) -> UIColor {
@@ -483,7 +489,7 @@ struct ThemedSymbol: View {
                     }
                 }
         } else {
-            Image(systemName: systemName)
+            Image(interfaceSystemName: systemName)
         }
     }
 }
@@ -599,9 +605,36 @@ struct ByungkiThemeGlyph: View {
     var size: CGFloat = 24
     var tintColor: Color? = nil
 
-    var body: some View {
-        let drawColor = tintColor ?? theme.palette.accent
-        Canvas { context, canvasSize in
+    @AppStorage(InterfaceIconStyle.storageKey) private var iconStyleRaw = "simple"
+
+    private var canonical: String? {
+        switch theme {
+        case .light: return "display_light"
+        case .bkstyle: return "theme_half"
+        case .night: return "display_dark"
+        case .friday: return "theme_hexagon"
+        case .jarvis, .ultron: return nil // These two marks identify the named colour themes.
+        }
+    }
+
+    @ViewBuilder var body: some View {
+        let style = InterfaceIconStyle(rawValue: iconStyleRaw) ?? .simple
+        if let canonical, let artwork = InterfaceDesignArtwork.asset(canonical, style: style) {
+            Image(uiImage: artwork)
+                .renderingMode(style == .simple ? .template : .original)
+                .resizable().scaledToFit()
+                .foregroundStyle(theme.isDark ? Color.white : Color.black)
+                .frame(width: size, height: size)
+                .accessibilityHidden(true)
+        } else {
+            legacyGlyph
+        }
+    }
+
+    private var legacyGlyph: some View {
+        let style = InterfaceIconStyle(rawValue: iconStyleRaw) ?? .simple
+        let drawColor = style == .simple ? (theme.isDark ? Color.white : Color.black) : (tintColor ?? theme.palette.accent)
+        return Canvas { context, canvasSize in
             let scale = canvasSize.width / 24.0
             context.scaleBy(x: scale, y: scale)
 
@@ -819,7 +852,7 @@ struct ByungkiThemeControlButton: View {
     }
 
     private var accessibilityLabelText: String {
-        "병기스타일 테마: \(currentTheme.title) (누르면 \(nextTheme.title), 길게 누르면 목록)"
+        "테마: \(currentTheme.title) (누르면 \(nextTheme.title), 길게 누르면 목록)"
     }
 
     var body: some View {
@@ -893,7 +926,7 @@ struct ByungkiThemeControlButton: View {
                             .lineLimit(1)
                             .fixedSize(horizontal: true, vertical: false)
                         Spacer(minLength: 12)
-                        Image(systemName: "checkmark")
+                        Image(interfaceSystemName: "checkmark", pointSize: 12)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(theme.chooserBadgeColors.border)
                             .frame(width: 20)
@@ -912,7 +945,7 @@ struct ByungkiThemeControlButton: View {
         .padding(.vertical, 6)
         .fixedSize()
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("병기스타일 테마")
+        .accessibilityLabel("테마")
     }
 
     @ViewBuilder
@@ -938,7 +971,7 @@ struct ByungkiThemeControlButton: View {
         let renderer = ImageRenderer(content: ByungkiThemeChooserBadge(theme: theme))
         renderer.scale = 3
         guard let uiImage = renderer.uiImage else {
-            return Image(systemName: theme.systemImage)
+            return Image(interfaceSystemName: theme.systemImage)
         }
         return Image(uiImage: uiImage.withRenderingMode(.alwaysOriginal))
     }

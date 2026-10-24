@@ -20,6 +20,8 @@ struct CollectedVideo: Codable, Identifiable, Equatable, Sendable {
     /// `videoFilename`은 비어 있다. 컬렉션은 이 원본을 읽기만 하고 바꾸거나 지우지 않는다.
     var referenceBookmark: Data? = nil
     var referenceName: String? = nil
+    /// 비공개 영상(nil = 공개, 예전 데이터와 같다). 포스터·복사본 파일은 이 레코드에 종속이라 따로 표시하지 않는다.
+    var isPrivate: Bool? = nil
 
     var isReference: Bool { referenceBookmark != nil }
 }
@@ -73,7 +75,10 @@ enum CollectionCompressionOption: String, CaseIterable, Identifiable {
 final class MovieCollectionStore: ObservableObject {
     static let shared = MovieCollectionStore()
 
-    @Published private(set) var videos: [CollectedVideo] = []
+    /// 비공개를 포함한 전체 컬렉션. 저장·삭제·참조 갱신은 항상 이 전체 목록을 대상으로 한다.
+    @Published private(set) var allVideos: [CollectedVideo] = []
+    /// 지금 모드에서 보이는 컬렉션: 일반 모드는 공개 영상만, 프라이버시 모드는 공개 + 비공개.
+    var videos: [CollectedVideo] { allVideos.filter { PrivacyMode.isVisible($0.isPrivate) } }
     @Published private(set) var errorMessage: String?
     @Published private(set) var referenceStates: [UUID: CollectionReferenceState] = [:]
     /// 참조 항목을 재생·공유하려고 열어 둔 보안 범위 접근. 제거하거나 다시 풀 때 닫는다.
@@ -91,7 +96,7 @@ final class MovieCollectionStore: ObservableObject {
         if let data = try? Data(contentsOf: indexURL),
            let decoded = try? JSONDecoder().decode([CollectedVideo].self, from: data) {
             // 파일이 사라진 항목도 목록에서 지우지 않는다. 복사본이 없으면 화면에서 사유를 보여 준다.
-            videos = decoded
+            allVideos = decoded
         } else if FileManager.default.fileExists(atPath: indexURL.path) {
             // 읽지 못한 인덱스는 다음 저장이 덮어쓰기 전에 따로 보관한다.
             let backup = base.appendingPathComponent("index.unreadable-\(Int(Date().timeIntervalSince1970)).json")
@@ -130,8 +135,12 @@ final class MovieCollectionStore: ObservableObject {
     /// 인덱스 저장까지 성공한 뒤에야 목록에 넣는다. 저장에 실패하면 이번에 만든 파일만 지우고 이전 목록을 유지한다.
     @discardableResult
     func add(from source: URL, title: String, posterData: Data? = nil,
-             sourceProjectID: UUID? = nil, isImported: Bool, asReference: Bool = false) async -> CollectedVideo? {
+             sourceProjectID: UUID? = nil, isImported: Bool, asReference: Bool = false,
+             isPrivate: Bool? = nil) async -> CollectedVideo? {
         let id = UUID()
+        // 시작 시점의 출처를 한 번 잡는다: 프라이버시 모드, 비공개 편집본에서 만든 영상, 호출자가 지정한 경우.
+        let flag: Bool? = (isPrivate == true || PrivacyMode.currentlyActive
+            || sourceProjectID.flatMap { TrailerProjectStore.shared.records[$0]?.isPrivate } == true) ? true : nil
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
 
@@ -194,11 +203,12 @@ final class MovieCollectionStore: ObservableObject {
             id: id, title: title, videoFilename: videoName, posterFilename: posterName,
             createdAt: Date(), duration: seconds, byteCount: size, isPinned: false,
             sourceProjectID: sourceProjectID, isImported: isImported,
-            referenceBookmark: bookmark, referenceName: asReference ? source.lastPathComponent : nil)
-        let previous = videos
-        videos.append(video)
+            referenceBookmark: bookmark, referenceName: asReference ? source.lastPathComponent : nil,
+            isPrivate: flag)
+        let previous = allVideos
+        allVideos.append(video)
         guard save() else {
-            videos = previous
+            allVideos = previous
             rollback()
             return nil
         }
@@ -234,7 +244,7 @@ final class MovieCollectionStore: ObservableObject {
 
     /// 참조 항목의 원본이 아직 열리는지 다시 확인한다. 실패해도 항목은 지우지 않고 상태만 바꾼다.
     func refreshReferences(ids: Set<UUID>? = nil) async {
-        for video in videos where video.isReference && (ids?.contains(video.id) ?? true) {
+        for video in allVideos where video.isReference && (ids?.contains(video.id) ?? true) {
             guard let data = video.referenceBookmark else { continue }
             let resolved = await Task.detached { Self.resolveBookmark(data) }.value
             if let old = accessing[video.id] { old.stopAccessingSecurityScopedResource(); accessing[video.id] = nil }
@@ -261,7 +271,7 @@ final class MovieCollectionStore: ObservableObject {
     /// 사용자가 다시 고른 원본으로 참조를 바꾼다. 재생할 수 있는 영상일 때만 바꾸고, 실패하면 이전 참조를 유지한다.
     @discardableResult
     func reselectReference(_ id: UUID, to source: URL) async -> Bool {
-        guard videos.contains(where: { $0.id == id }) else { return false }
+        guard allVideos.contains(where: { $0.id == id }) else { return false }
         let scoped = source.startAccessingSecurityScopedResource()
         defer { if scoped { source.stopAccessingSecurityScopedResource() } }
         let seconds = (try? await AVURLAsset(url: source).load(.duration).seconds) ?? 0
@@ -285,7 +295,7 @@ final class MovieCollectionStore: ObservableObject {
     /// 참조 항목을 앱 안 복사본으로 바꾼다. 복사와 확인이 끝난 뒤에만 전환하며 원본은 건드리지 않는다.
     @discardableResult
     func convertToCopy(_ id: UUID) async -> Bool {
-        guard let video = videos.first(where: { $0.id == id }), video.isReference,
+        guard let video = allVideos.first(where: { $0.id == id }), video.isReference,
               let source = playbackURL(video) else {
             errorMessage = "원본에 연결할 수 없어 복사본을 만들 수 없습니다. 먼저 원본을 다시 연결해 주세요."
             return false
@@ -325,24 +335,30 @@ final class MovieCollectionStore: ObservableObject {
         update(id) { $0.title = trimmed }
     }
 
+    /// 명시적인 공개/비공개 전환. 영상·포스터 파일과 순서는 그대로이고 플래그만 바뀐다.
+    func setPrivate(_ id: UUID, _ isPrivate: Bool) {
+        update(id) { $0.isPrivate = isPrivate ? true : nil }
+    }
+
     func togglePin(_ id: UUID) { update(id) { $0.isPinned.toggle() } }
 
     /// 같은 고정 구역 안에서 한 칸 이동한다.
     func move(_ id: UUID, by offset: Int) {
-        guard let index = videos.firstIndex(where: { $0.id == id }) else { return }
-        let pinned = videos[index].isPinned
-        let peers = videos.indices.filter { videos[$0].isPinned == pinned }
+        guard let index = allVideos.firstIndex(where: { $0.id == id }) else { return }
+        let pinned = allVideos[index].isPinned
+        // 보이는 영상끼리만 이웃으로 센다(숨겨진 영상과 자리를 바꿔 아무 일도 없는 것처럼 보이지 않게).
+        let peers = allVideos.indices.filter { allVideos[$0].isPinned == pinned && PrivacyMode.isVisible(allVideos[$0].isPrivate) }
         guard let position = peers.firstIndex(of: index) else { return }
         let target = position + offset
         guard peers.indices.contains(target) else { return }
-        let previous = videos
-        videos.swapAt(index, peers[target])
-        if !save() { videos = previous }
+        let previous = allVideos
+        allVideos.swapAt(index, peers[target])
+        if !save() { allVideos = previous }
     }
 
     /// 고른 포스터를 저장한다. 같은 이름의 새 파일을 원자적으로 교체하므로 쓰기에 실패해도 이전 포스터가 남는다.
     func setPoster(_ id: UUID, data: Data) {
-        guard let video = videos.first(where: { $0.id == id }) else { return }
+        guard let video = allVideos.first(where: { $0.id == id }) else { return }
         do {
             try data.write(to: posterURL(video), options: .atomic)
             objectWillChange.send()
@@ -362,7 +378,7 @@ final class MovieCollectionStore: ObservableObject {
     /// 출력이 더 작고 재생 가능할 때만 인덱스를 바꾸고, 실패·취소·검증 실패면 이전 파일과 메타데이터를 그대로 둔다.
     /// 참조 항목이면 원본은 읽기만 하고, 성공하면 이 항목이 앱 안 압축본으로 전환된다.
     func compress(_ id: UUID, option: CollectionCompressionOption) async -> Bool {
-        guard let video = videos.first(where: { $0.id == id }) else { return false }
+        guard let video = allVideos.first(where: { $0.id == id }) else { return false }
         guard let source = playbackURL(video) else {
             errorMessage = "원본 영상을 열 수 없어 압축할 수 없습니다. 연결을 확인해 주세요."
             return false
@@ -412,10 +428,10 @@ final class MovieCollectionStore: ObservableObject {
     /// 컬렉션에서 뺀다. 앱이 만든 복사본과 포스터, 참조 기록만 지우며 편집본과 외부 원본은 지우지 않는다.
     /// 인덱스 저장이 성공한 뒤에만 파일을 지운다.
     func remove(_ id: UUID) {
-        guard let video = videos.first(where: { $0.id == id }) else { return }
-        let previous = videos
-        videos.removeAll { $0.id == id }
-        guard save() else { videos = previous; return }
+        guard let video = allVideos.first(where: { $0.id == id }) else { return }
+        let previous = allVideos
+        allVideos.removeAll { $0.id == id }
+        guard save() else { allVideos = previous; return }
         if !video.isReference { try? FileManager.default.removeItem(at: directory.appendingPathComponent(video.videoFilename)) }
         try? FileManager.default.removeItem(at: posterURL(video))
         if let old = accessing[id] { old.stopAccessingSecurityScopedResource(); accessing[id] = nil }
@@ -426,10 +442,10 @@ final class MovieCollectionStore: ObservableObject {
 
     /// 값을 바꾸고 저장한다. 저장에 실패하면 이전 값으로 되돌리고 false.
     private func commit(_ id: UUID, _ change: (inout CollectedVideo) -> Void) -> Bool {
-        guard let index = videos.firstIndex(where: { $0.id == id }) else { return false }
-        let previous = videos
-        change(&videos[index])
-        guard save() else { videos = previous; return false }
+        guard let index = allVideos.firstIndex(where: { $0.id == id }) else { return false }
+        let previous = allVideos
+        change(&allVideos[index])
+        guard save() else { allVideos = previous; return false }
         return true
     }
 
@@ -439,7 +455,7 @@ final class MovieCollectionStore: ObservableObject {
     @discardableResult
     private func save() -> Bool {
         do {
-            try JSONEncoder().encode(videos).write(to: indexURL, options: .atomic)
+            try JSONEncoder().encode(allVideos).write(to: indexURL, options: .atomic)
             return true
         } catch {
             errorMessage = "컬렉션을 저장하지 못했습니다: \(error.localizedDescription)"

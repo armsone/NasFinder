@@ -84,9 +84,12 @@ final class TrailerMusicRemoteLoader: ObservableObject {
             audition?.stop()
         }
         let operationID = UUID()
+        // 시작하는 순간 출처를 고정한다(프라이버시 모드이거나 비공개 연결·폰하드 경로의 음악).
+        let jobPrivate = PrivacyMode.capturedOrigin(
+            inputPrivate: PrivacyMode.isPrivateOrigin(connectionID: item.connectionID, path: item.path))
         active = Active(operationID: operationID, item: item, purpose: purpose, totalByteCount: item.size)
         task = Task { [weak self] in
-            await self?.run(item, service: service, operationID: operationID)
+            await self?.run(item, service: service, operationID: operationID, jobPrivate: jobPrivate)
         }
     }
 
@@ -109,12 +112,12 @@ final class TrailerMusicRemoteLoader: ObservableObject {
         try? FileManager.default.removeItem(at: sessionDirectory)
     }
 
-    private func run(_ item: RemoteFileItem, service: any RemoteFileService, operationID: UUID) async {
+    private func run(_ item: RemoteFileItem, service: any RemoteFileService, operationID: UUID, jobPrivate: Bool) async {
         do {
             let staged = try await stagedCopy(of: item, service: service, operationID: operationID)
             guard let current = active, current.operationID == operationID else { return }
             if current.purpose == .use {
-                try await importCopy(of: item, url: staged.url, duration: staged.duration, operationID: operationID)
+                try await importCopy(of: item, url: staged.url, duration: staged.duration, operationID: operationID, jobPrivate: jobPrivate)
             } else {
                 active = nil
                 // Something else started playing meanwhile: leave this one ready instead.
@@ -194,7 +197,7 @@ final class TrailerMusicRemoteLoader: ObservableObject {
         }
     }
 
-    private func importCopy(of item: RemoteFileItem, url: URL, duration: Double, operationID: UUID) async throws {
+    private func importCopy(of item: RemoteFileItem, url: URL, duration: Double, operationID: UUID, jobPrivate: Bool) async throws {
         guard let inboxStore else { throw CocoaError(.fileNoSuchFile) }
         if let existing = imported[item.id], inboxStore.records.contains(where: { $0.id == existing.recordID }),
            FileManager.default.fileExists(atPath: existing.url.path) {
@@ -208,7 +211,8 @@ final class TrailerMusicRemoteLoader: ObservableObject {
         let record = try await inboxStore.importMusicFile(
             at: url,
             originalFilename: item.name,
-            contentTypeIdentifier: item.contentTypeIdentifier
+            contentTypeIdentifier: item.contentTypeIdentifier,
+            isPrivate: jobPrivate
         )
         let picked = TrailerMusicSelection(recordID: record.id, name: record.originalFilename,
                                            url: try SharedInbox.fileURL(for: record),
@@ -254,7 +258,7 @@ struct TrailerMusicNetworkRows: View {
 
     private func connectionRow(_ connection: RemoteConnection) -> some View {
         HStack(spacing: ui(12)) {
-            Image(systemName: connection.kind.systemImage)
+            Image(interfaceSystemName: connection.kind.systemImage, pointSize: 20)
                 .font(.ui(.title3))
                 .foregroundStyle(.tint)
                 .frame(width: ui(34), height: ui(34))
@@ -267,7 +271,7 @@ struct TrailerMusicNetworkRows: View {
                     .font(.ui(.caption))
                     .foregroundStyle(PorcelainMetrics.secondary)
                     .lineLimit(1)
-                Label(connection.normalizedRootPath, systemImage: "folder")
+                Label(connection.normalizedRootPath, interfaceSystemImage: "folder")
                     .font(.ui(.caption2))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
@@ -327,7 +331,7 @@ struct TrailerMusicFavoriteRows: View {
                     .lineLimit(1)
             }
         } icon: {
-            Image(systemName: available ? "folder.fill" : "externaldrive.badge.xmark")
+            Image(interfaceSystemName: available ? "folder.fill" : "externaldrive.badge.xmark")
                 .foregroundStyle(available ? SkyBreezeTheme.folderBlue : Color.secondary)
         }
         .accessibilityElement(children: .combine)
@@ -355,7 +359,7 @@ private struct TrailerMusicRemoteLocationView: View {
                                              title: title, loader: loader, audition: audition)
             } else {
                 ContentUnavailableView {
-                    Label("로그인 정보 없음", systemImage: "key.slash")
+                    Label("로그인 정보 없음", interfaceSystemImage: "key.slash")
                 } description: {
                     Text("연결을 수정해 비밀번호를 다시 저장한 뒤 시도해 주세요.")
                 }
@@ -423,7 +427,7 @@ private struct TrailerMusicRemoteFolderView: View {
             } else if let errorMessage = viewModel.errorMessage,
                       viewModel.items.isEmpty {
                 ContentUnavailableView {
-                    Label("폴더를 열 수 없습니다", systemImage: "wifi.exclamationmark")
+                    Label("폴더를 열 수 없습니다", interfaceSystemImage: "wifi.exclamationmark")
                 } description: {
                     Text(errorMessage)
                 } actions: {
@@ -434,7 +438,7 @@ private struct TrailerMusicRemoteFolderView: View {
                 }
             } else if entries.isEmpty {
                 ContentUnavailableView {
-                    Label("음악이 없습니다", systemImage: "music.note")
+                    Label("음악이 없습니다", interfaceSystemImage: "music.note")
                 } description: {
                     Text("이 폴더에는 하위 폴더나 음악 파일이 없습니다.")
                 }
@@ -448,7 +452,7 @@ private struct TrailerMusicRemoteFolderView: View {
                             Label {
                                 Text(item.name).foregroundStyle(.primary)
                             } icon: {
-                                Image(systemName: "folder.fill")
+                                Image(interfaceSystemName: "folder.fill")
                                     .foregroundStyle(SkyBreezeTheme.folderBlue)
                             }
                         }
@@ -491,7 +495,7 @@ private struct TrailerMusicRemoteFolderView: View {
             Button {
                 loader.request(item, purpose: .audition, using: service)
             } label: {
-                Image(systemName: isPlaying ? "stop.circle.fill" : "play.circle")
+                Image(interfaceSystemName: isPlaying ? "stop.circle.fill" : "play.circle", pointSize: 20)
                     .font(.ui(.title3))
                     .foregroundStyle(isPlaying || !(isBlocked || isActive) ? Color.accentColor : Color.secondary)
             }
@@ -725,7 +729,7 @@ struct InlineMusicThumbnailControl: View {
             case .idle, .unusable:
                 EmptyView()
             }
-            Image(systemName: symbol(for: state))
+            Image(interfaceSystemName: symbol(for: state), pointSize: ui(15))
                 .font(.system(size: ui(15), weight: .bold))
                 .foregroundStyle(.white)
         }

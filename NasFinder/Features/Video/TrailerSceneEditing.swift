@@ -182,7 +182,7 @@ private struct TrailerSceneThumb: View {
                 if let image {
                     Image(uiImage: image).resizable().scaledToFill()
                 } else {
-                    Image(systemName: source.isImage ? "photo" : "film").foregroundStyle(.secondary)
+                    Image(interfaceSystemName: source.isImage ? "photo" : "film").foregroundStyle(.secondary)
                 }
             }
             .clipped()
@@ -285,15 +285,15 @@ struct TrailerSceneInspector: View {
             HStack {
                 Text("선택한 장면").font(.subheadline.weight(.semibold))
                 Spacer()
-                Button(action: chrome.onUndo) { Image(systemName: "arrow.uturn.backward") }
+                Button(action: chrome.onUndo) { Image(interfaceSystemName: "arrow.uturn.backward") }
                     .disabled(!chrome.canUndo).accessibilityLabel("되돌리기")
-                Button(action: chrome.onRedo) { Image(systemName: "arrow.uturn.forward") }
+                Button(action: chrome.onRedo) { Image(interfaceSystemName: "arrow.uturn.forward") }
                     .disabled(!chrome.canRedo).accessibilityLabel("다시 실행")
             }
             if scenes == nil {
                 Text("지금은 자동 추천 장면을 쓰고 있어요. 장면별로 자르거나 순서를 바꾸려면 직접 편집을 시작하세요. 시작해도 사진은 하나도 빠지지 않고, 담기지 못한 영상은 \"제외\"로 표시돼요.")
                     .font(.caption).foregroundStyle(.secondary)
-                Button("장면 직접 편집 시작", action: beginEditing).buttonStyle(.borderedProminent)
+                Button("장면 직접 편집 시작", action: beginEditing).buttonStyle(PorcelainProminentButtonStyle())
             } else if let index = selectedIndex, let scene = scenes?[index],
                       let source = sources.first(where: { $0.id == scene.sourceID }) {
                 header(index: index, scene: scene, source: source)
@@ -471,18 +471,18 @@ struct TrailerSceneInspector: View {
     private func arrangement(index: Int, scene: TrailerEditScene) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
-                Button { move(-1) } label: { Label("앞으로", systemImage: "arrow.left") }
+                Button { move(-1) } label: { Label("앞으로", interfaceSystemImage: "arrow.left") }
                     .disabled(index == 0)
-                Button { move(1) } label: { Label("뒤로", systemImage: "arrow.right") }
+                Button { move(1) } label: { Label("뒤로", interfaceSystemImage: "arrow.right") }
                     .disabled(index + 1 >= (scenes?.count ?? 0))
             }
             HStack(spacing: 6) {
-                Button { duplicate() } label: { Label("복제", systemImage: "plus.square.on.square") }
+                Button { duplicate() } label: { Label("복제", interfaceSystemImage: "plus.square.on.square") }
                 Button { set { $0.excluded.toggle() } } label: {
-                    Label(scene.excluded ? "포함" : "제외", systemImage: scene.excluded ? "eye" : "eye.slash")
+                    Label(scene.excluded ? "포함" : "제외", interfaceSystemImage: scene.excluded ? "eye" : "eye.slash")
                 }
                 if TrailerSceneEditor.canDelete(scene.id, in: scenes ?? []) {
-                    Button(role: .destructive) { remove() } label: { Label("삭제", systemImage: "trash") }
+                    Button(role: .destructive) { remove() } label: { Label("삭제", interfaceSystemImage: "trash") }
                 }
             }
         }

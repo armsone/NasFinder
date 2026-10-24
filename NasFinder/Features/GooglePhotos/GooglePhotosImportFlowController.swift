@@ -11,9 +11,12 @@ import SwiftUI
 enum GooglePhotosImportFlowError: LocalizedError, Equatable, Sendable {
     case pickerOpenFailed
     case selectionTimedOut
+    case referenceRejected(String)
 
     var errorDescription: String? {
         switch self {
+        case .referenceRejected(let message):
+            message
         case .pickerOpenFailed:
             "Google 포토 선택 화면을 열지 못했습니다. 잠시 후 다시 시도해 주세요."
         case .selectionTimedOut:
@@ -57,6 +60,14 @@ struct GooglePhotosItemReport: Equatable, Sendable, Identifiable {
     }
 }
 
+/// 참조 전용 모드가 작업대에 넘기는 선택 결과. 다운로드 없이 Picker가 돌려준 메타데이터와 세션 참조·만료만 담는다.
+/// baseUrl은 약 60분만 유효하므로 작업대는 이 값을 저장하지 않고 실행 시점에 세션을 다시 나열해 새 값을 받는다.
+struct GooglePhotosReferenceBatch: Sendable {
+    let sessionID: String
+    let expiresAt: Date?
+    let items: [GooglePhotosPickedMediaItem]
+}
+
 @MainActor
 final class GooglePhotosImportFlowController: ObservableObject {
     struct Dependencies: Sendable {
@@ -79,14 +90,21 @@ final class GooglePhotosImportFlowController: ObservableObject {
         var closePicker: @MainActor @Sendable () async -> Void
         var sleep: @Sendable (TimeInterval) async throws -> Void
         var now: @Sendable () -> Date
+        /// 지정하면 참조 전용 모드: 선택한 항목을 내려받거나 폰하드에 저장하지 않고 이 클로저에 메타데이터만 넘기며,
+        /// 포켓 참조가 계속 쓸 수 있도록 Picker 세션을 지우지 않는다.
+        var referenceSink: (@MainActor @Sendable (GooglePhotosReferenceBatch) async throws -> Void)? = nil
 
         static func live(
-            inboxStore: SharedInboxStore,
+            inboxStore: SharedInboxStore? = nil,
+            stage: (@MainActor @Sendable (_ fileURL: URL, _ filename: String, _ mimeType: String?) async throws -> Void)? = nil,
             onImported: @escaping @MainActor @Sendable (SharedInboxRecord) -> Void = { _ in },
+            referenceSink: (@MainActor @Sendable (GooglePhotosReferenceBatch) async throws -> Void)? = nil,
             openPicker: @escaping @MainActor @Sendable (URL) async -> Bool,
             closePicker: @escaping @MainActor @Sendable () async -> Void
         ) -> Dependencies {
             let credentialStore = GooglePhotosKeychainCredentialStore()
+            // 가져오기를 시작한 순간의 모드를 고정한다. 도중에 모드가 바뀌어도 폰하드 파일의 공개 범위는 그대로다.
+            let startedPrivate = PrivacyMode.currentlyActive
             return Dependencies(
                 loadConfiguration: { try GooglePhotosOAuthConfiguration.loadFromMainBundle() },
                 loadCredential: { try credentialStore.load() },
@@ -125,11 +143,18 @@ final class GooglePhotosImportFlowController: ObservableObject {
                 },
                 importFile: { fileURL, filename, mimeType in
                     defer { try? FileManager.default.removeItem(at: fileURL) }
+                    // 사진 전송 보내기 목록처럼 폰하드가 아닌 곳에 담는 호출자는 stage로 복사를 대신한다.
+                    if let stage {
+                        try await stage(fileURL, filename, mimeType)
+                        return
+                    }
+                    guard let inboxStore else { throw CocoaError(.fileWriteUnknown) }
                     let typeIdentifier = mimeType.flatMap { UTType(mimeType: $0)?.identifier }
                     let record = try await inboxStore.importDownloadedFile(
                         at: fileURL,
                         originalFilename: filename,
-                        contentTypeIdentifier: typeIdentifier
+                        contentTypeIdentifier: typeIdentifier,
+                        isPrivate: startedPrivate
                     )
                     onImported(record)
                 },
@@ -138,7 +163,8 @@ final class GooglePhotosImportFlowController: ObservableObject {
                 sleep: { seconds in
                     try await Task.sleep(nanoseconds: UInt64(max(seconds, 0) * 1_000_000_000))
                 },
-                now: { Date() }
+                now: { Date() },
+                referenceSink: referenceSink
             )
         }
     }
@@ -232,10 +258,28 @@ final class GooglePhotosImportFlowController: ObservableObject {
             phase = .waitingForSelection
             try await openPicker(pickerURL)
 
-            try await waitForSelection(initialSession: session, accessToken: accessToken)
+            let readySession = try await waitForSelection(initialSession: session, accessToken: accessToken)
             await dependencies.closePicker()
 
             let items = try await dependencies.listMediaItems(accessToken, session.id)
+            if let referenceSink = dependencies.referenceSink {
+                // 참조 전용: downloadItem을 부르지 않고 메타데이터만 기록한다. 기록에 성공한 뒤에는 세션을 지우지 않는다.
+                phase = .importing(completed: 0, total: items.count)
+                try await referenceSink(GooglePhotosReferenceBatch(
+                    sessionID: session.id,
+                    expiresAt: readySession.expireTime ?? session.expireTime,
+                    items: items))
+                activeSession = nil
+                importedCount = items.count
+                itemReports = items.map {
+                    GooglePhotosItemReport(
+                        itemID: $0.id, name: $0.mediaFile?.filename ?? "Google 포토 항목",
+                        isVideo: $0.type == .video, status: .imported)
+                }
+                phase = .finished(imported: items.count, skipped: 0, failed: 0)
+                activeFlowTask = nil
+                return
+            }
             phase = .importing(completed: 0, total: items.count)
             let summary = try await importItems(items, accessToken: accessToken)
             itemReports = summary.outcomes.map { outcome in
@@ -317,11 +361,12 @@ final class GooglePhotosImportFlowController: ObservableObject {
         return credential
     }
 
+    @discardableResult
     private func waitForSelection(
         initialSession: GooglePhotosPickingSession,
         accessToken: String
-    ) async throws {
-        if initialSession.mediaItemsSet { return }
+    ) async throws -> GooglePhotosPickingSession {
+        if initialSession.mediaItemsSet { return initialSession }
         var interval = initialSession.pollingConfig?.pollInterval ?? Self.defaultPollInterval
         var deadline = dependencies.now().addingTimeInterval(initialSession.pollingConfig?.timeoutIn ?? 600)
         while true {
@@ -336,7 +381,7 @@ final class GooglePhotosImportFlowController: ObservableObject {
             try await dependencies.sleep(max(interval, 1))
             guard isScenePollingAllowed else { continue }
             let latest = try await dependencies.fetchSession(accessToken, initialSession.id)
-            if latest.mediaItemsSet { return }
+            if latest.mediaItemsSet { return latest }
             if let updatedInterval = latest.pollingConfig?.pollInterval {
                 interval = updatedInterval
             }

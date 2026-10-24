@@ -1,0 +1,12 @@
+{
+  "images": [
+    {
+      "filename": "phonehard.png",
+      "idiom": "universal"
+    }
+  ],
+  "info": {
+    "author": "xcode",
+    "version": 1
+  }
+}

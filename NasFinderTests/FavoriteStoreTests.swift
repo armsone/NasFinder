@@ -262,7 +262,7 @@ final class FavoriteStoreTests: XCTestCase {
         }
 
         let store = FavoriteStore(defaults: defaults)
-        items.forEach(store.toggle)
+        items.forEach { store.toggle($0) }
         store.move(id: items[2].id, to: 0)
 
         let expectedIDs = [items[2].id, items[0].id, items[1].id]

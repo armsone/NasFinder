@@ -104,7 +104,7 @@ private struct InboxDestinationFolderView: View {
         List {
             if folderOptions.isEmpty {
                 ContentUnavailableView {
-                    Label("하위 폴더가 없습니다", systemImage: "folder")
+                    Label("하위 폴더가 없습니다", interfaceSystemImage: "folder")
                 } description: {
                     Text("아래 버튼으로 이 폴더를 선택할 수 있습니다.")
                 }
@@ -120,7 +120,7 @@ private struct InboxDestinationFolderView: View {
                             onChoose: onChoose
                         )
                     } label: {
-                        Label(option.name, systemImage: "folder.fill")
+                        Label(option.name, interfaceSystemImage: "folder.fill")
                     }
                     .disabled(isWorking)
                     .listRowBackground(PorcelainMetrics.card)
@@ -134,7 +134,7 @@ private struct InboxDestinationFolderView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button("새 폴더", systemImage: "folder.badge.plus") {
+                Button("새 폴더", interfaceSystemImage: "nf.folder_add") {
                     newFolderName = ""
                     isCreatingFolder = true
                 }
@@ -173,7 +173,7 @@ private struct InboxDestinationFolderView: View {
                 Button {
                     onChoose(path)
                 } label: {
-                    Label("이 폴더를 선택", systemImage: "checkmark.circle.fill")
+                    Label("이 폴더를 선택", interfaceSystemImage: "checkmark.circle.fill")
                         .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(PorcelainProminentButtonStyle())

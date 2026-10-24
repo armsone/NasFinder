@@ -10,6 +10,10 @@ public struct SharedInboxRecord: Codable, Sendable, Identifiable, Hashable {
     /// User-created folders only. Absent in every manifest written before this feature,
     /// so decoding defaults it to `false` and keeps those legacy file records unchanged.
     public let isDirectory: Bool
+    /// App-private visibility flag. `nil` (absent in every older manifest) means public; it is only ever
+    /// written as `true`, so existing records are never rewritten with a new key. A folder's flag also
+    /// hides everything below it (see `PrivateScope`). Hiding is a display rule of this app, not protection.
+    public let isPrivate: Bool?
 
     public init(
         id: UUID,
@@ -18,7 +22,8 @@ public struct SharedInboxRecord: Codable, Sendable, Identifiable, Hashable {
         contentTypeIdentifier: String?,
         byteCount: Int64,
         importedAt: Date,
-        isDirectory: Bool = false
+        isDirectory: Bool = false,
+        isPrivate: Bool? = nil
     ) {
         self.id = id
         self.originalFilename = originalFilename
@@ -27,6 +32,7 @@ public struct SharedInboxRecord: Codable, Sendable, Identifiable, Hashable {
         self.byteCount = byteCount
         self.importedAt = importedAt
         self.isDirectory = isDirectory
+        self.isPrivate = isPrivate == true ? true : nil
     }
 
     public init(from decoder: Decoder) throws {
@@ -38,6 +44,71 @@ public struct SharedInboxRecord: Codable, Sendable, Identifiable, Hashable {
         byteCount = try container.decode(Int64.self, forKey: .byteCount)
         importedAt = try container.decode(Date.self, forKey: .importedAt)
         isDirectory = try container.decodeIfPresent(Bool.self, forKey: .isDirectory) ?? false
+        isPrivate = try container.decodeIfPresent(Bool.self, forKey: .isPrivate) == true ? true : nil
+    }
+
+    /// The same record (same id and place) with another visibility flag.
+    public func settingPrivate(_ flag: Bool?) -> SharedInboxRecord {
+        SharedInboxRecord(
+            id: id,
+            originalFilename: originalFilename,
+            storedFilename: storedFilename,
+            contentTypeIdentifier: contentTypeIdentifier,
+            byteCount: byteCount,
+            importedAt: importedAt,
+            isDirectory: isDirectory,
+            isPrivate: flag
+        )
+    }
+}
+
+/// Which stored paths are private: a record's own flag or any ancestor folder's flag.
+/// Built from the full manifest; it never changes or deletes anything.
+public struct PrivateScope: Sendable {
+    public let files: Set<String>
+    public let folders: [String]
+    public let ids: Set<UUID>
+
+    public init(records: [SharedInboxRecord]) {
+        let flagged = records.filter { $0.isPrivate == true }
+        files = Set(flagged.map(\.storedFilename))
+        folders = flagged.filter(\.isDirectory).map(\.storedFilename)
+        // UUID 경로로 들어오는 조회도 상위 폴더가 비공개인 하위 기록을 놓치지 않도록, 자기 플래그뿐 아니라
+        // 상위 폴더 플래그를 물려받은 기록의 id까지 포함한다(경로 구성요소별 집합 조회라 O(n·깊이)).
+        let folderSet = Set(folders)
+        ids = Set(records.filter { record in
+            if record.isPrivate == true { return true }
+            guard !folderSet.isEmpty else { return false }
+            var prefix = ""
+            for component in record.storedFilename.split(separator: "/").dropLast() {
+                prefix = prefix.isEmpty ? String(component) : prefix + "/" + component
+                if folderSet.contains(prefix) { return true }
+            }
+            return false
+        }.map(\.id))
+    }
+
+    /// Own flag or an ancestor folder's flag (by stored path prefix).
+    public func contains(storedFilename: String) -> Bool {
+        if files.contains(storedFilename) { return true }
+        return folders.contains { storedFilename.hasPrefix($0 + "/") }
+    }
+
+    public func contains(_ record: SharedInboxRecord) -> Bool {
+        record.isPrivate == true || ids.contains(record.id) || contains(storedFilename: record.storedFilename)
+    }
+
+    /// Does anything below `storedFilename` (a folder; "" is the root) carry its own private flag?
+    /// A recursive export or delete of a visible folder would otherwise take those hidden items along.
+    public func hasPrivateDescendant(of storedFilename: String) -> Bool {
+        if storedFilename.isEmpty { return !files.isEmpty }
+        let prefix = storedFilename + "/"
+        return files.contains { $0.hasPrefix(prefix) }
+    }
+
+    /// Is `storedFilename` inside a private folder (its own flag not counted)?
+    public func inheritsPrivate(storedFilename: String) -> Bool {
+        folders.contains { storedFilename.hasPrefix($0 + "/") }
     }
 }
 
@@ -110,6 +181,34 @@ public enum SharedInbox {
         }
     }
 
+    /// The private paths according to the manifest on disk right now (taken under the same process
+    /// lock as every import/commit). Surfaces outside the app, such as the local web server, use this instead
+    /// of an in-memory snapshot so a file committed a moment ago is already classified.
+    public static func privateScope() throws -> PrivateScope {
+        try withProcessLock {
+            let locations = try prepareLocations()
+            return PrivateScope(records: try readRecords(at: locations.manifestURL))
+        }
+    }
+
+    /// Explicit visibility change for one record (and, through the folder rule, everything below a folder).
+    /// Only the flag changes; id, place, order and bytes stay. `nil`/`false` makes it public again.
+    @discardableResult
+    public static func setPrivate(_ record: SharedInboxRecord, _ isPrivate: Bool) throws -> SharedInboxRecord {
+        try withProcessLock {
+            let locations = try prepareLocations()
+            var result = record
+            try updateRecords(at: locations.manifestURL) { records in
+                guard let index = records.firstIndex(where: {
+                    $0.id == record.id || $0.storedFilename == record.storedFilename
+                }) else { throw InboxError.staleRecord }
+                records[index] = records[index].settingPrivate(isPrivate ? true : nil)
+                result = records[index]
+            }
+            return result
+        }
+    }
+
     public static func storageURL() throws -> URL {
         try withProcessLock { try prepareLocations().inboxURL }
     }
@@ -136,19 +235,24 @@ public enum SharedInbox {
         }
     }
 
-    /// Copies a provider-owned temporary item into the durable App Group inbox.
-    /// The caller commits one or more returned records with `append(records:)`.
+    /// Copies a provider-owned temporary item into the durable App Group inbox and commits its record
+    /// in the same locked step: the bytes are staged under a hidden name, then renamed to the final
+    /// name and appended to the manifest (with the privacy flag) before the lock is released, so the
+    /// item is never visible at its final name without its classification. The returned record is
+    /// already committed; do not `append` it again.
     @discardableResult
     public static func importTemporaryFile(
         at sourceURL: URL,
         originalFilename: String,
-        contentTypeIdentifier: String?
+        contentTypeIdentifier: String?,
+        isPrivate: Bool? = nil
     ) throws -> SharedInboxRecord {
         try importTemporaryFile(
             at: sourceURL,
             originalFilename: originalFilename,
             contentTypeIdentifier: contentTypeIdentifier,
-            intoMusicDirectory: false
+            intoMusicDirectory: false,
+            isPrivate: isPrivate
         )
     }
 
@@ -159,13 +263,15 @@ public enum SharedInbox {
     public static func importTemporaryMusicFile(
         at sourceURL: URL,
         originalFilename: String,
-        contentTypeIdentifier: String?
+        contentTypeIdentifier: String?,
+        isPrivate: Bool? = nil
     ) throws -> SharedInboxRecord {
         try importTemporaryFile(
             at: sourceURL,
             originalFilename: originalFilename,
             contentTypeIdentifier: contentTypeIdentifier,
-            intoMusicDirectory: true
+            intoMusicDirectory: true,
+            isPrivate: isPrivate
         )
     }
 
@@ -179,7 +285,8 @@ public enum SharedInbox {
         at sourceURL: URL,
         originalFilename: String,
         contentTypeIdentifier: String?,
-        intoFolder folderStoredPath: String?
+        intoFolder folderStoredPath: String?,
+        isPrivate: Bool? = nil
     ) throws -> SharedInboxRecord {
         try withProcessLock {
             let fileManager = FileManager.default
@@ -250,7 +357,8 @@ public enum SharedInbox {
                     contentTypeIdentifier: isDirectory ? nil : contentTypeIdentifier,
                     byteCount: isDirectory ? 0 : try allocatedByteCount(at: destinationURL),
                     importedAt: Date(),
-                    isDirectory: isDirectory
+                    isDirectory: isDirectory,
+                    isPrivate: isPrivate
                 )
                 try appendLocked(records: [record], locations: locations)
                 return record
@@ -265,7 +373,8 @@ public enum SharedInbox {
         at sourceURL: URL,
         originalFilename: String,
         contentTypeIdentifier: String?,
-        intoMusicDirectory: Bool
+        intoMusicDirectory: Bool,
+        isPrivate: Bool?
     ) throws -> SharedInboxRecord {
         try withProcessLock {
             let fileManager = FileManager.default
@@ -305,13 +414,19 @@ public enum SharedInbox {
                 )
             } while existingIDs.contains(identifier) || fileManager.fileExists(atPath: destinationURL.path)
 
+            // Hidden, task-owned staging name (dot files are skipped by reconcile and by the web server's
+            // listing), so a half-copied or not-yet-classified file never shows at its final name.
+            let stagingURL = directoryURL.appendingPathComponent(
+                ".nasfinder-import-\(UUID().uuidString)",
+                isDirectory: false
+            )
             var bodyError: Error?
             var coordinationError: NSError?
             let coordinator = NSFileCoordinator(filePresenter: nil)
             coordinator.coordinate(
                 readingItemAt: sourceURL,
                 options: .withoutChanges,
-                writingItemAt: destinationURL,
+                writingItemAt: stagingURL,
                 options: [],
                 error: &coordinationError
             ) { coordinatedSource, coordinatedDestination in
@@ -323,26 +438,36 @@ public enum SharedInbox {
             }
 
             if let coordinationError {
-                try? fileManager.removeItem(at: destinationURL)
+                try? fileManager.removeItem(at: stagingURL)
                 throw InboxError.coordinationFailed(coordinationError.localizedDescription)
             }
             if let bodyError {
-                try? fileManager.removeItem(at: destinationURL)
+                try? fileManager.removeItem(at: stagingURL)
                 throw bodyError
             }
 
             do {
-                let byteCount = try allocatedByteCount(at: destinationURL)
-                return SharedInboxRecord(
+                let byteCount = try allocatedByteCount(at: stagingURL)
+                try fileManager.moveItem(at: stagingURL, to: destinationURL)
+                let record = SharedInboxRecord(
                     id: identifier,
                     originalFilename: safeOriginalName,
                     storedFilename: storedFilename,
                     contentTypeIdentifier: contentTypeIdentifier,
                     byteCount: byteCount,
-                    importedAt: Date()
+                    importedAt: Date(),
+                    isPrivate: isPrivate
                 )
+                do {
+                    try appendLocked(records: [record], locations: locations)
+                } catch {
+                    // Only what this call created is removed.
+                    try? fileManager.removeItem(at: destinationURL)
+                    throw error
+                }
+                return record
             } catch {
-                try? fileManager.removeItem(at: destinationURL)
+                try? fileManager.removeItem(at: stagingURL)
                 throw error
             }
         }
@@ -409,7 +534,8 @@ public enum SharedInbox {
     @discardableResult
     public static func createFolder(
         named name: String,
-        in parentStoredPath: String?
+        in parentStoredPath: String?,
+        isPrivate: Bool? = nil
     ) throws -> SharedInboxRecord {
         try withProcessLock {
             let locations = try prepareLocations()
@@ -450,7 +576,8 @@ public enum SharedInbox {
                 contentTypeIdentifier: nil,
                 byteCount: 0,
                 importedAt: Date(),
-                isDirectory: true
+                isDirectory: true,
+                isPrivate: isPrivate
             )
             do {
                 try appendLocked(records: [record], locations: locations)
@@ -534,6 +661,13 @@ public enum SharedInbox {
             var movedRecord = record
             do {
                 try updateRecords(at: locations.manifestURL) { records in
+                    // Moving out of a private place never makes the item public by itself: if it was private
+                    // (own flag or a private ancestor) and the new parent is not private, it keeps the flag.
+                    let scope = PrivateScope(records: records)
+                    let wasPrivate = records.first {
+                        $0.id == record.id || $0.storedFilename == record.storedFilename
+                    }.map { scope.contains($0) } ?? false
+                    let stampPrivate = wasPrivate && !scope.inheritsPrivate(storedFilename: newStoredFilename)
                     var matchedCount = 0
                     for index in records.indices {
                         if records[index].id == record.id
@@ -546,7 +680,8 @@ public enum SharedInbox {
                                 contentTypeIdentifier: records[index].contentTypeIdentifier,
                                 byteCount: records[index].byteCount,
                                 importedAt: records[index].importedAt,
-                                isDirectory: records[index].isDirectory
+                                isDirectory: records[index].isDirectory,
+                                isPrivate: stampPrivate ? true : records[index].isPrivate
                             )
                             records[index] = updated
                             movedRecord = updated
@@ -559,7 +694,8 @@ public enum SharedInbox {
                                 contentTypeIdentifier: records[index].contentTypeIdentifier,
                                 byteCount: records[index].byteCount,
                                 importedAt: records[index].importedAt,
-                                isDirectory: records[index].isDirectory
+                                isDirectory: records[index].isDirectory,
+                                isPrivate: records[index].isPrivate
                             )
                         }
                     }
@@ -691,7 +827,8 @@ public enum SharedInbox {
                                 contentTypeIdentifier: records[index].contentTypeIdentifier,
                                 byteCount: records[index].byteCount,
                                 importedAt: records[index].importedAt,
-                                isDirectory: records[index].isDirectory
+                                isDirectory: records[index].isDirectory,
+                                isPrivate: records[index].isPrivate
                             )
                             records[index] = updated
                             renamedRecord = updated
@@ -704,7 +841,8 @@ public enum SharedInbox {
                                 contentTypeIdentifier: records[index].contentTypeIdentifier,
                                 byteCount: records[index].byteCount,
                                 importedAt: records[index].importedAt,
-                                isDirectory: records[index].isDirectory
+                                isDirectory: records[index].isDirectory,
+                                isPrivate: records[index].isPrivate
                             )
                         }
                     }
@@ -792,9 +930,13 @@ public enum SharedInbox {
             // Existing manifest records for the subtree are mirrored into the copy so
             // nested, user-created folders (and their records) keep showing up; loose
             // files are rediscovered automatically on the next `records()` reconcile.
-            let trackedDescendants = try readRecords(at: locations.manifestURL).filter {
+            let manifestRecords = try readRecords(at: locations.manifestURL)
+            let trackedDescendants = manifestRecords.filter {
                 $0.id != record.id && $0.storedFilename.hasPrefix(record.storedFilename + "/")
             }
+            // The copy of a private item (own flag or private ancestor) is private too; the original is untouched.
+            let copyIsPrivate = PrivateScope(records: manifestRecords).contains(record)
+                || record.isPrivate == true
 
             // Copy into a hidden, task-owned staging name first and rename into place only
             // once the whole tree has fully landed. A failure at either step can only ever
@@ -831,7 +973,8 @@ public enum SharedInbox {
                     contentTypeIdentifier: record.contentTypeIdentifier,
                     byteCount: record.isDirectory ? 0 : record.byteCount,
                     importedAt: Date(),
-                    isDirectory: record.isDirectory
+                    isDirectory: record.isDirectory,
+                    isPrivate: copyIsPrivate ? true : nil
                 ),
             ]
             for descendant in trackedDescendants {
@@ -844,7 +987,8 @@ public enum SharedInbox {
                         contentTypeIdentifier: descendant.contentTypeIdentifier,
                         byteCount: descendant.isDirectory ? 0 : descendant.byteCount,
                         importedAt: Date(),
-                        isDirectory: descendant.isDirectory
+                        isDirectory: descendant.isDirectory,
+                        isPrivate: descendant.isPrivate
                     )
                 )
             }

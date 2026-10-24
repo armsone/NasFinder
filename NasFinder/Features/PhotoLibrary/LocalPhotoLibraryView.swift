@@ -4,37 +4,82 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// 사진과 달력은 같은 PHAsset 바스켓을 사용하며 실제 작업을 시작할 때만 원본을 복사한다.
+/// 맥락(일반/영상 만들기/뮤직비디오/현재 프로젝트)에 맞는 선택 세션을 골라 본문에 넘긴다.
+/// 선택은 화면이 아니라 세션이 들고 있어 pop·모듈 전환·재생성에도 사라지지 않는다.
 struct LocalPhotoLibraryView: View {
     @Environment(\.trailerProjectSink) private var projectSink
-    private enum EntryOrigin { case photoPicker, calendar, file, network, phoneHard, googlePhotos }
-    private struct Entry: Identifiable {
-        let id: String
-        let item: RemoteFileItem
-        var url: URL?
-        let isVideo: Bool
-        var thumbnail: UIImage?
-        let origin: EntryOrigin
-        var duration: TimeInterval?
-        var asset: PHAsset? = nil
-        var pickerItem: PhotosPickerItem? = nil
-        /// 폰하드에 이미 저장된 파일은 읽기만 하며 바스켓이 지우지 않는다.
-        var ownsURL = true
+    private let initialMode: VideoTrailerMode?
+    /// Mac 파인더의 '내 사진·영상'에서만 true. 사이드바가 다른 소스를 이미 열어 주므로 거기서만 중복 탭을 숨긴다.
+    /// 영상 만들기 재료 고르기 등 나머지는 모든 소스 탭을 보여 준다(주변 사이드바 환경값에 기대지 않는다).
+    private let hidesDuplicateSources: Bool
+    init(initialMode: VideoTrailerMode? = nil, hidesDuplicateSources: Bool = false) {
+        self.initialMode = initialMode
+        self.hidesDuplicateSources = hidesDuplicateSources
     }
+
+    private var scope: LocalPhotoLibrarySelectionStore.Scope {
+        if projectSink != nil { return .project }
+        switch initialMode {
+        case .mediaMusic: return .mediaMusic
+        case .trailer: return .trailer
+        case nil: return .library
+        }
+    }
+    var body: some View {
+        LocalPhotoLibraryPicker(initialMode: initialMode, hidesDuplicateSources: hidesDuplicateSources,
+                                session: LocalPhotoLibrarySelectionStore.store(for: scope))
+    }
+}
+
+/// 사진과 달력은 같은 PHAsset 바스켓을 사용하며 실제 작업을 시작할 때만 원본을 복사한다.
+private struct LocalPhotoLibraryPicker: View {
+    @Environment(\.trailerProjectSink) private var projectSink
+    private typealias EntryOrigin = LocalPhotoSelectionOrigin
+    private typealias Entry = LocalPhotoSelectionEntry
     @EnvironmentObject private var connectionStore: ConnectionStore
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @Environment(\.scenePhase) private var scenePhase
     private let initialMode: VideoTrailerMode?
-    init(initialMode: VideoTrailerMode? = nil) { self.initialMode = initialMode }
+    @ObservedObject private var session: LocalPhotoLibrarySelectionStore
+    private let hidesDuplicateSources: Bool
+    init(initialMode: VideoTrailerMode?, hidesDuplicateSources: Bool, session: LocalPhotoLibrarySelectionStore) {
+        self.initialMode = initialMode
+        self.hidesDuplicateSources = hidesDuplicateSources
+        self.session = session
+    }
 
     @Environment(\.dismiss) private var dismiss
-    @State private var sourcePage: MediaSourcePage = .photos
+    @Environment(\.usesShellSidebar) private var usesShellSidebar
+    private var sourcePages: [MediaSourcePage] {
+        return hidesDuplicateSources && usesShellSidebar ? MediaSourcePage.shellPages : MediaSourcePage.allCases
+    }
+    private var sourcePage: MediaSourcePage {
+        get { session.sourcePage }
+        nonmutating set { session.sourcePage = newValue }
+    }
+    private var sourcePageBinding: Binding<MediaSourcePage> { $session.sourcePage }
+    private var pickerSelectionBinding: Binding<[PhotosPickerItem]> { $session.pickerSelection }
+    private var pickerSelection: [PhotosPickerItem] {
+        get { session.pickerSelection }
+        nonmutating set { session.pickerSelection = newValue }
+    }
+    private var entries: [Entry] {
+        get { session.entries }
+        nonmutating set { session.entries = newValue }
+    }
+    private var rememberedIdentities: [PhotosPickerItem: String] {
+        get { session.rememberedIdentities }
+        nonmutating set { session.rememberedIdentities = newValue }
+    }
+    private var queuedGoogleRecords: [SharedInboxRecord] {
+        get { session.queuedGoogleRecords }
+        nonmutating set { session.queuedGoogleRecords = newValue }
+    }
+    private var googleLifecycle: EmbeddedGooglePhotosLifecycle { session.googleLifecycle }
     @State private var libraryAssets: PHFetchResult<PHAsset>?
     @State private var authorizationStatus = LocalPhotoLibraryCalendarService.authorizationStatus
     @State private var isLoadingLibrary = false
     @State private var libraryQueryGeneration = 0
-    @State private var pickerSelection: [PhotosPickerItem] = []
-    @State private var entries: [Entry] = []
     @State private var isPickerPresented = false
     @State private var isFileImporterPresented = false
     @State private var pendingFileImportResult: Result<[URL], Error>?
@@ -48,11 +93,11 @@ struct LocalPhotoLibraryView: View {
     @State private var previewItems: [RemoteFileItem] = []
     @State private var previewService: LocalPhotoLibraryFileService?
     @State private var previewTemporaryURLs: [URL] = []
-    @State private var rememberedIdentities: [PhotosPickerItem: String] = [:]
     @State private var loadTotal = 0
     @State private var loadCompleted = 0
     @State private var currentLoadingLabel: String?
     @State private var importSummaryText: String?
+    @State private var workbenchRequest: WorkbenchAddRequest?
     private struct PhoneHardCopyRequest {
         let selection: [Entry]
         let folderPath: String?
@@ -65,9 +110,6 @@ struct LocalPhotoLibraryView: View {
     @State private var isFileImporting = false
     @State private var isCleanupPendingOnDeparture = false
     @State private var preparationTask: Task<Void, Never>?
-    /// Google 포토 페이지가 가져온 뒤 아직 바구니에 담지 못한 기록. 다른 준비 작업이 끝나면 이어서 담는다.
-    @State private var queuedGoogleRecords: [SharedInboxRecord] = []
-    @State private var googleLifecycle = EmbeddedGooglePhotosLifecycle()
 
     private let columns = [GridItem(.adaptive(minimum: ui(92), maximum: ui(120)), spacing: ui(8))]
     private var service: LocalPhotoLibraryFileService {
@@ -79,7 +121,7 @@ struct LocalPhotoLibraryView: View {
         switch initialMode {
         case .mediaMusic: "뮤직비디오"
         case .trailer: "영상 만들기"
-        case nil: "내 사진·영상"
+        case nil: "내 미디어"
         }
     }
     private var themeRefresh = ThemeRefresh()
@@ -90,21 +132,30 @@ struct LocalPhotoLibraryView: View {
     private var mediaContent: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
+                // 파일 브라우저의 뒤로와 같은 모양(32pt 강조 원 + 44pt 터치). 길게 누르기 동작은 파일 브라우저에만 있다.
                 Button { dismiss() } label: {
-                    InterfaceIcon(systemName: "chevron.left", size: ui(22)).font(.system(size: ui(17), weight: .semibold))
+                    InterfaceIcon(systemName: "chevron.left", size: ui(20))
+                        .font(.system(size: ui(17), weight: .semibold))
                         .foregroundStyle(PorcelainMetrics.accent)
+                        .frame(width: ui(32), height: ui(32))
+                        .background(PorcelainMetrics.accent.opacity(0.12), in: Circle())
                         .frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("뒤로")
-                Text(navigationTitleText).font(.ui(.headline))
+                Text(navigationTitleText).porcelainFont(.section, weight: .semibold)
                     .foregroundStyle(PorcelainMetrics.graphite)
+                    .accessibilityAddTraits(.isHeader)
                 Spacer()
             }
             .padding(.horizontal, ui(4))
             .background(PorcelainMetrics.paper)
-            MediaSourceTabBar(page: $sourcePage)
-            MediaSourcePager(page: $sourcePage) { page in
+            MediaSourceTabBar(page: sourcePageBinding, pages: sourcePages)
+            MediaSourcePager(page: sourcePageBinding, pages: sourcePages) { page in
                 pageContent(page).disabled(isBusy)
             }
+        }
+        .onAppear {
+            // 이전에 다른 출처 탭에 있었어도 사이드바가 맡는 출처 탭이 없는 창에서는 사진으로 돌아온다.
+            if !sourcePages.contains(sourcePage) { sourcePage = .photos }
         }
         .background(PorcelainMetrics.paper.ignoresSafeArea())
         .toolbar(.hidden, for: .navigationBar)
@@ -119,7 +170,7 @@ struct LocalPhotoLibraryView: View {
                     .background(PorcelainMetrics.sidebar)
             }
         }
-        .photosPicker(isPresented: $isPickerPresented, selection: $pickerSelection,
+        .photosPicker(isPresented: $isPickerPresented, selection: pickerSelectionBinding,
                       matching: .any(of: [.images, .videos]), photoLibrary: .shared())
         #if targetEnvironment(macCatalyst)
         .fileImporter(isPresented: $isFileImporterPresented, allowedContentTypes: [.image, .movie], allowsMultipleSelection: true,
@@ -177,8 +228,9 @@ struct LocalPhotoLibraryView: View {
                 .ignoresSafeArea()
             }
         }
+        .workbenchAddSheet($workbenchRequest)
         .routesTrailerSelection($trailerSelection, service: { editingService ?? service }, sink: projectSink)
-        .fullScreenCover(item: trailerCoverBinding($trailerSelection, sink: projectSink)) { selection in
+        .trailerEditorCover(item: trailerCoverBinding($trailerSelection, sink: projectSink)) { selection in
             VideoTrailerView(items: selection.items, service: editingService ?? service, mode: selection.mode,
                              keepsSelectionOrder: selection.keepsSelectionOrder)
         }
@@ -186,7 +238,7 @@ struct LocalPhotoLibraryView: View {
             RemotePreviewView(item: item, sequentialItems: previewItems, service: previewService ?? service,
                               onClose: { previewItem = nil })
         }
-        .alert("알림", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
+        .alert("미디어 알림", isPresented: Binding(get: { errorMessage != nil }, set: { if !$0 { errorMessage = nil } })) {
             Button("확인", role: .cancel) { errorMessage = nil }
         } message: { Text(errorMessage ?? "") }
         .onChange(of: trailerSelection?.id) { _, id in if id == nil { runDeferredCleanupIfPending() } }
@@ -246,14 +298,14 @@ struct LocalPhotoLibraryView: View {
             GooglePhotosImportFlowView(inboxStore: inboxStore, lifecycle: googleLifecycle, onImportedMedia: { records in
                 queuedGoogleRecords.append(contentsOf: records)
                 drainGoogleQueue()
-            })
+            }, onExit: { sourcePage = .photos })
         }
     }
     private var photoModeContent: some View {
         VStack(spacing: ui(6)) {
             if authorizationStatus == .limited {
                 HStack {
-                    Text("허용한 사진·영상만 표시됩니다").font(.ui(.footnote)).foregroundStyle(.secondary)
+                    Text("허용한 미디어만 표시됩니다").font(.ui(.footnote)).foregroundStyle(.secondary)
                     Spacer()
                     Button("선택 변경") { presentLimitedLibraryPicker() }.font(.ui(.footnote))
                 }.padding(.horizontal, ui(12))
@@ -265,15 +317,15 @@ struct LocalPhotoLibraryView: View {
                         onSelectionChange: applyPhotoGridSelection)
                 } else if isLoadingLibrary { ProgressView("사진 보관함 불러오는 중") }
                 else {
-                    ContentUnavailableView("사진·영상이 없습니다", systemImage: "photo.on.rectangle",
-                        description: Text(authorizationStatus == .limited ? "선택 변경으로 허용할 사진·영상을 추가할 수 있습니다." : "사진 보관함의 사진·영상이 여기에 표시됩니다."))
+                    ContentUnavailableView("미디어가 없습니다", systemImage: "photo.on.rectangle",
+                        description: Text(authorizationStatus == .limited ? "선택 변경으로 허용할 미디어를 추가할 수 있습니다." : "사진 보관함의 미디어가 여기에 표시됩니다."))
                 }
             } else { photoAccessContent }
         }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     }
     private var photoAccessContent: some View {
         ContentUnavailableView {
-            Label("사진 보관함 접근이 꺼져 있습니다", systemImage: "lock")
+            Label("사진 보관함 접근이 꺼져 있습니다", interfaceSystemImage: "lock")
         } description: {
             Text("설정에서 사진 접근을 허용하거나 시스템 선택기로 필요한 항목만 선택할 수 있습니다. 기존 선택 항목은 유지됩니다.")
         } actions: {
@@ -295,37 +347,59 @@ struct LocalPhotoLibraryView: View {
                     onPreview: { id in startPreparation { await previewSelected(ids: [id]) } },
                     onRemove: { id in if let entry = entries.first(where: { $0.id == id }) { remove(entry) } })
             }
-            HStack(spacing: ui(8)) {
-                Text("선택됨 \(entries.count)개").font(.ui(.footnote)).foregroundStyle(PorcelainMetrics.secondary)
-                if !entries.isEmpty {
-                    Button("미리보기", systemImage: "eye") {
-                        startPreparation { await previewSelected() }
-                    }.font(.ui(.footnote)).frame(minHeight: 36).disabled(isBusy)
+            // 폭이 넓으면 한 줄, 좁으면 상태/미리보기 + 액션 두 줄, 큰 글자에서는 전폭 세로 배치.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: ui(8)) {
+                    footerStatusRow
+                    Spacer(minLength: ui(4))
+                    footerActionButtons(fillsWidth: false)
                 }
-                Spacer(minLength: ui(4))
-                Group {
-                    Button {
-                        pendingPhoneHardCopy = nil
-                        inboxStore.reload()
-                        isChoosingPhoneHardDestination = true
-                    } label: { Text("폰하드 복사").padding(.horizontal, ui(8)).frame(minHeight: ui(30)) }
-                    Button {
-                        startPreparation { await addSelectionToBasket() }
-                    } label: { Text("재료함에 담기").padding(.horizontal, ui(8)).frame(minHeight: ui(30)) }
-                    Button {
-                        startPreparation { await beginTrailer(mode: initialMode ?? .trailer) }
-                    } label: { Text(projectSink == nil ? "바로 영상 제작" : "현재 프로젝트에 추가").padding(.horizontal, ui(8)).frame(minHeight: ui(30)) }
+                VStack(spacing: ui(6)) {
+                    HStack(spacing: ui(8)) { footerStatusRow; Spacer(minLength: 0) }
+                    HStack(spacing: ui(8)) { footerActionButtons(fillsWidth: true) }
                 }
-                .font(PorcelainTypeface.font(size: 14, weight: .medium))
-                .buttonStyle(PorcelainProminentButtonStyle())
-                .disabled(isBusy || entries.isEmpty)
+                VStack(spacing: ui(6)) {
+                    HStack(spacing: ui(8)) { footerStatusRow; Spacer(minLength: 0) }
+                    VStack(spacing: ui(6)) { footerActionButtons(fillsWidth: true) }
+                }
             }
         }.padding(.horizontal, ui(12)).padding(.vertical, ui(8))
         .background(PorcelainMetrics.card.opacity(0.95))
         .overlay(alignment: .top) { PorcelainMetrics.line.frame(height: 0.5) }
     }
+    @ViewBuilder private var footerStatusRow: some View {
+        Text("선택됨 \(entries.count)개").font(.ui(.footnote)).foregroundStyle(PorcelainMetrics.secondary)
+        if !entries.isEmpty {
+            Button("미리보기", interfaceSystemImage: "eye") {
+                startPreparation { await previewSelected() }
+            }.font(.ui(.footnote)).frame(minHeight: 36).disabled(isBusy)
+            Button("모두 비우기", interfaceSystemImage: "xmark.circle") { clearSelection() }
+                .font(.ui(.footnote)).frame(minHeight: 36).disabled(isBusy)
+        }
+    }
+    @ViewBuilder private func footerActionButtons(fillsWidth: Bool) -> some View {
+        Group {
+            Button {
+                pendingPhoneHardCopy = nil
+                inboxStore.reload()
+                isChoosingPhoneHardDestination = true
+            } label: { footerActionLabel("폰하드 복사", fillsWidth: fillsWidth) }
+            Button {
+                presentWorkbenchAdd()
+            } label: { footerActionLabel("작업대에 담기", fillsWidth: fillsWidth) }
+            Button {
+                startPreparation { await beginTrailer(mode: initialMode ?? .trailer) }
+            } label: { footerActionLabel(projectSink == nil ? "바로 영상 제작" : "현재 프로젝트에 추가", fillsWidth: fillsWidth) }
+        }
+        .font(PorcelainTypeface.font(size: 14, weight: .medium))
+        .buttonStyle(PorcelainProminentButtonStyle())
+        .disabled(isBusy || entries.isEmpty)
+    }
+    private func footerActionLabel(_ title: String, fillsWidth: Bool) -> some View {
+        Text(title).padding(.horizontal, ui(8)).frame(maxWidth: fillsWidth ? .infinity : nil, minHeight: ui(30))
+    }
     private var progressStatusText: String {
-        loadTotal > 0 ? "사진·영상 준비 중 · \(loadCompleted)/\(loadTotal)개" : "사진·영상 준비 중…"
+        loadTotal > 0 ? "미디어 준비 중 · \(loadCompleted)/\(loadTotal)개" : "미디어 준비 중…"
     }
     private var progressBanner: some View {
         VStack(alignment: .leading, spacing: ui(4)) {
@@ -357,7 +431,7 @@ struct LocalPhotoLibraryView: View {
         discardOwnedFile(of: entry)
     }
     private func discardOwnedFile(of entry: Entry) {
-        if entry.ownsURL, let url = entry.url { try? FileManager.default.removeItem(at: url) }
+        session.discardOwnedFile(of: entry)
     }
     private func applyPhotoGridSelection(_ identifiers: [String]) {
         guard !isBusy else { return }
@@ -386,7 +460,11 @@ struct LocalPhotoLibraryView: View {
             let name = "\(isVideo ? "동영상" : "사진")-\(entries.count + 1).\(type?.preferredFilenameExtension ?? (isVideo ? "mov" : "jpg"))"
             let item = RemoteFileItem(connectionID: LocalPhotoLibraryFileService.connectionID, path: key, name: name, kind: .file,
                                       size: nil, modifiedAt: nil, contentTypeIdentifier: type?.identifier)
-            entries.append(Entry(id: key, item: item, url: nil, isVideo: isVideo, thumbnail: nil, origin: .photoPicker, pickerItem: pickerItem))
+            var pickerEntry = Entry(id: key, item: item, url: nil, isVideo: isVideo, thumbnail: nil, origin: .photoPicker, pickerItem: pickerItem)
+            if let identifier = pickerItem.itemIdentifier {
+                pickerEntry.reference = WorkbenchEntryFactory.entry(assetIdentifier: identifier, name: name, isVideo: isVideo)
+            }
+            entries.append(pickerEntry)
         }
     }
     private func assetEntry(_ asset: PHAsset) -> Entry {
@@ -395,8 +473,10 @@ struct LocalPhotoLibraryView: View {
         let type = UTType(filenameExtension: URL(fileURLWithPath: name).pathExtension) ?? (isVideo ? .movie : .image)
         let item = RemoteFileItem(connectionID: LocalPhotoLibraryFileService.connectionID, path: asset.localIdentifier,
                                   name: name, kind: .file, size: nil, modifiedAt: asset.creationDate, contentTypeIdentifier: type.identifier)
-        return Entry(id: asset.localIdentifier, item: item, url: nil, isVideo: isVideo, thumbnail: nil, origin: .calendar,
-                     duration: LocalPhotoLibraryCalendarService.duration(for: asset), asset: asset)
+        var entry = Entry(id: asset.localIdentifier, item: item, url: nil, isVideo: isVideo, thumbnail: nil, origin: .calendar,
+                          duration: LocalPhotoLibraryCalendarService.duration(for: asset), asset: asset)
+        entry.reference = WorkbenchEntryFactory.entry(asset: asset, name: name)
+        return entry
     }
     private func addAssets(_ assets: [PHAsset]) {
         guard !isBusy else { return }
@@ -461,7 +541,12 @@ struct LocalPhotoLibraryView: View {
         let items = records.map { LocalInboxFileService.remoteItem(for: $0) }.filter(\.isTrailerEligible)
         guard !items.isEmpty else { return }
         let service = LocalInboxFileService(records: records)
-        startPreparation { await importRemoteMedia(items, service: service, origin: .googlePhotos) }
+        // 폰하드로 가져온 파일은 저장 경로로 다시 가리킬 수 있다(Google 원본이 아니라 폰하드 안의 파일).
+        let references = Dictionary(records.map {
+            ($0.id.uuidString, WorkbenchEntryFactory.entry(
+                remote: LocalInboxFileService.browserItem(for: $0), sourceLabel: WorkbenchSourceLabel.phoneHard))
+        }, uniquingKeysWith: { first, _ in first })
+        startPreparation { await importRemoteMedia(items, service: service, origin: .googlePhotos, references: references) }
     }
     private func prepare(_ selection: [Entry]) async -> [(Entry, URL)] {
         guard !isLoadingSelection else { return [] }
@@ -480,6 +565,10 @@ struct LocalPhotoLibraryView: View {
                 if let existing = entry.url, FileManager.default.fileExists(atPath: existing.path) { url = existing }
                 else if let asset = entry.asset { url = try await LocalPhotoLibraryCalendarService.exportOriginal(for: asset).url }
                 else if let picker = entry.pickerItem { url = try await LocalPhotoLibrarySelectionLoader.load(item: picker).url }
+                else if let deferred = entry.deferred {
+                    // 선택만 해 둔 원본은 영상 제작·미리보기·폰하드 복사처럼 실제로 필요한 이 순간에 가져온다.
+                    url = try await LocalPhotoLibrarySelectionLoader.materialize(deferred, name: entry.item.name)
+                }
                 else { throw LocalPhotoLibraryError.fileUnavailable }
                 if Task.isCancelled {
                     if entry.url != url { try? FileManager.default.removeItem(at: url) }
@@ -496,33 +585,24 @@ struct LocalPhotoLibraryView: View {
         }
         return Task.isCancelled ? [] : result
     }
-    /// 고른 항목을 준비해 재료함에 복사해 담는다. 선택은 그대로 두고, 같은 출처 식별자는 건너뛴다.
-    private func addSelectionToBasket() async {
-        let prepared = await prepare(entries)
-        guard !Task.isCancelled else { return }
-        var added = 0
-        var duplicates = 0
-        var failures: [String] = []
-        for (entry, url) in prepared {
-            let kind: MaterialSourceKind = switch entry.origin {
-            case .photoPicker, .calendar: .photoLibrary
-            case .file: .systemFile
-            case .network, .googlePhotos: .nas
-            case .phoneHard: .phoneHard
-            }
-            // 준비된 파일은 원본일 수 있으므로 재료함이 검증한 자기 복사본만 만든다.
-            switch await MaterialBasketStore.shared.addValidated(
-                url: url, name: entry.item.name, isVideo: entry.isVideo,
-                sourceKey: "\(entry.origin):\(entry.id)", kind: kind) {
-            case .added: added += 1
-            case .duplicate: duplicates += 1
-            case .failed(let reason): failures.append("\(entry.item.name): \(reason)")
-            }
+    /// 고른 항목의 원본 위치(참조)만 작업대 포켓에 담는다. 이 화면이 이미 준비해 둔 임시 사본이나 내려받은 파일은 쓰지 않고,
+    /// 참조를 만들 수 없는 항목(원본 위치를 다시 가리킬 수 없는 것)은 몰래 복사하지 않고 담지 못했다고 알린다.
+    private func presentWorkbenchAdd() {
+        var references: [WorkbenchEntry] = []
+        var missing: [String] = []
+        for entry in entries {
+            if let reference = entry.reference { references.append(reference) } else { missing.append(entry.item.name) }
         }
-        var summary = "재료함에 \(added)개를 담았습니다."
-        if duplicates > 0 { summary += " 이미 담긴 \(duplicates)개는 건너뛰었습니다." }
-        if !failures.isEmpty { summary += " 담지 못한 \(failures.count)개: " + failures.joined(separator: ", ") }
-        showTemporaryImportSummary(summary)
+        var notices: [String] = []
+        if !missing.isEmpty {
+            let sample = missing.prefix(3).joined(separator: ", ")
+            notices.append("\(missing.count)개는 나중에 다시 가리킬 원본 위치를 알 수 없어 담지 않았습니다 (\(sample)\(missing.count > 3 ? " 외" : "")). 사진 접근을 허용하거나 원본 위치에서 직접 담아 주세요. 몰래 복사하지 않습니다.")
+        }
+        guard !references.isEmpty else {
+            errorMessage = notices.first ?? "담을 항목이 없습니다."
+            return
+        }
+        workbenchRequest = WorkbenchAddRequest(title: "선택한 미디어 \(references.count)개", entries: references, notices: notices)
     }
     private func beginTrailer(mode: VideoTrailerMode) async {
         let originals = await prepare(entries)
@@ -650,6 +730,24 @@ struct LocalPhotoLibraryView: View {
 
                 let contentType = UTType(filenameExtension: url.pathExtension.lowercased())
                 let isVideo = contentType?.conforms(to: .movie) == true || contentType?.conforms(to: .video) == true
+
+                // 북마크를 만들 수 있으면 복사하지 않고 선택만 기록한다. 영상 제작 등을 시작할 때에만 가져온다.
+                if case .success(let reference) = WorkbenchEntryFactory.entry(fileURL: url), let bookmark = reference.bookmarkData {
+                    let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                    let lazyItem = RemoteFileItem(
+                        connectionID: LocalPhotoLibraryFileService.connectionID, path: key, name: url.lastPathComponent,
+                        kind: .file, size: values?.fileSize.map(Int64.init), modifiedAt: values?.contentModificationDate,
+                        contentTypeIdentifier: contentType?.identifier)
+                    var lazyEntry = Entry(id: key, item: lazyItem, url: nil, isVideo: isVideo, thumbnail: nil, origin: .file)
+                    lazyEntry.deferred = .bookmark(bookmark)
+                    lazyEntry.reference = reference
+                    entries.append(lazyEntry)
+                    addedCount += 1
+                    loadCompleted += 1
+                    continue
+                }
+
+                // 북마크를 만들 수 없는 파일은 이전처럼 이 선택에서 쓸 임시 사본만 만든다(작업대 참조는 만들지 않는다).
                 let destination = LocalPhotoLibrarySelectionLoader.temporaryURL(fileExtension: url.pathExtension)
                 try FileManager.default.copyItem(at: url, to: destination)
 
@@ -700,8 +798,8 @@ struct LocalPhotoLibraryView: View {
         if addedCount > 0 {
             showTemporaryImportSummary(
                 failedCount > 0
-                    ? "파일에서 \(addedCount)개를 가져왔습니다. \(failedCount)개는 실패했습니다."
-                    : "파일에서 \(addedCount)개를 가져왔습니다."
+                    ? "파일 \(addedCount)개를 선택에 추가했습니다. \(failedCount)개는 실패했습니다."
+                    : "파일 \(addedCount)개를 선택에 추가했습니다."
             )
         }
     }
@@ -714,7 +812,8 @@ struct LocalPhotoLibraryView: View {
 
     /// 선택한 항목만 내려받는다. 네트워크 항목은 앱 소유 임시 사본으로 두고, 폰하드에 이미 있는 파일은
     /// 복사하지 않고 읽기만 한다. 취소·실패해도 이전 선택과 이미 추가한 항목은 유지한다.
-    private func importRemoteMedia(_ items: [RemoteFileItem], service: any RemoteFileService, origin: EntryOrigin) async {
+    private func importRemoteMedia(_ items: [RemoteFileItem], service: any RemoteFileService, origin: EntryOrigin,
+                                   references: [String: WorkbenchEntry] = [:]) async {
         guard !isLoadingSelection else { return }
         let ownsCopies = origin == .network
         isLoadingSelection = true
@@ -730,6 +829,21 @@ struct LocalPhotoLibraryView: View {
             defer { loadCompleted += 1 }
             var key = "remote:\(service.connection.id.uuidString):\(item.path)"
             if ownsCopies, entries.contains(where: { $0.id == key }) { skipped += 1; continue }
+            if ownsCopies {
+                // 네트워크 원본은 선택만 기록한다(내려받기·복사·썸네일 생성 없음). 영상 제작·미리보기·폰하드 복사처럼
+                // 원본이 실제로 필요한 동작을 시작할 때에만 `prepare`가 가져온다. '작업대에 담기'는 이 참조만 쓴다.
+                let lazyItem = RemoteFileItem(
+                    connectionID: LocalPhotoLibraryFileService.connectionID, path: key, name: item.name, kind: .file,
+                    size: item.size, modifiedAt: item.modifiedAt, contentTypeIdentifier: item.contentTypeIdentifier)
+                var lazyEntry = Entry(id: key, item: lazyItem, url: nil, isVideo: item.isVideo, thumbnail: nil, origin: origin)
+                lazyEntry.deferred = .remote(item: item, service: service)
+                lazyEntry.reference = references[item.path] ?? WorkbenchEntryFactory.entry(
+                    remote: item,
+                    sourceLabel: service is DeviceFolderFileService ? WorkbenchSourceLabel.deviceFiles : WorkbenchSourceLabel.nas)
+                entries.append(lazyEntry)
+                added += 1
+                continue
+            }
             do {
                 let downloaded = try await service.download(item)
                 var url = downloaded
@@ -757,6 +871,10 @@ struct LocalPhotoLibraryView: View {
                 var entry = Entry(id: key, item: entryItem, url: url, isVideo: item.isVideo, thumbnail: nil,
                                   origin: origin, duration: duration)
                 entry.ownsURL = ownsCopies
+                entry.reference = references[item.path] ?? WorkbenchEntryFactory.entry(
+                    remote: item,
+                    sourceLabel: origin == .phoneHard ? WorkbenchSourceLabel.phoneHard
+                        : service is DeviceFolderFileService ? WorkbenchSourceLabel.deviceFiles : WorkbenchSourceLabel.nas)
                 entries.append(entry)
                 await loadThumbnail(for: key)
                 added += 1
@@ -783,6 +901,8 @@ struct LocalPhotoLibraryView: View {
 
 
     private func copySelectedToPhoneHard(_ selection: [Entry], toFolder folderPath: String?) async {
+        // 첫 await 전에 출처를 고정한다(준비 중 모드가 바뀌어도 이 복사의 공개 범위는 그대로).
+        let jobPrivate: Bool = PrivacyMode.currentlyActive
         let prepared = await prepare(selection)
         guard !Task.isCancelled, !prepared.isEmpty else { return }
         isCopyingToPhoneHard = true
@@ -795,7 +915,7 @@ struct LocalPhotoLibraryView: View {
             if Task.isCancelled { break }
             do {
                 _ = try await inboxStore.importDownloadedItem(at: url, originalName: entry.item.name,
-                    contentTypeIdentifier: entry.item.contentTypeIdentifier, intoFolder: folderPath)
+                    contentTypeIdentifier: entry.item.contentTypeIdentifier, intoFolder: folderPath, isPrivate: jobPrivate)
                 succeeded += 1
             } catch { failed += 1 }
             copyProgressCompleted += 1
@@ -824,6 +944,8 @@ struct LocalPhotoLibraryView: View {
     }
 
 
+    /// 화면을 떠날 때는 선택(항목·임시 사본·Google 세션)을 세션에 그대로 남기고,
+    /// 이 화면이 미리보기·편집을 위해 만든 파생 임시 파일만 정리한다. 진행 중 작업은 취소만 한다.
     private func cleanupTemporaryFiles() {
         guard trailerSelection == nil, previewItem == nil, nativePreviewAsset == nil, !isPickerPresented, !isFileImporterPresented,
               !isChoosingPhoneHardDestination, pendingPhoneHardCopy == nil else { return }
@@ -833,13 +955,16 @@ struct LocalPhotoLibraryView: View {
             return
         }
         isCleanupPendingOnDeparture = false
-        googleLifecycle.cancel()
-        for entry in entries { discardOwnedFile(of: entry) }
         for url in previewTemporaryURLs { try? FileManager.default.removeItem(at: url) }
         previewTemporaryURLs = []
         editingService = nil
         for url in editingTemporaryURLs { try? FileManager.default.removeItem(at: url) }
         editingTemporaryURLs = []
+    }
+    /// 사용자가 명시적으로 선택을 모두 비울 때만 대기 항목과 앱 소유 임시 사본을 해제한다.
+    private func clearSelection() {
+        guard !isBusy, preparationTask == nil else { return }
+        session.releaseAll()
     }
     private func runDeferredCleanupIfPending() {
         if isCleanupPendingOnDeparture { cleanupTemporaryFiles() }

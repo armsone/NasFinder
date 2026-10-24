@@ -223,11 +223,18 @@ final class ThumbnailPreheater: ObservableObject {
     @Published private(set) var estimatedTimeRemaining: TimeInterval?
     @Published private(set) var pauseReason: String?
     @Published private(set) var workPhase: String?
-    @Published private(set) var recentGeneratedThumbnails: [GeneratedThumbnailPreview] = []
+    /// 비공개 출처 썸네일을 포함한 전체 최근 목록. 화면에는 `recentGeneratedThumbnails`만 보여 준다.
+    @Published private(set) var storedRecentThumbnails: [GeneratedThumbnailPreview] = []
+    /// 일반 모드에서는 비공개 출처로 만든 미리보기(이름 + 이미지)가 빠진다. 작업은 계속 돌고 목록만 가려진다.
+    var recentGeneratedThumbnails: [GeneratedThumbnailPreview] {
+        PrivacyMode.currentlyActive ? storedRecentThumbnails : storedRecentThumbnails.filter { !$0.originPrivate }
+    }
     @Published var statusMessage: String?
     @Published var errorMessage: String?
 
     private var task: Task<Void, Never>?
+    /// 작업을 시작하는 순간(첫 await 전) 현재 모드 또는 비공개 입력으로 한 번 고정한다. 이후 모드가 바뀌어도 바뀌지 않는다.
+    private var jobPrivate = false
     private var cancelConnectionWork: (@Sendable () async -> Void)?
     private var appIsActive = true
     private var etaEstimator = ThumbnailETAEstimator()
@@ -279,6 +286,9 @@ final class ThumbnailPreheater: ObservableObject {
             return
         }
 
+        jobPrivate = PrivacyMode.capturedOrigin(
+            inputPrivate: PrivacyMode.isPrivateOrigin(connectionID: service.connection.id, path: rootPath)
+                || rootItems.contains { PrivacyMode.isPrivateOrigin(connectionID: $0.connectionID, path: $0.path) })
         resetProgress()
         isCancellationRequested = false
         isRunning = true
@@ -408,6 +418,10 @@ final class ThumbnailPreheater: ObservableObject {
             var appliedMaximumDataBytes = maximumDataBytes
 
             let queueSessionKey = "\(service.connection.id.uuidString)|\(rootPath)"
+            let runIsPrivate = jobPrivate
+            if runIsPrivate {
+                await SuperThumbnailQueueStore.shared.markPrivateOrigin(sessionKey: queueSessionKey)
+            }
             let usesVault = generationMode == .completeFile && vaultOptions.isEnabled
             let savedAttempts = generationMode == .completeFile
                 ? await SuperThumbnailQueueStore.shared.attempts(
@@ -420,7 +434,8 @@ final class ThumbnailPreheater: ObservableObject {
                 : [:]
             if generationMode == .completeFile,
                let savedReport = await SuperThumbnailQueueStore.shared.report(
-                   sessionKey: queueSessionKey
+                   sessionKey: queueSessionKey,
+                   includingPrivate: runIsPrivate
                ) {
                 successAttemptCounts = normalizedSuccessCounts(
                     savedReport.successCounts
@@ -469,7 +484,7 @@ final class ThumbnailPreheater: ObservableObject {
                     if let cachedData {
                         cachedCount += 1
                         completedCount += 1
-                        appendRecentThumbnail(name: item.name, data: cachedData)
+                        appendRecentThumbnail(name: item.name, data: cachedData, from: item)
                         let transition = await SuperThumbnailQueueStore.shared.markCached(
                             item,
                             sessionKey: queueSessionKey
@@ -633,7 +648,8 @@ final class ThumbnailPreheater: ObservableObject {
                     if generationMode == .completeFile {
                         appendRecentThumbnail(
                             name: item.name,
-                            data: cachedThumbnailData
+                            data: cachedThumbnailData,
+                            from: item
                         )
                         if usesVault {
                             await SuperThumbnailQueueStore.shared.markVaultPending(
@@ -786,7 +802,8 @@ final class ThumbnailPreheater: ObservableObject {
                         if generationMode == .completeFile {
                             appendRecentThumbnail(
                                 name: item.name,
-                                data: payload.data
+                                data: payload.data,
+                                from: item
                             )
                         }
                         if service.connection.kind == .sftp {
@@ -1245,7 +1262,8 @@ final class ThumbnailPreheater: ObservableObject {
 
     private func refreshVaultProgress(sessionKey: String) async {
         guard let report = await SuperThumbnailQueueStore.shared.report(
-            sessionKey: sessionKey
+            sessionKey: sessionKey,
+            includingPrivate: jobPrivate
         ) else { return }
         vaultPendingCount = report.vaultPendingCount
         vaultFailedCount = report.vaultFailedCount
@@ -1503,7 +1521,7 @@ final class ThumbnailPreheater: ObservableObject {
         pauseReason = nil
         workPhase = nil
         estimatedTimeRemaining = nil
-        recentGeneratedThumbnails = []
+        storedRecentThumbnails = []
         statusMessage = nil
         errorMessage = nil
     }
@@ -1553,13 +1571,15 @@ final class ThumbnailPreheater: ObservableObject {
         )
     }
 
-    private func appendRecentThumbnail(name: String, data: Data) {
-        recentGeneratedThumbnails.append(
-            GeneratedThumbnailPreview(name: name, data: data)
+    private func appendRecentThumbnail(name: String, data: Data, from item: RemoteFileItem) {
+        // 작업 시작 때 고정한 출처(jobPrivate)나 항목 자체의 비공개 출처를 미리보기에 붙인다. 완료 시점의 모드는 읽지 않는다.
+        let isPrivate = jobPrivate || PrivacyMode.isPrivateOrigin(connectionID: item.connectionID, path: item.path)
+        storedRecentThumbnails.append(
+            GeneratedThumbnailPreview(name: name, data: data, originPrivate: isPrivate)
         )
-        if recentGeneratedThumbnails.count > 20 {
-            recentGeneratedThumbnails.removeFirst(
-                recentGeneratedThumbnails.count - 20
+        if storedRecentThumbnails.count > 20 {
+            storedRecentThumbnails.removeFirst(
+                storedRecentThumbnails.count - 20
             )
         }
     }
@@ -1569,6 +1589,7 @@ struct GeneratedThumbnailPreview: Identifiable, Sendable {
     let id = UUID()
     let name: String
     let data: Data
+    var originPrivate = false
 }
 
 private struct ThumbnailETAEstimator {

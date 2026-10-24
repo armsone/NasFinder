@@ -17,7 +17,7 @@ enum InterfaceIconStyle: String, CaseIterable, Identifiable, Sendable {
         case .simple: "심플"
         case .solid: "솔리드"
         case .dimension: "입체"
-        case .realistic: "리얼리스틱"
+        case .realistic: "리얼"
         }
     }
 
@@ -31,16 +31,26 @@ enum InterfaceIconStyle: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// 디자인 패키지의 24개 의미 ID. 순서는 아틀라스 6열×4행(행 우선)과 같다.
+/// 기본 24개 ID 순서는 아틀라스 6열×4행(행 우선)이다. 포켓·Privacy는 승인된 개별 자산을 쓴다.
 enum ThemeIconID: String, CaseIterable, Sendable {
     case home, nas, photos, phonehard, cloud, browser
     case video, drafts, transfer, storage, settings, favorites
     case back, close, add, check, save, share
     case edit, play, pause, sort, grid, trash
+    case pocket, privacy, brand, connections
 
     /// 아틀라스에서 한 아이콘을 이루는 분리 본체 수(패키지 manifest 기준).
-    var bodyCount: Int {
-        switch self {
+    /// 입체 색면 아틀라스는 글리프마다 분리된 조각 수를 보존한다. 다른 팩의 추출 규칙은 유지한다.
+    func bodyCount(style: InterfaceIconStyle) -> Int {
+        if style == .dimension {
+            switch self {
+            case .nas: return 3
+            case .photos, .phonehard, .drafts, .transfer, .storage, .save, .share, .pause, .sort: return 2
+            case .grid: return 4
+            default: return 1
+            }
+        }
+        return switch self {
         case .check, .save, .share, .pause: 2
         case .edit: 3
         case .grid: 4
@@ -52,10 +62,13 @@ enum ThemeIconID: String, CaseIterable, Sendable {
     init?(systemName: String) {
         switch systemName {
         case "house", "house.fill": self = .home
+        case "point.3.connected.trianglepath.dotted": self = .connections
         case "network", "externaldrive.connected.to.line.below", "externaldrive.badge.wifi",
             "externaldrive.fill.badge.wifi": self = .nas
         case "photo", "photo.on.rectangle.angled", "photo.stack": self = .photos
-        case "folder", "folder.fill", "iphone", "tray.full.fill": self = .phonehard
+        case "folder", "folder.fill": self = .pocket
+        case "eye.slash", "eye.slash.fill": self = .privacy
+        case "iphone", "tray.full.fill": self = .phonehard
         case "cloud", "cloud.fill": self = .cloud
         case "globe": self = .browser
         case "film", "video", "video.fill": self = .video
@@ -69,7 +82,8 @@ enum ThemeIconID: String, CaseIterable, Sendable {
         case "xmark": self = .close
         case "plus": self = .add
         case "checkmark": self = .check
-        case "square.and.arrow.down": self = .save
+        // 작업대(포켓에 담기)는 전용 글리프가 없어 담는 트레이 모양의 save를 쓴다. 다른 루트 탭과 같은 팩으로 보이게 한다.
+        case "square.and.arrow.down", "tray.2": self = .save
         case "square.and.arrow.up": self = .share
         case "pencil": self = .edit
         case "play", "play.fill": self = .play
@@ -90,21 +104,41 @@ enum ThemeIconArtwork {
     nonisolated(unsafe) private static var atlasCache: [InterfaceIconStyle: [ThemeIconID: UIImage]] = [:]
 
     static func image(_ id: ThemeIconID, style: InterfaceIconStyle) -> UIImage? {
+        let canonical = id == .save ? "workbench" : id == .storage ? "device_files" : id.rawValue
+        if let design = InterfaceDesignArtwork.asset(canonical, style: style) { return design }
+        if id == .pocket, style != .dimension { return image(.phonehard, style: style) }
+        if style == .dimension, let approved = UIImage(named: "ThemeIconColorPlanes-\(id.rawValue)") {
+            return approved.withRenderingMode(.alwaysOriginal)
+        }
+        // 앱 로고·연결 목록·NAS가 같은 그림이 되지 않도록, 전용 그림이 없는 팩은 심플 팩의 고유 그림을 쓴다.
+        if id == .brand || id == .connections {
+            return InterfaceDesignArtwork.asset(id.rawValue, style: .simple) ?? image(.nas, style: style)
+        }
         if style.isAtlas {
             return atlasImages(style)[id]
         }
-        return UIImage(named: "ThemeIcon-\(style.rawValue)-\(id.rawValue)")?
+        return UIImage(named: "\(namePrefix(nasOnly: true, id: id))-\(style.rawValue)-\(id.rawValue)")?
             .withRenderingMode(.alwaysOriginal)
+    }
+
+    /// 정사각 3단 랙 NAS 아이콘 전용 에셋(ThemeIconMac*-nas)은 Mac·iPhone·iPad가 함께 쓴다.
+    /// 나머지 아이콘과 아틀라스는 Mac만 전용 에셋을 쓰고 iPhone·iPad는 기존 에셋 그대로다.
+    private static func namePrefix(nasOnly: Bool, id: ThemeIconID?) -> String {
+        if nasOnly && id == .nas { return "ThemeIconMac" }
+        #if targetEnvironment(macCatalyst)
+        if !nasOnly || id == .nas { return "ThemeIconMac" }
+        #endif
+        return "ThemeIcon"
     }
 
     static func atlasImages(_ style: InterfaceIconStyle) -> [ThemeIconID: UIImage] {
         lock.lock()
         defer { lock.unlock() }
         if let cached = atlasCache[style] { return cached }
-        guard let source = UIImage(named: "ThemeIconAtlas-\(style.rawValue)")?.cgImage else {
+        guard let source = UIImage(named: "\(namePrefix(nasOnly: false, id: nil))Atlas-\(style.rawValue)")?.cgImage else {
             return [:]
         }
-        let result = isolate(source)
+        let result = isolate(source, style: style)
         atlasCache[style] = result
         return result
     }
@@ -160,7 +194,7 @@ enum ThemeIconArtwork {
         return result
     }
 
-    private static func isolate(_ source: CGImage) -> [ThemeIconID: UIImage] {
+    private static func isolate(_ source: CGImage, style: InterfaceIconStyle) -> [ThemeIconID: UIImage] {
         let width = source.width, height = source.height
         let columns = 6, rows = 4
         var pixels = [UInt8](repeating: 0, count: width * height * 4)
@@ -215,7 +249,7 @@ enum ThemeIconArtwork {
             guard cell < ThemeIconID.allCases.count else { continue }
             let icon = ThemeIconID.allCases[cell]
             let bodies = ids.sorted { components[$0].count > components[$1].count }
-                .prefix(icon.bodyCount)
+                .prefix(icon.bodyCount(style: style))
             let keep = Set(bodies.map(Int32.init))
             var left = width, right = 0, top = height, bottom = 0
             for body in bodies {
@@ -273,6 +307,7 @@ struct ThemeIcon: View {
     @AppStorage(AppThemePreference.storageKey) private var themeRawValue =
         AppThemePreference.light.rawValue
     @State private var atlasImage: UIImage?
+    @State private var loadedAtlasStyle: InterfaceIconStyle?
 
     init(
         _ id: ThemeIconID, style: InterfaceIconStyle, fallbackSystemName: String? = nil,
@@ -292,7 +327,8 @@ struct ThemeIcon: View {
     }
 
     private var image: UIImage? {
-        let raw = style.isAtlas ? atlasImage : ThemeIconArtwork.image(id, style: style)
+        // 새 스타일이 로드되기 전 이전 그림을 새 스타일 키로 툴바 캐시에 넣지 않는다.
+        let raw = style.isAtlas ? (loadedAtlasStyle == style ? atlasImage : nil) : ThemeIconArtwork.image(id, style: style)
         guard let raw else { return nil }
         guard let fittedSize else { return raw }
         let sized = ThemeIconArtwork.fitted(raw, id: id, style: style, size: fittedSize)
@@ -311,7 +347,7 @@ struct ThemeIcon: View {
                     .scaledToFit()
                     .foregroundStyle(tintTheme?.palette.text ?? .primary)
             } else if let fallbackSystemName {
-                Image(systemName: fallbackSystemName)
+                Image(interfaceSystemName: fallbackSystemName)
             } else {
                 Color.clear
             }
@@ -319,9 +355,12 @@ struct ThemeIcon: View {
         .task(id: style) {
             guard style.isAtlas else { return }
             let style = style, id = id
-            atlasImage = await Task.detached(priority: .userInitiated) {
-                ThemeIconArtwork.atlasImages(style)[id]
+            let image = await Task.detached(priority: .userInitiated) {
+                ThemeIconArtwork.image(id, style: style)
             }.value
+            guard !Task.isCancelled else { return }
+            atlasImage = image
+            loadedAtlasStyle = style
         }
         .accessibilityHidden(true)
     }
@@ -336,6 +375,18 @@ enum PorcelainActivation {
         guard !defaults.bool(forKey: markerKey) else { return }
         defaults.set(AppThemePreference.light.rawValue, forKey: AppThemePreference.storageKey)
         defaults.set(InterfaceIconStyle.realistic.rawValue, forKey: InterfaceIconStyle.storageKey)
+        defaults.set(true, forKey: markerKey)
+    }
+}
+
+/// 2.28.0(Jarvis 셸) 첫 실행에서 한 번만 승인된 Jarvis 테마를 켠다. 마커가 생긴 뒤에는 사용자가 고른
+/// 테마를 다시 덮어쓰지 않으며, 다른 5개 테마는 테마 단추·설정에서 그대로 고를 수 있다. 아이콘 스타일·앱 아이콘은 건드리지 않는다.
+enum JarvisShellActivation {
+    static let markerKey = "app.theme.jarvis.activation.2.28.0"
+
+    static func applyOnce(defaults: UserDefaults = .standard) {
+        guard !defaults.bool(forKey: markerKey) else { return }
+        defaults.set(AppThemePreference.jarvis.rawValue, forKey: AppThemePreference.storageKey)
         defaults.set(true, forKey: markerKey)
     }
 }
@@ -355,14 +406,19 @@ struct InterfaceIcon: View {
         let style = InterfaceIconStyle.resolved(
             styleRawValue, theme: AppThemePreference.resolved(themeRawValue)
         )
-        if let style, let id = ThemeIconID(systemName: systemName) {
+        if let style, let canonical = InterfaceDesignArtwork.canonical(systemName),
+           let art = InterfaceDesignArtwork.asset(canonical, style: style) {
+            Image(uiImage: art).renderingMode(style == .simple || (!style.isAtlas && AppThemePreference.current.isDark) ? .template : .original).resizable().scaledToFit()
+                .foregroundStyle(style == .simple ? AppThemePreference.current.palette.text : .primary)
+                .frame(width: size, height: size)
+        } else if let style, let id = ThemeIconID(systemName: InterfaceDesignArtwork.originalSymbol(systemName)) {
             ThemeIcon(
                 id, style: style, fallbackSystemName: systemName,
                 fittedSize: fitsBitmap ? size : nil
             )
             .frame(width: size, height: size)
         } else {
-            Image(systemName: systemName)
+            Image(interfaceSystemName: systemName)
         }
     }
 }
@@ -381,7 +437,7 @@ struct InterfaceToolbarIcon: View {
     }
 }
 
-/// 앱 헤더 로고 자리: 선택한 아이콘 팩의 NAS 글리프. OS 앱 아이콘은 바꾸지 않는다.
+/// 앱 헤더 로고 자리: 입체 팩은 브랜드 전용 글리프. OS 앱 아이콘은 바꾸지 않는다.
 struct PorcelainHeaderGlyph: View {
     let size: CGFloat
 
@@ -389,7 +445,7 @@ struct PorcelainHeaderGlyph: View {
 
     var body: some View {
         let style = InterfaceIconStyle.resolved(styleRawValue, theme: .current) ?? .simple
-        ThemeIcon(.nas, style: style, fallbackSystemName: "externaldrive.connected.to.line.below")
+        ThemeIcon(.brand, style: style, fallbackSystemName: "externaldrive.connected.to.line.below")
             .frame(width: size, height: size)
             .fixedSize()
     }

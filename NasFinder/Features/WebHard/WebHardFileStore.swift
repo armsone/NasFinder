@@ -16,6 +16,7 @@ enum WebHardFileStoreError: LocalizedError, Equatable, Sendable {
     case itemAlreadyExists
     case unsupportedItem
     case archiveTooLarge
+    case containsHiddenItems
 
     var errorDescription: String? {
         switch self {
@@ -29,6 +30,8 @@ enum WebHardFileStoreError: LocalizedError, Equatable, Sendable {
             "지원하지 않는 파일 형식입니다."
         case .archiveTooLarge:
             "폴더가 웹 다운로드용 ZIP 한도를 초과합니다."
+        case .containsHiddenItems:
+            "이 폴더에는 여기에 표시되지 않는 항목이 들어 있어 통째로 받거나 삭제할 수 없습니다. 앱에서 폴더를 확인해 주세요."
         }
     }
 }
@@ -65,7 +68,7 @@ struct WebHardFileStore: Sendable {
         let values = try directoryURL.resourceValues(forKeys: [.isDirectoryKey])
         guard values.isDirectory == true else { throw WebHardFileStoreError.unsupportedItem }
 
-        return try FileManager.default.contentsOfDirectory(
+        let entries = try FileManager.default.contentsOfDirectory(
             at: directoryURL,
             includingPropertiesForKeys: [
                 .isDirectoryKey,
@@ -75,7 +78,10 @@ struct WebHardFileStore: Sendable {
                 .isSymbolicLinkKey,
             ],
             options: [.skipsHiddenFiles]
-        ).compactMap { url in
+        )
+        // 디렉터리를 읽은 뒤에 디스크의 매니페스트로 분류한다: 읽는 순간 보인 파일은 이미 같은 잠금 안에서 기록이 끝난 것이다.
+        let scope = try SharedInbox.privateScope()
+        return try entries.compactMap { url in
             guard directoryURL != rootURL || url.lastPathComponent != "manifest.json" else {
                 return nil
             }
@@ -91,6 +97,7 @@ struct WebHardFileStore: Sendable {
                 return nil
             }
             let relativePath = try pathRelativeToRoot(url)
+            if scope.contains(storedFilename: String(relativePath.dropFirst())) { return nil }
             return WebHardFileItem(
                 name: url.lastPathComponent,
                 path: relativePath,
@@ -116,6 +123,7 @@ struct WebHardFileStore: Sendable {
         return url
     }
 
+    /// 폴더를 통째로 내보낼 때 쓴다. 안에 이 화면에 보이지 않는 비공개 항목이 있으면 함께 나가지 않도록 거부한다.
     func directoryURL(path: String) throws -> URL {
         let url = try existingURL(for: path)
         let values = try url.resourceValues(forKeys: [
@@ -125,6 +133,7 @@ struct WebHardFileStore: Sendable {
         guard values.isDirectory == true, values.isSymbolicLink != true else {
             throw WebHardFileStoreError.unsupportedItem
         }
+        try rejectHiddenDescendants(of: path)
         return url
     }
 
@@ -144,6 +153,8 @@ struct WebHardFileStore: Sendable {
     func delete(path: String) throws {
         let url = try existingURL(for: path)
         guard url.path != rootURL.path else { throw WebHardFileStoreError.invalidPath }
+        // 재귀 삭제가 보이지 않는 비공개 하위 항목까지 지우지 않도록, 그런 항목이 있는 폴더는 지우지 않는다.
+        try rejectHiddenDescendants(of: path)
         try FileManager.default.removeItem(at: url)
     }
 
@@ -202,16 +213,38 @@ struct WebHardFileStore: Sendable {
     }
 
     private func existingURL(for path: String) throws -> URL {
-        let url = try safeURL(for: path, allowingRoot: true)
+        let url = try safeURL(for: path, allowingRoot: true, checksPrivacy: false)
         guard FileManager.default.fileExists(atPath: url.path) else {
             throw WebHardFileStoreError.itemNotFound
         }
         let resolved = url.resolvingSymlinksInPath()
         try validateInsideRoot(resolved)
+        // 존재를 확인한 뒤에 분류한다(방금 들어온 비공개 파일이 분류 전 상태로 읽히지 않도록).
+        try rejectIfPrivate(path)
         return resolved
     }
 
-    private func safeURL(for path: String, allowingRoot: Bool) throws -> URL {
+    private static func storedPath(of path: String) -> String {
+        path.split(separator: "/", omittingEmptySubsequences: true).joined(separator: "/")
+    }
+
+    /// 로컬 웹하드는 앱 모드를 모르는 앱 밖 표면이다. 목록과 직접 접근 모두 비공개 폰하드 경로를 항상 숨기며,
+    /// 판정은 메모리 스냅샷이 아니라 지금 디스크 매니페스트 기준이다.
+    private func rejectIfPrivate(_ path: String) throws {
+        let stored = Self.storedPath(of: path)
+        guard !stored.isEmpty else { return }
+        if try SharedInbox.privateScope().contains(storedFilename: stored) {
+            throw WebHardFileStoreError.itemNotFound
+        }
+    }
+
+    private func rejectHiddenDescendants(of path: String) throws {
+        if try SharedInbox.privateScope().hasPrivateDescendant(of: Self.storedPath(of: path)) {
+            throw WebHardFileStoreError.containsHiddenItems
+        }
+    }
+
+    private func safeURL(for path: String, allowingRoot: Bool, checksPrivacy: Bool = true) throws -> URL {
         guard !path.contains("\0") else { throw WebHardFileStoreError.invalidPath }
         let components = path.split(separator: "/", omittingEmptySubsequences: true)
         guard components.allSatisfy({ $0 != "." && $0 != ".." }) else {
@@ -225,6 +258,7 @@ struct WebHardFileStore: Sendable {
             partial.appendingPathComponent(String(component), isDirectory: false)
         }.standardizedFileURL
         try validateInsideRoot(url)
+        if checksPrivacy { try rejectIfPrivate(path) }
         return url
     }
 

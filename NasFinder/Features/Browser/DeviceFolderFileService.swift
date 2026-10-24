@@ -36,6 +36,14 @@ final class DeviceFolderAccess: @unchecked Sendable {
             && isDirectory.boolValue
     }
 
+    /// 선택한 폴더 위에 폴더가 더 있는지(파일 시스템 맨 위가 아닌지).
+    var hasParentFolder: Bool { rootURL.standardizedFileURL.pathComponents.count > 1 }
+
+    /// 지금 이 앱이 그 폴더의 목록을 읽을 수 있는지. 읽을 수 없으면 아직 허락되지 않은 폴더다.
+    static func canList(_ url: URL) -> Bool {
+        (try? FileManager.default.contentsOfDirectory(atPath: url.path)) != nil
+    }
+
     /// 허락된 폴더의 실제 경로에서 결정론적으로 만든 고유 식별자.
     /// 폴더가 바뀌면 다른 connectionID가 되어 다른 루트 간 같은 이름의 파일 충돌을 막는다.
     var connectionID: UUID {
@@ -180,6 +188,16 @@ struct DeviceFolderFileService: RemoteFileService {
         }.value
     }
 
+    /// 허락된 폴더 안의 원본을 복사 없이 그 자리에서 연다.
+    func externalPlaybackTarget(for item: RemoteFileItem) -> RemoteExternalPlaybackTarget {
+        guard item.connectionID == connection.id,
+              let source = try? fileURL(forBrowserPath: item.path),
+              FileManager.default.fileExists(atPath: source.path) else {
+            return .unavailable(reason: "기기 폴더에서 이 파일을 찾을 수 없습니다.")
+        }
+        return .localFile(source)
+    }
+
     /// 원본이 아니라 이 접근의 사본 폴더에 만든 사본을 돌려준다. 같은 볼륨이면 APFS 복제라 바로 끝난다.
     func download(_ item: RemoteFileItem) async throws -> URL {
         guard item.connectionID == connection.id else {
@@ -298,7 +316,10 @@ struct DeviceFolderBrowserView: View {
 
     @State private var phase: Phase = .checking
     @State private var isChoosingFolder = false
+    @State private var parentFolderHint: URL?
+    @State private var asksForParentAuthorization = false
     @State private var message: String?
+    @Environment(\.returnToDashboard) private var returnToDashboard
     private var themeRefresh = ThemeRefresh()
 
     init(onImportFiles: @escaping () -> Void) {
@@ -314,24 +335,26 @@ struct DeviceFolderBrowserView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             case .needsFolder:
                 ContentUnavailableView {
-                    Label("기기 파일", systemImage: "internaldrive")
+                    Label("기기 파일", interfaceSystemImage: "nf.device_files")
                 } description: {
-                    Text("앱 안에서 볼 폴더를 한 번 선택하세요. 선택한 폴더 안의 파일만 읽고, 원본은 바꾸거나 옮기거나 지우지 않습니다.")
+                    Text("앱 안에서 볼 폴더를 한 번 선택하세요. 선택한 폴더와 그 위 폴더로 이동해 파일을 읽고, 원본은 바꾸거나 옮기거나 지우지 않습니다.")
                 } actions: {
                     Button("폴더 선택") { isChoosingFolder = true }
                         .buttonStyle(PorcelainProminentButtonStyle())
                     Button("파일을 폰하드로 가져오기") { onImportFiles() }
+                    Button("메뉴로 돌아가기") { returnToDashboard() }
                 }
                 .navigationTitle("기기 파일")
             case .unavailable:
                 ContentUnavailableView {
-                    Label("선택한 폴더를 열 수 없습니다", systemImage: "exclamationmark.triangle")
+                    Label("선택한 폴더를 열 수 없습니다", interfaceSystemImage: "exclamationmark.triangle")
                 } description: {
                     Text("폴더가 옮겨졌거나 지워졌거나, 외장 디스크가 연결되어 있지 않을 수 있습니다. 다시 시도하거나 폴더를 다시 선택해 주세요.")
                 } actions: {
                     Button("다시 시도") { phase = Self.restoredPhase() }
                         .buttonStyle(PorcelainProminentButtonStyle())
                     Button("폴더 다시 선택") { isChoosingFolder = true }
+                    Button("메뉴로 돌아가기") { returnToDashboard() }
                 }
                 .navigationTitle("기기 파일")
             case .ready(let access):
@@ -343,16 +366,18 @@ struct DeviceFolderBrowserView: View {
                     title: service.connection.name
                 )
                 .id(ObjectIdentifier(access))
+                // 어느 폴더를 보고 있는지, 바꾸거나 메뉴로 돌아가는 길을 항상 보이게 한다(사이드바는 그대로).
+                .safeAreaInset(edge: .top, spacing: 0) { selectedFolderBar(access) }
             }
         }
         .toolbar {
             if case .ready = phase {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
-                        Button("폴더 변경", systemImage: "folder.badge.gearshape") { isChoosingFolder = true }
-                        Button("파일을 폰하드로 가져오기", systemImage: "square.and.arrow.down") { onImportFiles() }
+                        Button("폴더 변경", interfaceSystemImage: "folder.badge.gearshape") { isChoosingFolder = true }
+                        Button("파일을 폰하드로 가져오기", interfaceSystemImage: "nf.import") { onImportFiles() }
                     } label: {
-                        Label("기기 파일 메뉴", systemImage: "folder.badge.gearshape")
+                        Label("기기 파일 메뉴", interfaceSystemImage: "folder.badge.gearshape")
                     }
                 }
             }
@@ -375,9 +400,16 @@ struct DeviceFolderBrowserView: View {
                 message = "폴더를 열지 못했습니다: \(error.localizedDescription)"
             }
         }
+        .fileDialogDefaultDirectory(parentFolderHint)
         .fileDialogConfirmationLabel("이 폴더 열기")
         .fileDialogMessage("NasFinder 안에서 볼 폴더를 선택하세요. 파일은 읽기만 합니다.")
-        .alert("기기 파일", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
+        .alert("상위 폴더 허락", isPresented: $asksForParentAuthorization) {
+            Button("상위 폴더 선택") { isChoosingFolder = true }
+            Button("취소", role: .cancel) { parentFolderHint = nil }
+        } message: {
+            Text("이 폴더의 상위 폴더는 아직 허락되지 않아 앱이 열 수 없습니다. 시스템 선택기에서 상위 폴더를 직접 고르면 그 폴더부터 볼 수 있습니다. 파일은 읽기만 합니다.")
+        }
+        .alert("기기 파일 알림", isPresented: Binding(get: { message != nil }, set: { if !$0 { message = nil } })) {
             Button("확인", role: .cancel) { message = nil }
         } message: {
             Text(message ?? "")
@@ -385,6 +417,59 @@ struct DeviceFolderBrowserView: View {
         .task {
             if case .checking = phase { phase = Self.restoredPhase() }
         }
+    }
+
+    /// 허락한 폴더의 실제 이름을 화면에만 보여 준다(기록하거나 저장하지 않는다). 목록의 "/"는 이 폴더 안의 맨 위를 뜻한다.
+    private func selectedFolderBar(_ access: DeviceFolderAccess) -> some View {
+        let name = access.rootURL.lastPathComponent
+        return HStack(spacing: 10) {
+            InterfaceIcon(systemName: "internaldrive", size: 20)
+                .foregroundStyle(PorcelainMetrics.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 0) {
+                Text("선택한 폴더").porcelainFont(.meta).foregroundStyle(PorcelainMetrics.secondary)
+                Text(name.isEmpty ? "/" : name)
+                    .porcelainFont(.tile, weight: .semibold)
+                    .foregroundStyle(PorcelainMetrics.graphite)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 8)
+            if access.hasParentFolder {
+                Button("상위 폴더") { openParentFolder(of: access) }
+                    .porcelainFont(.body)
+                    .buttonStyle(.bordered)
+                    .accessibilityHint("선택한 폴더의 위 폴더를 엽니다. 허락되지 않았으면 시스템 선택기로 직접 고르게 합니다.")
+            }
+            Button("폴더 변경") { parentFolderHint = nil; isChoosingFolder = true }
+                .porcelainFont(.body)
+                .buttonStyle(.bordered)
+            Button("메뉴로") { returnToDashboard() }
+                .porcelainFont(.body)
+                .buttonStyle(.bordered)
+                .accessibilityLabel("메뉴로 돌아가기")
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(PorcelainMetrics.sidebar)
+        .overlay(alignment: .bottom) { PorcelainMetrics.line.frame(height: 0.5) }
+    }
+
+    /// 이 세션에서 이미 읽을 수 있는 상위 폴더만 바로 연다(권한을 늘리지 않고, 저장된 선택도 바꾸지 않는다).
+    /// 읽을 수 없으면 성공한 것처럼 보이지 않고, 시스템 선택기로 상위 폴더를 직접 허락하게 안내한다.
+    private func openParentFolder(of access: DeviceFolderAccess) {
+        let parent = access.rootURL.deletingLastPathComponent()
+        if DeviceFolderAccess.canList(parent) {
+            let parentAccess = DeviceFolderAccess(rootURL: parent)
+            if parentAccess.isReachableFolder {
+                phase = .ready(parentAccess)
+                return
+            }
+        }
+        parentFolderHint = parent
+        asksForParentAuthorization = true
     }
 
     private static func restoredPhase() -> Phase {

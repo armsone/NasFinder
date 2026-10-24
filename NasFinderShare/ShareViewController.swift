@@ -11,14 +11,14 @@ private struct ShareImportItem {
 private enum ShareItemState {
     case waiting
     case importing
-    case saved(SharedInboxRecord)
+    case staged(ShareIntentItem)
     case failed(String)
 
     var symbol: String {
         switch self {
         case .waiting: "•"
         case .importing: "↓"
-        case .saved: "✓"
+        case .staged: "✓"
         case .failed: "!"
         }
     }
@@ -27,14 +27,14 @@ private enum ShareItemState {
         switch self {
         case .waiting: "대기 중"
         case .importing: "복사 중"
-        case let .saved(record): ByteCountFormatter.string(fromByteCount: record.byteCount, countStyle: .file)
+        case let .staged(item): ByteCountFormatter.string(fromByteCount: item.byteCount, countStyle: .file)
         case let .failed(message): message
         }
     }
 }
 
 private enum ShareCopyResult: Sendable {
-    case success(SharedInboxRecord)
+    case staged(ShareIntentItem)
     case failure(String)
 }
 
@@ -61,8 +61,17 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
     private let progressView = UIProgressView(progressViewStyle: .default)
     private let statusTextView = UITextView()
     private let cancelButton = UIButton(type: .system)
-    private let openButton = UIButton(type: .system)
     private let doneButton = UIButton(type: .system)
+    private let makeVideoButton = UIButton(type: .system)
+    private let photoSelectButton = UIButton(type: .system)
+    private let choiceStack = UIStackView()
+
+    /// 공유 시트는 이미지 선별 / 영상 만들기 두 가지만 제공한다(폰하드 저장은 앱 본체 기능으로 그대로 남아 있다).
+    private var chosenIntent: ShareIntent?
+    private var stagingBatchID: UUID?
+    private var unsupportedCount = 0
+    private var didChooseDestination = false
+    private var stagedItems: [ShareIntentItem] = []
 
     private var items: [ShareImportItem] = []
     private var states: [ShareItemState] = []
@@ -71,8 +80,10 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
     private var didFinalize = false
     private var didCommit = false
     private var isCancelled = false
-    private var attemptedAutomaticOpen = false
-    private var committedRecords: [SharedInboxRecord] = []
+    /// 동시에 복사하는 항목 수. 많은 항목을 공유해도 확장 메모리·파일 핸들이 한꺼번에 늘지 않게 순서대로 이어 간다.
+    private static let maximumConcurrentCopies = 4
+    private var nextIndexToStart = 0
+    private var activeCopies = 0
     private let cancellationGate = ShareCancellationGate()
 
     override func viewDidLoad() {
@@ -84,7 +95,7 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
     private func configureUI() {
         view.backgroundColor = .systemBackground
 
-        titleLabel.text = "NasFinder에 저장"
+        titleLabel.text = "NasFinder로 보내기"
         titleLabel.font = .preferredFont(forTextStyle: .title2)
         titleLabel.adjustsFontForContentSizeCategory = true
         titleLabel.textAlignment = .center
@@ -109,24 +120,24 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
         cancelButton.setTitle("취소", for: .normal)
         cancelButton.addTarget(self, action: #selector(cancelImport), for: .touchUpInside)
 
-        openButton.configuration = .filled()
-        openButton.configuration?.title = "NasFinder 열기"
-        openButton.configuration?.image = UIImage(systemName: "arrow.up.forward.app")
-        openButton.configuration?.imagePadding = 7
-        openButton.isHidden = true
-        openButton.addTarget(self, action: #selector(openNasFinder), for: .touchUpInside)
-
         doneButton.setTitle("완료", for: .normal)
         doneButton.isHidden = true
         doneButton.addTarget(self, action: #selector(completeWithoutOpening), for: .touchUpInside)
 
-        let buttonStack = UIStackView(arrangedSubviews: [cancelButton, doneButton, openButton])
+        configureChoiceButton(makeVideoButton, title: "영상 만들기", symbol: "film", action: #selector(chooseMakeVideo))
+        configureChoiceButton(photoSelectButton, title: "사진 선별", symbol: "photo.stack", action: #selector(choosePhotoSelect))
+        choiceStack.axis = .vertical
+        choiceStack.spacing = 10
+        choiceStack.isHidden = true
+        [photoSelectButton, makeVideoButton].forEach(choiceStack.addArrangedSubview)
+
+        let buttonStack = UIStackView(arrangedSubviews: [cancelButton, doneButton])
         buttonStack.axis = .horizontal
         buttonStack.spacing = 12
         buttonStack.alignment = .center
         buttonStack.distribution = .fillEqually
 
-        let contentStack = UIStackView(arrangedSubviews: [titleLabel, summaryLabel, progressView, statusTextView, buttonStack])
+        let contentStack = UIStackView(arrangedSubviews: [titleLabel, summaryLabel, choiceStack, progressView, statusTextView, buttonStack])
         contentStack.translatesAutoresizingMaskIntoConstraints = false
         contentStack.axis = .vertical
         contentStack.spacing = 14
@@ -142,12 +153,54 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
         ])
     }
 
+    private func configureChoiceButton(_ button: UIButton, title: String, symbol: String, action: Selector) {
+        button.configuration = .filled()
+        button.configuration?.title = title
+        button.configuration?.image = UIImage(systemName: symbol)
+        button.configuration?.imagePadding = 7
+        button.heightAnchor.constraint(greaterThanOrEqualToConstant: 46).isActive = true
+        button.addTarget(self, action: action, for: .touchUpInside)
+    }
+
+    @objc private func choosePhotoSelect() { beginImport(intent: .photoSelect) }
+    @objc private func chooseMakeVideo() { beginImport(intent: .makeVideo) }
+
+    /// 목적을 고른 뒤에만 복사를 시작한다. 모든 항목을 App Group 대기 폴더에 복사한 뒤 매니페스트를 한 번에 확정한다.
+    private func beginImport(intent: ShareIntent) {
+        guard !didChooseDestination, !items.isEmpty else { return }
+        didChooseDestination = true
+        chosenIntent = intent
+        choiceStack.isHidden = true
+        do {
+            stagingBatchID = try ShareIntentStaging.createBatch(intent: intent)
+        } catch {
+            didFinalize = true
+            summaryLabel.text = "공유 대기 폴더를 만들지 못했습니다: \(error.localizedDescription)"
+            cancelButton.isHidden = true
+            doneButton.isHidden = false
+            return
+        }
+        summaryLabel.text = "0 / \(items.count)개 저장 중"
+        startNextImports()
+    }
+
+    private func startNextImports() {
+        while activeCopies < Self.maximumConcurrentCopies, nextIndexToStart < items.count, !isCancelled {
+            let index = nextIndexToStart
+            nextIndexToStart += 1
+            activeCopies += 1
+            startImport(at: index)
+        }
+    }
+
     private func collectItemsAndStart() {
         let providers = extensionContext?.inputItems
             .compactMap { $0 as? NSExtensionItem }
             .flatMap { $0.attachments ?? [] } ?? []
 
-        items = providers.prefix(50).compactMap(Self.importItem(from:))
+        // 공유 항목 수에는 앱이 정한 상한이 없다. 활성화 여부는 Info.plist의 활성화 조건(NSExtensionActivationRule)이 정한다.
+        items = providers.compactMap(Self.importItem(from:))
+        unsupportedCount = providers.count - items.count
         states = Array(repeating: .waiting, count: items.count)
         renderStatus()
 
@@ -159,10 +212,10 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
             return
         }
 
-        summaryLabel.text = "0 / \(items.count)개 저장 중"
-        for index in items.indices {
-            startImport(at: index)
-        }
+        summaryLabel.text = unsupportedCount > 0
+            ? "\(items.count)개 항목을 어떻게 할까요? (지원하지 않는 \(unsupportedCount)개는 제외)"
+            : "\(items.count)개 항목을 어떻게 할까요?"
+        choiceStack.isHidden = false
     }
 
     private static func importItem(from provider: NSItemProvider) -> ShareImportItem? {
@@ -229,6 +282,8 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
         let item = items[index]
         let displayName = item.displayName
         let typeIdentifier = item.typeIdentifier
+        // 공유 대기 배치 ID는 메인 액터에서 읽어 백그라운드 복사에 값으로 넘긴다.
+        let batchID = stagingBatchID
 
         if item.loadsFileURL {
             item.provider.loadItem(
@@ -242,6 +297,7 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
                     index: index,
                     displayName: loadedURL?.lastPathComponent ?? displayName,
                     typeIdentifier: typeIdentifier,
+                    batchID: batchID,
                     providerError: errorMessage
                 )
             }
@@ -255,6 +311,7 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
                     index: index,
                     displayName: displayName,
                     typeIdentifier: typeIdentifier,
+                    batchID: batchID,
                     providerError: errorMessage
                 )
             }
@@ -280,6 +337,7 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
         index: Int,
         displayName: String,
         typeIdentifier: String,
+        batchID: UUID?,
         providerError: String?
     ) {
         guard !cancellationGate.isCancelled else { return }
@@ -291,16 +349,21 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
             }
 
             do {
-                let record = try SharedInbox.importTemporaryFile(
-                    at: url,
-                    originalFilename: displayName,
-                    contentTypeIdentifier: typeIdentifier
-                )
-                if cancellationGate.isCancelled {
-                    try? SharedInbox.delete(record)
-                    return
+                if let batchID {
+                    let type = UTType(typeIdentifier)
+                    let isVideo = type?.conforms(to: .movie) == true || type?.conforms(to: .video) == true
+                    // 영상 만들기/이미지 선별은 사진·영상만 받는다. 다른 형식은 항목 오류로 남기고 나머지는 계속 진행한다.
+                    guard isVideo || type?.conforms(to: .image) == true else {
+                        throw ShareIntentStaging.StagingError.unsupportedType
+                    }
+                    let staged = try ShareIntentStaging.stage(
+                        fileAt: url, originalFilename: displayName, contentTypeIdentifier: typeIdentifier,
+                        isVideo: isVideo, intoBatch: batchID)
+                    if cancellationGate.isCancelled { return }
+                    result = .staged(staged)
+                } else {
+                    result = .failure("공유 대기 폴더가 준비되지 않았습니다.")
                 }
-                result = .success(record)
             } catch {
                 result = .failure(error.localizedDescription)
             }
@@ -316,16 +379,11 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
     private func finishImport(at index: Int, result: ShareCopyResult) {
         guard states.indices.contains(index) else { return }
 
-        if isCancelled {
-            if case let .success(record) = result {
-                try? SharedInbox.delete(record)
-            }
-            return
-        }
+        if isCancelled { return }
 
         switch result {
-        case let .success(record):
-            states[index] = .saved(record)
+        case let .staged(item):
+            states[index] = .staged(item)
         case let .failure(message):
             states[index] = .failed(message)
         }
@@ -334,52 +392,54 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
         summaryLabel.text = "\(completedCount) / \(items.count)개 처리함"
         renderStatus()
 
+        activeCopies -= 1
         if completedCount == items.count {
-            finalizeBatch()
+            finalizeStagedBatch()
+        } else {
+            startNextImports()
         }
     }
 
-    private func finalizeBatch() {
-        guard !didFinalize, !isCancelled else { return }
+    /// 받은 순서(공유 항목 순서)를 유지해 배치를 확정한다. 실패 항목은 사유와 함께 앱에도 알린다.
+    private func finalizeStagedBatch() {
+        guard !didFinalize, !isCancelled, let batchID = stagingBatchID, let intent = chosenIntent else { return }
         didFinalize = true
-
-        let successfulRecords = states.compactMap { state -> SharedInboxRecord? in
-            if case let .saved(record) = state { return record }
-            return nil
+        var skipped: [String] = []
+        var staged: [ShareIntentItem] = []
+        for (item, state) in zip(items, states) {
+            switch state {
+            case let .staged(stagedItem): staged.append(stagedItem)
+            case let .failed(message): skipped.append("\(item.displayName): \(message)")
+            default: break
+            }
         }
-        let failedCount = states.count - successfulRecords.count
-
-        guard !successfulRecords.isEmpty else {
-            summaryLabel.text = "모든 파일을 저장하지 못했습니다."
+        if unsupportedCount > 0 { skipped.append("지원하지 않는 형식 \(unsupportedCount)개") }
+        guard !staged.isEmpty else {
+            ShareIntentStaging.discardUncommitted(batchID: batchID)
+            summaryLabel.text = "가져올 수 있는 사진이나 영상이 없습니다."
             cancelButton.isHidden = true
             doneButton.isHidden = false
             return
         }
-
         do {
-            try SharedInbox.append(records: successfulRecords)
+            try ShareIntentStaging.commit(ShareIntentBatch(
+                id: batchID, intent: intent, createdAt: Date(), items: staged, skippedReasons: skipped))
             didCommit = true
-            committedRecords = successfulRecords
-            if failedCount == 0 {
-                summaryLabel.text = "\(successfulRecords.count)개 파일을 저장했습니다."
-            } else {
-                summaryLabel.text = "\(successfulRecords.count)개 저장, \(failedCount)개 실패"
-            }
+            stagedItems = staged
+            let failed = states.count - staged.count
+            // 공유 확장은 앱 자동 열기를 보장받지 못한다(공식 문서: 확장 종류가 open 지원을 정한다). 파일과 작업은 App Group에
+            // 원자적으로 남겼으므로 사용자가 NasFinder를 열면 앱이 다음 foreground에서 이어서 처리한다.
+            let continuation = intent == .makeVideo
+                ? "NasFinder를 열면 작업대에 담을 수 있습니다."
+                : "NasFinder를 열면 사진 선별을 이어갑니다."
+            summaryLabel.text = failed == 0
+                ? "\(staged.count)개를 보관했습니다. \(continuation)"
+                : "\(staged.count)개를 보관했고 \(failed)개는 가져오지 못했습니다. \(continuation)"
             cancelButton.isHidden = true
             doneButton.isHidden = false
-            openButton.isHidden = false
-            attemptToOpenNasFinder(automatic: true)
         } catch {
-            for record in successfulRecords {
-                try? SharedInbox.delete(record)
-            }
-            for index in states.indices {
-                if case .saved = states[index] {
-                    states[index] = .failed("저장 목록 반영 실패: \(error.localizedDescription)")
-                }
-            }
-            renderStatus()
-            summaryLabel.text = "파일 목록을 저장하지 못했습니다."
+            ShareIntentStaging.discardUncommitted(batchID: batchID)
+            summaryLabel.text = "공유 대기 정보를 저장하지 못했습니다: \(error.localizedDescription)"
             cancelButton.isHidden = true
             doneButton.isHidden = false
         }
@@ -398,72 +458,8 @@ final class ShareViewController: UIViewController, @unchecked Sendable {
         isCancelled = true
         cancellationGate.cancel()
         loadProgresses.forEach { $0.cancel() }
-        for case let .saved(record) in states {
-            try? SharedInbox.delete(record)
-        }
+        if let batchID = stagingBatchID { ShareIntentStaging.discardUncommitted(batchID: batchID) }
         extensionContext?.cancelRequest(withError: CocoaError(.userCancelled))
-    }
-
-    @objc private func openNasFinder() {
-        attemptToOpenNasFinder(automatic: false)
-    }
-
-    private func attemptToOpenNasFinder(automatic: Bool) {
-        var components = URLComponents()
-        components.scheme = "nasfinder"
-        components.host = "inbox"
-        if let latestRecord = committedRecords.last {
-            components.queryItems = [
-                URLQueryItem(name: "id", value: latestRecord.id.uuidString)
-            ]
-        }
-        guard didCommit,
-              let deepLink = components.url,
-              !automatic || !attemptedAutomaticOpen else { return }
-        if automatic { attemptedAutomaticOpen = true }
-
-        openButton.isEnabled = false
-        extensionContext?.open(deepLink) { [weak self] didOpen in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.openButton.isEnabled = true
-                if didOpen {
-                    self.extensionContext?.completeRequest(returningItems: [], completionHandler: nil)
-                } else {
-                    // Some iOS versions reject NSExtensionContext.open from a
-                    // share extension even though the containing app owns the
-                    // URL scheme. HanClip's established compatibility path
-                    // walks the responder chain and sends the legacy openURL:
-                    // action. Keep it strictly as a fallback after the public
-                    // API reports failure.
-                    if self.openThroughLegacyResponderChain(deepLink) {
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                            self.extensionContext?.completeRequest(
-                                returningItems: [],
-                                completionHandler: nil
-                            )
-                        }
-                    } else {
-                        self.openButton.isHidden = false
-                        self.doneButton.isHidden = false
-                        self.summaryLabel.text = "파일은 저장됐습니다. NasFinder를 직접 열면 받은 파일에서 확인할 수 있습니다."
-                    }
-                }
-            }
-        }
-    }
-
-    private func openThroughLegacyResponderChain(_ url: URL) -> Bool {
-        let selector = NSSelectorFromString("openURL:")
-        var responder: UIResponder? = self
-        while let current = responder {
-            if current.responds(to: selector) {
-                _ = current.perform(selector, with: url)
-                return true
-            }
-            responder = current.next
-        }
-        return false
     }
 
     @objc private func completeWithoutOpening() {

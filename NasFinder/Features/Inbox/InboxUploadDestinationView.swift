@@ -26,9 +26,9 @@ struct InboxUploadDestinationView: View {
             Group {
                 if connectionStore.connections.isEmpty {
                     ContentUnavailableView {
-                        Label("연결된 NAS가 없습니다", systemImage: "externaldrive.badge.plus")
+                        Label("연결된 NAS가 없습니다", interfaceSystemImage: "externaldrive.badge.plus")
                     } description: {
-                        Text("먼저 NasFinder에 Synology NAS 또는 SFTP 서버를 추가해 주세요.")
+                        Text("먼저 NasFinder에 NAS(Synology·SFTP·SMB·WebDAV·FTP) 연결을 추가해 주세요.")
                     }
                 } else {
                     List(connectionStore.connections) { connection in
@@ -74,7 +74,7 @@ struct InboxUploadDestinationView: View {
 
     private func connectionRow(_ connection: RemoteConnection) -> some View {
         HStack(spacing: ui(12)) {
-            Image(systemName: connection.kind.systemImage)
+            Image(interfaceSystemName: connection.kind.systemImage, pointSize: 20)
                 .font(.ui(.title3))
                 .foregroundStyle(.tint)
                 .frame(width: ui(34), height: ui(34))
@@ -87,7 +87,7 @@ struct InboxUploadDestinationView: View {
                     .font(.ui(.caption))
                     .foregroundStyle(PorcelainMetrics.secondary)
                     .lineLimit(1)
-                Label(connection.normalizedRootPath, systemImage: "folder")
+                Label(connection.normalizedRootPath, interfaceSystemImage: "folder")
                     .font(.ui(.caption2))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
@@ -126,7 +126,7 @@ private struct InboxUploadConnectionView: View {
                 )
             } else {
                 ContentUnavailableView {
-                    Label("로그인 정보 없음", systemImage: "key.slash")
+                    Label("로그인 정보 없음", interfaceSystemImage: "key.slash")
                 } description: {
                     Text("연결을 수정해 비밀번호를 다시 저장한 뒤 시도해 주세요.")
                 }
@@ -196,7 +196,7 @@ private struct InboxUploadFolderView: View {
             } else if let errorMessage = viewModel.errorMessage,
                       viewModel.items.isEmpty {
                 ContentUnavailableView {
-                    Label("폴더를 열 수 없습니다", systemImage: "wifi.exclamationmark")
+                    Label("폴더를 열 수 없습니다", interfaceSystemImage: "wifi.exclamationmark")
                 } description: {
                     Text(errorMessage)
                 } actions: {
@@ -208,7 +208,7 @@ private struct InboxUploadFolderView: View {
                 }
             } else if folders.isEmpty {
                 ContentUnavailableView {
-                    Label("하위 폴더가 없습니다", systemImage: "folder")
+                    Label("하위 폴더가 없습니다", interfaceSystemImage: "folder")
                 } description: {
                     Text("아래 버튼을 눌러 현재 폴더에 파일을 업로드할 수 있습니다.")
                 }
@@ -235,7 +235,7 @@ private struct InboxUploadFolderView: View {
                                 }
                             }
                         } icon: {
-                            Image(systemName: "folder.fill")
+                            Image(interfaceSystemName: "folder.fill")
                                 .foregroundStyle(SkyBreezeTheme.folderBlue)
                         }
                     }
@@ -299,7 +299,7 @@ private struct InboxUploadFolderView: View {
             Button {
                 uploadIntoCurrentFolder()
             } label: {
-                Label(uploadButtonTitle, systemImage: "arrow.up.doc.fill")
+                Label(uploadButtonTitle, interfaceSystemImage: "arrow.up.doc.fill")
                     .frame(maxWidth: .infinity)
             }
             .buttonStyle(PorcelainProminentButtonStyle())
