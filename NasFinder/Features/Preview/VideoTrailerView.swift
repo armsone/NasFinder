@@ -14,15 +14,24 @@ enum MediaError: LocalizedError {
 }
 
 private enum TrailerError: LocalizedError {
-    case exportUnavailable, exportFailed, noUsableSources, outputMissing
+    case exportUnavailable, exportFailed, noUsableSources, outputMissing, intermediateInvalid
     var errorDescription: String? {
         switch self {
+        case .intermediateInvalid: "만든 중간 영상을 읽지 못했습니다. 다시 시도해 주세요."
         case .exportUnavailable: "이 영상 형식으로 예고편을 만들 수 없습니다."
         case .exportFailed: "예고편을 만들지 못했습니다. 다시 시도해 주세요."
         case .noUsableSources: "예고편으로 만들 수 있는 사진이나 영상이 없습니다."
         case .outputMissing: "완성한 예고편 파일이 작업 폴더에서 사라졌습니다. 다시 시도해 주세요."
         }
     }
+}
+
+/// One finished intermediate clip and the scenes it really contains. `hasOriginalSound`
+/// is false for a clip rebuilt from a still frame, which carries no original sound.
+private struct TrailerRenderedClip {
+    let url: URL
+    let scenes: [VideoTrailerScene]
+    let hasOriginalSound: Bool
 }
 
 /// Domain/code chain of an error for logs and the failure message. Never includes
@@ -73,6 +82,7 @@ private struct TrailerFailureDiagnostic: Encodable {
     var wrappedErrorChain: String?
     var sources = 0
     var skipped = 0
+    var recovered = 0
     var segments = 0
     var tracks = 0
     var renderWidth = 0
@@ -444,6 +454,7 @@ struct VideoTrailerView: View {
                 draft: $draft,
                 opening: currentDraft(),
                 skippedCount: model.skippedCount,
+                recoveredCount: model.recoveredCount,
                 isBusy: model.isBusy,
                 status: model.status,
                 exportProgress: model.exportProgress,
@@ -766,7 +777,8 @@ struct VideoTrailerView: View {
     private func settingsContent(_ presentation: TrailerSettingsPresentation) -> some View {
         TrailerSettingsHost(
             mode: mode, draft: $draft, opening: presentation.draft,
-            skippedCount: model.skippedCount, isBusy: model.isBusy, status: model.status,
+            skippedCount: model.skippedCount, recoveredCount: model.recoveredCount,
+            isBusy: model.isBusy, status: model.status,
             exportProgress: model.exportProgress, joinProgress: model.joinProgress,
             outputURL: model.outputURL, error: model.error,
             onModeChange: changeMode, onClose: { presentedSettings = nil },
@@ -979,6 +991,7 @@ private struct TrailerSettingsHost: View {
     @Binding var draft: TrailerSettingsDraft?
     let opening: TrailerSettingsDraft
     let skippedCount: Int
+    var recoveredCount: Int = 0
     let isBusy: Bool
     let status: String
     let exportProgress: Double?
@@ -1002,6 +1015,7 @@ private struct TrailerSettingsHost: View {
         VideoTrailerSettings(
             mode: mode, sources: binding.sources, total: binding.total,
             clipLength: binding.clipLength, skippedCount: skippedCount,
+            recoveredCount: recoveredCount,
             aspectRatio: binding.aspectRatio, music: binding.music,
             showingDuration: binding.showingDuration, showingClipLength: binding.showingClipLength,
             isBusy: isBusy, status: status,
@@ -1033,6 +1047,7 @@ private struct VideoTrailerSettings: View {
     @Binding var total: Double
     @Binding var clipLength: Double
     let skippedCount: Int
+    var recoveredCount: Int = 0
     @Binding var aspectRatio: OutputAspectRatio?
     /// Draft only: the session's music changes after a new video is actually made.
     @Binding var music: TrailerMusicSelection?
@@ -1643,6 +1658,9 @@ private struct VideoTrailerSettings: View {
                 Text("선택한 \(trailerDurationTitle(total))에 가장 가까운 길이로 맞췄어요")
                     .font(.ui(.caption)).foregroundStyle(.secondary)
             }
+            if recoveredCount > 0 {
+                Text("복구됨 \(recoveredCount)개 · 멈춘 화면으로 대체된 영상").font(.ui(.caption)).foregroundStyle(.secondary)
+            }
             if skippedCount > 0 {
                 Text(trailerSkippedTitle(skippedCount)).font(.ui(.caption)).foregroundStyle(.secondary)
             }
@@ -2139,6 +2157,8 @@ final class VideoTrailerModel: ObservableObject {
     /// Items whose image/video decode validation failed and were skipped without
     /// aborting the rest of the batch (e.g. a folder containing an undecodable clip).
     @Published private(set) var skippedCount = 0
+    /// Offending items isolated via recursive bisect and recovered as still photo clips.
+    @Published private(set) var recoveredCount = 0
     /// The exporter's own measured progress while the final joining runs, otherwise nil.
     /// Reaches 1 only after the export session reports completion.
     @Published private(set) var exportProgress: Double?
@@ -2271,86 +2291,446 @@ final class VideoTrailerModel: ObservableObject {
         VideoTrailerBatchPlan.recommendedClipLength(sources)
     }
 
-    /// Actually decodes the planned ranges of one staged video and returns the error chain
-    /// of the first failure. `isDecodable` only reports that a decoder exists for the
-    /// track's format; a stream that decoder then rejects mid-file (seen with MPEG-4 Part 2
-    /// video: VideoToolbox -8969 after some frames) still fails the whole export with
-    /// AVFoundationErrorDomain -11821 / -16977. With `softwareOnly`, tracks that have a
-    /// hardware decoder are left to the export itself.
-    nonisolated private static func decodeFailure(url: URL, ranges: [CMTimeRange], softwareOnly: Bool) async throws -> String? {
-        let work = Task.detached(priority: .userInitiated) { () -> String? in
-            do {
-                let asset = AVURLAsset(url: url)
-                guard let track = try await asset.loadTracks(withMediaType: .video).first else {
-                    return trailerErrorChain(MediaError.videoTrackUnavailable)
-                }
-                if softwareOnly {
-                    let formats = try await track.load(.formatDescriptions)
-                    guard formats.contains(where: { !VTIsHardwareDecodeSupported(CMFormatDescriptionGetMediaSubType($0)) }) else {
-                        return nil
-                    }
-                }
-                for range in ranges {
-                    let reader = try AVAssetReader(asset: asset)
-                    let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
-                        kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
-                    ])
-                    output.alwaysCopiesSampleData = false
-                    guard reader.canAdd(output) else { return trailerErrorChain(MediaError.videoTrackUnavailable) }
-                    reader.add(output)
-                    reader.timeRange = range
-                    guard reader.startReading() else { return trailerErrorChain(reader.error ?? MediaError.videoTrackUnavailable) }
-                    while output.copyNextSampleBuffer() != nil {
-                        if Task.isCancelled {
-                            reader.cancelReading()
-                            return nil
-                        }
-                    }
-                    if reader.status == .failed { return trailerErrorChain(reader.error ?? MediaError.videoTrackUnavailable) }
-                }
-                return nil
-            } catch {
-                return trailerErrorChain(error)
-            }
+    private static let maximumItemsPerComposition = 15
+
+    /// Only a failure that really points at one source's media may be bisected down to
+    /// that source. Anything else (cancel, disk, permission, system/media services,
+    /// encoder, or an error nobody classified) is rethrown so it is never mistaken for a
+    /// bad item and silently dropped. A global cause anywhere in the chain wins over an
+    /// outer media error.
+    nonisolated private static func isBisectableSourceFailure(_ error: Error) -> Bool {
+        var chain: [Error] = []
+        var current: Error? = error
+        while let link = current, chain.count < 8 {
+            if link is CancellationError { return false }
+            chain.append(link)
+            current = (link as NSError).userInfo[NSUnderlyingErrorKey] as? Error
         }
-        let failure = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+        if chain.contains(where: isGlobalFailure) { return false }
+        return chain.contains(where: isSourceMediaFailure)
+    }
+
+    nonisolated private static func isGlobalFailure(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let ns = error as NSError
+        switch ns.domain {
+        case NSCocoaErrorDomain, NSPOSIXErrorDomain, NSURLErrorDomain:
+            // Every filesystem or transport failure (missing/unreadable file, I/O error,
+            // disk, permission, network) is infrastructure, never a bad source's media.
+            return true
+        case AVFoundationErrorDomain:
+            return [-11878 /* AVErrorOperationCancelled */,
+                    -11807 /* AVErrorDiskFull */,
+                    -11819 /* AVErrorMediaServicesWereReset */,
+                    -11847 /* AVErrorOperationInterrupted */,
+                    -11835 /* AVErrorClientIsNotAuthorized */,
+                    -11852 /* AVErrorClientIsNotAuthorizedToUseDevice */].contains(ns.code)
+        default:
+            return false
+        }
+    }
+
+    nonisolated private static func isSourceMediaFailure(_ error: Error) -> Bool {
+        if error is MediaError { return true }
+        if let clipError = error as? VideoTrailerImageClip.ClipError { return clipError == .decodeFailed }
+        let ns = error as NSError
+        guard ns.domain == AVFoundationErrorDomain else { return false }
+        return [-11821 /* AVErrorDecodeFailed */,
+                -11822 /* AVErrorInvalidSourceMedia */,
+                -11828 /* AVErrorFileFormatNotRecognized */,
+                -11829 /* AVErrorFileFailedToParse */].contains(ns.code)
+    }
+
+    /// True when cancel, filesystem/transport, permission or system/media-services is
+    /// anywhere in the chain.
+    nonisolated private static func hasGlobalFailure(_ error: Error) -> Bool {
+        errorChain(error).contains(where: isGlobalFailure)
+    }
+
+    nonisolated private static func errorChain(_ error: Error) -> [Error] {
+        var chain: [Error] = []
+        var current: Error? = error
+        while let link = current, chain.count < 8 {
+            chain.append(link)
+            current = (link as NSError).userInfo[NSUnderlyingErrorKey] as? Error
+        }
+        return chain
+    }
+
+    /// A frame request that only failed to produce an image for this media. Anything
+    /// unknown, or with a global cause in its chain, is not ordinary and must be thrown.
+    nonisolated private static func isOrdinaryFrameFailure(_ error: Error) -> Bool {
+        let chain = errorChain(error)
+        if chain.contains(where: isGlobalFailure) { return false }
+        return chain.contains { link in
+            if isSourceMediaFailure(link) { return true }
+            let ns = link as NSError
+            return ns.domain == AVFoundationErrorDomain
+                && [-11832 /* AVErrorNoImageAtTime */,
+                    -11833 /* AVErrorDecoderNotFound */].contains(ns.code)
+        }
+    }
+
+    nonisolated private static func extractStillImage(
+        source: VideoTrailerSource,
+        at timeSeconds: Double,
+        maxPixelSize: CGFloat = 1920
+    ) async throws -> UIImage? {
         try Task.checkCancellation()
-        return failure
-    }
-
-    /// Runs the actual decode check over every planned video scene, per source.
-    private func decodeFailures(in selected: [VideoTrailerScene], softwareOnly: Bool) async throws -> [Int: String] {
-        var failures: [Int: String] = [:]
-        for source in sources where !source.isImage {
-            // A scene repeated to fill the music's length is the same range again.
-            var ranges: [CMTimeRange] = []
-            for scene in selected where scene.sourceID == source.id {
-                let range = CMTimeRange(start: CMTime(seconds: scene.start, preferredTimescale: 600),
-                                        duration: CMTime(seconds: scene.length, preferredTimescale: 600))
-                if !ranges.contains(range) { ranges.append(range) }
+        if source.isImage {
+            // A throwing read, so a missing or unreadable file propagates; only a readable
+            // but undecodable image falls back to the thumbnail decode.
+            let data = try Data(contentsOf: source.url, options: .mappedIfSafe)
+            try Task.checkCancellation()
+            if let image = UIImage(data: data), image.size.width > 0, image.size.height > 0 {
+                return image
             }
-            guard !ranges.isEmpty else { continue }
-            if let failure = try await Self.decodeFailure(url: source.url, ranges: ranges, softwareOnly: softwareOnly) {
-                failures[source.id] = failure
+            return await trailerThumbnailImage(at: source.url, maxPixelSize: maxPixelSize)
+        }
+        let asset = AVURLAsset(url: source.url)
+        let anchorTime = (timeSeconds.isFinite && timeSeconds >= 0) ? timeSeconds : source.plan.analysis.peakTime
+        if #available(iOS 17, macOS 14, macCatalyst 17, *) {
+            do {
+                let cgImage = try await RepresentativeVideoFrame.extract(
+                    asset: asset,
+                    anchor: anchorTime,
+                    appliesPreferredTrackTransform: true,
+                    maximumSize: CGSize(width: maxPixelSize, height: maxPixelSize)
+                )
+                return UIImage(cgImage: cgImage)
+            } catch {
+                // Only an ordinary frame/decode failure falls through to the generator.
+                if hasGlobalFailure(error) { throw error }
             }
         }
-        return failures
+        let generator = AVAssetImageGenerator(asset: asset)
+        generator.appliesPreferredTrackTransform = true
+        generator.maximumSize = CGSize(width: maxPixelSize, height: maxPixelSize)
+        let requestedTime = CMTime(seconds: max(0, anchorTime), preferredTimescale: 600)
+        do {
+            let frame = try await generator.image(at: requestedTime)
+            return UIImage(cgImage: frame.image)
+        } catch {
+            if !isOrdinaryFrameFailure(error) { throw error }
+        }
+        try Task.checkCancellation()
+        do {
+            let frame = try await generator.image(at: .zero)
+            return UIImage(cgImage: frame.image)
+        } catch {
+            if !isOrdinaryFrameFailure(error) { throw error }
+        }
+        return nil
     }
 
-    /// Excludes sources whose planned ranges failed an actual decode, counted and logged
-    /// like any other skipped item. Only this run's own staged copies are removed.
-    private func exclude(_ failures: [Int: String], at step: String) throws -> Bool {
-        guard !failures.isEmpty else { return false }
-        for source in sources {
-            guard let failure = failures[source.id] else { continue }
-            Self.logger.error("trailer source \(source.id, privacy: .public) skipped at \(step, privacy: .public): \(failure, privacy: .public) type \(source.url.pathExtension.lowercased(), privacy: .public)")
-            try? FileManager.default.removeItem(at: source.url)
+    private func renderSceneGroup(
+        scenes: [VideoTrailerScene],
+        renderSize: CGSize,
+        outputURL: URL,
+        generationSeed: Int,
+        sourceByID: [Int: VideoTrailerSource],
+        directory: URL,
+        attemptFiles: inout [URL],
+        imageClipCache: inout [String: URL]
+    ) async throws {
+        try Task.checkCancellation()
+        guard !scenes.isEmpty else { throw TrailerError.exportFailed }
+        // Registered before anything is written, and removed again unless this attempt
+        // finishes: a cancelled or failed group never leaves its output behind.
+        attemptFiles.append(outputURL)
+        var finished = false
+        defer { if !finished { try? FileManager.default.removeItem(at: outputURL) } }
+        let composition = AVMutableComposition()
+        guard let outputVideo = composition.addMutableTrack(
+            withMediaType: .video,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        ) else {
+            throw TrailerError.exportUnavailable
         }
-        sources.removeAll { failures[$0.id] != nil }
-        skippedCount += failures.count
-        skippedSourceIDs.formUnion(failures.keys)
-        guard !sources.isEmpty else { throw TrailerError.noUsableSources }
-        return true
+        let outputAudio = composition.addMutableTrack(
+            withMediaType: .audio,
+            preferredTrackID: kCMPersistentTrackID_Invalid
+        )
+        var cursor = CMTime.zero
+        var instructions: [AVMutableVideoCompositionInstruction] = []
+        var originalVolumes: [(time: CMTime, volume: Float)] = []
+
+        for segment in scenes {
+            try Task.checkCancellation()
+            guard let source = sourceByID[segment.sourceID] else { throw TrailerError.exportFailed }
+            let naturalSize: CGSize
+            let transform: CGAffineTransform
+            let video: AVAssetTrack
+            let asset: AVURLAsset
+            if source.isImage {
+                let photoRenderSize = Self.photoRenderSize(for: renderSize)
+                let framing: VideoTrailerImageClip.Framing? = (segment.fitsFrame || segment.offsetX != 0 || segment.offsetY != 0)
+                    ? .init(fitsFrame: segment.fitsFrame, offsetX: segment.offsetX, offsetY: segment.offsetY) : nil
+                let framingKey = framing.map { "\($0.fitsFrame ? "fit" : "fill")\($0.offsetX),\($0.offsetY)" } ?? "auto"
+                let cacheKey = "\(source.id):\(Int64((segment.length * 600).rounded())):\(Int(photoRenderSize.width))x\(Int(photoRenderSize.height)):\(framingKey)"
+                let clipURL: URL
+                if let cached = imageClipCache[cacheKey], FileManager.default.fileExists(atPath: cached.path) {
+                    clipURL = cached
+                } else {
+                    clipURL = directory.appendingPathComponent("image-clip-\(segment.id)-\(UUID().uuidString).mov")
+                    attemptFiles.append(clipURL)
+                    let renderTask = Task.detached(priority: .userInitiated) {
+                        try Task.checkCancellation()
+                        try VideoTrailerImageClip.render(
+                            imageURL: source.url,
+                            duration: segment.length,
+                            renderSize: photoRenderSize,
+                            outputURL: clipURL,
+                            seed: segment.id ^ generationSeed,
+                            framing: framing
+                        )
+                    }
+                    do {
+                        try await withTaskCancellationHandler {
+                            try await renderTask.value
+                        } onCancel: {
+                            renderTask.cancel()
+                        }
+                    } catch {
+                        try? FileManager.default.removeItem(at: clipURL)
+                        throw error
+                    }
+                    imageClipCache[cacheKey] = clipURL
+                }
+                try Task.checkCancellation()
+                asset = AVURLAsset(url: clipURL)
+                guard let imageVideo = try await asset.loadTracks(withMediaType: .video).first else {
+                    throw TrailerError.exportFailed
+                }
+                video = imageVideo
+                naturalSize = photoRenderSize
+                transform = CGAffineTransform(
+                    scaleX: renderSize.width / photoRenderSize.width,
+                    y: renderSize.height / photoRenderSize.height
+                )
+            } else {
+                asset = AVURLAsset(url: source.url)
+                guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
+                    throw MediaError.videoTrackUnavailable
+                }
+                video = videoTrack
+                naturalSize = try await video.load(.naturalSize)
+                transform = try await video.load(.preferredTransform)
+            }
+            guard naturalSize.width > 0, naturalSize.height > 0 else { throw TrailerError.exportUnavailable }
+            let range = source.isImage
+                ? CMTimeRange(start: .zero, duration: CMTime(seconds: segment.length, preferredTimescale: 600))
+                : CMTimeRange(start: CMTime(seconds: segment.start, preferredTimescale: 600),
+                              duration: CMTime(seconds: segment.length, preferredTimescale: 600))
+            try outputVideo.insertTimeRange(range, of: video, at: cursor)
+            if !source.isImage, !segment.muted, let audio = try await asset.loadTracks(withMediaType: .audio).first, let outputAudio,
+               try await audio.load(.isDecodable) {
+                let audioRange = try await audio.load(.timeRange)
+                let overlap = CMTimeRangeGetIntersection(range, otherRange: audioRange)
+                if overlap.duration.seconds > 0 {
+                    let audioStart = CMTimeAdd(cursor, CMTimeSubtract(overlap.start, range.start))
+                    try outputAudio.insertTimeRange(overlap, of: audio, at: audioStart)
+                    originalVolumes.append((audioStart, Float(min(1, max(0, segment.volume)))))
+                }
+            }
+            let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: outputVideo)
+            layer.setTransform(source.isImage ? transform : (segment.fitsFrame
+                ? TrailerOutputRenderer.aspectFitTransform(naturalSize: naturalSize, preferredTransform: transform, renderSize: renderSize)
+                : TrailerOutputRenderer.aspectFillTransform(naturalSize: naturalSize, preferredTransform: transform, renderSize: renderSize,
+                                                            offsetX: segment.offsetX, offsetY: segment.offsetY)), at: cursor)
+            let instruction = AVMutableVideoCompositionInstruction()
+            instruction.timeRange = CMTimeRange(start: cursor, duration: range.duration)
+            instruction.layerInstructions = [layer]
+            instruction.backgroundColor = UIColor.black.cgColor
+            instructions.append(instruction)
+            cursor = CMTimeAdd(cursor, range.duration)
+        }
+
+        if let outputAudio, outputAudio.segments.isEmpty { composition.removeTrack(outputAudio) }
+
+        var audioMix: AVMutableAudioMix?
+        let keepsOriginalTrack = outputAudio.map { !$0.segments.isEmpty } ?? false
+        if keepsOriginalTrack, let outputAudio, originalVolumes.contains(where: { $0.volume != 1 }) {
+            let originalParameters = AVMutableAudioMixInputParameters(track: outputAudio)
+            for entry in originalVolumes { originalParameters.setVolume(entry.volume, at: entry.time) }
+            let mix = AVMutableAudioMix()
+            mix.inputParameters = [originalParameters]
+            audioMix = mix
+        }
+
+        let videoComposition = AVMutableVideoComposition()
+        videoComposition.renderSize = renderSize
+        videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+        videoComposition.instructions = instructions
+
+        guard let session = AVAssetExportSession(asset: composition, presetName: AVAssetExportPresetHighestQuality) else {
+            throw TrailerError.exportUnavailable
+        }
+        session.videoComposition = videoComposition
+        session.audioMix = audioMix
+        session.outputURL = outputURL
+        session.outputFileType = .mp4
+        session.shouldOptimizeForNetworkUse = false
+
+        // Visible to `stop`/`suspend` while it runs; the cancellation handler also reaches
+        // it when the task is cancelled by any other route.
+        exporter = session
+        defer { if exporter === session { exporter = nil } }
+        nonisolated(unsafe) let cancelTarget = session
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                session.exportAsynchronously { continuation.resume() }
+            }
+        } onCancel: {
+            cancelTarget.cancelExport()
+        }
+        // A cancelled export reports its own error; it is always a cancellation here, never
+        // a bad source.
+        try Task.checkCancellation()
+        guard session.status == .completed else {
+            throw session.error ?? TrailerError.exportFailed
+        }
+        finished = true
+    }
+
+    private func recoverFailedGroup(
+        scenes: [VideoTrailerScene],
+        renderSize: CGSize,
+        generationSeed: Int,
+        sourceByID: [Int: VideoTrailerSource],
+        directory: URL,
+        intermediateFiles: inout [URL],
+        attemptFiles: inout [URL],
+        imageClipCache: inout [String: URL]
+    ) async throws -> [TrailerRenderedClip] {
+        try Task.checkCancellation()
+        guard !scenes.isEmpty else { return [] }
+
+        if scenes.count > 1 {
+            let mid = scenes.count / 2
+            let leftScenes = Array(scenes[0..<mid])
+            let rightScenes = Array(scenes[mid..<scenes.count])
+
+            var leftClips: [TrailerRenderedClip] = []
+            let leftURL = directory.appendingPathComponent("chunk-left-\(UUID().uuidString).mp4")
+            do {
+                try await renderSceneGroup(
+                    scenes: leftScenes,
+                    renderSize: renderSize,
+                    outputURL: leftURL,
+                    generationSeed: generationSeed,
+                    sourceByID: sourceByID,
+                    directory: directory,
+                    attemptFiles: &attemptFiles,
+                    imageClipCache: &imageClipCache
+                )
+                leftClips = [TrailerRenderedClip(url: leftURL, scenes: leftScenes, hasOriginalSound: true)]
+                intermediateFiles.append(leftURL)
+            } catch {
+                guard Self.isBisectableSourceFailure(error) else { throw error }
+                leftClips = try await recoverFailedGroup(
+                    scenes: leftScenes,
+                    renderSize: renderSize,
+                    generationSeed: generationSeed,
+                    sourceByID: sourceByID,
+                    directory: directory,
+                    intermediateFiles: &intermediateFiles,
+                    attemptFiles: &attemptFiles,
+                    imageClipCache: &imageClipCache
+                )
+            }
+
+            var rightClips: [TrailerRenderedClip] = []
+            let rightURL = directory.appendingPathComponent("chunk-right-\(UUID().uuidString).mp4")
+            do {
+                try await renderSceneGroup(
+                    scenes: rightScenes,
+                    renderSize: renderSize,
+                    outputURL: rightURL,
+                    generationSeed: generationSeed,
+                    sourceByID: sourceByID,
+                    directory: directory,
+                    attemptFiles: &attemptFiles,
+                    imageClipCache: &imageClipCache
+                )
+                rightClips = [TrailerRenderedClip(url: rightURL, scenes: rightScenes, hasOriginalSound: true)]
+                intermediateFiles.append(rightURL)
+            } catch {
+                guard Self.isBisectableSourceFailure(error) else { throw error }
+                rightClips = try await recoverFailedGroup(
+                    scenes: rightScenes,
+                    renderSize: renderSize,
+                    generationSeed: generationSeed,
+                    sourceByID: sourceByID,
+                    directory: directory,
+                    intermediateFiles: &intermediateFiles,
+                    attemptFiles: &attemptFiles,
+                    imageClipCache: &imageClipCache
+                )
+            }
+
+            return leftClips + rightClips
+        }
+
+        // Singleton offending item isolation
+        let singleton = scenes[0]
+        guard let source = sourceByID[singleton.sourceID] else {
+            if skippedSourceIDs.insert(singleton.sourceID).inserted { skippedCount += 1 }
+            return []
+        }
+
+        Self.logger.notice("trailer isolating singleton source \(source.id, privacy: .public) scene \(singleton.id, privacy: .public)")
+
+        if let stillImage = try await Self.extractStillImage(source: source, at: singleton.start),
+           let jpegData = stillImage.jpegData(compressionQuality: 0.85) {
+            let stillURL = directory.appendingPathComponent("recovered-still-\(singleton.id)-\(UUID().uuidString).jpg")
+            let recoveredClipURL = directory.appendingPathComponent("recovered-chunk-\(singleton.id)-\(UUID().uuidString).mp4")
+            // Registered before they are written, so a failure part-way still removes them.
+            attemptFiles.append(stillURL)
+            do {
+                try Task.checkCancellation()
+                try jpegData.write(to: stillURL)
+                let recoveredSource = VideoTrailerSource(
+                    id: source.id,
+                    name: source.name,
+                    url: stillURL,
+                    plan: source.plan,
+                    isImage: true,
+                    contentTypeIdentifier: "public.jpeg",
+                    captureDate: source.captureDate,
+                    imageDurationRatio: source.imageDurationRatio
+                )
+                // Only this one scene sees the still; the source keeps its own entry, so
+                // other ranges of the same video are rendered from the video as before.
+                var singletonSources = sourceByID
+                singletonSources[source.id] = recoveredSource
+                var singletonCache: [String: URL] = [:]
+                try await renderSceneGroup(
+                    scenes: [singleton],
+                    renderSize: renderSize,
+                    outputURL: recoveredClipURL,
+                    generationSeed: generationSeed,
+                    sourceByID: singletonSources,
+                    directory: directory,
+                    attemptFiles: &attemptFiles,
+                    imageClipCache: &singletonCache
+                )
+                recoveredCount += 1
+                intermediateFiles.append(recoveredClipURL)
+                Self.logger.notice("trailer source \(source.id, privacy: .public) recovered as still clip")
+                return [TrailerRenderedClip(url: recoveredClipURL, scenes: [singleton], hasOriginalSound: false)]
+            } catch {
+                try? FileManager.default.removeItem(at: stillURL)
+                guard Self.isBisectableSourceFailure(error) else { throw error }
+                Self.logger.error("trailer source \(source.id, privacy: .public) still render failed: \(trailerErrorChain(error), privacy: .public)")
+            }
+        }
+
+        // A still that could not be extracted because the work was cancelled is not a skip.
+        try Task.checkCancellation()
+        Self.logger.error("trailer source \(source.id, privacy: .public) skipped: no safe still available")
+        if skippedSourceIDs.insert(source.id).inserted { skippedCount += 1 }
+        return []
     }
 
     /// 60% of the final render size for the temporary Ken Burns photo clip, kept even
@@ -2392,7 +2772,7 @@ final class VideoTrailerModel: ObservableObject {
             defer { isBusy = false; isSuspending = false; task = nil }
             do {
                 for (position, source) in pending.enumerated() {
-                    status = "\(position + 1)/\(pending.count) · \(source.name) · 한양이 장면을 고르는 중…"
+                    status = "\(position + 1)/\(pending.count) · 한양이 장면을 고르는 중…"
                     let buckets = max(192, min(2048, Int(min(1024, source.duration) * 2)))
                     let analysis = try await AudioAnalysisService.analyze(url: source.url, bucketCount: buckets)
                     try Task.checkCancellation()
@@ -2471,6 +2851,8 @@ final class VideoTrailerModel: ObservableObject {
             var exportOutput: URL?
             // Photo clips rendered for the attempt in progress; never an input or an output.
             var attemptFiles: [URL] = []
+            // Recoveries belong to one generation; they are counted afresh every time.
+            recoveredCount = 0
             do {
                 if directory == nil {
                     let folder = FileManager.default.temporaryDirectory
@@ -2478,6 +2860,7 @@ final class VideoTrailerModel: ObservableObject {
                     try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     directory = folder
                     skippedCount = 0
+                    recoveredCount = 0
                     skippedSourceIDs = []
                     Self.logger.notice("trailer model \(self.identity, privacy: .public) workspace created: items \(items.count, privacy: .public)")
                 }
@@ -2485,7 +2868,7 @@ final class VideoTrailerModel: ObservableObject {
                 for (index, item) in items.enumerated()
                 where !sources.contains(where: { $0.id == index }) && !removedSourceIDs.contains(index)
                     && !skippedSourceIDs.contains(index) {
-                    status = "\(index + 1)/\(items.count) · \(item.name) · \(item.isImage ? "사진을 받는 중…" : "영상을 받는 중…")"
+                    status = "\(index + 1)/\(items.count) · \(item.isImage ? "사진을 받는 중…" : "영상을 받는 중…")"
                     await DownloadCache.shared.protect(item)
                     let staged: URL
                     do {
@@ -2527,7 +2910,7 @@ final class VideoTrailerModel: ObservableObject {
                             // Whole videos are used as they are, so no scene is picked here.
                             analysis = AudioAnalysisResult(waveform: [], peakTime: 0, highlightSource: .fallback)
                         } else {
-                            status = "\(index + 1)/\(items.count) · \(item.name) · 한양이 장면을 고르는 중…"
+                            status = "\(index + 1)/\(items.count) · 한양이 장면을 고르는 중…"
                             step = "audio-analysis"
                             let buckets = max(192, min(2048, Int(min(1024, duration) * 2)))
                             analysis = try await AudioAnalysisService.analyze(url: staged, bucketCount: buckets)
@@ -2638,28 +3021,23 @@ final class VideoTrailerModel: ObservableObject {
                 var baseSelected: [VideoTrailerScene] = []
                 var cursor = CMTime.zero
                 // Every pass either exports or excludes at least one source that failed an
-                // actual decode, so this ends within as many passes as there are sources.
-                while true {
-                    stage = "plan"
-                    // `manualScenes` is a value copy taken when this render began, so edits made
-                    // while it runs only affect the next one.
-                    baseSelected = TrailerPreparedPlan.base(mode: mode, sources: sources, total: total,
-                        clipLength: clipLength ?? recommendedClipLength, manual: manualScenes)
-                    guard !baseSelected.isEmpty else { throw TrailerError.exportFailed }
-                    if let music, let musicInput, music.policy == .fitMusic {
-                        // Same ordered scenes, repeated or cut at the end to the music's length
-                        // laid end to end `fitCount` times; the music loop below fills the same.
-                        guard let fitted = VideoTrailerBatchPlan.fitted(baseSelected,
-                            to: musicInput.range.duration.seconds * Double(max(1, music.fitCount))) else {
-                            throw TrailerMusicError.tooManyRepeats
-                        }
-                        selected = fitted
-                    } else {
-                        selected = baseSelected
+                stage = "plan"
+                // `manualScenes` is a value copy taken when this render began, so edits made
+                // while it runs only affect the next one.
+                baseSelected = TrailerPreparedPlan.base(mode: mode, sources: sources, total: total,
+                    clipLength: clipLength ?? recommendedClipLength, manual: manualScenes)
+                guard !baseSelected.isEmpty else { throw TrailerError.exportFailed }
+                if let music, let musicInput, music.policy == .fitMusic {
+                    // Same ordered scenes, repeated or cut at the end to the music's length
+                    // laid end to end `fitCount` times; the music loop below fills the same.
+                    guard let fitted = VideoTrailerBatchPlan.fitted(baseSelected,
+                        to: musicInput.range.duration.seconds * Double(max(1, music.fitCount))) else {
+                        throw TrailerMusicError.tooManyRepeats
                     }
-                    stage = "decode-check"
-                    status = "장면을 확인하는 중…"
-                    if try exclude(try await decodeFailures(in: selected, softwareOnly: true), at: stage) { continue }
+                    selected = fitted
+                } else {
+                    selected = baseSelected
+                }
                     if musicInput != nil {
                         // Reads each video's own decoded sound on this device, only to know
                         // where it is audible; this is not scene picking.
@@ -2681,255 +3059,268 @@ final class VideoTrailerModel: ObservableObject {
                             try Task.checkCancellation()
                         }
                     }
-                    stage = "compose"
-                    layout = "sources \(sources.count) skipped \(skippedCount) segments \(selected.count)"
-                    diagnostic.segments = selected.count
-                    // Reset to this attempt's own actual count: a decode-exclusion pass or a
-                    // photo-render failure both land back here with a freshly recomputed
-                    // `selected`, never carrying over the previous attempt's total.
-                    joinProgress = (0, selected.count)
-                    status = "클립 연결 중 · 0/\(selected.count)개"
-                    let composition = AVMutableComposition()
-                    guard let outputVideo = composition.addMutableTrack(withMediaType: .video,
-                        preferredTrackID: kCMPersistentTrackID_Invalid) else { throw TrailerError.exportUnavailable }
-                    let outputAudio = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-                    let sourceByID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
-                    cursor = .zero
-                    var clipURLs: [URL] = []
-                    var imageClipCache: [String: URL] = [:]
-                    var originalSound: [TrailerMusicDucking.Clip] = []
-                    var originalVolumes: [(time: CMTime, volume: Float)] = []
-                    var instructions: [AVMutableVideoCompositionInstruction] = []
-                    var renderSize = aspectRatio?.renderSize
-                    // 원본 = the first video of the current order (orientation-correct), even when
-                    // a photo comes first; only a photo-only selection falls back to the first photo.
-                    if renderSize == nil,
-                       let firstVideo = selected.lazy.compactMap({ sourceByID[$0.sourceID] }).first(where: { !$0.isImage }) {
-                        guard let size = try await trailerOrientedVideoSize(url: firstVideo.url) else { throw MediaError.videoTrackUnavailable }
-                        renderSize = OutputAspectRatio.renderSize(for: size)
+                let currentSourceByID = Dictionary(uniqueKeysWithValues: sources.map { ($0.id, $0) })
+                var renderSize = aspectRatio?.renderSize
+                if renderSize == nil,
+                   let firstVideo = selected.lazy.compactMap({ currentSourceByID[$0.sourceID] }).first(where: { !$0.isImage }) {
+                    guard let size = try await trailerOrientedVideoSize(url: firstVideo.url) else { throw MediaError.videoTrackUnavailable }
+                    renderSize = OutputAspectRatio.renderSize(for: size)
+                }
+                if renderSize == nil,
+                   let firstImage = selected.lazy.compactMap({ currentSourceByID[$0.sourceID] }).first(where: { $0.isImage }) {
+                    let imageSize = try VideoTrailerImageClip.imageSize(at: firstImage.url)
+                    renderSize = OutputAspectRatio.renderSize(for: imageSize)
+                }
+                guard let renderSize else { throw TrailerError.exportUnavailable }
+
+                stage = "chunk-render"
+                layout = "sources \(sources.count) skipped \(skippedCount) segments \(selected.count)"
+                diagnostic.segments = selected.count
+
+                var sceneChunks: [[VideoTrailerScene]] = []
+                var chunkStart = 0
+                while chunkStart < selected.count {
+                    let chunkEnd = min(chunkStart + Self.maximumItemsPerComposition, selected.count)
+                    sceneChunks.append(Array(selected[chunkStart..<chunkEnd]))
+                    chunkStart = chunkEnd
+                }
+
+                var intermediateClips: [TrailerRenderedClip] = []
+                var intermediateFiles: [URL] = []
+                var imageClipCache: [String: URL] = [:]
+                var processedScenesCount = 0
+                joinProgress = (0, selected.count)
+                status = "클립 연결 중 · 0/\(selected.count)개"
+
+                for (chunkIndex, chunkScenes) in sceneChunks.enumerated() {
+                    try Task.checkCancellation()
+                    let chunkURL = directory.appendingPathComponent("chunk-\(chunkIndex)-\(UUID().uuidString).mp4")
+                    do {
+                        try await renderSceneGroup(
+                            scenes: chunkScenes,
+                            renderSize: renderSize,
+                            outputURL: chunkURL,
+                            generationSeed: generationSeed,
+                            sourceByID: currentSourceByID,
+                            directory: directory,
+                            attemptFiles: &attemptFiles,
+                            imageClipCache: &imageClipCache
+                        )
+                        intermediateClips.append(TrailerRenderedClip(url: chunkURL, scenes: chunkScenes, hasOriginalSound: true))
+                        intermediateFiles.append(chunkURL)
+                        processedScenesCount += chunkScenes.count
+                        joinProgress = (processedScenesCount, selected.count)
+                        status = "클립 연결 중 · \(processedScenesCount)/\(selected.count)개"
+                    } catch {
+                        guard Self.isBisectableSourceFailure(error) else { throw error }
+                        status = "풀 수 없는 장면을 찾는 중…"
+                        let recovered = try await recoverFailedGroup(
+                            scenes: chunkScenes,
+                            renderSize: renderSize,
+                            generationSeed: generationSeed,
+                            sourceByID: currentSourceByID,
+                            directory: directory,
+                            intermediateFiles: &intermediateFiles,
+                            attemptFiles: &attemptFiles,
+                            imageClipCache: &imageClipCache
+                        )
+                        guard !recovered.isEmpty else {
+                            processedScenesCount += chunkScenes.count
+                            joinProgress = (processedScenesCount, selected.count)
+                            continue
+                        }
+                        intermediateClips.append(contentsOf: recovered)
+                        processedScenesCount += chunkScenes.count
+                        joinProgress = (processedScenesCount, selected.count)
+                        status = "클립 연결 중 · \(processedScenesCount)/\(selected.count)개"
                     }
-                    for (segmentIndex, segment) in selected.enumerated() {
-                        try Task.checkCancellation()
-                        guard let source = sourceByID[segment.sourceID] else { throw TrailerError.exportFailed }
-                        let naturalSize: CGSize
-                        let transform: CGAffineTransform
-                        let video: AVAssetTrack
-                        let asset: AVURLAsset
-                        if source.isImage {
-                            if renderSize == nil {
-                                let imageSize = try VideoTrailerImageClip.imageSize(at: source.url)
-                                renderSize = OutputAspectRatio.renderSize(for: imageSize)
+                }
+
+                guard !intermediateClips.isEmpty else { throw TrailerError.noUsableSources }
+
+                stage = "compose-final"
+                let finalComposition = AVMutableComposition()
+                guard let finalVideoTrack = finalComposition.addMutableTrack(
+                    withMediaType: .video,
+                    preferredTrackID: kCMPersistentTrackID_Invalid
+                ) else {
+                    throw TrailerError.exportUnavailable
+                }
+                let finalAudioTrack = finalComposition.addMutableTrack(
+                    withMediaType: .audio,
+                    preferredTrackID: kCMPersistentTrackID_Invalid
+                )
+                var finalCursor = CMTime.zero
+                var intermediateAssets: [AVURLAsset] = []
+                // Built from the scenes that really made it into the output, in order, so a
+                // skipped scene never shifts the ducking and a still stand-in has no sound.
+                var originalSound: [TrailerMusicDucking.Clip] = []
+
+                for rendered in intermediateClips {
+                    try Task.checkCancellation()
+                    let asset = AVURLAsset(url: rendered.url)
+                    intermediateAssets.append(asset)
+                    // These are this attempt's own intermediates: one that cannot be read is a
+                    // failure to report, never a clip to drop quietly.
+                    guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
+                        throw TrailerError.intermediateInvalid
+                    }
+                    let duration = try await asset.load(.duration)
+                    guard duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0 else {
+                        throw TrailerError.intermediateInvalid
+                    }
+                    let timeRange = CMTimeRange(start: .zero, duration: duration)
+                    try finalVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: finalCursor)
+                    if let audioTrack = try await asset.loadTracks(withMediaType: .audio).first,
+                       try await audioTrack.load(.isDecodable),
+                       let finalAudioTrack {
+                        let audioRange = try await audioTrack.load(.timeRange)
+                        let overlap = CMTimeRangeGetIntersection(timeRange, otherRange: audioRange)
+                        if overlap.duration.seconds > 0 {
+                            let audioStart = CMTimeAdd(finalCursor, CMTimeSubtract(overlap.start, timeRange.start))
+                            try finalAudioTrack.insertTimeRange(overlap, of: audioTrack, at: audioStart)
+                        }
+                    }
+                    if rendered.hasOriginalSound {
+                        var sceneStart = finalCursor.seconds
+                        for segment in rendered.scenes {
+                            if let source = currentSourceByID[segment.sourceID], !source.isImage, !segment.muted {
+                                originalSound.append(TrailerMusicDucking.Clip(
+                                    outputStart: sceneStart,
+                                    sourceStart: segment.start,
+                                    length: segment.length,
+                                    envelope: activityBySourceID[source.id]
+                                ))
                             }
-                            guard let renderSize else { throw TrailerError.exportUnavailable }
-                            status = "\(source.name) · 사진 장면을 만드는 중…"
-                            stage = "photo-clip"
-                            // Still images render at 60% of the final pixel dimensions; the layer
-                            // transform below upscales to the full render size, which is the only
-                            // part of the export that actually makes photo scenes faster to encode.
-                            let photoRenderSize = Self.photoRenderSize(for: renderSize)
-                            let framing: VideoTrailerImageClip.Framing? = (segment.fitsFrame || segment.offsetX != 0 || segment.offsetY != 0)
-                                ? .init(fitsFrame: segment.fitsFrame, offsetX: segment.offsetX, offsetY: segment.offsetY) : nil
-                            let framingKey = framing.map { "\($0.fitsFrame ? "fit" : "fill")\($0.offsetX),\($0.offsetY)" } ?? "auto"
-                            let cacheKey = "\(source.id):\(Int64((segment.length * 600).rounded())):\(Int(photoRenderSize.width))x\(Int(photoRenderSize.height)):\(framingKey)"
-                            let clipURL: URL
-                            if let cached = imageClipCache[cacheKey] {
-                                clipURL = cached
-                            } else {
-                                clipURL = directory.appendingPathComponent("image-clip-\(segment.id)-\(UUID().uuidString)")
-                                    .appendingPathExtension("mov")
-                                try await Task.detached(priority: .userInitiated) {
-                                    try VideoTrailerImageClip.render(imageURL: source.url, duration: segment.length,
-                                        renderSize: photoRenderSize, outputURL: clipURL, seed: segment.id ^ generationSeed, framing: framing)
-                                }.value
-                                clipURLs.append(clipURL)
-                                attemptFiles.append(clipURL)
-                                imageClipCache[cacheKey] = clipURL
-                            }
-                            try Task.checkCancellation()
-                            asset = AVURLAsset(url: clipURL)
-                            guard let imageVideo = try await asset.loadTracks(withMediaType: .video).first else { throw TrailerError.exportFailed }
-                            video = imageVideo
-                            naturalSize = photoRenderSize
-                            transform = CGAffineTransform(scaleX: renderSize.width / photoRenderSize.width,
-                                                           y: renderSize.height / photoRenderSize.height)
-                            stage = "compose"
-                        } else {
-                            asset = AVURLAsset(url: source.url)
-                            guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else { throw MediaError.videoTrackUnavailable }
-                            video = videoTrack
-                            naturalSize = try await video.load(.naturalSize)
-                            transform = try await video.load(.preferredTransform)
-                            if renderSize == nil {
-                                let oriented = CGRect(origin: .zero, size: naturalSize).applying(transform)
-                                renderSize = OutputAspectRatio.renderSize(for: CGSize(width: abs(oriented.width), height: abs(oriented.height)))
-                            }
-                        }
-                        guard let renderSize, naturalSize.width > 0, naturalSize.height > 0 else { throw TrailerError.exportUnavailable }
-                        let range = source.isImage
-                            ? CMTimeRange(start: .zero, duration: CMTime(seconds: segment.length, preferredTimescale: 600))
-                            : CMTimeRange(start: CMTime(seconds: segment.start, preferredTimescale: 600),
-                                          duration: CMTime(seconds: segment.length, preferredTimescale: 600))
-                        try outputVideo.insertTimeRange(range, of: video, at: cursor)
-                        if !source.isImage, !segment.muted, let audio = try await asset.loadTracks(withMediaType: .audio).first, let outputAudio,
-                           try await audio.load(.isDecodable) {
-                            let audioRange = try await audio.load(.timeRange)
-                            let overlap = CMTimeRangeGetIntersection(range, otherRange: audioRange)
-                            if overlap.duration.seconds > 0 {
-                                let audioStart = CMTimeAdd(cursor, CMTimeSubtract(overlap.start, range.start))
-                                try outputAudio.insertTimeRange(overlap, of: audio, at: audioStart)
-                                originalVolumes.append((audioStart, Float(min(1, max(0, segment.volume)))))
-                                originalSound.append(TrailerMusicDucking.Clip(outputStart: audioStart.seconds,
-                                    sourceStart: overlap.start.seconds, length: overlap.duration.seconds,
-                                    envelope: activityBySourceID[source.id]))
-                            }
-                        }
-                        let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: outputVideo)
-                        layer.setTransform(source.isImage ? transform : (segment.fitsFrame
-                            ? TrailerOutputRenderer.aspectFitTransform(naturalSize: naturalSize,
-                                preferredTransform: transform, renderSize: renderSize)
-                            : TrailerOutputRenderer.aspectFillTransform(naturalSize: naturalSize,
-                                preferredTransform: transform, renderSize: renderSize,
-                                offsetX: segment.offsetX, offsetY: segment.offsetY)), at: cursor)
-                        let instruction = AVMutableVideoCompositionInstruction()
-                        instruction.timeRange = CMTimeRange(start: cursor, duration: range.duration)
-                        instruction.layerInstructions = [layer]
-                        instruction.backgroundColor = UIColor.black.cgColor
-                        instructions.append(instruction)
-                        cursor = CMTimeAdd(cursor, range.duration)
-                        // This scene clip is now actually inserted into the composition, so the
-                        // count below reflects real completed work, never an estimate.
-                        joinProgress = (segmentIndex + 1, selected.count)
-                        status = "클립 연결 중 · \(segmentIndex + 1)/\(selected.count)개"
-                    }
-                    guard let renderSize else { throw TrailerError.exportUnavailable }
-                    // An audio track left without any segment (photos only, or videos without sound)
-                    // makes the export's media validation reject the whole composition with
-                    // AVFoundationErrorDomain -11838 / -16976 "Operation Stopped".
-                    if let outputAudio, outputAudio.segments.isEmpty { composition.removeTrack(outputAudio) }
-                    var audioMix: AVMutableAudioMix?
-                    let keepsOriginalTrack = outputAudio.map { !$0.segments.isEmpty } ?? false
-                    if let musicInput {
-                        stage = "music"
-                        guard let musicTrack = composition.addMutableTrack(withMediaType: .audio,
-                            preferredTrackID: kCMPersistentTrackID_Invalid) else { throw TrailerError.exportUnavailable }
-                        // The track's own range, so a leading offset in the file is skipped the
-                        // same way on every repeat; the last piece is cut where the video ends.
-                        var musicCursor = CMTime.zero
-                        var pieces = 0
-                        // A hand-set length plays the music once: it is cut where the video
-                        // ends, and a longer video goes on with its own sound only.
-                        let playsOnce = music?.policy == .single
-                        while CMTimeCompare(musicCursor, cursor) < 0, !(playsOnce && pieces == 1) {
-                            pieces += 1
-                            guard pieces <= TrailerMusic.maximumRepeats else { throw TrailerMusicError.tooManyRepeats }
-                            let piece = CMTimeMinimum(musicInput.range.duration, CMTimeSubtract(cursor, musicCursor))
-                            try musicTrack.insertTimeRange(CMTimeRange(start: musicInput.range.start, duration: piece),
-                                of: musicInput.track, at: musicCursor)
-                            musicCursor = CMTimeAdd(musicCursor, piece)
-                            diagnostic.music?.pieces = pieces
-                        }
-                        // One set of parameters, for the music track alone: the original
-                        // sound's track has none and is mixed at its normal level.
-                        let parameters = AVMutableAudioMixInputParameters(track: musicTrack)
-                        let ramps = TrailerMusicDucking.ramps(clips: originalSound, total: musicCursor.seconds,
-                                                              enabled: music?.autoDuck ?? true)
-                        for ramp in ramps {
-                            // Shared boundaries convert to the same time, so ramps never overlap.
-                            let rampStart = CMTime(seconds: ramp.start, preferredTimescale: 600)
-                            let rampEnd = CMTime(seconds: ramp.end, preferredTimescale: 600)
-                            guard CMTimeCompare(rampStart, rampEnd) < 0 else { continue }
-                            parameters.setVolumeRamp(fromStartVolume: ramp.from * Float(min(1, max(0, music?.level ?? 1))),
-                                toEndVolume: ramp.to * Float(min(1, max(0, music?.level ?? 1))),
-                                timeRange: CMTimeRange(start: rampStart, end: rampEnd))
-                        }
-                        let musicLevel = Float(min(1, max(0, music?.level ?? 1)))
-                        if music?.autoDuck == false {
-                            parameters.setVolume(TrailerMusicDucking.loudVolume * musicLevel, at: .zero)
-                        } else if ramps.isEmpty, musicLevel != 1 {
-                            parameters.setVolume(musicLevel, at: .zero)
-                        }
-                        let mix = AVMutableAudioMix()
-                        mix.inputParameters = [parameters]
-                        audioMix = mix
-                        layout += " music \(pieces) ducked \(ramps.count)"
-                        diagnostic.music?.ducked = ramps.count
-                        stage = "compose"
-                    }
-                    // 장면별 원본 소리 음량. 모두 100%면 기존 믹스를 그대로 둔다.
-                    if keepsOriginalTrack, let outputAudio, originalVolumes.contains(where: { $0.volume != 1 }) {
-                        let originalParameters = AVMutableAudioMixInputParameters(track: outputAudio)
-                        for entry in originalVolumes { originalParameters.setVolume(entry.volume, at: entry.time) }
-                        let mix = audioMix ?? AVMutableAudioMix()
-                        mix.inputParameters = (mix.inputParameters) + [originalParameters]
-                        audioMix = mix
-                    }
-                    let videoComposition = AVMutableVideoComposition()
-                    videoComposition.renderSize = renderSize
-                    videoComposition.frameDuration = CMTime(value: 1, timescale: 30)
-                    videoComposition.instructions = instructions
-                    guard let session = AVAssetExportSession(asset: composition,
-                        presetName: AVAssetExportPresetHighestQuality) else { throw TrailerError.exportUnavailable }
-                    let output = directory.appendingPathComponent("trailer-\(UUID().uuidString).mp4")
-                    stage = "export"
-                    layout += " tracks \(composition.tracks.count) render \(Int(renderSize.width))x\(Int(renderSize.height)) seconds \(Int(cursor.seconds))"
-                    diagnostic.tracks = composition.tracks.count
-                    diagnostic.renderWidth = Int(renderSize.width)
-                    diagnostic.renderHeight = Int(renderSize.height)
-                    diagnostic.outputSeconds = cursor.seconds
-                    exportOutput = output
-                    // A workspace that has already vanished would let the exporter finish into an
-                    // unlinked file; fail here with the folder state instead of after the encode.
-                    guard FileManager.default.fileExists(atPath: directory.path) else { throw TrailerError.outputMissing }
-                    Self.logger.notice("trailer model \(self.identity, privacy: .public) export start: \(layout, privacy: .public) app \(UIApplication.shared.applicationState.rawValue, privacy: .public)")
-                    session.videoComposition = videoComposition
-                    session.audioMix = audioMix
-                    session.outputURL = output
-                    session.outputFileType = .mp4
-                    session.shouldOptimizeForNetworkUse = true
-                    status = "클립 연결 \(selected.count)/\(selected.count)개 · 영상으로 저장 중"
-                    exporter = session
-                    exportProgress = 0
-                    // Mirrors the session's measured progress only while this export runs; it is
-                    // cancelled as soon as the session calls back, on every outcome.
-                    let progressTask = Task {
-                        while !Task.isCancelled {
-                            exportProgress = min(0.99, Double(session.progress))
-                            try? await Task.sleep(for: .milliseconds(100))
+                            sceneStart += segment.length
                         }
                     }
+                    finalCursor = CMTimeAdd(finalCursor, duration)
+                }
+
+                guard finalCursor.seconds > 0 else { throw TrailerError.noUsableSources }
+                cursor = finalCursor
+
+                if let finalAudioTrack, finalAudioTrack.segments.isEmpty {
+                    finalComposition.removeTrack(finalAudioTrack)
+                }
+
+                var audioMix: AVMutableAudioMix?
+                if let musicInput {
+                    stage = "music"
+                    guard let musicTrack = finalComposition.addMutableTrack(
+                        withMediaType: .audio,
+                        preferredTrackID: kCMPersistentTrackID_Invalid
+                    ) else {
+                        throw TrailerError.exportUnavailable
+                    }
+                    var musicCursor = CMTime.zero
+                    var pieces = 0
+                    let playsOnce = music?.policy == .single
+                    while CMTimeCompare(musicCursor, finalCursor) < 0, !(playsOnce && pieces == 1) {
+                        pieces += 1
+                        guard pieces <= TrailerMusic.maximumRepeats else { throw TrailerMusicError.tooManyRepeats }
+                        let piece = CMTimeMinimum(musicInput.range.duration, CMTimeSubtract(finalCursor, musicCursor))
+                        try musicTrack.insertTimeRange(
+                            CMTimeRange(start: musicInput.range.start, duration: piece),
+                            of: musicInput.track,
+                            at: musicCursor
+                        )
+                        musicCursor = CMTimeAdd(musicCursor, piece)
+                        diagnostic.music?.pieces = pieces
+                    }
+                    let parameters = AVMutableAudioMixInputParameters(track: musicTrack)
+                    let ramps = TrailerMusicDucking.ramps(clips: originalSound, total: musicCursor.seconds, enabled: music?.autoDuck ?? true)
+                    for ramp in ramps {
+                        let rampStart = CMTime(seconds: ramp.start, preferredTimescale: 600)
+                        let rampEnd = CMTime(seconds: ramp.end, preferredTimescale: 600)
+                        guard CMTimeCompare(rampStart, rampEnd) < 0 else { continue }
+                        parameters.setVolumeRamp(
+                            fromStartVolume: ramp.from * Float(min(1, max(0, music?.level ?? 1))),
+                            toEndVolume: ramp.to * Float(min(1, max(0, music?.level ?? 1))),
+                            timeRange: CMTimeRange(start: rampStart, end: rampEnd)
+                        )
+                    }
+                    let musicLevel = Float(min(1, max(0, music?.level ?? 1)))
+                    if music?.autoDuck == false {
+                        parameters.setVolume(TrailerMusicDucking.loudVolume * musicLevel, at: .zero)
+                    } else if ramps.isEmpty, musicLevel != 1 {
+                        parameters.setVolume(musicLevel, at: .zero)
+                    }
+                    let mix = AVMutableAudioMix()
+                    mix.inputParameters = [parameters]
+                    audioMix = mix
+                    layout += " music \(pieces) ducked \(ramps.count)"
+                    diagnostic.music?.ducked = ramps.count
+                }
+
+                let finalVideoComposition = AVMutableVideoComposition()
+                finalVideoComposition.renderSize = renderSize
+                finalVideoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+                let instruction = AVMutableVideoCompositionInstruction()
+                instruction.timeRange = CMTimeRange(start: .zero, duration: finalCursor)
+                let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: finalVideoTrack)
+                instruction.layerInstructions = [layerInstruction]
+                instruction.backgroundColor = UIColor.black.cgColor
+                finalVideoComposition.instructions = [instruction]
+
+                let output = directory.appendingPathComponent("trailer-\(UUID().uuidString).mp4")
+                stage = "export"
+                layout += " tracks \(finalComposition.tracks.count) render \(Int(renderSize.width))x\(Int(renderSize.height)) seconds \(Int(finalCursor.seconds))"
+                diagnostic.tracks = finalComposition.tracks.count
+                diagnostic.renderWidth = Int(renderSize.width)
+                diagnostic.renderHeight = Int(renderSize.height)
+                diagnostic.outputSeconds = finalCursor.seconds
+                exportOutput = output
+
+                guard FileManager.default.fileExists(atPath: directory.path) else { throw TrailerError.outputMissing }
+                Self.logger.notice("trailer model \(self.identity, privacy: .public) export start: \(layout, privacy: .public) app \(UIApplication.shared.applicationState.rawValue, privacy: .public)")
+
+                guard let session = AVAssetExportSession(
+                    asset: finalComposition,
+                    presetName: AVAssetExportPresetHighestQuality
+                ) else {
+                    throw TrailerError.exportUnavailable
+                }
+                session.videoComposition = finalVideoComposition
+                session.audioMix = audioMix
+                session.outputURL = output
+                session.outputFileType = .mp4
+                session.shouldOptimizeForNetworkUse = true
+                status = "클립 연결 \(selected.count)/\(selected.count)개 · 영상으로 저장 중"
+                exporter = session
+                exportProgress = 0
+
+                let progressTask = Task {
+                    while !Task.isCancelled {
+                        exportProgress = min(0.99, Double(session.progress))
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                }
+                nonisolated(unsafe) let cancelTarget = session
+                await withTaskCancellationHandler {
                     await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
                         session.exportAsynchronously { continuation.resume() }
                     }
-                    progressTask.cancel()
-                    // The music asset's last use: it is guaranteed alive through every
-                    // insert above and the whole export, on every pass of this loop.
-                    withExtendedLifetime(musicInput?.asset) { }
-                    try Task.checkCancellation()
-                    guard session.status == .completed else {
-                        exporter = nil
-                        exportProgress = nil
-                        let failure = session.error ?? TrailerError.exportFailed
-                        Self.logger.error("trailer export failed: \(trailerErrorChain(failure), privacy: .public) segments \(selected.count, privacy: .public) tracks \(composition.tracks.count, privacy: .public) render \(Int(renderSize.width), privacy: .public)x\(Int(renderSize.height), privacy: .public)")
-                        // The export stops at the first frame it cannot decode without saying which
-                        // source it came from, so decode every planned range to find and exclude
-                        // exactly those sources; anything else is reported as the failure it is.
-                        stage = "decode-check"
-                        status = "풀 수 없는 영상을 찾는 중…"
-                        guard try exclude(try await decodeFailures(in: selected, softwareOnly: false), at: stage) else {
-                            stage = "export"
-                            throw failure
-                        }
-                        // This attempt's own partial output and photo clips are rebuilt next pass.
-                        try? FileManager.default.removeItem(at: output)
-                        for clipURL in clipURLs { try? FileManager.default.removeItem(at: clipURL) }
-                        attemptFiles = []
-                        exportOutput = nil
-                        continue
-                    }
-                    exporter = nil
-                    exportProgress = 1
-                    break
+                } onCancel: {
+                    cancelTarget.cancelExport()
                 }
+                progressTask.cancel()
+                withExtendedLifetime(musicInput?.asset) { }
+                withExtendedLifetime(intermediateAssets) { }
+                try Task.checkCancellation()
+                guard session.status == .completed else {
+                    exporter = nil
+                    exportProgress = nil
+                    let failure = session.error ?? TrailerError.exportFailed
+                    Self.logger.error("trailer final export failed: \(trailerErrorChain(failure), privacy: .public)")
+                    try? FileManager.default.removeItem(at: output)
+                    exportOutput = nil
+                    throw failure
+                }
+                exporter = nil
+                exportProgress = 1
+                for file in intermediateFiles { try? FileManager.default.removeItem(at: file) }
                 guard let output = exportOutput else { throw TrailerError.exportFailed }
                 Self.logger.notice("trailer model \(self.identity, privacy: .public) export completed: \(Self.workspaceState(directory: directory, output: output, sources: self.sources), privacy: .public)")
                 stage = "verify"
@@ -2938,6 +3329,8 @@ final class VideoTrailerModel: ObservableObject {
                 guard FileManager.default.fileExists(atPath: output.path) else { throw TrailerError.outputMissing }
                 let outputAsset = AVURLAsset(url: output)
                 guard try await outputAsset.load(.isPlayable) else { throw TrailerError.exportFailed }
+                // Cancelled while verifying: nothing is published.
+                try Task.checkCancellation()
                 let workspace = Self.workspaceState(directory: directory, output: output, sources: sources)
                 Self.logger.notice("trailer exported: \(layout, privacy: .public) \(workspace, privacy: .public)")
                 guard SharedMediaAudioSession.activatePlayback() else { throw TrailerError.exportFailed }
@@ -2958,9 +3351,13 @@ final class VideoTrailerModel: ObservableObject {
                     musicSnapshots[recordID] = nil
                 }
                 let originalTotal = sources.reduce(0) { $0 + $1.duration }
+                var countParts: [String] = []
+                if recoveredCount > 0 { countParts.append("복구 \(recoveredCount)개") }
+                if skippedCount > 0 { countParts.append("제외 \(skippedCount)개") }
+                let countSuffix = countParts.isEmpty ? "" : " (\(countParts.joined(separator: ", ")))"
                 status = mode == .mediaMusic
-                    ? "영상 \(videoTrailerTime(cursor.seconds)) · \(selected.count)개 장면 · 음악 포함"
-                    : "원본 \(videoTrailerTime(originalTotal)) → 예고편 \(videoTrailerTime(cursor.seconds)) · \(selected.count)개 클립"
+                    ? "영상 \(videoTrailerTime(cursor.seconds)) · \(selected.count)개 장면\(countSuffix)" + (music == nil ? "" : " · 음악 포함")
+                    : "원본 \(videoTrailerTime(originalTotal)) → 예고편 \(videoTrailerTime(cursor.seconds)) · \(selected.count)개 클립\(countSuffix)"
                         + (music == nil ? "" : " · 음악 포함")
             } catch let error where isSuspending && (error is CancellationError || Task.isCancelled) {
                 // Left mid-run without discarding: only this attempt's unfinished output and
@@ -2968,6 +3365,7 @@ final class VideoTrailerModel: ObservableObject {
                 // earlier finished video all stay for when the editor is reopened.
                 Self.logger.notice("trailer model \(self.identity, privacy: .public) suspended at \(stage, privacy: .public)")
                 exporter = nil
+                recoveredCount = 0
                 if let exportOutput, exportOutput != outputURL { try? FileManager.default.removeItem(at: exportOutput) }
                 for file in attemptFiles { try? FileManager.default.removeItem(at: file) }
                 status = mode == .mediaMusic ? "음악을 고르면 영상을 만듭니다."
@@ -2981,6 +3379,7 @@ final class VideoTrailerModel: ObservableObject {
                 diagnostic.errorChain = trailerErrorChain(error)
                 diagnostic.sources = sources.count
                 diagnostic.skipped = skippedCount
+                diagnostic.recovered = recoveredCount
                 do {
                     try diagnostic.persist()
                 } catch {
@@ -3129,6 +3528,7 @@ final class VideoTrailerModel: ObservableObject {
         removedSourceIDs = Set(record.removedSourceIDs)
         skippedSourceIDs = Set(record.skippedSourceIDs)
         skippedCount = skippedSourceIDs.count
+        recoveredCount = 0
         isStaged = true
         var restoredMusic: TrailerMusicSelection?
         if let row = record.music {
@@ -3266,6 +3666,7 @@ final class VideoTrailerModel: ObservableObject {
         photoDurationsAnalyzed = false
         skippedSourceIDs = []
         skippedCount = 0
+        recoveredCount = 0
         isStaged = false
         if let directory, !FileManager.default.fileExists(atPath: directory.path) {
             self.directory = nil
@@ -3291,6 +3692,8 @@ final class VideoTrailerModel: ObservableObject {
         joinProgress = nil
         removedSourceIDs = []
         skippedSourceIDs = []
+        skippedCount = 0
+        recoveredCount = 0
         if let directory { try? FileManager.default.removeItem(at: directory) }
         directory = nil
     }

@@ -35,6 +35,7 @@ enum VideoTrailerImageClip {
 
     /// - Parameter seed: stable per-clip seed so zoom direction and focal point are sampled once, not per frame.
     static func render(imageURL: URL, duration: Double, renderSize: CGSize, outputURL: URL, seed: Int, framing: Framing? = nil) throws {
+        try Task.checkCancellation()
         guard let source = UIImage(contentsOfFile: imageURL.path), source.size.width > 0, source.size.height > 0 else {
             throw ClipError.decodeFailed
         }
@@ -42,49 +43,63 @@ enum VideoTrailerImageClip {
         let zoomsIn = generator.next() % 2 == 0
         let focal = CGPoint(x: generator.nextUnit() * 2 - 1, y: generator.nextUnit() * 2 - 1)
 
+        try Task.checkCancellation()
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mov)
-        let settings: [String: Any] = [
-            AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: Int(renderSize.width),
-            AVVideoHeightKey: Int(renderSize.height)
-        ]
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
-        input.expectsMediaDataInRealTime = false
-        let attributes: [String: Any] = [
-            kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
-            kCVPixelBufferWidthKey as String: Int(renderSize.width),
-            kCVPixelBufferHeightKey as String: Int(renderSize.height)
-        ]
-        let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: attributes)
-        guard writer.canAdd(input) else { throw ClipError.writeFailed }
-        writer.add(input)
-        guard writer.startWriting() else { throw ClipError.writeFailed }
-        writer.startSession(atSourceTime: .zero)
+        do {
+            let settings: [String: Any] = [
+                AVVideoCodecKey: AVVideoCodecType.h264,
+                AVVideoWidthKey: Int(renderSize.width),
+                AVVideoHeightKey: Int(renderSize.height)
+            ]
+            let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
+            input.expectsMediaDataInRealTime = false
+            let attributes: [String: Any] = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB,
+                kCVPixelBufferWidthKey as String: Int(renderSize.width),
+                kCVPixelBufferHeightKey as String: Int(renderSize.height)
+            ]
+            let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: attributes)
+            guard writer.canAdd(input) else { throw writer.error ?? ClipError.writeFailed }
+            writer.add(input)
+            guard writer.startWriting() else { throw writer.error ?? ClipError.writeFailed }
+            writer.startSession(atSourceTime: .zero)
 
-        let fps: Int32 = 30
-        let frameDuration = CMTime(value: 1, timescale: fps)
-        // Rounded up so a fractional length such as 0.75s is always fully covered by frames.
-        let totalFrames = max(1, Int((duration * Double(fps) - 0.000001).rounded(.up)))
+            let fps: Int32 = 30
+            let frameDuration = CMTime(value: 1, timescale: fps)
+            // Rounded up so a fractional length such as 0.75s is always fully covered by frames.
+            let totalFrames = max(1, Int((duration * Double(fps) - 0.000001).rounded(.up)))
 
-        for frame in 0..<totalFrames {
-            while !input.isReadyForMoreMediaData {
-                Thread.sleep(forTimeInterval: 0.002)
+            for frame in 0..<totalFrames {
+                try Task.checkCancellation()
+                while !input.isReadyForMoreMediaData {
+                    try Task.checkCancellation()
+                    if writer.status == .failed || writer.status == .cancelled { throw writer.error ?? ClipError.writeFailed }
+                    Thread.sleep(forTimeInterval: 0.002)
+                }
+                let t = totalFrames > 1 ? Double(frame) / Double(totalFrames - 1) : 1
+                let scale = framing != nil ? 1.0 : (zoomsIn ? 1.0 + 0.10 * t : 1.10 - 0.10 * t)
+                let chosenFocal = framing.map { CGPoint(x: -$0.offsetX, y: -$0.offsetY) } ?? focal
+                guard let pixelBuffer = Self.pixelBuffer(for: source, renderSize: renderSize, scale: scale, focal: chosenFocal,
+                                                         fitsFrame: framing?.fitsFrame ?? false, pool: adaptor.pixelBufferPool) else {
+                    throw ClipError.writeFailed
+                }
+                let time = CMTimeMultiply(frameDuration, multiplier: Int32(frame))
+                guard adaptor.append(pixelBuffer, withPresentationTime: time) else { throw writer.error ?? ClipError.writeFailed }
             }
-            let t = totalFrames > 1 ? Double(frame) / Double(totalFrames - 1) : 1
-            let scale = framing != nil ? 1.0 : (zoomsIn ? 1.0 + 0.10 * t : 1.10 - 0.10 * t)
-            let chosenFocal = framing.map { CGPoint(x: -$0.offsetX, y: -$0.offsetY) } ?? focal
-            guard let pixelBuffer = Self.pixelBuffer(for: source, renderSize: renderSize, scale: scale, focal: chosenFocal,
-                                                     fitsFrame: framing?.fitsFrame ?? false, pool: adaptor.pixelBufferPool) else {
-                throw ClipError.writeFailed
+            input.markAsFinished()
+            let semaphore = DispatchSemaphore(value: 0)
+            writer.finishWriting { semaphore.signal() }
+            while semaphore.wait(timeout: .now() + 0.05) == .timedOut {
+                try Task.checkCancellation()
+                if writer.status == .failed || writer.status == .cancelled { throw writer.error ?? ClipError.writeFailed }
             }
-            let time = CMTimeMultiply(frameDuration, multiplier: Int32(frame))
-            guard adaptor.append(pixelBuffer, withPresentationTime: time) else { throw ClipError.writeFailed }
+            guard writer.status == .completed else { throw writer.error ?? ClipError.writeFailed }
+        } catch {
+            if writer.status == .writing { writer.cancelWriting() }
+            // 이 호출이 만든 출력 파일만 지운다. 입력 이미지나 원본은 건드리지 않는다.
+            try? FileManager.default.removeItem(at: outputURL)
+            throw error
         }
-        input.markAsFinished()
-        let semaphore = DispatchSemaphore(value: 0)
-        writer.finishWriting { semaphore.signal() }
-        semaphore.wait()
-        guard writer.status == .completed else { throw writer.error ?? ClipError.writeFailed }
     }
 
     private static func pixelBuffer(for image: UIImage, renderSize: CGSize, scale: CGFloat, focal: CGPoint, fitsFrame: Bool = false, pool: CVPixelBufferPool?) -> CVPixelBuffer? {

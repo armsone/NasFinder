@@ -85,13 +85,14 @@ final class FavoriteStoreTests: XCTestCase {
         XCTAssertFalse(SkinToneBlurPolicy.isSkinTone(red: 80, green: 150, blue: 210))
     }
 
-    func testFavoriteShelfOnlyBeginsReorderingForLongHorizontalMovement() {
+    func testFavoriteShelfBeginsReorderingForAnyDirectionAfterLongPressThreshold() {
         XCTAssertFalse(
             FavoriteShelfInteractionPolicy.shouldBeginReordering(
                 translation: CGSize(width: 11, height: 0)
             )
         )
-        XCTAssertFalse(
+        // 롱프레스 이후에는 방향과 무관하게 이동 거리(hypot >= 12)만 본다.
+        XCTAssertTrue(
             FavoriteShelfInteractionPolicy.shouldBeginReordering(
                 translation: CGSize(width: 20, height: 21)
             )

@@ -2529,6 +2529,9 @@ extension ConnectionListView {
                             ScrollView {
                                 VStack(alignment: .leading, spacing: 20) {
                                     porcelainFavorites()
+                                    if !embedsInTrailerPanel {
+                                        HomeCollectionEntry()
+                                    }
                                     porcelainFileOpen
                                 }
                                 .padding(16)
@@ -2547,6 +2550,9 @@ extension ConnectionListView {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 20) {
                                 porcelainFavorites()
+                                if !embedsInTrailerPanel {
+                                    HomeCollectionEntry()
+                                }
                                 porcelainFileOpen
                                 porcelainSavedConnections
                             }
@@ -2813,6 +2819,9 @@ extension ConnectionListView {
                         PorcelainSectionHeader(title: "소스")
                     }
                     porcelainFavorites()
+                    if showsLaunchSections && !embedsInTrailerPanel {
+                        HomeCollectionEntry()
+                    }
                     porcelainFileOpen
                     porcelainSavedConnections
                     Text(networkFooterText)
@@ -2833,6 +2842,9 @@ extension ConnectionListView {
                         HomeLaunchSection(kind: .workbench)
                     }
                     porcelainFavorites(showsDivider: true)
+                    if showsHomeRoot && !embedsInTrailerPanel {
+                        HomeCollectionEntry()
+                    }
                     porcelainFileOpen
                         .frame(maxWidth: contentWidth >= PorcelainMetrics.splitContentWidth ? 640 : .infinity,
                                alignment: .topLeading)

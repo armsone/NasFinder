@@ -96,7 +96,9 @@ struct HomeLaunchSection: View {
                     }
                 case .video:
                     let ids = sidebarOrder.ordered(.video, current: VideoDestination.allCases.map(\.rawValue))
-                    let items = ids.compactMap(VideoDestination.init(rawValue:))
+                    // 컬렉션은 홈에서 즐겨찾기 바로 아래 입구(HomeCollectionEntry)로 열어 여기서는 뺀다.
+                    // 영상 탭·사이드바의 목적지 목록은 그대로다.
+                    let items = ids.compactMap(VideoDestination.init(rawValue:)).filter { $0 != .collection }
                     ForEach(Array(items.enumerated()), id: \.element) { index, item in
                         if index > 0 { PorcelainDivider() }
                         launchRow(title: item.title, icon: item.iconName) {
@@ -128,6 +130,32 @@ struct HomeLaunchSection: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(title)
+    }
+}
+
+/// 홈(Mac·iPad·iPhone)의 즐겨찾기 바로 아래에 두는 작은 컬렉션 입구. 영상 탭·사이드바와 같은 라우터 값으로
+/// 컬렉션을 열고, 개수는 지금 모드에서 보이는 컬렉션만 센다.
+struct HomeCollectionEntry: View {
+    @ObservedObject private var router = AppShellRouter.shared
+    @ObservedObject private var collection = MovieCollectionStore.shared
+
+    var body: some View {
+        let title = "\(VideoDestination.collection.title) \(collection.videos.count)편"
+        PorcelainGroupCard {
+            Button {
+                router.videoDestination = .collection
+                router.request = .video
+            } label: {
+                PorcelainInlineAction(title: title) {
+                    InterfaceIcon(systemName: VideoDestination.collection.iconName, size: 24)
+                }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(title)
+        }
     }
 }
 
