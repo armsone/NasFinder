@@ -161,7 +161,17 @@ struct VideoTrailerSource: Identifiable {
     /// every preview redraw, export and resumed session until the photo is staged again.
     /// This default only shows briefly while that analysis is still running.
     var imageDurationRatio: Double = 0.55
+    /// 1 = 레거시(0.35...0.75 범위), 2 = 현재 정책(0.10...0.95 + 보너스). 새 소스는 2.
+    var imageDurationPolicyVersion: Int = 2
     var duration: Double { plan.duration }
+
+    /// 추천 및 자동 계획 계산 시 구버전 비율을 안전하게 마이그레이션된 값으로 평가한다.
+    var effectiveImageDurationRatio: Double {
+        if imageDurationPolicyVersion < 2 {
+            return VideoTrailerPhotoQuality.migrateV1ToV2Ratio(imageDurationRatio)
+        }
+        return imageDurationRatio
+    }
 }
 
 enum VideoTrailerSourceOrder {
@@ -280,7 +290,12 @@ enum VideoTrailerBatchPlan {
     /// Length of one scene of `source` when the common scene length is `clipLength`: a photo's own
     /// fraction of it, a video the common length (its whole length when it is shorter).
     static func sceneLength(_ source: VideoTrailerSource, clipLength: Double) -> Double {
-        source.isImage ? clipLength * source.imageDurationRatio : max(0.001, min(clipLength, source.duration))
+        if source.isImage {
+            let ratio = source.imageDurationRatio.isFinite && source.imageDurationRatio > 0 ? source.imageDurationRatio : 0.55
+            return min(30.0, max(1.0 / 30.0, clipLength * ratio))
+        } else {
+            return max(0.001, min(clipLength, source.duration))
+        }
     }
 
     /// How many scenes the automatic recommendation takes from `source` at the common `clipLength`:

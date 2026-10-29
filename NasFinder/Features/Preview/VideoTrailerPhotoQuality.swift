@@ -24,12 +24,23 @@ enum VideoTrailerPhotoQuality {
 
     /// Photos look alike enough to shorten the later one's own scene, within [0, 1]: 0 at
     /// the similarity threshold itself, 1 for a near-exact duplicate.
-    private static let ordinaryMinimumRatio = 0.35
-    private static let ordinaryMaximumRatio = 0.75
+    private static let ordinaryMinimumRatio = 0.10
+    private static let ordinaryMaximumRatio = 0.95
     /// A near-duplicate's floor: short enough to read as a flash, never zero.
-    private static let extremeDuplicateFloorRatio = 0.05
-    private static let neutralRatio = (ordinaryMinimumRatio + ordinaryMaximumRatio) / 2
+    private static let extremeDuplicateFloorRatio = 0.01
+    private static let neutralRatio = 0.55
     private static let analysisMaxPixelSize: CGFloat = 768
+
+    /// V1 정책(0.35...0.75)의 비율을 V2 정책(0.10...0.95)으로 1회 마이그레이션한다.
+    static func migrateV1ToV2Ratio(_ r: Double) -> Double {
+        guard r.isFinite, r > 0 else { return neutralRatio }
+        if r < 0.35 {
+            return max(0.01, r * (0.10 / 0.35))
+        } else {
+            let clamped = min(0.75, max(0.35, r))
+            return 0.10 + (clamped - 0.35) * (0.85 / 0.40)
+        }
+    }
 
     /// nil only when the photo could not be decoded at all.
     static func measure(fileAt url: URL, maxPixelSize: CGFloat = analysisMaxPixelSize, includeAesthetics: Bool = true) async -> Measurement? {
@@ -106,9 +117,26 @@ enum VideoTrailerPhotoQuality {
             lhs.value != rhs.value ? lhs.value > rhs.value : lhs.key < rhs.key
         }.map(\.key)
         let count = ranked.count
+
+        let sortedScores = measuredScoreByID.values.sorted()
+        let median: Double
+        if sortedScores.isEmpty {
+            median = 0
+        } else {
+            median = sortedScores[sortedScores.count / 2]
+        }
+
         for (position, id) in ranked.enumerated() {
-            let normalized = count > 1 ? Double(count - 1 - position) / Double(count - 1) : 1
-            baseRatio[id] = ordinaryMinimumRatio + (ordinaryMaximumRatio - ordinaryMinimumRatio) * normalized
+            let normalized = count > 1 ? Double(count - 1 - position) / Double(count - 1) : 1.0
+            var ratio = 0.10 + 0.85 * normalized
+            if normalized >= 0.9, let quality = measuredScoreByID[id] {
+                let diff = quality - median - 0.15
+                if diff > 0 {
+                    let bonus = 0.30 * min(1.0, max(0.0, diff / 0.35))
+                    ratio += bonus
+                }
+            }
+            baseRatio[id] = ratio
         }
         let fingerprinted = items.compactMap { item -> (id: Int, measurement: Measurement)? in
             guard let measurement = item.measurement else { return nil }

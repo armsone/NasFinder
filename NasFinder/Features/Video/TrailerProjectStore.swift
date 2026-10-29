@@ -68,6 +68,8 @@ struct TrailerProjectRecord: Codable, Sendable {
         var highlightSource: String
         var audioAvailability: String
         var highlightAnalyzed: Bool
+        /// 1 = 레거시(0.35...0.75), 2 = 현재 정책(0.10...0.95 + 보너스). 구버전 저장본은 nil(1로 읽음).
+        var imageDurationPolicyVersion: Int? = nil
     }
 
     struct Music: Codable, Sendable {

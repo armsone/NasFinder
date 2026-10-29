@@ -123,11 +123,13 @@ enum TrailerPreparedPlan {
             guard let source = byID[edit.sourceID] else { continue }
             var scene: VideoTrailerScene
             if source.isImage {
-                scene = VideoTrailerScene(id: result.count, start: 0, length: min(30, max(0.5, edit.length)))
+                let bounds = TrailerSceneEditor.sceneDurationBounds(scene: edit, source: source)
+                scene = VideoTrailerScene(id: result.count, start: 0, length: min(bounds.maximum, max(bounds.minimum, edit.length)))
             } else {
                 guard source.duration > 0 else { continue }
-                let start = min(max(0, edit.start), max(0, source.duration - 0.2))
-                let length = max(0.2, min(edit.length, source.duration - start))
+                let bounds = TrailerSceneEditor.sceneDurationBounds(scene: edit, source: source)
+                let start = min(max(0, edit.start), max(0, source.duration - bounds.minimum))
+                let length = min(bounds.maximum, max(bounds.minimum, edit.length))
                 scene = VideoTrailerScene(id: result.count, start: start, length: length)
             }
             scene.sourceID = source.id
@@ -183,7 +185,8 @@ enum TrailerPreparedPlan {
         let covered = Set(planned.map(\.sourceID))
         for source in sources where !covered.contains(source.id) {
             if source.isImage {
-                var scene = VideoTrailerScene(id: 0, start: 0, length: max(0.5, clipLength * source.imageDurationRatio))
+                let ratio = source.imageDurationRatio.isFinite && source.imageDurationRatio > 0 ? source.imageDurationRatio : 0.55
+                var scene = VideoTrailerScene(id: 0, start: 0, length: min(30.0, max(1.0 / 30.0, clipLength * ratio)))
                 scene.sourceID = source.id
                 append(scene)
             } else if source.duration > 0 {
@@ -1185,15 +1188,33 @@ private struct VideoTrailerSettings: View {
     private var createTitle: String {
         if isBusy { return "영상을 만드는 중…" }
         if outputURL != nil {
-            return mode == .mediaMusic ? "새 설정으로 영상 만들기" : "\(trailerDurationTitle(actualTotal)) 예고편 다시 만들기"
+            return mode == .mediaMusic ? "새 설정으로 영상 만들기" : "\(trailerFullDurationTitle(actualTotal)) 예고편 다시 만들기"
         }
-        guard mode == .mediaMusic else { return "\(trailerDurationTitle(actualTotal)) 예고편 만들기" }
-        return music == nil ? "음악을 골라 주세요" : "\(trailerDurationTitle(actualTotal)) 영상 만들기"
+        guard mode == .mediaMusic else { return "\(trailerFullDurationTitle(actualTotal)) 예고편 만들기" }
+        return music == nil ? "음악을 골라 주세요" : "\(trailerFullDurationTitle(actualTotal)) 영상 만들기"
     }
     private var percent: Double { originalTotal > 0 ? actualTotal / originalTotal * 100 : 0 }
-    // Only real video durations bound the clip length; a still image has no duration of
-    // its own, so a photo-only trailer keeps every preset.
-    private var maximumClipLength: Double { min(30, sources.filter { !$0.isImage }.map(\.duration).max() ?? 30) }
+    // Only real video durations bound the clip length; manual maximum is longest valid remaining span;
+    // photos-only base ceiling 30.
+    private var maximumClipLength: Double {
+        if let editScenes = scenes {
+            let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let videoSpans = editScenes.filter { !$0.excluded }.compactMap { scene -> Double? in
+                guard let source = byID[scene.sourceID], !source.isImage, source.duration > 0 else { return nil }
+                return max(0.0, source.duration - scene.start)
+            }
+            if let longest = videoSpans.max(), longest > 0 {
+                return longest
+            }
+            return 30.0
+        } else {
+            let videoDurations = sources.filter { !$0.isImage && $0.duration > 0 }.map(\.duration)
+            if let maxDuration = videoDurations.max(), maxDuration > 0 {
+                return maxDuration
+            }
+            return 30.0
+        }
+    }
     private var excludedCount: Int { sources.filter { source in !baseProposal.contains { $0.sourceID == source.id } }.count }
 
     private var musicSection: some View {
@@ -1591,7 +1612,7 @@ private struct VideoTrailerSettings: View {
 
             VStack(alignment: .leading, spacing: ui(3)) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(trailerDurationTitle(actualTotal)).font(.ui(.title2).weight(.semibold)).monospacedDigit()
+                    Text(trailerFullDurationTitle(actualTotal)).font(.ui(.title2).weight(.semibold)).monospacedDigit()
                     Spacer()
                     Text(sceneSummary).font(.ui(.subheadline)).foregroundStyle(.secondary)
                 }
@@ -1600,50 +1621,9 @@ private struct VideoTrailerSettings: View {
                 }
             }
 
-            if scenes != nil {
+            if mode == .trailer {
                 Divider()
-                Text("장면을 직접 편집 중이라 총길이는 장면 길이의 합이에요. 자동 추천으로 되돌리면 총길이·장면 길이 설정을 다시 쓸 수 있어요.")
-                    .font(.ui(.caption)).foregroundStyle(.secondary)
-            }
-
-            if mode == .trailer && scenes == nil {
-                Divider()
-                VStack(alignment: .leading, spacing: ui(4)) {
-                    Text("얼마나 길게 볼까요?").font(.ui(.subheadline).weight(.semibold))
-                    HStack(spacing: ui(5)) {
-                        ForEach([30.0, 60, 120, 180, 300], id: \.self) { value in
-                            TrailerChoiceButton(title: trailerDurationTitle(value), selected: abs(total - value) < 0.01, height: 32) {
-                                setManualTotal(value)
-                                showingDuration = false
-                            }
-                        }
-                    }
-                    otherLengthButton(value: trailerDurationTitle(total), expanded: showingDuration) { showingDuration.toggle() }
-                    if showingDuration {
-                        TrailerTotalDurationSlider(value: Binding(
-                            get: { min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, total.isFinite ? total : 1)) },
-                            set: { if abs($0 - total) >= 0.01 { setManualTotal($0) } }))
-                            .frame(minHeight: ui(30))
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: ui(4)) {
-                    Text("한 장면은 얼마나 볼까요?").font(.ui(.subheadline).weight(.semibold))
-                    HStack(spacing: ui(5)) {
-                        ForEach([1.0, 1.5, 2, 4, 6].filter { $0 <= maximumClipLength }, id: \.self) { value in
-                            TrailerChoiceButton(title: trailerSceneLengthTitle(value), selected: abs(clipLength - value) < 0.01, height: 32) {
-                                clipLength = value
-                                showingClipLength = false
-                            }
-                        }
-                    }
-                    otherLengthButton(value: trailerSceneLengthTitle(clipLength), expanded: showingClipLength) { showingClipLength.toggle() }
-                    if showingClipLength, maximumClipLength > 1 {
-                        Slider(value: $clipLength, in: 1...maximumClipLength, step: 1)
-                            .accessibilityLabel("공통 장면 길이")
-                            .accessibilityValue("\(Int(clipLength))초")
-                    }
-                }
+                durationControls
             }
 
             Divider()
@@ -1655,7 +1635,7 @@ private struct VideoTrailerSettings: View {
                     .font(.ui(.caption)).foregroundStyle(.red)
             }
             if mode == .trailer, music?.policy != .fitMusic, abs(total - baseTotal) >= 0.5 {
-                Text("선택한 \(trailerDurationTitle(total))에 가장 가까운 길이로 맞췄어요")
+                Text("선택한 \(trailerFullDurationTitle(total))에 가장 가까운 길이로 맞췄어요")
                     .font(.ui(.caption)).foregroundStyle(.secondary)
             }
             if recoveredCount > 0 {
@@ -1717,15 +1697,106 @@ private struct VideoTrailerSettings: View {
         total = selection.fittedDuration
     }
 
-    /// The total length picked by hand (a preset or the slider). The music stays, but
-    /// neither automatic policy applies any more. Only these controls call this, so a
-    /// length that changes for any other reason never clears the chosen policy.
+    private var durationControls: some View {
+        let migratedSourcesForRecommendation: [VideoTrailerSource] = sources.map { src in
+            guard src.isImage && src.imageDurationPolicyVersion < 2 else { return src }
+            var copy = src
+            copy.imageDurationRatio = VideoTrailerPhotoQuality.migrateV1ToV2Ratio(src.imageDurationRatio)
+            copy.imageDurationPolicyVersion = 2
+            return copy
+        }
+        let recommendedClip = VideoTrailerModel.recommendedLength(migratedSourcesForRecommendation)
+        let recommendedTotal = VideoTrailerBatchPlan.recommendedTotal(sources: migratedSourcesForRecommendation, clipLength: recommendedClip)
+
+        let computedMaxClip = maximumClipLength
+        let maxClip = max(clipLength, computedMaxClip)
+        let minClip = min(clipLength, min(0.5, maxClip))
+
+        let totalValue: Double
+        let minTotal: Double
+        let maxTotal: Double
+        if let editScenes = scenes {
+            let actualSum = editScenes.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+            totalValue = actualSum
+            let bounds = TrailerSceneEditor.manualTotalBounds(scenes: editScenes, sources: sources)
+            minTotal = min(actualSum, bounds.minimum)
+            maxTotal = max(actualSum, bounds.maximum)
+        } else {
+            totalValue = total
+            minTotal = 1.0
+            maxTotal = VideoTrailerBatchPlan.maximumRequestedDuration
+        }
+
+        return VStack(alignment: .leading, spacing: ui(12)) {
+            TrailerAdaptiveDurationControl(
+                title: "전체 길이",
+                value: totalValue,
+                recommended: recommendedTotal,
+                minValue: minTotal,
+                maxValue: maxTotal,
+                isNonlinear: true,
+                explanation: nil,
+                formatValue: trailerFullDurationTitle,
+                candidateFormatValue: trailerCompactDurationTitle,
+                onCommit: { finalVal in
+                    setManualTotal(finalVal)
+                }
+            )
+
+            TrailerAdaptiveDurationControl(
+                title: "영상 클립 길이",
+                value: clipLength,
+                recommended: recommendedClip,
+                minValue: minClip,
+                maxValue: maxClip,
+                isNonlinear: true,
+                explanation: "사진은 영상 클립 길이를 기준으로 중요도에 따라 조절돼요.",
+                formatValue: trailerSceneLengthTitle,
+                candidateFormatValue: trailerSceneLengthTitle,
+                onCommit: { finalVal in
+                    setExplicitClipLength(finalVal)
+                }
+            )
+        }
+    }
+
+    /// The total length picked by hand (buttons or the slider).
     private func setManualTotal(_ value: Double) {
-        total = value.isFinite ? min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, value)) : 1
+        if let editScenes = scenes {
+            let bounds = TrailerSceneEditor.manualTotalBounds(scenes: editScenes, sources: sources)
+            let valid = value.isFinite ? min(bounds.maximum, max(bounds.minimum, value)) : bounds.minimum
+            TrailerSceneEditor.redistributeManualTotal(scenes: &scenes!, sources: sources, targetTotal: valid)
+            let actual = (scenes ?? []).filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+            total = actual
+        } else {
+            let valid = value.isFinite ? min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, value)) : 1
+            total = valid
+        }
         guard var selection = music, selection.policy != .single else { return }
         selection.policy = .single
         selection.fitCount = 1
         music = selection
+    }
+
+    /// 공통 영상 클립 길이를 명시적으로 변경한다.
+    private func setExplicitClipLength(_ value: Double) {
+        let computedMaxClip = maximumClipLength
+        let maxClip = max(clipLength, computedMaxClip)
+        let minClip = min(clipLength, min(0.5, maxClip))
+        let valid = value.isFinite ? max(minClip, min(maxClip, value)) : 4.0
+        clipLength = valid
+        // V1 사진 비율 1회 안전하게 마이그레이션
+        for i in sources.indices where sources[i].isImage && sources[i].imageDurationPolicyVersion < 2 {
+            sources[i].imageDurationRatio = VideoTrailerPhotoQuality.migrateV1ToV2Ratio(sources[i].imageDurationRatio)
+            sources[i].imageDurationPolicyVersion = 2
+        }
+        if scenes != nil {
+            TrailerSceneEditor.applyExplicitClipLength(clipLength: valid, scenes: &scenes!, sources: &sources)
+            let actual = (scenes ?? []).filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+            total = actual
+        } else {
+            total = VideoTrailerBatchPlan.recommendedBudget(sources: sources, clipLength: valid)
+        }
     }
 
     #if targetEnvironment(macCatalyst)
@@ -1982,6 +2053,60 @@ private func trailerDurationTitle(_ seconds: Double) -> String {
             seconds > 0 || value == 0 ? "\(seconds)초" : nil].compactMap { $0 }.joined(separator: " ")
 }
 
+/// 0.5초 등 소수점 초를 정확히 표시하는 전체 표시용 포맷터.
+private func trailerFullDurationTitle(_ seconds: Double) -> String {
+    guard seconds.isFinite, seconds > 0 else { return "0초" }
+    let roundedSec = (seconds * 10).rounded() / 10.0
+    let totalSecInt = Int(roundedSec)
+    let fraction = roundedSec - Double(totalSecInt)
+    let hours = totalSecInt / 3600
+    let minutes = totalSecInt / 60 % 60
+    let remainingSec = totalSecInt % 60
+    let hasFraction = abs(fraction) >= 0.05
+
+    let secString: String?
+    if hasFraction {
+        let secValue = Double(remainingSec) + fraction
+        secString = "\(secValue.formatted(.number.precision(.fractionLength(1))))초"
+    } else if remainingSec > 0 || (hours == 0 && minutes == 0) {
+        secString = "\(remainingSec)초"
+    } else {
+        secString = nil
+    }
+
+    return [hours > 0 ? "\(hours)시간" : nil,
+            minutes > 0 ? "\(minutes)분" : nil,
+            secString].compactMap { $0 }.joined(separator: " ")
+}
+
+/// 후보 버튼용 콤팩트 mm:ss.s 포맷터.
+private func trailerCompactDurationTitle(_ seconds: Double) -> String {
+    guard seconds.isFinite, seconds > 0 else { return "00:00" }
+    let roundedSec = (seconds * 10).rounded() / 10.0
+    let totalSecInt = Int(roundedSec)
+    let fraction = roundedSec - Double(totalSecInt)
+    let hours = totalSecInt / 3600
+    let minutes = totalSecInt / 60 % 60
+    let remainingSec = totalSecInt % 60
+    let hasFraction = abs(fraction) >= 0.05
+
+    if hours > 0 {
+        if hasFraction {
+            let secVal = Double(remainingSec) + fraction
+            return String(format: "%d:%02d:%04.1f", hours, minutes, secVal)
+        } else {
+            return String(format: "%d:%02d:%02d", hours, minutes, remainingSec)
+        }
+    } else {
+        if hasFraction {
+            let secVal = Double(remainingSec) + fraction
+            return String(format: "%02d:%04.1f", minutes, secVal)
+        } else {
+            return String(format: "%02d:%02d", minutes, remainingSec)
+        }
+    }
+}
+
 private struct TrailerChoiceButton: View {
     let title: String
     let selected: Bool
@@ -2002,6 +2127,308 @@ private struct TrailerChoiceButton: View {
         .buttonStyle(.plain)
         .foregroundStyle(selected ? Color.accentColor : Color.primary)
         .accessibilityAddTraits(selected ? .isSelected : [])
+    }
+}
+
+enum TrailerDurationMapping {
+    static func position(value: Double, min minVal: Double, max maxVal: Double) -> Double {
+        guard maxVal > minVal else { return 0 }
+        let clamped = min(maxVal, max(minVal, value))
+        return sqrt((clamped - minVal) / (maxVal - minVal))
+    }
+
+    static func value(position: Double, min minVal: Double, max maxVal: Double) -> Double {
+        let clampedPos = min(1.0, max(0.0, position))
+        let raw = minVal + (maxVal - minVal) * (clampedPos * clampedPos)
+        let step = adaptiveStep(for: raw)
+        let snapped = (raw / step).rounded() * step
+        return min(maxVal, max(minVal, snapped))
+    }
+
+    static func adaptiveStep(for value: Double) -> Double {
+        if value < 10 { return 0.5 }
+        if value < 30 { return 1.0 }
+        if value < 180 { return 5.0 }
+        if value < 600 { return 30.0 }
+        return 60.0
+    }
+
+    static func formatStep(_ step: Double) -> String {
+        if step < 60 {
+            if step == step.rounded() {
+                return "\(Int(step))초"
+            } else {
+                return "\(step.formatted(.number.precision(.fractionLength(1))))초"
+            }
+        } else {
+            let mins = Int(step / 60)
+            return "\(mins)분"
+        }
+    }
+}
+
+private struct TrailerAdaptiveDurationControl: View {
+    let title: String
+    let value: Double
+    let recommended: Double
+    let minValue: Double
+    let maxValue: Double
+    let isNonlinear: Bool
+    let explanation: String?
+    let formatValue: (Double) -> String
+    var candidateFormatValue: ((Double) -> String)? = nil
+    let onCommit: (Double) -> Void
+
+    @State private var draggingValue: Double? = nil
+
+    private var displayValue: Double {
+        draggingValue ?? value
+    }
+
+    var body: some View {
+        let isControlEnabled = maxValue > minValue
+        let clampedRec = min(maxValue, max(minValue, recommended))
+        let lowerStep = TrailerDurationMapping.adaptiveStep(for: max(minValue, clampedRec - 0.001))
+        let lowerCandidate = min(maxValue, max(minValue, ((clampedRec - lowerStep) / lowerStep).rounded() * lowerStep))
+        let showLower = isControlEnabled && lowerCandidate < clampedRec && abs(lowerCandidate - clampedRec) >= 0.01
+
+        let higherStep = TrailerDurationMapping.adaptiveStep(for: clampedRec)
+        let higherCandidate = min(maxValue, max(minValue, ((clampedRec + higherStep) / higherStep).rounded() * higherStep))
+        let showHigher = isControlEnabled && higherCandidate > clampedRec && abs(higherCandidate - clampedRec) >= 0.01
+
+        let isRecSelected = isControlEnabled && abs(displayValue - clampedRec) < 0.01
+        let isLowerSelected = showLower && abs(displayValue - lowerCandidate) < 0.01
+        let isHigherSelected = showHigher && abs(displayValue - higherCandidate) < 0.01
+
+        let stepDown = TrailerDurationMapping.adaptiveStep(for: max(minValue, displayValue - 0.001))
+        let stepUp = TrailerDurationMapping.adaptiveStep(for: displayValue)
+        let candidateFormatter = candidateFormatValue ?? formatValue
+
+        let sliderMin = minValue
+        let sliderMax = max(minValue + 0.001, maxValue)
+
+        VStack(alignment: .leading, spacing: ui(6)) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(title).font(.ui(.subheadline).weight(.semibold))
+                Spacer()
+                Text(formatValue(displayValue))
+                    .font(.ui(.title3).weight(.bold))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.accentColor)
+            }
+
+            HStack(spacing: ui(4)) {
+                // Minus button
+                Button {
+                    let nextVal = min(maxValue, max(minValue, displayValue - stepDown))
+                    onCommit(nextVal)
+                } label: {
+                    Text("-\(TrailerDurationMapping.formatStep(stepDown))")
+                        .font(.ui(.footnote).weight(.medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .frame(maxWidth: .infinity, minHeight: ui(44))
+                        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: ui(8)))
+                }
+                .buttonStyle(.plain)
+                .disabled(!isControlEnabled || displayValue <= minValue)
+                .opacity((!isControlEnabled || displayValue <= minValue) ? 0.35 : 1.0)
+                .accessibilityLabel("\(TrailerDurationMapping.formatStep(stepDown)) 줄이기")
+
+                // Lower candidate
+                if showLower {
+                    Button {
+                        onCommit(lowerCandidate)
+                    } label: {
+                        Text(candidateFormatter(lowerCandidate))
+                            .font(.ui(.footnote).weight(.medium))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .frame(maxWidth: .infinity, minHeight: ui(44))
+                            .background(isLowerSelected ? Color.accentColor.opacity(0.12) : Color(uiColor: .tertiarySystemFill),
+                                        in: RoundedRectangle(cornerRadius: ui(8)))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: ui(8)).stroke(isLowerSelected ? Color.accentColor : Color.clear, lineWidth: 1)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!isControlEnabled)
+                    .opacity(isControlEnabled ? 1.0 : 0.35)
+                    .accessibilityLabel(formatValue(lowerCandidate))
+                    .accessibilityAddTraits(isLowerSelected ? .isSelected : [])
+                } else {
+                    Button {} label: {
+                        Text("-")
+                            .font(.ui(.footnote))
+                            .frame(maxWidth: .infinity, minHeight: ui(44))
+                            .background(Color(uiColor: .tertiarySystemFill).opacity(0.35), in: RoundedRectangle(cornerRadius: ui(8)))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(true)
+                    .opacity(0.3)
+                }
+
+                // Recommended candidate (centered)
+                Button {
+                    onCommit(clampedRec)
+                } label: {
+                    VStack(spacing: ui(1)) {
+                        Text(candidateFormatter(clampedRec))
+                            .font(.ui(.footnote).weight(.semibold))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                        Text("추천").font(.system(size: ui(9), weight: .bold))
+                            .padding(.horizontal, ui(4)).padding(.vertical, ui(1))
+                            .background(isRecSelected ? Color.accentColor : Color.secondary.opacity(0.2), in: Capsule())
+                            .foregroundStyle(isRecSelected ? Color.white : Color.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: ui(44))
+                    .background(isRecSelected ? Color.accentColor.opacity(0.12) : Color(uiColor: .tertiarySystemFill),
+                                in: RoundedRectangle(cornerRadius: ui(8)))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: ui(8)).stroke(isRecSelected ? Color.accentColor : Color.clear, lineWidth: 1)
+                    }
+                }
+                .buttonStyle(.plain)
+                .disabled(!isControlEnabled)
+                .opacity(isControlEnabled ? 1.0 : 0.35)
+                .accessibilityLabel("\(formatValue(clampedRec)), 추천")
+                .accessibilityAddTraits(isRecSelected ? .isSelected : [])
+
+                // Higher candidate
+                if showHigher {
+                    Button {
+                        onCommit(higherCandidate)
+                    } label: {
+                        Text(candidateFormatter(higherCandidate))
+                            .font(.ui(.footnote).weight(.medium))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .frame(maxWidth: .infinity, minHeight: ui(44))
+                            .background(isHigherSelected ? Color.accentColor.opacity(0.12) : Color(uiColor: .tertiarySystemFill),
+                                        in: RoundedRectangle(cornerRadius: ui(8)))
+                            .overlay {
+                                RoundedRectangle(cornerRadius: ui(8)).stroke(isHigherSelected ? Color.accentColor : Color.clear, lineWidth: 1)
+                            }
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!isControlEnabled)
+                    .opacity(isControlEnabled ? 1.0 : 0.35)
+                    .accessibilityLabel(formatValue(higherCandidate))
+                    .accessibilityAddTraits(isHigherSelected ? .isSelected : [])
+                } else {
+                    Button {} label: {
+                        Text("-")
+                            .font(.ui(.footnote))
+                            .frame(maxWidth: .infinity, minHeight: ui(44))
+                            .background(Color(uiColor: .tertiarySystemFill).opacity(0.35), in: RoundedRectangle(cornerRadius: ui(8)))
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(true)
+                    .opacity(0.3)
+                }
+
+                // Plus button
+                Button {
+                    let nextVal = min(maxValue, max(minValue, displayValue + stepUp))
+                    onCommit(nextVal)
+                } label: {
+                    Text("+\(TrailerDurationMapping.formatStep(stepUp))")
+                        .font(.ui(.footnote).weight(.medium))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.75)
+                        .frame(maxWidth: .infinity, minHeight: ui(44))
+                        .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: ui(8)))
+                }
+                .buttonStyle(.plain)
+                .disabled(!isControlEnabled || displayValue >= maxValue)
+                .opacity((!isControlEnabled || displayValue >= maxValue) ? 0.35 : 1.0)
+                .accessibilityLabel("\(TrailerDurationMapping.formatStep(stepUp)) 늘리기")
+            }
+
+            // Slider immediately below
+            if isNonlinear {
+                Slider(
+                    value: Binding(
+                        get: {
+                            TrailerDurationMapping.position(value: displayValue, min: sliderMin, max: sliderMax)
+                        },
+                        set: { pos in
+                            let val = TrailerDurationMapping.value(position: pos, min: sliderMin, max: sliderMax)
+                            draggingValue = val
+                        }
+                    ),
+                    in: 0...1,
+                    onEditingChanged: { editing in
+                        if !editing {
+                            let finalVal = draggingValue ?? displayValue
+                            draggingValue = nil
+                            onCommit(finalVal)
+                        }
+                    }
+                )
+                .disabled(!isControlEnabled)
+                .accessibilityLabel(title)
+                .accessibilityValue(formatValue(displayValue))
+                .accessibilityAdjustableAction { direction in
+                    guard isControlEnabled else { return }
+                    switch direction {
+                    case .increment:
+                        let step = TrailerDurationMapping.adaptiveStep(for: displayValue)
+                        onCommit(min(maxValue, max(minValue, displayValue + step)))
+                    case .decrement:
+                        let step = TrailerDurationMapping.adaptiveStep(for: max(minValue, displayValue - 0.001))
+                        onCommit(min(maxValue, max(minValue, displayValue - step)))
+                    @unknown default:
+                        break
+                    }
+                }
+            } else {
+                Slider(
+                    value: Binding(
+                        get: { displayValue },
+                        set: { val in
+                            let step = TrailerDurationMapping.adaptiveStep(for: val)
+                            let snapped = min(sliderMax, max(sliderMin, (val / step).rounded() * step))
+                            draggingValue = snapped
+                        }
+                    ),
+                    in: sliderMin...sliderMax,
+                    onEditingChanged: { editing in
+                        if !editing {
+                            let finalVal = draggingValue ?? displayValue
+                            draggingValue = nil
+                            onCommit(finalVal)
+                        }
+                    }
+                )
+                .disabled(!isControlEnabled)
+                .accessibilityLabel(title)
+                .accessibilityValue(formatValue(displayValue))
+                .accessibilityAdjustableAction { direction in
+                    guard isControlEnabled else { return }
+                    switch direction {
+                    case .increment:
+                        let step = TrailerDurationMapping.adaptiveStep(for: displayValue)
+                        onCommit(min(maxValue, max(minValue, displayValue + step)))
+                    case .decrement:
+                        let step = TrailerDurationMapping.adaptiveStep(for: max(minValue, displayValue - 0.001))
+                        onCommit(min(maxValue, max(minValue, displayValue - step)))
+                    @unknown default:
+                        break
+                    }
+                }
+            }
+
+            if let explanation {
+                Text(explanation)
+                    .font(.ui(.caption))
+                    .foregroundStyle(.secondary)
+            }
+        }
     }
 }
 
@@ -2253,7 +2680,10 @@ final class VideoTrailerModel: ObservableObject {
         let snapshotMap = Dictionary(uniqueKeysWithValues: snapshot)
         guard currentMap == snapshotMap else { return }
         for index in sources.indices {
-            if let ratio = ratios[sources[index].id] { sources[index].imageDurationRatio = ratio }
+            if let ratio = ratios[sources[index].id] {
+                sources[index].imageDurationRatio = ratio
+                sources[index].imageDurationPolicyVersion = 2
+            }
         }
     }
 
@@ -2698,7 +3128,8 @@ final class VideoTrailerModel: ObservableObject {
                     isImage: true,
                     contentTypeIdentifier: "public.jpeg",
                     captureDate: source.captureDate,
-                    imageDurationRatio: source.imageDurationRatio
+                    imageDurationRatio: source.imageDurationRatio,
+                    imageDurationPolicyVersion: source.imageDurationPolicyVersion
                 )
                 // Only this one scene sees the still; the source keeps its own entry, so
                 // other ranges of the same video are rendered from the video as before.
@@ -2780,7 +3211,8 @@ final class VideoTrailerModel: ObservableObject {
                         sources[index] = VideoTrailerSource(id: source.id, name: source.name, url: source.url,
                             plan: VideoTrailerPlan(analysis: analysis, duration: source.duration),
                             isImage: false, contentTypeIdentifier: source.contentTypeIdentifier,
-                            captureDate: source.captureDate, imageDurationRatio: source.imageDurationRatio)
+                            captureDate: source.captureDate, imageDurationRatio: source.imageDurationRatio,
+                            imageDurationPolicyVersion: source.imageDurationPolicyVersion)
                     }
                     highlightAnalyzedIDs.insert(source.id)
                 }
@@ -3435,7 +3867,8 @@ final class VideoTrailerModel: ObservableObject {
                 peakTime: analysis.peakTime, peakTimes: analysis.peakTimes,
                 highlightSource: analysis.highlightSource.rawValue,
                 audioAvailability: analysis.audioAvailability.rawValue,
-                highlightAnalyzed: highlightAnalyzedIDs.contains(source.id))
+                highlightAnalyzed: highlightAnalyzedIDs.contains(source.id),
+                imageDurationPolicyVersion: source.imageDurationPolicyVersion)
         }
         var musicRow: TrailerProjectRecord.Music?
         var musicFile: URL?
@@ -3521,7 +3954,8 @@ final class VideoTrailerModel: ObservableObject {
             return VideoTrailerSource(id: row.id, name: row.name, url: bring(row.file),
                 plan: VideoTrailerPlan(analysis: analysis, duration: row.duration), isImage: row.isImage,
                 contentTypeIdentifier: row.contentTypeIdentifier, captureDate: row.captureDate,
-                imageDurationRatio: row.imageDurationRatio)
+                imageDurationRatio: row.imageDurationRatio,
+                imageDurationPolicyVersion: row.imageDurationPolicyVersion ?? 1)
         }
         highlightAnalyzedIDs = Set(record.sources.filter(\.highlightAnalyzed).map(\.id))
         photoDurationsAnalyzed = record.photosAnalyzed

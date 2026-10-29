@@ -1,8 +1,33 @@
 import XCTest
+import HanAIApple
 @testable import NasFinder
 
 /// 사진 선별 추천·선택 정책. 합성 수치만 쓰며 실제 사진이나 모델 정확도를 주장하지 않는다.
 final class PhotoSelectionEngineTests: XCTestCase {
+    func testTrailerPhotoDurationWeights() {
+        func measurement(_ score: Double, fingerprint: [UInt8] = []) -> VideoTrailerPhotoQuality.Measurement {
+            .init(qualityScore: score, fingerprint: fingerprint, aspectRatio: 1,
+                  sharpnessScore: score, exposureScore: 0.5)
+        }
+        let ordinary = VideoTrailerPhotoQuality.durationRatios(for: [
+            (id: 0, measurement: measurement(1)),
+            (id: 1, measurement: measurement(0.3)),
+            (id: 2, measurement: measurement(0.1)),
+            (id: 3, measurement: nil)
+        ])
+        XCTAssertEqual(ordinary[0] ?? 0, 1.25, accuracy: 0.00001)
+        XCTAssertEqual(ordinary[1] ?? 0, 0.525, accuracy: 0.00001)
+        XCTAssertEqual(ordinary[2] ?? 0, 0.10, accuracy: 0.00001)
+        XCTAssertEqual(ordinary[3] ?? 0, 0.55, accuracy: 0.00001)
+
+        let fingerprint = [UInt8](repeating: 100, count: 256)
+        let duplicates = VideoTrailerPhotoQuality.durationRatios(for: [
+            (id: 0, measurement: measurement(1, fingerprint: fingerprint)),
+            (id: 1, measurement: measurement(0.1, fingerprint: fingerprint))
+        ])
+        XCTAssertEqual(duplicates[1] ?? 0, 0.01, accuracy: 0.00001)
+    }
+
     private func candidate(_ index: Int, sharpness: Double = 0.6, exposure: Double = 0.8,
                            pixels: Int = 12_000_000, aesthetics: Double? = nil) -> PhotoSelectionCandidate {
         PhotoSelectionCandidate(index: index, sharpness: sharpness, exposure: exposure, pixelCount: pixels, aesthetics: aesthetics)
@@ -203,5 +228,103 @@ final class PhotoSelectionEngineTests: XCTestCase {
             return
         }
         XCTAssertEqual(outcome.selectedIndices, [0])
+    }
+
+    func testManualHelpersBoundsMigrationAndRedistribution() {
+        let analysis = AudioAnalysisResult(
+            waveform: [], peakTime: 0, peakTimes: [],
+            audioAvailability: .unknown, highlightSource: .fallback
+        )
+        let dummyURL = URL(fileURLWithPath: "/dummy")
+
+        // mixed legacy photos .75 / .35 / .05 and video start 1 duration 8
+        var sources = [
+            VideoTrailerSource(
+                id: 1, name: "photo1", url: dummyURL,
+                plan: VideoTrailerPlan(analysis: analysis, duration: 4.0),
+                isImage: true, imageDurationRatio: 0.75, imageDurationPolicyVersion: 1
+            ),
+            VideoTrailerSource(
+                id: 2, name: "photo2", url: dummyURL,
+                plan: VideoTrailerPlan(analysis: analysis, duration: 4.0),
+                isImage: true, imageDurationRatio: 0.35, imageDurationPolicyVersion: 1
+            ),
+            VideoTrailerSource(
+                id: 3, name: "photo3", url: dummyURL,
+                plan: VideoTrailerPlan(analysis: analysis, duration: 4.0),
+                isImage: true, imageDurationRatio: 0.05, imageDurationPolicyVersion: 1
+            ),
+            VideoTrailerSource(
+                id: 4, name: "video", url: dummyURL,
+                plan: VideoTrailerPlan(analysis: analysis, duration: 8.0),
+                isImage: false, imageDurationRatio: 0.55, imageDurationPolicyVersion: 2
+            ),
+        ]
+
+        var scenes = [
+            TrailerEditScene(id: 101, sourceID: 1, start: 0, length: 1.0),
+            TrailerEditScene(id: 102, sourceID: 2, start: 0, length: 1.0),
+            TrailerEditScene(id: 103, sourceID: 3, start: 0, length: 1.0),
+            TrailerEditScene(id: 104, sourceID: 4, start: 1.0, length: 2.0, muted: true, fitsFrame: true, volume: 0.7, offsetX: 0.2, offsetY: -0.3),
+            TrailerEditScene(id: 105, sourceID: 4, start: 5.0, length: 2.0, excluded: true),
+        ]
+
+        // clip 2.5 => photo 2.375 / .25 / 1frame-or-weighted and video 2.5
+        TrailerSceneEditor.applyExplicitClipLength(clipLength: 2.5, scenes: &scenes, sources: &sources)
+
+        XCTAssertEqual(scenes[0].length, 2.375, accuracy: 0.0001)
+        XCTAssertEqual(scenes[1].length, 0.25, accuracy: 0.0001)
+        XCTAssertGreaterThanOrEqual(scenes[2].length, 1.0 / 30.0)
+        XCTAssertEqual(scenes[2].length, 2.5 * VideoTrailerPhotoQuality.migrateV1ToV2Ratio(0.05), accuracy: 0.0001)
+        XCTAssertEqual(scenes[3].length, 2.5, accuracy: 0.0001)
+        XCTAssertEqual(scenes[3].start, 1.0, accuracy: 0.0001)
+
+        // ratio/version migrate once
+        XCTAssertEqual(sources[0].imageDurationPolicyVersion, 2)
+        XCTAssertEqual(sources[1].imageDurationPolicyVersion, 2)
+        XCTAssertEqual(sources[2].imageDurationPolicyVersion, 2)
+        XCTAssertEqual(sources[0].imageDurationRatio, 0.95, accuracy: 0.0001)
+        XCTAssertEqual(sources[1].imageDurationRatio, 0.10, accuracy: 0.0001)
+
+        // applying again 3 => new ratio not migrated again
+        TrailerSceneEditor.applyExplicitClipLength(clipLength: 3.0, scenes: &scenes, sources: &sources)
+        XCTAssertEqual(sources[0].imageDurationRatio, 0.95, accuracy: 0.0001)
+        XCTAssertEqual(sources[1].imageDurationRatio, 0.10, accuracy: 0.0001)
+        XCTAssertEqual(scenes[0].length, 3.0 * 0.95, accuracy: 0.0001)
+        XCTAssertEqual(scenes[1].length, 3.0 * 0.10, accuracy: 0.0001)
+        XCTAssertEqual(scenes[3].length, 3.0, accuracy: 0.0001)
+
+        // total redistribution respects bounds and IDs/order/start/audio/excluded
+        let bounds = TrailerSceneEditor.manualTotalBounds(scenes: scenes, sources: sources)
+        XCTAssertEqual(bounds.minimum, 0.1 + 0.2, accuracy: 0.0001)
+        XCTAssertEqual(bounds.maximum, 90.0 + 7.0, accuracy: 0.0001)
+
+        let target = 15.0
+        TrailerSceneEditor.redistributeManualTotal(scenes: &scenes, sources: sources, targetTotal: target)
+        let actualSum = scenes.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+        XCTAssertEqual(actualSum, target, accuracy: 0.001)
+
+        // Verify bounds respected for each included scene
+        XCTAssertGreaterThanOrEqual(scenes[0].length, 1.0 / 30.0)
+        XCTAssertLessThanOrEqual(scenes[0].length, 30.0)
+        XCTAssertGreaterThanOrEqual(scenes[1].length, 1.0 / 30.0)
+        XCTAssertLessThanOrEqual(scenes[1].length, 30.0)
+        XCTAssertGreaterThanOrEqual(scenes[2].length, 1.0 / 30.0)
+        XCTAssertLessThanOrEqual(scenes[2].length, 30.0)
+        XCTAssertGreaterThanOrEqual(scenes[3].length, 0.2)
+        XCTAssertLessThanOrEqual(scenes[3].length, 7.0)
+
+        // Verify IDs, order, start, audio, crop, excluded preserved
+        XCTAssertEqual(scenes.map(\.id), [101, 102, 103, 104, 105])
+        XCTAssertEqual(scenes.map(\.sourceID), [1, 2, 3, 4, 4])
+        XCTAssertEqual(scenes[3].start, 1.0, accuracy: 0.0001)
+        XCTAssertTrue(scenes[3].muted)
+        XCTAssertTrue(scenes[3].fitsFrame)
+        XCTAssertEqual(scenes[3].volume, 0.7, accuracy: 0.0001)
+        XCTAssertEqual(scenes[3].offsetX, 0.2, accuracy: 0.0001)
+        XCTAssertEqual(scenes[3].offsetY, -0.3, accuracy: 0.0001)
+        XCTAssertTrue(scenes[4].excluded)
+        XCTAssertEqual(scenes[4].length, 2.0, accuracy: 0.0001)
+        XCTAssertEqual(scenes[4].start, 5.0, accuracy: 0.0001)
     }
 }

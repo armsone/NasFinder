@@ -34,7 +34,12 @@ final class DesignCoverageUITests: XCTestCase {
     private func shot(_ app: XCUIApplication, _ name: String) {
         counter += 1
         let file = directory.appendingPathComponent(String(format: "%02d-%@.png", counter, name))
-        let png = XCUIScreen.main.screenshot().pngRepresentation
+        let screenshot = XCUIScreen.main.screenshot()
+        let attachment = XCTAttachment(screenshot: screenshot)
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        let png = screenshot.pngRepresentation
         try? png.write(to: file)
         log.append("shot \(file.lastPathComponent)")
     }
@@ -260,6 +265,11 @@ final class DesignCoverageUITests: XCTestCase {
                 XCUIDevice.shared.orientation = arg == "landscape" ? .landscapeLeft : .portrait
                 sleep(2)
             case "shot": shot(app, arg)
+            case "tree":
+                let attachment = XCTAttachment(string: app.debugDescription)
+                attachment.name = arg + ".tree"
+                attachment.lifetime = .keepAlways
+                add(attachment)
             default: log.append("UNKNOWN \(step)")
             }
         }

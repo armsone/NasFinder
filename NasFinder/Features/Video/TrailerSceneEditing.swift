@@ -47,12 +47,196 @@ enum TrailerSceneEditor {
     /// 새로 들어온 소스의 장면. 사진은 기본 길이, 영상은 공통 장면 길이만큼의 하이라이트.
     static func newScene(for source: VideoTrailerSource, id: Int, clipLength: Double) -> TrailerEditScene? {
         if source.isImage {
-            return TrailerEditScene(id: id, sourceID: source.id, start: 0, length: max(0.5, clipLength * source.imageDurationRatio))
+            let ratio = source.imageDurationRatio.isFinite && source.imageDurationRatio > 0 ? source.imageDurationRatio : 0.55
+            return TrailerEditScene(id: id, sourceID: source.id, start: 0,
+                length: min(30.0, max(1.0 / 30.0, clipLength * ratio)))
         }
         guard source.duration > 0 else { return nil }
         let length = VideoTrailerBatchPlan.sceneLength(source, clipLength: clipLength)
         let first = source.plan.proposal(total: length, clipLength: length).first
         return TrailerEditScene(id: id, sourceID: source.id, start: first?.start ?? 0, length: first?.length ?? length)
+    }
+
+    /// 장면의 물리적 표시 시간 범위(최소...최대).
+    /// 비디오는 min(.2, duration), 시작점 유효 클램프 0...duration-min, max = duration-validStart.
+    /// 사진은 1/30...30초. 유효하지 않거나 누락된 소스는 기존 유한 길이를 고정값으로 유지.
+    static func sceneDurationBounds(scene: TrailerEditScene, source: VideoTrailerSource?) -> (minimum: Double, maximum: Double) {
+        guard let source else {
+            let fixed = scene.length.isFinite && scene.length > 0 ? scene.length : 0.2
+            return (fixed, fixed)
+        }
+        if source.isImage {
+            return (1.0 / 30.0, 30.0)
+        }
+        guard source.duration.isFinite, source.duration > 0 else {
+            let fixed = scene.length.isFinite && scene.length > 0 ? scene.length : 0.2
+            return (fixed, fixed)
+        }
+        let duration = source.duration
+        let minLen = min(0.2, duration)
+        let validStart = min(max(0.0, scene.start), max(0.0, duration - minLen))
+        let maxLen = max(minLen, duration - validStart)
+        return (minLen, maxLen)
+    }
+
+    /// 직접 편집 모드에서 포함된 장면들의 물리적 총길이 범위.
+    static func manualTotalBounds(scenes: [TrailerEditScene], sources: [VideoTrailerSource]) -> (minimum: Double, maximum: Double) {
+        let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var totalMin = 0.0
+        var totalMax = 0.0
+        for scene in scenes where !scene.excluded {
+            let bounds = sceneDurationBounds(scene: scene, source: byID[scene.sourceID])
+            totalMin += bounds.minimum
+            totalMax += bounds.maximum
+        }
+        return (totalMin, max(totalMin, totalMax))
+    }
+
+    /// 직접 편집 모드에서 총길이 변경 시 기존 장면 길이를 비율에 맞춰 비례 재분배한다.
+    /// 제외된 장면은 보존하며, 포함된 장면의 경계(사진 1/30...30초, 영상 소스 잔여 길이)에서
+    /// 60단계 이분법 스케일링 후 잔여 분배로 목표 오차까지 정확히 맞춘다.
+    static func redistributeManualTotal(
+        scenes: inout [TrailerEditScene],
+        sources: [VideoTrailerSource],
+        targetTotal: Double
+    ) {
+        guard targetTotal.isFinite, targetTotal > 0 else { return }
+        let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let includedIndices = scenes.indices.filter { !scenes[$0].excluded }
+        guard !includedIndices.isEmpty else { return }
+
+        var minBounds: [Int: Double] = [:]
+        var maxBounds: [Int: Double] = [:]
+        var totalMin = 0.0
+        var totalMax = 0.0
+
+        for index in includedIndices {
+            let bounds = sceneDurationBounds(scene: scenes[index], source: byID[scenes[index].sourceID])
+            minBounds[index] = bounds.minimum
+            maxBounds[index] = bounds.maximum
+            totalMin += bounds.minimum
+            totalMax += bounds.maximum
+        }
+
+        let clampedTarget = min(totalMax, max(totalMin, targetTotal))
+
+        var lengths: [Int: Double] = [:]
+        for index in includedIndices {
+            let minB = minBounds[index]!
+            let maxB = maxBounds[index]!
+            lengths[index] = min(maxB, max(minB, scenes[index].length))
+        }
+
+        func sumForScale(_ s: Double) -> Double {
+            var sum = 0.0
+            for index in includedIndices {
+                let orig = lengths[index]!
+                let minB = minBounds[index]!
+                let maxB = maxBounds[index]!
+                sum += min(maxB, max(minB, orig * s))
+            }
+            return sum
+        }
+
+        var sLow = 0.0
+        var sHigh = 1.0
+        let currentSum = sumForScale(1.0)
+        if currentSum >= clampedTarget {
+            sHigh = 1.0
+        } else {
+            sHigh = 2.0
+            while sumForScale(sHigh) < clampedTarget && sHigh < 1_000_000.0 {
+                sHigh *= 2.0
+            }
+        }
+
+        for _ in 0..<60 {
+            let mid = (sLow + sHigh) / 2.0
+            if sumForScale(mid) < clampedTarget {
+                sLow = mid
+            } else {
+                sHigh = mid
+            }
+        }
+
+        let bestScale = (sLow + sHigh) / 2.0
+        for index in includedIndices {
+            let orig = lengths[index]!
+            let minB = minBounds[index]!
+            let maxB = maxBounds[index]!
+            lengths[index] = min(maxB, max(minB, orig * bestScale))
+        }
+
+        let targetTolerance = 0.0001
+        for _ in 0..<20 {
+            let currentTotal = includedIndices.reduce(0.0) { $0 + (lengths[$1] ?? 0.0) }
+            let residual = clampedTarget - currentTotal
+            if abs(residual) <= targetTolerance { break }
+
+            if residual > 0 {
+                let expandable = includedIndices.filter { (lengths[$0] ?? 0.0) < (maxBounds[$0] ?? 0.0) - 0.000001 }
+                guard !expandable.isEmpty else { break }
+                let share = residual / Double(expandable.count)
+                for index in expandable {
+                    let cur = lengths[index]!
+                    let maxB = maxBounds[index]!
+                    lengths[index] = min(maxB, cur + share)
+                }
+            } else {
+                let reducible = includedIndices.filter { (lengths[$0] ?? 0.0) > (minBounds[$0] ?? 0.0) + 0.000001 }
+                guard !reducible.isEmpty else { break }
+                let share = (-residual) / Double(reducible.count)
+                for index in reducible {
+                    let cur = lengths[index]!
+                    let minB = minBounds[index]!
+                    lengths[index] = max(minB, cur - share)
+                }
+            }
+        }
+
+        for index in includedIndices {
+            if let len = lengths[index] {
+                scenes[index].length = len
+                let scene = scenes[index]
+                if let source = byID[scene.sourceID], !source.isImage, source.duration > 0 {
+                    let minLen = minBounds[index] ?? min(0.2, source.duration)
+                    let validStart = min(max(0, scene.start), max(0, source.duration - minLen))
+                    scenes[index].start = validStart
+                }
+            }
+        }
+    }
+
+    /// 공통 영상 클립 길이 변경을 직접 편집 장면에 명시적으로 적용한다.
+    /// 영상은 잔여 길이 내 기준 길이, 사진은 저장된 가중치 비율(1/30...30초)로 재계산된다.
+    static func applyExplicitClipLength(
+        clipLength: Double,
+        scenes: inout [TrailerEditScene],
+        sources: inout [VideoTrailerSource]
+    ) {
+        guard clipLength.isFinite, clipLength > 0 else { return }
+
+        // V1 사진 비율이 있으면 1회 안전하게 마이그레이션
+        for i in sources.indices where sources[i].isImage && sources[i].imageDurationPolicyVersion < 2 {
+            sources[i].imageDurationRatio = VideoTrailerPhotoQuality.migrateV1ToV2Ratio(sources[i].imageDurationRatio)
+            sources[i].imageDurationPolicyVersion = 2
+        }
+
+        let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+
+        for index in scenes.indices where !scenes[index].excluded {
+            let source = byID[scenes[index].sourceID]
+            let bounds = sceneDurationBounds(scene: scenes[index], source: source)
+            if let source, source.isImage {
+                let targetLen = clipLength * source.imageDurationRatio
+                scenes[index].length = min(bounds.maximum, max(bounds.minimum, targetLen))
+            } else if let source, source.duration > 0 {
+                scenes[index].length = min(bounds.maximum, max(bounds.minimum, clipLength))
+                let minLen = bounds.minimum
+                let validStart = min(max(0, scenes[index].start), max(0, source.duration - minLen))
+                scenes[index].start = validStart
+            }
+        }
     }
 }
 
@@ -83,7 +267,8 @@ extension TrailerSettingsDraft {
     var signature: TrailerDraftSignature {
         TrailerDraftSignature(
             sourceIDs: sources.map(\.id), total: total, clipLength: clipLength, aspect: aspectRatio?.rawValue,
-            music: music, scenes: scenes, photoRatios: sources.map(\.imageDurationRatio))
+            music: music, scenes: scenes, photoRatios: sources.map(\.imageDurationRatio),
+            policyVersions: sources.map(\.imageDurationPolicyVersion))
     }
 }
 
@@ -95,6 +280,7 @@ struct TrailerDraftSignature: Equatable {
     var music: TrailerMusicSelection?
     var scenes: [TrailerEditScene]?
     var photoRatios: [Double]
+    var policyVersions: [Int] = []
 }
 
 // MARK: - 되돌리기 / 다시 실행
@@ -335,7 +521,7 @@ struct TrailerSceneInspector: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("사진 표시 시간 \(String(format: "%.1f", scene.length))초").font(.subheadline).monospacedDigit()
                 Slider(value: Binding(get: { scene.length }, set: { value in set { $0.length = value } }),
-                       in: 0.5...30, step: 0.5)
+                       in: (1.0 / 30.0)...30)
                     .accessibilityLabel("사진 표시 시간")
             }
         } else {
