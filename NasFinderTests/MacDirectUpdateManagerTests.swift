@@ -232,7 +232,7 @@ final class MacDirectUpdateManagerTests: XCTestCase {
             githubReleaseJSON(assetName: "NasFinder-iOS-2.1.3.ipa"),
             githubReleaseJSON(assetURL: "http://example.com/NasFinder-Mac-2.1.3-202608260900.dmg"),
             githubReleaseJSON(digest: "sha256:bad"),
-            githubReleaseJSON(tag: "mac-v2.1"),
+            githubReleaseJSON(tag: "mac-v9.0"),
             githubReleaseJSON(build: "not-a-build"),
         ]
         for data in invalidCases {

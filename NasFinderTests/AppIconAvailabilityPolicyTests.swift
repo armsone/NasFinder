@@ -72,7 +72,7 @@ struct AppIconAvailabilityPolicyTests {
         }
     }
 
-    @Test func enteringEnamelThemeInstallsEnamelIconAndRemembersPrevious() {
+    @Test func enteringEnamelThemeLeavesIconUnchanged() {
         let sync = AppIconAvailabilityPolicy.themeSynchronization(
             from: .resolved("day"),
             to: .resolved("skeuomorphism"),
@@ -80,7 +80,7 @@ struct AppIconAvailabilityPolicyTests {
             iconBeforeEnamel: nil,
             isIOSAppOnMac: false
         )
-        #expect(sync == .init(icon: .enamelNAS, remembersCurrentIcon: true))
+        #expect(sync == nil)
 
         let alreadyEnamel = AppIconAvailabilityPolicy.themeSynchronization(
             from: .resolved("skeuomorphism"),
@@ -89,10 +89,10 @@ struct AppIconAvailabilityPolicyTests {
             iconBeforeEnamel: .purpleNAS,
             isIOSAppOnMac: false
         )
-        #expect(alreadyEnamel == .init(icon: .enamelNAS, remembersCurrentIcon: false))
+        #expect(alreadyEnamel == nil)
     }
 
-    @Test func leavingEnamelThemeRestoresRememberedIcon() {
+    @Test func leavingEnamelThemeLeavesIconUnchanged() {
         let restored = AppIconAvailabilityPolicy.themeSynchronization(
             from: .resolved("skeuomorphism"),
             to: .night,
@@ -100,7 +100,7 @@ struct AppIconAvailabilityPolicyTests {
             iconBeforeEnamel: .cyberVault,
             isIOSAppOnMac: false
         )
-        #expect(restored == .init(icon: .cyberVault, remembersCurrentIcon: false))
+        #expect(restored == nil)
 
         let fallback = AppIconAvailabilityPolicy.themeSynchronization(
             from: .resolved("skeuomorphism"),
@@ -109,10 +109,10 @@ struct AppIconAvailabilityPolicyTests {
             iconBeforeEnamel: nil,
             isIOSAppOnMac: false
         )
-        #expect(fallback == .init(icon: .blueNAS, remembersCurrentIcon: false))
+        #expect(fallback == nil)
     }
 
-    @Test func vibeCoderThemeInstallsVibeCoderIconAndOtherThemesLeaveIconAlone() {
+    @Test func vibeCoderThemeAndOtherThemesLeaveIconUnchanged() {
         #expect(
             AppIconAvailabilityPolicy.themeSynchronization(
                 from: .resolved("system"),
@@ -120,7 +120,7 @@ struct AppIconAvailabilityPolicyTests {
                 currentIcon: .blueNAS,
                 iconBeforeEnamel: nil,
                 isIOSAppOnMac: false
-            ) == .init(icon: .vibeCoder, remembersCurrentIcon: false)
+            ) == nil
         )
         #expect(
             AppIconAvailabilityPolicy.themeSynchronization(
