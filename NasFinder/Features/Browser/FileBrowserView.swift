@@ -502,15 +502,15 @@ struct FileBrowserView: View {
         .onAppear {
             // 홈 작업 호스트는 보기 방식·최근 위치·썸네일 진행 표시 같은 브라우저 상태를 건드리지 않는다.
             guard !isFavoriteActionHost else { return }
-            if onPickMedia == nil, storedLayoutStyle == LayoutStyle.coverFlow.rawValue {
-                storedLayoutStyle = LayoutStyle.largeThumbnails.rawValue
-                coverFlowEnteredFromPoster = false
-                explicitCoverFlowReturnStyle = nil
-            }
             // 전체 창 플로잉이 닫히며 다시 나타나는 것은 새 화면이 아니므로 썸네일 세션을 끊지 않는다.
             if returnedFromCoverFlow {
                 returnedFromCoverFlow = false
                 return
+            }
+            if isPhoneIdiom, storedLayoutStyle == LayoutStyle.coverFlow.rawValue {
+                storedLayoutStyle = LayoutStyle.largeThumbnails.rawValue
+                coverFlowEnteredFromPoster = false
+                explicitCoverFlowReturnStyle = nil
             }
             trafficTracker.reset()
             thumbnailActivity.beginNewSession()
@@ -522,6 +522,7 @@ struct FileBrowserView: View {
                     title: title
                 )
             }
+            reconcileAutomaticCoverFlow()
         }
         .onChange(of: layoutStyle, initial: true) { _, style in
             guard !isFavoriteActionHost else { return }
@@ -1216,6 +1217,13 @@ struct FileBrowserView: View {
             let style = LayoutStyle(rawValue: storedSelectionLayoutStyle) ?? .smallThumbnails
             return style == .coverFlow ? .smallThumbnails : style
         }
+        if isPhoneIdiom {
+            if coverFlowEnteredFromPoster {
+                return .coverFlow
+            }
+            let style = LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
+            return style == .coverFlow ? .largeThumbnails : style
+        }
         let style = LayoutStyle(rawValue: storedLayoutStyle) ?? .smallThumbnails
         // The hidden Home favorite-action host never presents Flowing.
         return isFavoriteActionHost && style == .coverFlow ? .largeThumbnails : style
@@ -1225,7 +1233,7 @@ struct FileBrowserView: View {
     /// content window, including the wide Home/NAS sidebar that sits beside
     /// this page. The page itself keeps showing the mode Flowing returns to.
     private var presentsCoverFlowFullWindow: Bool {
-        layoutStyle == .coverFlow
+        layoutStyle == .coverFlow && navigatedFolder == nil
     }
 
     private var inlineLayoutStyle: LayoutStyle {
@@ -1283,6 +1291,7 @@ struct FileBrowserView: View {
     private func coverFlowCoverDidDismiss() {
         guard let folder = folderToOpenAfterCoverFlow else { return }
         folderToOpenAfterCoverFlow = nil
+        suppressAutomaticCoverFlow = false
         navigatedFolder = folder
     }
 
@@ -1309,7 +1318,9 @@ struct FileBrowserView: View {
         explicitCoverFlowReturnStyle = nil
         coverFlowEnteredFromPoster = false
         suppressAutomaticCoverFlow = true
-        storedLayoutStyle = returnStyle.rawValue
+        if !isPhoneIdiom || storedLayoutStyle == LayoutStyle.coverFlow.rawValue {
+            storedLayoutStyle = returnStyle.rawValue
+        }
     }
 
     private func updateCoverFlowOrientation(for style: LayoutStyle) {
@@ -1334,6 +1345,7 @@ struct FileBrowserView: View {
 
     private func reconcileAutomaticCoverFlow() {
         guard onPickMedia == nil, !isFavoriteActionHost else { return }
+        guard navigatedFolder == nil else { return }
         if !isPhoneIdiom {
             // iPad/Mac: selecting files leaves the explicit Flowing view for the
             // previous mode; nothing is ever presented automatically.
@@ -1357,11 +1369,9 @@ struct FileBrowserView: View {
         if shouldPresent,
            layoutStyle == .largeThumbnails {
             coverFlowEnteredFromPoster = true
-            storedLayoutStyle = LayoutStyle.coverFlow.rawValue
         } else if !shouldPresent,
                   layoutStyle == .coverFlow,
                   coverFlowEnteredFromPoster {
-            storedLayoutStyle = LayoutStyle.largeThumbnails.rawValue
             coverFlowEnteredFromPoster = false
         }
     }
