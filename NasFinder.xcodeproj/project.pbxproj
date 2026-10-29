@@ -704,7 +704,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -713,7 +713,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -729,7 +729,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -738,7 +738,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.uitests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
@@ -874,7 +874,7 @@
 				CODE_SIGN_ENTITLEMENTS = NasFinder/NasFinder.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "NasFinder/NasFinder-Mac.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -894,7 +894,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -922,7 +922,7 @@
 				CODE_SIGN_ENTITLEMENTS = NasFinder/NasFinder.entitlements;
 				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "NasFinder/NasFinder-Mac.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -942,7 +942,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
@@ -961,7 +961,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderFileProvider/NasFinderFileProvider.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderFileProvider/Info.plist;
@@ -970,7 +970,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.fileprovider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -988,7 +988,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderFileProvider/NasFinderFileProvider.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderFileProvider/Info.plist;
@@ -997,7 +997,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.fileprovider;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1014,7 +1014,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -1023,7 +1023,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -1039,7 +1039,7 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -1048,7 +1048,7 @@
 					"@executable_path/Frameworks",
 					"@loader_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.tests;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -1065,7 +1065,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderShare/NasFinderShare.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderShare/Info.plist;
@@ -1074,7 +1074,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1092,7 +1092,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderShare/NasFinderShare.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderShare/Info.plist;
@@ -1101,7 +1101,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.share;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1118,7 +1118,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1128,7 +1128,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1145,7 +1145,7 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
@@ -1155,7 +1155,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.widget;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1173,7 +1173,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderDocumentPicker/NasFinderDocumentPicker.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderDocumentPicker/Info.plist;
@@ -1182,7 +1182,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.documentpicker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
@@ -1200,7 +1200,7 @@
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGN_ENTITLEMENTS = NasFinderDocumentPicker/NasFinderDocumentPicker.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 202610290001;
+				CURRENT_PROJECT_VERSION = 202610291639;
 				DEVELOPMENT_TEAM = T7B4EPLHPK;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = NasFinderDocumentPicker/Info.plist;
@@ -1209,7 +1209,7 @@
 					"$(inherited)",
 					"@executable_path/../../Frameworks",
 				);
-				MARKETING_VERSION = 2.28.2;
+				MARKETING_VERSION = 2.28.3;
 				PRODUCT_BUNDLE_IDENTIFIER = com.armsone.nasfinder.documentpicker;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SKIP_INSTALL = YES;
