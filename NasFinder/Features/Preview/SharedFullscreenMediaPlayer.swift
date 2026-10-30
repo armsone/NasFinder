@@ -76,6 +76,8 @@ struct SharedVideoProgressBar: View {
         HStack(spacing: ui(compact ? 5 : 10)) {
             Text(formattedTime(currentSeconds))
                 .frame(width: ui(compact ? 34 : 42), alignment: .trailing)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
 
             VStack(spacing: ui(-4)) {
                 if let sourceLabel {
@@ -98,9 +100,12 @@ struct SharedVideoProgressBar: View {
                     "\(formattedTime(currentSeconds)) / \(formattedTime(durationSeconds))"
                 )
             }
+            .frame(minWidth: ui(compact ? 36 : 60))
 
             Text(formattedTime(durationSeconds))
                 .frame(width: ui(compact ? 34 : 42), alignment: .leading)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
         }
         .font(.system(size: ui(11), weight: .semibold, design: .monospaced))
         .foregroundStyle(.white.opacity(0.9))

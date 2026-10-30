@@ -1470,7 +1470,7 @@ private struct VideoTrailerSettings: View {
     }
 
     private var trailerControlsView: some View {
-        HStack(spacing: ui(8)) {
+        HStack(spacing: ui(6)) {
             Button { isPreviewFullscreen.toggle() } label: {
                 SharedPlayerCircleLabel(systemImage: isPreviewFullscreen
                     ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")

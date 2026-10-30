@@ -502,19 +502,27 @@ struct RemotePreviewView: View {
         // by the container insets (which pushed the bottom transport out of the window).
         let isEmbedded = accessoryControls != nil
         let insets = isEmbedded ? EdgeInsets() : safeAreaInsets
-        return VStack(spacing: 0) {
-            topBar(showsPosition: viewportSize.width <= viewportSize.height)
-                .padding(.top, max(insets.top, ui(8)) + ui(8))
+        let horizontalPadding = isEmbedded
+            ? (viewportSize.width < ui(380) ? ui(8) : ui(12))
+            : max(max(insets.leading, insets.trailing), ui(8)) + ui(8)
+        let availableWidth = max(viewportSize.width - horizontalPadding * 2, 0)
+        let isCompactHeight = isEmbedded || viewportSize.height < ui(320)
 
-            Spacer(minLength: ui(72))
+        return VStack(spacing: 0) {
+            topBar(
+                availableWidth: availableWidth,
+                showsPosition: viewportSize.width <= viewportSize.height
+            )
+            .padding(.top, isEmbedded ? ui(8) : max(insets.top, ui(8)) + ui(8))
+
+            Spacer(minLength: isCompactHeight ? ui(6) : ui(72))
 
             if viewModel.currentItem.isImage || viewModel.currentItem.isPlayerMedia {
-                bottomControls(isLandscape: viewportSize.width > viewportSize.height)
-                    .padding(.bottom, max(insets.bottom, ui(8)) + ui(10))
+                bottomControls(availableWidth: availableWidth)
+                    .padding(.bottom, isEmbedded ? ui(8) : max(insets.bottom, ui(8)) + ui(10))
             }
         }
-        .padding(.leading, max(insets.leading, ui(8)) + ui(8))
-        .padding(.trailing, max(insets.trailing, ui(8)) + ui(8))
+        .padding(.horizontal, horizontalPadding)
         .ignoresSafeArea(edges: isEmbedded ? [] : .all)
         .opacity(
             requiresAlwaysVisibleChrome
@@ -625,38 +633,91 @@ struct RemotePreviewView: View {
         if let onClose { onClose() } else { dismiss() }
     }
 
-    private func topBar(showsPosition: Bool) -> some View {
-        HStack(spacing: ui(10)) {
-            Button {
-                closePreview()
-            } label: {
-                SharedPlayerCircleLabel(systemImage: "xmark")
-            }
-            .accessibilityLabel("미리보기 닫기")
+    private func topBar(
+        availableWidth: CGFloat,
+        showsPosition: Bool
+    ) -> some View {
+        let isNarrow = availableWidth < ui(240)
+        let isCompact = availableWidth < ui(380)
 
-            VStack(spacing: ui(2)) {
-                Text(viewModel.currentItem.name)
-                    .font(.ui(.body))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-                    .multilineTextAlignment(.center)
+        return Group {
+            if isNarrow {
+                VStack(spacing: ui(6)) {
+                    HStack(spacing: ui(6)) {
+                        Button {
+                            closePreview()
+                        } label: {
+                            SharedPlayerCircleLabel(systemImage: "xmark")
+                        }
+                        .accessibilityLabel("미리보기 닫기")
 
-                if showsPosition,
-                   viewModel.currentItem.isImage || viewModel.currentItem.isVideo {
-                    positionLabel
+                        Spacer(minLength: ui(4))
+
+                        Text(viewModel.currentItem.name)
+                            .font(.ui(.caption))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .minimumScaleFactor(0.6)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+
+                        Spacer(minLength: ui(4))
+
+                        Button { shareCurrentItem() } label: {
+                            SharedPlayerCircleLabel(systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(playbackSuspended || shareCoordinator.isPreparing || viewModel.isPreparingExternalPlayback)
+                        .accessibilityLabel("현재 파일 공유")
+                    }
+
+                    if let accessoryControls {
+                        HStack(spacing: ui(6)) {
+                            Spacer(minLength: 0)
+                            accessoryControls
+                            Spacer(minLength: 0)
+                        }
+                    }
+                }
+            } else {
+                HStack(spacing: ui(isCompact ? 6 : 10)) {
+                    Button {
+                        closePreview()
+                    } label: {
+                        SharedPlayerCircleLabel(systemImage: "xmark")
+                    }
+                    .accessibilityLabel("미리보기 닫기")
+                    .layoutPriority(1)
+
+                    VStack(spacing: ui(2)) {
+                        Text(viewModel.currentItem.name)
+                            .font(.ui(isCompact ? .subheadline : .body))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .minimumScaleFactor(0.6)
+                            .multilineTextAlignment(.center)
+
+                        if showsPosition, viewModel.itemsCount > 1,
+                           viewModel.currentItem.isImage || viewModel.currentItem.isVideo {
+                            positionLabel
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.horizontal, ui(isCompact ? 2 : 4))
+                    .layoutPriority(0)
+
+                    HStack(spacing: ui(isCompact ? 6 : 8)) {
+                        if let accessoryControls {
+                            accessoryControls
+                        }
+                        Button { shareCurrentItem() } label: {
+                            SharedPlayerCircleLabel(systemImage: "square.and.arrow.up")
+                        }
+                        .disabled(playbackSuspended || shareCoordinator.isPreparing || viewModel.isPreparingExternalPlayback)
+                        .accessibilityLabel("현재 파일 공유")
+                    }
+                    .layoutPriority(1)
                 }
             }
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, ui(4))
-
-            if let accessoryControls {
-                accessoryControls
-            }
-            Button { shareCurrentItem() } label: {
-                SharedPlayerCircleLabel(systemImage: "square.and.arrow.up")
-            }
-            .disabled(playbackSuspended || shareCoordinator.isPreparing || viewModel.isPreparingExternalPlayback)
-            .accessibilityLabel("현재 파일 공유")
         }
         .foregroundStyle(.white)
         .shadow(color: .black.opacity(0.45), radius: 5, y: 2)
@@ -690,35 +751,44 @@ struct RemotePreviewView: View {
         }
     }
 
-    private func bottomControls(isLandscape: Bool) -> some View {
-        VStack(spacing: ui(10)) {
-            if isLandscape {
-                HStack(spacing: ui(12)) {
+    private func bottomControls(availableWidth: CGFloat) -> some View {
+        let needsStackedControls: Bool = {
+            if viewModel.itemsCount > 1 {
+                return availableWidth < ui(460)
+            } else {
+                return availableWidth < ui(300)
+            }
+        }()
+
+        return VStack(spacing: ui(needsStackedControls ? 6 : 10)) {
+            if needsStackedControls {
+                if viewModel.currentItem.isPlayerMedia, viewModel.hasVideoPlayer {
+                    videoProgressBar(compact: true)
+                        .frame(maxWidth: .infinity)
+                }
+
+                HStack(spacing: ui(8)) {
                     transportControls
 
-                    if viewModel.currentItem.isPlayerMedia, viewModel.hasVideoPlayer {
-                        videoProgressBar(compact: false)
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        Spacer(minLength: ui(32))
-                    }
+                    Spacer(minLength: ui(8))
 
                     playbackStatusControls
                 }
                 .frame(maxWidth: .infinity)
             } else {
-                HStack(spacing: ui(8)) {
+                HStack(spacing: ui(availableWidth < ui(600) ? 8 : 12)) {
                     transportControls
 
                     if viewModel.currentItem.isPlayerMedia, viewModel.hasVideoPlayer {
-                        videoProgressBar(compact: true)
+                        videoProgressBar(compact: availableWidth < ui(600))
                             .frame(maxWidth: .infinity)
                     } else {
-                        Spacer(minLength: ui(8))
+                        Spacer(minLength: ui(16))
                     }
 
-                    playbackModeControl
+                    playbackStatusControls
                 }
+                .frame(maxWidth: .infinity)
             }
         }
         .foregroundStyle(.white)
@@ -743,24 +813,24 @@ struct RemotePreviewView: View {
     }
 
     private var transportControls: some View {
-        HStack(spacing: ui(12)) {
-            Button {
-                viewModel.navigate(by: -1, autoplay: true)
-                revealControls()
-            } label: {
-                SharedPlayerCircleLabel(systemImage: "backward.end.fill")
-            }
-            .disabled(viewModel.itemsCount < 2)
-            .accessibilityLabel("이전 미디어")
+        HStack(spacing: ui(8)) {
+            if viewModel.itemsCount > 1 {
+                Button {
+                    viewModel.navigate(by: -1, autoplay: true)
+                    revealControls()
+                } label: {
+                    SharedPlayerCircleLabel(systemImage: "backward.end.fill")
+                }
+                .accessibilityLabel("이전 미디어")
 
-            Button {
-                viewModel.navigate(by: 1, autoplay: true)
-                revealControls()
-            } label: {
-                SharedPlayerCircleLabel(systemImage: "forward.end.fill")
+                Button {
+                    viewModel.navigate(by: 1, autoplay: true)
+                    revealControls()
+                } label: {
+                    SharedPlayerCircleLabel(systemImage: "forward.end.fill")
+                }
+                .accessibilityLabel("다음 미디어")
             }
-            .disabled(viewModel.itemsCount < 2)
-            .accessibilityLabel("다음 미디어")
 
             Button {
                 viewModel.togglePlayback()
@@ -775,8 +845,10 @@ struct RemotePreviewView: View {
     }
 
     private var playbackStatusControls: some View {
-        HStack(spacing: ui(12)) {
-            positionLabel
+        HStack(spacing: ui(8)) {
+            if viewModel.itemsCount > 1 {
+                positionLabel
+            }
             playbackModeControl
         }
     }
