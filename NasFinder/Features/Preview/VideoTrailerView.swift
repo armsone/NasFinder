@@ -711,8 +711,7 @@ struct VideoTrailerView: View {
             fresh.knownIDs = Set(staged.map(\.id))
             return fresh
         }
-        let byID = Dictionary(uniqueKeysWithValues: staged.map { ($0.id, $0) })
-        draft.sources = draft.sources.compactMap { byID[$0.id] }
+        draft.sources = TrailerSceneEditor.reconcileSources(draftSources: draft.sources, stagedSources: staged)
         return draft
     }
 
@@ -732,10 +731,11 @@ struct VideoTrailerView: View {
         // Sources the user took out leave the session for good, so earlier undo steps that
         // still point at them are dropped.
         let dropsSources = model.sources.contains { staged in !draft.sources.contains { $0.id == staged.id } }
+        let reconciled = TrailerSceneEditor.reconcileSources(draftSources: draft.sources, stagedSources: model.sources)
         // Value copies of everything the render reads: later edits never change a running render.
-        model.start(items: items, service: service, mode: mode, generate: true, sourceOrder: draft.sources.map(\.id),
+        model.start(items: items, service: service, mode: mode, generate: true, sourceOrder: reconciled.map(\.id),
                     total: draft.total, clipLength: draft.clipLength, aspectRatio: draft.aspectRatio, music: draft.music,
-                    manualScenes: draft.scenes)
+                    manualScenes: draft.scenes, draftSources: reconciled)
         if dropsSources { history.reset(to: draft) }
     }
 
@@ -762,17 +762,21 @@ struct VideoTrailerView: View {
             model.useMode(next)
             return
         }
+        let baseline = model.sources
         model.analyzeHighlights { analyzed in
             guard !exitHandled, mode != .trailer else { return }
             mode = .trailer
             guard var current = draft else { return }
+            current.sources = TrailerSceneEditor.reconcileSources(
+                draftSources: current.sources,
+                stagedSources: model.sources,
+                timingBaseline: baseline
+            )
             if analyzed || current.total <= 0 {
                 current.clipLength = model.recommendedClipLength
                 current.total = VideoTrailerBatchPlan.recommendedTotal(sources: current.sources, clipLength: current.clipLength)
                 if let music = current.music, music.policy == .fitMusic { current.total = music.fittedDuration }
             }
-            let byID = Dictionary(uniqueKeysWithValues: model.sources.map { ($0.id, $0) })
-            current.sources = current.sources.compactMap { byID[$0.id] }
             draft = current
         }
     }
@@ -3240,7 +3244,7 @@ final class VideoTrailerModel: ObservableObject {
                generate: Bool = false, sourceOrder: [Int]? = nil, total: Double? = nil,
                clipLength: Double? = nil, aspectRatio: OutputAspectRatio? = nil,
                music: TrailerMusicSelection? = nil, keepsInputOrder: Bool = false,
-               manualScenes: [TrailerEditScene]? = nil) {
+               manualScenes: [TrailerEditScene]? = nil, draftSources: [VideoTrailerSource]? = nil) {
         guard !isBusy, !items.isEmpty else { return }
         let total = total.map { $0.isFinite ? min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, $0)) : 1 }
         self.mode = mode
@@ -3373,6 +3377,9 @@ final class VideoTrailerModel: ObservableObject {
                 if mode == .trailer { photoDurationsAnalyzed = true }
                 isStaged = true
                 stage = "plan"
+                if let draftSources {
+                    sources = TrailerSceneEditor.reconcileSources(draftSources: draftSources, stagedSources: sources)
+                }
                 if let sourceOrder {
                     // The requested order is the exact retained subset: ids are sparse after
                     // unsupported skips and removals, so only membership and uniqueness matter.

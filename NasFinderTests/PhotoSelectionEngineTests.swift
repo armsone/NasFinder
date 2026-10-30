@@ -326,5 +326,92 @@ final class PhotoSelectionEngineTests: XCTestCase {
         XCTAssertTrue(scenes[4].excluded)
         XCTAssertEqual(scenes[4].length, 2.0, accuracy: 0.0001)
         XCTAssertEqual(scenes[4].start, 5.0, accuracy: 0.0001)
+
+        // staged copies with old legacy ratios/policy and refreshed file URLs
+        let refreshedBaseURL = URL(fileURLWithPath: "/tmp/staged")
+        let stagedSources = [
+            VideoTrailerSource(
+                id: 1, name: "photo1", url: refreshedBaseURL.appendingPathComponent("p1.jpg"),
+                plan: VideoTrailerPlan(analysis: analysis, duration: 4.0),
+                isImage: true, imageDurationRatio: 0.75, imageDurationPolicyVersion: 1
+            ),
+            VideoTrailerSource(
+                id: 2, name: "photo2", url: refreshedBaseURL.appendingPathComponent("p2.jpg"),
+                plan: VideoTrailerPlan(analysis: analysis, duration: 4.0),
+                isImage: true, imageDurationRatio: 0.35, imageDurationPolicyVersion: 1
+            ),
+            VideoTrailerSource(
+                id: 3, name: "photo3", url: refreshedBaseURL.appendingPathComponent("p3.jpg"),
+                plan: VideoTrailerPlan(analysis: analysis, duration: 4.0),
+                isImage: true, imageDurationRatio: 0.05, imageDurationPolicyVersion: 1
+            ),
+            VideoTrailerSource(
+                id: 4, name: "video", url: refreshedBaseURL.appendingPathComponent("v4.mp4"),
+                plan: VideoTrailerPlan(analysis: analysis, duration: 8.0),
+                isImage: false, imageDurationRatio: 0.55, imageDurationPolicyVersion: 2
+            ),
+            VideoTrailerSource(
+                id: 5, name: "extra", url: refreshedBaseURL.appendingPathComponent("p5.jpg"),
+                plan: VideoTrailerPlan(analysis: analysis, duration: 4.0),
+                isImage: true, imageDurationRatio: 0.55, imageDurationPolicyVersion: 2
+            ),
+        ]
+
+        // edited migrated draft: reordered [3, 1], omitted 2, 4, 5
+        let migratedDraftSources = [sources[2], sources[0]]
+        let reconciled = TrailerSceneEditor.reconcileSources(draftSources: migratedDraftSources, stagedSources: stagedSources)
+
+        // retains new ratio and version
+        XCTAssertEqual(reconciled.count, 2)
+        XCTAssertEqual(reconciled[0].imageDurationPolicyVersion, 2)
+        XCTAssertEqual(reconciled[0].imageDurationRatio, sources[2].imageDurationRatio, accuracy: 0.0001)
+        XCTAssertEqual(reconciled[1].imageDurationPolicyVersion, 2)
+        XCTAssertEqual(reconciled[1].imageDurationRatio, 0.95, accuracy: 0.0001)
+
+        // staged URL refreshed
+        XCTAssertEqual(reconciled[0].url, refreshedBaseURL.appendingPathComponent("p3.jpg"))
+        XCTAssertEqual(reconciled[1].url, refreshedBaseURL.appendingPathComponent("p1.jpg"))
+
+        // omitted IDs/order preserved
+        XCTAssertEqual(reconciled.map(\.id), [3, 1])
+
+        // undo snapshot restores legacy ratio and policy version without being overwritten by staged
+        let undoDraftSources = [
+            VideoTrailerSource(
+                id: 1, name: "photo1", url: dummyURL,
+                plan: VideoTrailerPlan(analysis: analysis, duration: 4.0),
+                isImage: true, imageDurationRatio: 0.75, imageDurationPolicyVersion: 1
+            )
+        ]
+        var freshStagedSources = stagedSources
+        freshStagedSources[0].imageDurationRatio = 0.95
+        freshStagedSources[0].imageDurationPolicyVersion = 2
+
+        // baseline old .75 with unchanged draft .75 accepts freshly staged .95/policy2
+        let freshAccepted = TrailerSceneEditor.reconcileSources(
+            draftSources: undoDraftSources,
+            stagedSources: freshStagedSources,
+            timingBaseline: undoDraftSources
+        )
+        XCTAssertEqual(freshAccepted[0].imageDurationRatio, 0.95, accuracy: 0.0001)
+        XCTAssertEqual(freshAccepted[0].imageDurationPolicyVersion, 2)
+
+        // explicit draft .8 preserves .8 over fresh .95
+        var editedDraftSources = undoDraftSources
+        editedDraftSources[0].imageDurationRatio = 0.8
+        let explicitPreserved = TrailerSceneEditor.reconcileSources(
+            draftSources: editedDraftSources,
+            stagedSources: freshStagedSources,
+            timingBaseline: undoDraftSources
+        )
+        XCTAssertEqual(explicitPreserved[0].imageDurationRatio, 0.8, accuracy: 0.0001)
+
+        // undo legacy .75/policy1 against staged .95/policy2 with no baseline restores legacy pair
+        let restoredUndo = TrailerSceneEditor.reconcileSources(draftSources: undoDraftSources, stagedSources: freshStagedSources)
+        XCTAssertEqual(restoredUndo.count, 1)
+        XCTAssertEqual(restoredUndo[0].id, 1)
+        XCTAssertEqual(restoredUndo[0].imageDurationPolicyVersion, 1)
+        XCTAssertEqual(restoredUndo[0].imageDurationRatio, 0.75, accuracy: 0.0001)
+        XCTAssertEqual(restoredUndo[0].url, refreshedBaseURL.appendingPathComponent("p1.jpg"))
     }
 }

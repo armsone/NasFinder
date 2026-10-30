@@ -238,6 +238,38 @@ enum TrailerSceneEditor {
             }
         }
     }
+
+    /// 스테이징된 소스(최신 URL, 미디어 분석)와 드래프트 소스(순서, 사진 비율 및 정책 버전)를 조화시킨다.
+    /// 사용자가 제외한 소스는 되살리지 않고, 드래프트의 순서와 사진 타이밍 스냅샷을 보존한다.
+    static func reconcileSources(
+        draftSources: [VideoTrailerSource],
+        stagedSources: [VideoTrailerSource],
+        timingBaseline: [VideoTrailerSource]? = nil
+    ) -> [VideoTrailerSource] {
+        let byID = Dictionary(stagedSources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let baselineByID = timingBaseline.map { Dictionary($0.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
+        return draftSources.compactMap { draftSource in
+            guard var staged = byID[draftSource.id] else { return nil }
+            if staged.isImage || draftSource.isImage {
+                let shouldPreserveDraft: Bool
+                if let baselineByID {
+                    if let base = baselineByID[draftSource.id] {
+                        shouldPreserveDraft = draftSource.imageDurationRatio != base.imageDurationRatio
+                            || draftSource.imageDurationPolicyVersion != base.imageDurationPolicyVersion
+                    } else {
+                        shouldPreserveDraft = true
+                    }
+                } else {
+                    shouldPreserveDraft = true
+                }
+                if shouldPreserveDraft {
+                    staged.imageDurationRatio = draftSource.imageDurationRatio
+                    staged.imageDurationPolicyVersion = draftSource.imageDurationPolicyVersion
+                }
+            }
+            return staged
+        }
+    }
 }
 
 extension TrailerSettingsDraft {
