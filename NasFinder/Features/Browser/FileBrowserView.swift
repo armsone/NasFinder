@@ -1764,11 +1764,10 @@ struct FileBrowserView: View {
     }
 
     private var canPerformPasteAction: Bool {
-        if let clipboard = operationCoordinator.clipboard {
-            return clipboard.connectionID == viewModel.connection.id
-                && viewModel.service.capabilities.supports(
-                    clipboard.mode == .copy ? .copy : .move
-                )
+        // A clipboard staged in another storage (PhoneHard ↔ NAS) pastes
+        // through that storage's own service snapshot.
+        if operationCoordinator.clipboard != nil {
+            return operationCoordinator.canPaste(into: viewModel.service)
         }
         return viewModel.service.capabilities.contains(.upload)
             && canBeginUserPresentation
@@ -2214,7 +2213,11 @@ struct FileBrowserView: View {
 
                 CompactPanelButton(title: "복사", systemImage: "doc.on.doc") {
                     performContextPanelAction {
-                        operationCoordinator.placeOnClipboard([item], mode: .copy)
+                        operationCoordinator.placeOnClipboard(
+                            [item],
+                            mode: .copy,
+                            using: viewModel.service
+                        )
                         if isFavoriteActionHost {
                             beginFavoriteActionFollowup(.destination, with: item)
                         }
@@ -2227,7 +2230,11 @@ struct FileBrowserView: View {
 
                 CompactPanelButton(title: "이동", systemImage: "folder") {
                     performContextPanelAction {
-                        operationCoordinator.placeOnClipboard([item], mode: .move)
+                        operationCoordinator.placeOnClipboard(
+                            [item],
+                            mode: .move,
+                            using: viewModel.service
+                        )
                         if isFavoriteActionHost {
                             beginFavoriteActionFollowup(.destination, with: item)
                         }
@@ -2676,14 +2683,22 @@ struct FileBrowserView: View {
                 HStack(spacing: ui(20)) {
                     if viewModel.service.capabilities.supports(.copy) {
                         selectionActionButton("복사", systemImage: "doc.on.doc") {
-                            operationCoordinator.placeOnClipboard(selectedItems, mode: .copy)
+                            operationCoordinator.placeOnClipboard(
+                                selectedItems,
+                                mode: .copy,
+                                using: viewModel.service
+                            )
                             endSelection()
                         }
                     }
 
                     if viewModel.service.capabilities.supports(.move) {
                         selectionActionButton("이동", systemImage: "folder") {
-                            operationCoordinator.placeOnClipboard(selectedItems, mode: .move)
+                            operationCoordinator.placeOnClipboard(
+                                selectedItems,
+                                mode: .move,
+                                using: viewModel.service
+                            )
                             endSelection()
                         }
                     }

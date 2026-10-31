@@ -39,6 +39,52 @@ enum TrailerSceneEditor {
         scenes.remove(at: at)
     }
 
+    /// 선택한 장면들을 상대 순서를 유지하며 1기준 목표 위치(1...N)로 이동한다. (예: 420번째를 3번째로)
+    static func moveScenes(ids: Set<Int>, toOneBasedPosition targetPosition: Int, in scenes: inout [TrailerEditScene]) {
+        guard !ids.isEmpty, !scenes.isEmpty else { return }
+        let selectedScenes = scenes.filter { ids.contains($0.id) }
+        guard !selectedScenes.isEmpty else { return }
+        let remainingScenes = scenes.filter { !ids.contains($0.id) }
+        let targetIndex = min(remainingScenes.count, max(0, targetPosition - 1))
+        var result = remainingScenes
+        result.insert(contentsOf: selectedScenes, at: targetIndex)
+        scenes = result
+    }
+
+    /// 선택된 장면들을 복제한다.
+    static func duplicateScenes(ids: Set<Int>, in scenes: inout [TrailerEditScene], nextID: inout Int) -> [Int] {
+        guard !ids.isEmpty else { return [] }
+        var newIDs: [Int] = []
+        var index = 0
+        while index < scenes.count {
+            let scene = scenes[index]
+            if ids.contains(scene.id) {
+                var copy = scene
+                copy.id = nextID
+                copy.excluded = false
+                nextID += 1
+                newIDs.append(copy.id)
+                scenes.insert(copy, at: index + 1)
+                index += 2
+            } else {
+                index += 1
+            }
+        }
+        return newIDs
+    }
+
+    /// 선택된 장면들을 삭제한다.
+    static func deleteScenes(ids: Set<Int>, in scenes: inout [TrailerEditScene]) {
+        guard !ids.isEmpty else { return }
+        for id in ids {
+            if canDelete(id, in: scenes) {
+                delete(id, in: &scenes)
+            } else if let at = index(of: id, in: scenes) {
+                scenes[at].excluded = true
+            }
+        }
+    }
+
     static func update(_ id: Int, in scenes: inout [TrailerEditScene], _ change: (inout TrailerEditScene) -> Void) {
         guard let at = index(of: id, in: scenes) else { return }
         change(&scenes[at])
@@ -300,7 +346,8 @@ extension TrailerSettingsDraft {
         TrailerDraftSignature(
             sourceIDs: sources.map(\.id), total: total, clipLength: clipLength, aspect: aspectRatio?.rawValue,
             music: music, scenes: scenes, photoRatios: sources.map(\.imageDurationRatio),
-            policyVersions: sources.map(\.imageDurationPolicyVersion))
+            policyVersions: sources.map(\.imageDurationPolicyVersion),
+            batchCaption: batchCaption)
     }
 }
 
@@ -313,6 +360,7 @@ struct TrailerDraftSignature: Equatable {
     var scenes: [TrailerEditScene]?
     var photoRatios: [Double]
     var policyVersions: [Int] = []
+    var batchCaption: TrailerCaption? = nil
 }
 
 // MARK: - 되돌리기 / 다시 실행
@@ -382,9 +430,79 @@ struct TrailerEditorChrome {
     var saveLabel = ""
     var saveFailed = false
     var onRetrySave: () -> Void = {}
+    /// 편집본 저장 버튼 하나의 상태: 저장 / 저장 중… / 저장됨 / 저장 실패.
+    var isSavingDraft = false
+    var isDraftSaved = false
+    /// 렌더와 무관하게 지금 편집본을 디스크에 저장한다(끝날 때까지 기다리는 내구성 저장).
+    var onSaveDraft: () -> Void = {}
     var onCancelWork: () -> Void = {}
     var onRetryRender: () -> Void = {}
     var projectID: UUID?
+    /// 적용하지 않은 자막이 있으면 적용/입력 취소를 먼저 묻고, 고른 뒤에 동작을 이어 간다.
+    var guarded: (@escaping () -> Void) -> Void = { $0() }
+}
+
+// MARK: - 자막 입력 초안
+
+/// 자막 탭의 입력 중인 값. 편집기(부모)가 갖고 있어 회전·영역 전환·장면 전환에도 사라지지 않고,
+/// 적용/입력 취소를 고르기 전에는 장면에 들어가지도 버려지지도 않는다.
+@MainActor
+final class TrailerCaptionDraft: ObservableObject {
+    @Published var text = ""
+    @Published var position: TrailerCaption.Position = .bottom
+    @Published var fontDesign: TrailerCaption.FontDesign = .standard
+    @Published var fontSize: Double = 22
+    @Published var colorHex = "#FFFFFF"
+    @Published var hasShadow = true
+    @Published var isDirty = false
+    /// 이 초안을 불러온 장면.
+    @Published private(set) var sceneID: Int?
+
+    func load(_ scene: TrailerEditScene) {
+        if let caption = scene.caption {
+            text = caption.text
+            position = caption.position
+            fontDesign = caption.fontDesign
+            fontSize = caption.fontSize
+            colorHex = caption.colorHex
+            hasShadow = caption.hasShadow
+        } else {
+            text = ""
+            position = .bottom
+            fontDesign = .standard
+            fontSize = 22
+            colorHex = "#FFFFFF"
+            hasShadow = true
+        }
+        isDirty = false
+        sceneID = scene.id
+    }
+
+    /// 빈 문구는 자막 없음이다. 미리보기·내보내기 규칙과 같다.
+    var caption: TrailerCaption? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return TrailerCaption(text: trimmed, position: position, fontDesign: fontDesign,
+                              fontSize: fontSize, colorHex: colorHex, hasShadow: hasShadow)
+    }
+
+    /// 불러온 장면에 지금 값을 넣는다. 장면이 사라졌으면 넣을 곳이 없으므로 초안만 닫는다.
+    func apply(to scenes: inout [TrailerEditScene]?) {
+        if let id = sceneID, scenes?.contains(where: { $0.id == id }) == true {
+            let value = caption
+            TrailerSceneEditor.update(id, in: &scenes!) { $0.caption = value }
+        }
+        isDirty = false
+    }
+
+    /// 입력을 버리고 장면에 들어 있는 자막으로 되돌린다.
+    func discard(scenes: [TrailerEditScene]?) {
+        if let id = sceneID, let scene = scenes?.first(where: { $0.id == id }) {
+            load(scene)
+        } else {
+            isDirty = false
+        }
+    }
 }
 
 // MARK: - 장면 목록
@@ -473,10 +591,240 @@ struct TrailerSceneStrip: View {
     }
 }
 
+/// 반응형 스토리보드 격자 (태블릿/Mac 4열, 폰 2열 보드).
+/// 다중 선택, 임의 1기준 위치 이동(420 -> 3), 복제, 삭제 기능 내장.
+struct TrailerStoryboardGrid: View {
+    let scenes: [TrailerEditScene]
+    let sources: [VideoTrailerSource]
+    @Binding var selectedID: Int?
+    @Binding var selectedIDs: Set<Int>
+    var columnsCount: Int = 4
+    var onSelectSceneForDetail: ((Int) -> Void)? = nil
+    var onMoveScenes: ((Set<Int>, Int) -> Void)? = nil
+    var onDuplicateScenes: ((Set<Int>) -> Void)? = nil
+    var onDeleteScenes: ((Set<Int>) -> Void)? = nil
+
+    @State private var showingMoveSheet = false
+    @State private var targetPositionString = "1"
+    @State private var isMultiSelectMode = false
+
+    private var columns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), spacing: 10), count: max(2, columnsCount))
+    }
+
+    var body: some View {
+        let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        VStack(alignment: .leading, spacing: 8) {
+            toolbarSection
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVGrid(columns: columns, spacing: 10) {
+                        ForEach(Array(scenes.enumerated()), id: \.element.id) { index, scene in
+                            if let source = byID[scene.sourceID] {
+                                let isSelected = selectedIDs.contains(scene.id) || selectedID == scene.id
+                                Button {
+                                    handleSceneTap(scene: scene, index: index)
+                                } label: {
+                                    gridCell(index: index, scene: scene, source: source, isSelected: isSelected)
+                                }
+                                .buttonStyle(.plain)
+                                .id(scene.id)
+                                .accessibilityLabel("장면 \(index + 1), \(source.name), \(String(format: "%.1f", scene.length))초"
+                                    + (scene.excluded ? ", 제외됨" : "")
+                                    + (scene.caption != nil && !scene.caption!.text.isEmpty ? ", 자막 있음" : ""))
+                                .accessibilityAddTraits(isSelected ? .isSelected : [])
+                            }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+                .onChange(of: selectedID) { _, id in
+                    if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
+                }
+            }
+        }
+        .sheet(isPresented: $showingMoveSheet) {
+            movePositionSheet
+        }
+    }
+
+    private var toolbarSection: some View {
+        HStack(spacing: 8) {
+            if isMultiSelectMode || !selectedIDs.isEmpty {
+                Text("\(selectedIDs.count)개 선택됨")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button {
+                    selectedIDs = Set(scenes.map(\.id))
+                } label: { Text("전체").frame(minHeight: 44) }
+                .buttonStyle(.bordered).controlSize(.small)
+                Button {
+                    selectedIDs.removeAll()
+                    isMultiSelectMode = false
+                } label: { Text("해제").frame(minHeight: 44) }
+                .buttonStyle(.bordered).controlSize(.small)
+                if !selectedIDs.isEmpty {
+                    Button {
+                        // 지금 순서에서 가장 앞의 선택 장면 번호를 기본값으로 둔다.
+                        if let idx = scenes.firstIndex(where: { selectedIDs.contains($0.id) }) {
+                            targetPositionString = "\(idx + 1)"
+                        } else {
+                            targetPositionString = "1"
+                        }
+                        showingMoveSheet = true
+                    } label: {
+                        Label("위치 이동", interfaceSystemImage: "arrow.up.and.down.and.arrow.left.and.right")
+                            .frame(minHeight: 44)
+                    }
+                    .buttonStyle(.borderedProminent).controlSize(.small)
+                    Button {
+                        onDuplicateScenes?(selectedIDs)
+                    } label: {
+                        Label("복제", interfaceSystemImage: "plus.square.on.square").frame(minHeight: 44)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    Button(role: .destructive) {
+                        onDeleteScenes?(selectedIDs)
+                    } label: {
+                        Label("삭제", interfaceSystemImage: "trash").frame(minHeight: 44)
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                }
+            } else {
+                Text("장면 (\(scenes.count))")
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+                Button {
+                    isMultiSelectMode = true
+                    if let current = selectedID { selectedIDs.insert(current) }
+                } label: {
+                    Label("다중 선택", interfaceSystemImage: "checkmark.circle").frame(minHeight: 44)
+                }
+                .buttonStyle(.bordered).controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 4)
+    }
+
+    private func handleSceneTap(scene: TrailerEditScene, index: Int) {
+        if isMultiSelectMode {
+            if selectedIDs.contains(scene.id) {
+                selectedIDs.remove(scene.id)
+            } else {
+                selectedIDs.insert(scene.id)
+            }
+            selectedID = scene.id
+        } else {
+            selectedID = scene.id
+            selectedIDs = [scene.id]
+            onSelectSceneForDetail?(scene.id)
+        }
+    }
+
+    private func gridCell(index: Int, scene: TrailerEditScene, source: VideoTrailerSource, isSelected: Bool) -> some View {
+        ZStack {
+            TrailerSceneThumb(source: source, time: scene.start)
+                .aspectRatio(1.25, contentMode: .fill)
+                .clipped()
+                .opacity(scene.excluded ? 0.35 : 1)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(alignment: .topLeading) {
+            Text("\(index + 1)")
+                .font(.caption2.weight(.bold)).monospacedDigit()
+                .foregroundStyle(.white)
+                .padding(.horizontal, 6).padding(.vertical, 3)
+                .background(.black.opacity(0.65), in: Capsule())
+                .padding(6)
+        }
+        .overlay(alignment: .topTrailing) {
+            if isMultiSelectMode {
+                Image(interfaceSystemName: selectedIDs.contains(scene.id) ? "checkmark.circle.fill" : "circle")
+                    .font(.body.weight(.bold))
+                    .foregroundStyle(selectedIDs.contains(scene.id) ? PorcelainMetrics.accent : .white)
+                    .background(Circle().fill(.black.opacity(0.45)))
+                    .padding(6)
+            }
+        }
+        .overlay(alignment: .bottomLeading) {
+            if let caption = scene.caption, !caption.text.isEmpty {
+                HStack(spacing: 3) {
+                    Image(interfaceSystemName: "captions.bubble.fill")
+                    Text(caption.text).lineLimit(1)
+                }
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5).padding(.vertical, 2)
+                .background(.black.opacity(0.7), in: Capsule())
+                .padding(6)
+            }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            Text(String(format: "%.1f초", scene.length))
+                .font(.caption2.weight(.medium)).monospacedDigit()
+                .foregroundStyle(.white)
+                .padding(.horizontal, 5).padding(.vertical, 2)
+                .background(.black.opacity(0.65), in: Capsule())
+                .padding(6)
+        }
+        .overlay {
+            if scene.excluded {
+                Text("제외")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(.black.opacity(0.75), in: Capsule())
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(isSelected ? PorcelainMetrics.accent : Color.clear, lineWidth: isSelected ? 3 : 0)
+        )
+    }
+
+    private var movePositionSheet: some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("선택한 \(selectedIDs.count)개 장면을 이동할 1기준 위치 번호를 입력하세요.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                HStack {
+                    Text("목표 위치:")
+                        .font(.headline)
+                    TextField("1 ~ \(scenes.count)", text: $targetPositionString)
+                        .keyboardType(.numberPad)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
+                    Text("번째 (1 ~ \(scenes.count))")
+                        .font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(20)
+            .navigationTitle("장면 위치 이동")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("취소") { showingMoveSheet = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("이동") {
+                        if let target = Int(targetPositionString.trimmingCharacters(in: .whitespacesAndNewlines)), target >= 1 {
+                            onMoveScenes?(selectedIDs, target)
+                        }
+                        showingMoveSheet = false
+                    }
+                    .fontWeight(.bold)
+                }
+            }
+        }
+        .presentationDetents([.fraction(0.35), .medium])
+    }
+}
+
 // MARK: - 선택 장면 상세
 
 private enum TrailerInspectorTab: String, CaseIterable, Identifiable {
-    case scene = "장면", sound = "소리", picture = "화면"
+    case scene = "장면", caption = "자막", sound = "소리", picture = "화면"
     var id: String { rawValue }
 }
 
@@ -488,49 +836,55 @@ struct TrailerSceneInspector: View {
     @Binding var nextSceneID: Int
     @Binding var selectedID: Int?
     let clipLength: Double
-    let beginEditing: () -> Void
     var chrome: TrailerEditorChrome
     /// 전체 화면 비율. nil이면 원본(현재 순서의 첫 영상 비율)이며, 내보내기와 같은 규칙으로 계산한다.
     var aspectRatio: OutputAspectRatio? = nil
+    /// 자막 입력 초안. 편집기가 갖고 있어 이 화면이 다시 만들어져도 그대로다.
+    @ObservedObject var captionDraft: TrailerCaptionDraft
     @State private var tab = TrailerInspectorTab.scene
     /// 영상을 화면에 채울 때 어느 방향으로 잘리는지. 그 방향의 위치만 고를 수 있다.
     @State private var videoRoom: (key: String, horizontal: Bool, vertical: Bool)?
 
     private var selectedIndex: Int? { TrailerSceneEditor.index(of: selectedID, in: scenes ?? []) }
 
+    /// 머리글과 탭은 고정이고, 탭의 값들만 따로 스크롤된다.
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("선택한 장면").font(.subheadline.weight(.semibold))
-                Spacer()
-                Button(action: chrome.onUndo) { Image(interfaceSystemName: "arrow.uturn.backward") }
-                    .disabled(!chrome.canUndo).accessibilityLabel("되돌리기")
-                Button(action: chrome.onRedo) { Image(interfaceSystemName: "arrow.uturn.forward") }
-                    .disabled(!chrome.canRedo).accessibilityLabel("다시 실행")
-            }
+        VStack(alignment: .leading, spacing: 8) {
             if scenes == nil {
-                Text("지금은 자동 추천 장면을 쓰고 있어요. 장면별로 자르거나 순서를 바꾸려면 직접 편집을 시작하세요. 시작해도 사진은 하나도 빠지지 않고, 담기지 못한 영상은 \"제외\"로 표시돼요.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Button("장면 직접 편집 시작", action: beginEditing).buttonStyle(PorcelainProminentButtonStyle())
+                // 준비가 끝나면 편집기가 장면 목록을 만든다. 그 사이 안내 문구나 버튼은 두지 않는다.
+                Spacer(minLength: 0)
             } else if let index = selectedIndex, let scene = scenes?[index],
                       let source = sources.first(where: { $0.id == scene.sourceID }) {
                 header(index: index, scene: scene, source: source)
-                Picker("", selection: $tab) {
+                Picker("", selection: Binding(get: { tab }, set: { next in
+                    guard next != tab else { return }
+                    // 자막 탭을 떠날 때 적용하지 않은 입력이 있으면 먼저 묻는다.
+                    if tab == .caption { chrome.guarded { tab = next } } else { tab = next }
+                })) {
                     ForEach(TrailerInspectorTab.allCases) { Text($0.rawValue).tag($0) }
                 }
                 .pickerStyle(.segmented)
-                switch tab {
-                case .scene: sceneTab(scene: scene, source: source)
-                case .sound: soundTab(scene: scene, source: source)
-                case .picture: pictureTab(scene: scene, source: source)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 10) {
+                        switch tab {
+                        case .scene: sceneTab(scene: scene, source: source)
+                        case .caption: captionTab(scene: scene, source: source)
+                        case .sound: soundTab(scene: scene, source: source)
+                        case .picture: pictureTab(scene: scene, source: source)
+                        }
+                        arrangement(scene: scene)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.bottom, 8)
                 }
-                arrangement(index: index, scene: scene)
+                .scrollDismissesKeyboard(.interactively)
             } else {
-                Text("위 장면 목록에서 장면을 고르세요.").font(.caption).foregroundStyle(.secondary)
+                Text("장면 목록에서 장면을 고르세요.").font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
         }
         .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(PorcelainMetrics.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
@@ -575,6 +929,167 @@ struct TrailerSceneInspector: View {
                     set { $0.length = max(0.2, min(duration, value) - $0.start) }
                 }), in: 0.2...duration).accessibilityLabel("끝 지점")
             }
+        }
+    }
+
+    private func applyCaptionDraft() {
+        captionDraft.apply(to: &scenes)
+    }
+
+    private func revertCaptionDraft() {
+        captionDraft.discard(scenes: scenes)
+    }
+
+    private func batchApplyCaptionStyle() {
+        guard var editScenes = scenes else { return }
+        for index in editScenes.indices {
+            if let existing = editScenes[index].caption {
+                var updated = existing
+                updated.position = captionDraft.position
+                updated.fontDesign = captionDraft.fontDesign
+                updated.fontSize = captionDraft.fontSize
+                updated.colorHex = captionDraft.colorHex
+                updated.hasShadow = captionDraft.hasShadow
+                editScenes[index].caption = updated
+            }
+        }
+        var updatedScenes: [TrailerEditScene]? = editScenes
+        captionDraft.apply(to: &updatedScenes)
+        scenes = updatedScenes
+    }
+
+    /// 입력 초안 값 하나를 바꾸고 "적용하지 않은 입력"으로 표시하는 바인딩.
+    private func draftBinding<Value>(_ keyPath: ReferenceWritableKeyPath<TrailerCaptionDraft, Value>) -> Binding<Value> {
+        Binding(get: { captionDraft[keyPath: keyPath] },
+                set: { captionDraft[keyPath: keyPath] = $0; captionDraft.isDirty = true })
+    }
+
+    private func colorFromHex(_ hexString: String) -> Color {
+        let hex = hexString.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        var int: UInt64 = 0
+        Scanner(string: hex).scanHexInt64(&int)
+        let r, g, b: Double
+        switch hex.count {
+        case 6:
+            r = Double((int >> 16) & 0xFF) / 255.0
+            g = Double((int >> 8) & 0xFF) / 255.0
+            b = Double(int & 0xFF) / 255.0
+        default:
+            r = 1.0; g = 1.0; b = 1.0
+        }
+        return Color(red: r, green: g, blue: b)
+    }
+
+    @ViewBuilder
+    private func captionTab(scene: TrailerEditScene, source: VideoTrailerSource) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("자막 문구").font(.caption).foregroundStyle(.secondary)
+                TextField("이 장면에 표시할 문구를 입력하세요", text: draftBinding(\.text))
+                .textFieldStyle(.roundedBorder)
+            }
+
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("위치").font(.caption).foregroundStyle(.secondary)
+                    Picker("위치", selection: draftBinding(\.position)) {
+                        ForEach(TrailerCaption.Position.allCases) { pos in
+                            Text(pos.rawValue).tag(pos)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("글꼴").font(.caption).foregroundStyle(.secondary)
+                    Picker("글꼴", selection: draftBinding(\.fontDesign)) {
+                        ForEach(TrailerCaption.FontDesign.allCases) { font in
+                            Text(font.rawValue).tag(font)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("글자 크기").font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    Text("\(Int(captionDraft.fontSize))pt").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                }
+                Slider(value: draftBinding(\.fontSize), in: 14...36, step: 1)
+            }
+
+            HStack(spacing: 12) {
+                Text("글자 색상").font(.caption).foregroundStyle(.secondary)
+                let colorPresets = [
+                    ("#FFFFFF", "흰색"),
+                    ("#FFE600", "노랑"),
+                    ("#00F0FF", "하늘"),
+                    ("#FF3B30", "빨강"),
+                    ("#000000", "검정")
+                ]
+                ForEach(colorPresets, id: \.0) { hex, name in
+                    Button {
+                        captionDraft.colorHex = hex
+                        captionDraft.isDirty = true
+                    } label: {
+                        Circle()
+                            .fill(colorFromHex(hex))
+                            .frame(width: 26, height: 26)
+                            .overlay(Circle().stroke(captionDraft.colorHex == hex ? PorcelainMetrics.accent : Color.gray.opacity(0.4), lineWidth: captionDraft.colorHex == hex ? 3 : 1))
+                            .frame(width: 44, height: 44)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(name)
+                }
+                Spacer()
+                Toggle("그림자", isOn: draftBinding(\.hasShadow))
+                .font(.caption)
+            }
+
+            Divider()
+
+            HStack(spacing: 8) {
+                Button("적용", action: applyCaptionDraft)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!captionDraft.isDirty)
+
+                Button("취소", action: revertCaptionDraft)
+                    .buttonStyle(.bordered)
+                    .disabled(!captionDraft.isDirty)
+
+                Spacer()
+
+                Button("전체 일괄 스타일 적용") {
+                    batchApplyCaptionStyle()
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
+                if scene.caption != nil {
+                    Button("자막 삭제", role: .destructive) {
+                        set { $0.caption = nil }
+                        var cleared = scene
+                        cleared.caption = nil
+                        captionDraft.load(cleared)
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                }
+            }
+        }
+        .onAppear {
+            // 적용·취소하지 않은 입력은 그대로 둔다. 장면 전환·영역 전환은 편집기의 확인을 먼저 거친다.
+            if captionDraft.sceneID != scene.id, !captionDraft.isDirty { captionDraft.load(scene) }
+        }
+        .onChange(of: scene.id) { _, _ in
+            if !captionDraft.isDirty { captionDraft.load(scene) }
+        }
+        .onChange(of: scene.caption) { _, _ in
+            // 되돌리기·일괄 적용처럼 밖에서 바뀐 자막을 입력칸에 반영한다(입력 중이면 건드리지 않는다).
+            if !captionDraft.isDirty { captionDraft.load(scene) }
         }
     }
 
@@ -686,42 +1201,12 @@ struct TrailerSceneInspector: View {
         videoRoom = (key, overflow.width > 8, overflow.height > 8)
     }
 
-    private func arrangement(index: Int, scene: TrailerEditScene) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Button { move(-1) } label: { Label("앞으로", interfaceSystemImage: "arrow.left") }
-                    .disabled(index == 0)
-                Button { move(1) } label: { Label("뒤로", interfaceSystemImage: "arrow.right") }
-                    .disabled(index + 1 >= (scenes?.count ?? 0))
-            }
-            HStack(spacing: 6) {
-                Button { duplicate() } label: { Label("복제", interfaceSystemImage: "plus.square.on.square") }
-                Button { set { $0.excluded.toggle() } } label: {
-                    Label(scene.excluded ? "포함" : "제외", interfaceSystemImage: scene.excluded ? "eye" : "eye.slash")
-                }
-                if TrailerSceneEditor.canDelete(scene.id, in: scenes ?? []) {
-                    Button(role: .destructive) { remove() } label: { Label("삭제", interfaceSystemImage: "trash") }
-                }
-            }
+    /// 위치 이동·복제·삭제는 스토리보드 선택 도구줄에만 있다. 여기에는 그 줄에 없는 포함/제외만 둔다.
+    private func arrangement(scene: TrailerEditScene) -> some View {
+        Button { set { $0.excluded.toggle() } } label: {
+            Label(scene.excluded ? "포함" : "제외", interfaceSystemImage: scene.excluded ? "eye" : "eye.slash")
+                .frame(minHeight: 44)
         }
-        .buttonStyle(.bordered).controlSize(.small)
-    }
-
-    private func move(_ offset: Int) {
-        guard let id = selectedID else { return }
-        TrailerSceneEditor.move(id, by: offset, in: &scenes!)
-    }
-
-    private func duplicate() {
-        guard let id = selectedID else { return }
-        var next = nextSceneID
-        if let newID = TrailerSceneEditor.duplicate(id, in: &scenes!, nextID: &next) { selectedID = newID }
-        nextSceneID = next
-    }
-
-    private func remove() {
-        guard let id = selectedID, let at = selectedIndex else { return }
-        TrailerSceneEditor.delete(id, in: &scenes!)
-        selectedID = scenes?[min(at, (scenes?.count ?? 1) - 1)].id
+        .buttonStyle(.bordered)
     }
 }

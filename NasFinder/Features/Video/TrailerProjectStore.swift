@@ -4,6 +4,47 @@ import OSLog
 
 // MARK: - 편집 장면
 
+/// 한 장면 또는 전체 장면에 적용되는 자막 정보.
+struct TrailerCaption: Codable, Equatable, Sendable {
+    enum Position: String, Codable, CaseIterable, Identifiable, Sendable {
+        case top = "상단"
+        case center = "가운데"
+        case bottom = "하단"
+        var id: String { rawValue }
+    }
+
+    enum FontDesign: String, Codable, CaseIterable, Identifiable, Sendable {
+        case standard = "기본"
+        case serif = "명조"
+        case rounded = "둥근"
+        case monospaced = "고정폭"
+        var id: String { rawValue }
+    }
+
+    var text: String
+    var position: Position
+    var fontDesign: FontDesign
+    var fontSize: Double
+    var colorHex: String
+    var hasShadow: Bool
+
+    init(
+        text: String = "",
+        position: Position = .bottom,
+        fontDesign: FontDesign = .standard,
+        fontSize: Double = 24.0,
+        colorHex: String = "#FFFFFF",
+        hasShadow: Bool = true
+    ) {
+        self.text = text
+        self.position = position
+        self.fontDesign = fontDesign
+        self.fontSize = fontSize
+        self.colorHex = colorHex
+        self.hasShadow = hasShadow
+    }
+}
+
 /// 장면 직접 편집에서 쓰는 한 장면. 자동 추천 계획(VideoTrailerScene)을 그대로 씨앗으로 삼고,
 /// 사용자가 고친 값만 이 목록에 남는다. 영상은 start/length(트림), 사진은 length(표시 시간).
 struct TrailerEditScene: Codable, Equatable, Identifiable, Sendable {
@@ -23,12 +64,14 @@ struct TrailerEditScene: Codable, Equatable, Identifiable, Sendable {
     /// 화면 안에 맞추기(`fitsFrame`)에서는 쓰지 않는다.
     var offsetX = 0.0
     var offsetY = 0.0
+    /// 이 장면에 붙는 자막(nil이면 문구 없음).
+    var caption: TrailerCaption? = nil
 
     /// 사진 장면에서 사용자가 직접 정한 화면 구성이 있는지. 없으면 기존 자동 확대 효과를 그대로 쓴다.
     var hasCustomFraming: Bool { fitsFrame || offsetX != 0 || offsetY != 0 }
 
     enum CodingKeys: String, CodingKey {
-        case id, sourceID, start, length, excluded, muted, fitsFrame, volume, offsetX, offsetY
+        case id, sourceID, start, length, excluded, muted, fitsFrame, volume, offsetX, offsetY, caption
     }
 }
 
@@ -46,6 +89,7 @@ extension TrailerEditScene {
         volume = min(1, max(0, try c.decodeIfPresent(Double.self, forKey: .volume) ?? 1))
         offsetX = min(1, max(-1, try c.decodeIfPresent(Double.self, forKey: .offsetX) ?? 0))
         offsetY = min(1, max(-1, try c.decodeIfPresent(Double.self, forKey: .offsetY) ?? 0))
+        caption = try c.decodeIfPresent(TrailerCaption.self, forKey: .caption)
     }
 }
 
@@ -112,6 +156,8 @@ struct TrailerProjectRecord: Codable, Sendable {
     /// 비공개 편집본(nil = 공개, 예전 데이터와 같다). 비공개 입력이 한 번 들어오면 풀리지 않는 오염 플래그이며,
     /// 공개로 되돌리는 것은 사용자의 명시적 전환뿐이다. 이 편집본의 출력·컬렉션 영상·폰하드 파일에 이어진다.
     var isPrivate: Bool? = nil
+    /// 이 프로젝트에 설정된 일괄 자막 스타일(nil이면 기본값 사용).
+    var batchCaption: TrailerCaption? = nil
 }
 
 /// 저장 요청 한 번에 필요한 값. 메인 액터에서 만들고 디스크 작업은 백그라운드에서 한다.
@@ -546,6 +592,12 @@ final class TrailerProjectStore: ObservableObject {
                 return false
             }
         }
+    }
+
+    /// 편집본을 즉시 저장한다.
+    @discardableResult
+    func saveNow(_ snapshot: TrailerProjectSnapshot) async -> Bool {
+        await save(snapshot)
     }
 
     /// 이름을 바꿔 기록한다. 기록에 성공했을 때만 목록을 바꾸고 true.

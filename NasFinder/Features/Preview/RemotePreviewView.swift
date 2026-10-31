@@ -88,6 +88,11 @@ struct RemotePreviewView: View {
     private let accessoryControls: AnyView?
     private let onClose: (() -> Void)?
     private let playbackSuspended: Bool
+    /// 바뀔 때마다 지금 위치에서 멈춘다. 다시 재생하지 않는다(영상 편집기의 전체 화면 전환).
+    private let pauseRequest: Int
+    /// 영상 편집기 안의 작은 미리보기. 편집기에 이미 있는 닫기·제목은 빼고 재생/일시 정지·위치·
+    /// 전체 화면·공유만 실제 영상 칸 안에 둔다. 기본값(false)은 기존 전체 컨트롤이다.
+    private let editorCompact: Bool
 
     init(
         item: RemoteFileItem,
@@ -95,11 +100,16 @@ struct RemotePreviewView: View {
         service: any RemoteFileService,
         accessoryControls: AnyView? = nil,
         onClose: (() -> Void)? = nil,
-        playbackSuspended: Bool = false
+        playbackSuspended: Bool = false,
+        initiallyPaused: Bool = false,
+        pauseRequest: Int = 0,
+        editorCompact: Bool = false
     ) {
         self.accessoryControls = accessoryControls
         self.onClose = onClose
         self.playbackSuspended = playbackSuspended
+        self.pauseRequest = pauseRequest
+        self.editorCompact = editorCompact
         let orderedItems: [RemoteFileItem]
         if item.isImage || item.isVideo {
             let mediaItems = sequentialItems.filter { $0.isImage || $0.isVideo }
@@ -110,14 +120,17 @@ struct RemotePreviewView: View {
             orderedItems = [item]
         }
 
-        _viewModel = StateObject(
-            wrappedValue: RemotePreviewViewModel(
+        _viewModel = StateObject(wrappedValue: {
+            let model = RemotePreviewViewModel(
                 items: orderedItems,
                 relatedItems: sequentialItems,
                 initialItemID: item.id,
                 service: service
             )
-        )
+            // 재생기를 붙이기 전에 멈춤 상태로 두면 첫 화면에서 스스로 재생하지 않는다.
+            if initiallyPaused { model.pauseForLifecycle() }
+            return model
+        }())
     }
 
     private var isRunningOnMac: Bool {
@@ -169,9 +182,17 @@ struct RemotePreviewView: View {
             resetVideoTransform()
             revealControls()
             updateScreenAwakeActivity()
+            if accessoryControls != nil { refreshPausedPositionSoon() }
         }
         .task(id: viewModel.currentItem.id) {
+            // 영상 편집기 안에서 같은 미리보기가 다시 나타나면 이미 있는 재생기와 위치를 그대로 쓴다.
+            if accessoryControls != nil, viewModel.hasVideoPlayer, viewModel.errorMessage == nil { return }
             await viewModel.loadCurrentItem()
+        }
+        .onChange(of: pauseRequest) { _, _ in
+            resumeAfterSuspension = false
+            viewModel.pauseForLifecycle()
+            refreshPausedPositionSoon()
         }
         .onChange(of: playbackSuspended) { _, suspended in
             if suspended {
@@ -249,6 +270,15 @@ struct RemotePreviewView: View {
             }
         } message: {
             Text(shareCoordinator.errorMessage ?? "")
+        }
+    }
+
+    /// 전체 화면 전환으로 시간 표시가 새로 붙은 뒤, 멈춘 자리를 다시 찾아가 화면과 시간 표시가
+    /// 그 위치를 받게 한다. 재생은 시작하지 않는다.
+    private func refreshPausedPositionSoon() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(150))
+            viewModel.refreshPausedPosition()
         }
     }
 
@@ -508,22 +538,28 @@ struct RemotePreviewView: View {
         let availableWidth = max(viewportSize.width - horizontalPadding * 2, 0)
         let isCompactHeight = isEmbedded || viewportSize.height < ui(320)
 
-        return VStack(spacing: 0) {
-            topBar(
-                availableWidth: availableWidth,
-                showsPosition: viewportSize.width <= viewportSize.height
-            )
-            .padding(.top, isEmbedded ? ui(8) : max(insets.top, ui(8)) + ui(8))
+        return Group {
+            if editorCompact {
+                editorCompactChrome(viewportSize: viewportSize)
+            } else {
+                VStack(spacing: 0) {
+                    topBar(
+                        availableWidth: availableWidth,
+                        showsPosition: viewportSize.width <= viewportSize.height
+                    )
+                    .padding(.top, isEmbedded ? ui(8) : max(insets.top, ui(8)) + ui(8))
 
-            Spacer(minLength: isCompactHeight ? ui(6) : ui(72))
+                    Spacer(minLength: isCompactHeight ? ui(6) : ui(72))
 
-            if viewModel.currentItem.isImage || viewModel.currentItem.isPlayerMedia {
-                bottomControls(availableWidth: availableWidth)
-                    .padding(.bottom, isEmbedded ? ui(8) : max(insets.bottom, ui(8)) + ui(10))
+                    if viewModel.currentItem.isImage || viewModel.currentItem.isPlayerMedia {
+                        bottomControls(availableWidth: availableWidth)
+                            .padding(.bottom, isEmbedded ? ui(8) : max(insets.bottom, ui(8)) + ui(10))
+                    }
+                }
+                .padding(.horizontal, horizontalPadding)
+                .ignoresSafeArea(edges: isEmbedded ? [] : .all)
             }
         }
-        .padding(.horizontal, horizontalPadding)
-        .ignoresSafeArea(edges: isEmbedded ? [] : .all)
         .opacity(
             requiresAlwaysVisibleChrome
                 ? 1
@@ -543,6 +579,85 @@ struct RemotePreviewView: View {
                 )
         )
         .animation(.easeInOut(duration: 0.2), value: areControlsVisible)
+    }
+
+    /// 편집기 안의 작은 미리보기 컨트롤. 위에 전체 화면·공유, 아래에 재생/일시 정지와 위치를 두고,
+    /// 낮고 넓은 칸에서는 한 줄로 모은다. 좁은 칸(9:16 출력 등)에서는 재생 버튼 아래에 위치 줄을
+    /// 전체 폭으로 두고, 더 좁거나 낮으면 공유·위치 줄을 접는다(전체 화면에 공유와 탐색이 있다).
+    /// 버튼은 기존 44pt 원형 그대로다.
+    private func editorCompactChrome(viewportSize: CGSize) -> some View {
+        let width = viewportSize.width
+        let height = viewportSize.height
+        let rowFitsProgress = width >= ui(280)
+        let oneRow = height < ui(150) && (rowFitsProgress || height < ui(104))
+        let stacksTransport = width < ui(220)
+        let showsShare = oneRow
+            ? (rowFitsProgress || width >= ui(156))
+            : width >= ui(106)
+        return VStack(spacing: 0) {
+            if oneRow {
+                Spacer(minLength: 0)
+                HStack(spacing: ui(6)) {
+                    transportControls
+                    if rowFitsProgress {
+                        editorCompactProgress(showsTime: width >= ui(320))
+                    } else {
+                        Spacer(minLength: 0)
+                    }
+                    editorCompactActions(showsShare: showsShare)
+                }
+            } else {
+                HStack(spacing: ui(6)) {
+                    Spacer(minLength: 0)
+                    editorCompactActions(showsShare: showsShare)
+                }
+                Spacer(minLength: ui(4))
+                if stacksTransport {
+                    VStack(alignment: .leading, spacing: ui(6)) {
+                        transportControls
+                        if height >= ui(160) {
+                            editorCompactProgress(showsTime: true)
+                        }
+                    }
+                } else {
+                    HStack(alignment: .bottom, spacing: ui(6)) {
+                        transportControls
+                        editorCompactProgress(showsTime: true)
+                    }
+                }
+            }
+        }
+        .padding(ui(6))
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.45), radius: 5, y: 2)
+    }
+
+    private func editorCompactActions(showsShare: Bool) -> some View {
+        HStack(spacing: ui(6)) {
+            if let accessoryControls {
+                accessoryControls
+            }
+            if showsShare {
+                Button { shareCurrentItem() } label: {
+                    SharedPlayerCircleLabel(systemImage: "square.and.arrow.up")
+                }
+                .disabled(playbackSuspended || shareCoordinator.isPreparing || viewModel.isPreparingExternalPlayback)
+                .accessibilityLabel("현재 파일 공유")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func editorCompactProgress(showsTime: Bool) -> some View {
+        if viewModel.compatibilityPlayer == nil, let player = viewModel.player {
+            EditorCompactVideoProgress(player: player, showsTime: showsTime)
+                .frame(maxWidth: .infinity)
+        } else if viewModel.hasVideoPlayer {
+            videoProgressBar(compact: true)
+                .frame(maxWidth: .infinity)
+        } else {
+            Spacer(minLength: 0)
+        }
     }
 
     private func photoSlideshowEdgeControls(safeAreaInsets: EdgeInsets) -> some View {
@@ -616,6 +731,7 @@ struct RemotePreviewView: View {
     /// An error has no player surface to tap, so its close button must not hide either.
     private var requiresAlwaysVisibleChrome: Bool {
         accessoryControls != nil
+            || editorCompact
             || viewModel.errorMessage != nil
             || !(viewModel.currentItem.isImage || viewModel.currentItem.isVideo)
     }
@@ -1127,6 +1243,100 @@ struct RemotePreviewView: View {
         withAnimation(.easeInOut(duration: 0.2)) {
             areControlsVisible = false
         }
+    }
+}
+
+/// 편집기 안의 좁은 미리보기용 위치 줄: 시간 한 줄과 그 아래 슬라이더. 붙을 때 재생기의 지금 위치와
+/// 길이를 바로 읽으므로, 멈춘 채 다시 붙어도 0:00 / 0:00으로 보이지 않는다.
+private struct EditorCompactVideoProgress: View {
+    let player: AVPlayer
+    var showsTime = true
+
+    @State private var currentSeconds = 0.0
+    @State private var durationSeconds = 0.0
+    @State private var timeObserver: Any?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if showsTime {
+                Text("\(formattedTime(currentSeconds)) / \(formattedTime(durationSeconds))")
+                    .font(.system(size: ui(10), weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.white.opacity(0.9))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            }
+            Slider(
+                value: Binding(
+                    get: { min(currentSeconds, sliderMaximum) },
+                    set: { seek(to: $0) }
+                ),
+                in: 0...sliderMaximum
+            )
+            .tint(.white)
+            .frame(minHeight: ui(30))
+            .accessibilityLabel("재생 위치")
+            .accessibilityValue("\(formattedTime(currentSeconds)) / \(formattedTime(durationSeconds))")
+        }
+        .onAppear {
+            readCurrentPosition()
+            startObserving()
+        }
+        .onDisappear(perform: stopObserving)
+        .task {
+            // 멈춘 채 처음 붙으면 주기 관찰이 불리지 않으므로 길이는 여기서 읽는다.
+            guard let asset = player.currentItem?.asset,
+                  let duration = try? await asset.load(.duration),
+                  duration.seconds.isFinite, duration.seconds > 0 else { return }
+            durationSeconds = duration.seconds
+        }
+    }
+
+    private var sliderMaximum: Double { max(durationSeconds, 0.1) }
+
+    private func readCurrentPosition() {
+        let seconds = player.currentTime().seconds
+        if seconds.isFinite { currentSeconds = max(0, seconds) }
+        if let duration = player.currentItem?.duration.seconds, duration.isFinite, duration > 0 {
+            durationSeconds = duration
+        }
+    }
+
+    private func seek(to seconds: Double) {
+        currentSeconds = min(max(seconds, 0), sliderMaximum)
+        player.seek(
+            to: CMTime(seconds: currentSeconds, preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        )
+    }
+
+    private func startObserving() {
+        guard timeObserver == nil else { return }
+        timeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.1, preferredTimescale: 600),
+            queue: .main
+        ) { time in
+            let seconds = time.seconds
+            let duration = player.currentItem?.duration.seconds
+            Task { @MainActor in
+                if seconds.isFinite { currentSeconds = max(0, seconds) }
+                if let duration, duration.isFinite, duration > 0 {
+                    durationSeconds = duration
+                }
+            }
+        }
+    }
+
+    private func stopObserving() {
+        if let timeObserver {
+            player.removeTimeObserver(timeObserver)
+            self.timeObserver = nil
+        }
+    }
+
+    private func formattedTime(_ seconds: Double) -> String {
+        let total = max(Int(seconds.rounded()), 0)
+        return String(format: "%d:%02d", total / 60, total % 60)
     }
 }
 
@@ -1734,6 +1944,13 @@ final class RemotePreviewViewModel: ObservableObject {
         scrubStartSeconds = nil
         player?.pause()
         compatibilityPlayer?.pause()
+    }
+
+    /// 멈춘 영상만 지금 위치로 다시 찾아가 화면과 새로 붙은 시간 표시를 그 위치로 맞춘다.
+    func refreshPausedPosition() {
+        guard !isPlaying, currentItem.isPlayerMedia, let player,
+              player.currentItem?.status == .readyToPlay else { return }
+        player.seek(to: player.currentTime(), toleranceBefore: .zero, toleranceAfter: .zero)
     }
 
     func tearDown() {

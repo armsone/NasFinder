@@ -158,6 +158,31 @@ enum TrailerWorkspaceTier: Equatable {
     var dockedFinder: Bool { self == .wide || self == .medium }
 }
 
+// MARK: - 반응형 레이아웃 모드 (Tablet Portrait / Landscape / Phone Board & Detail / Mac)
+
+enum TrailerWorkspaceMode: Equatable {
+    case tabletPortrait
+    case tabletLandscape
+    case phoneBoard
+    case phoneDetail
+    case macResponsive
+
+    static func mode(size: CGSize, isPhoneDetail: Bool, usesShellSidebar: Bool) -> TrailerWorkspaceMode {
+        // 좁은 본문은 플랫폼과 상관없이 먼저 보드/상세 한 화면으로 나눈다(좁은 Mac 창에서 1:1로 짓눌리지 않게).
+        if size.width < 640 {
+            return isPhoneDetail ? .phoneDetail : .phoneBoard
+        }
+        #if targetEnvironment(macCatalyst)
+        return .macResponsive
+        #else
+        if usesShellSidebar || ProcessInfo.processInfo.isiOSAppOnMac {
+            return .macResponsive
+        }
+        return size.width >= size.height ? .tabletLandscape : .tabletPortrait
+        #endif
+    }
+}
+
 // MARK: - 레일
 
 struct TrailerWorkspaceRail: View {
@@ -274,19 +299,18 @@ struct TrailerFinderPanel: View {
 
 /// 폭에 따라 레일·파인더·편집기·상세를 배치한다. 편집기와 파인더는 각각 트리의 고정된 자리에
 /// 한 번만 두고 프레임만 바꾸므로, 폭이 바뀌어도 편집기의 플레이어·선택·파인더의 탐색 위치가 유지된다.
-struct TrailerWorkspace<Editor: View, Finder: View, Detail: View>: View {
+/// 선택 장면 상세(인스펙터)는 편집기 안의 고정 탭 + 스크롤 영역에만 있다. 여기서 따로 붙이지 않는다.
+struct TrailerWorkspace<Editor: View, Finder: View>: View {
     let finderOpenRequest: Int
     /// 항목을 추가한 뒤 겹쳐 뜬 파인더를 닫아 편집기가 보이게 한다. 도킹된 파인더는 그대로 둔다.
     let finderCloseRequest: Int
     let editor: (TrailerWorkspaceTier) -> Editor
     let finder: (Bool, @escaping () -> Void) -> Finder
-    let detail: (TrailerWorkspaceTier) -> Detail
     let openSettings: () -> Void
     let leave: (AppTab?) -> Void
 
     @Environment(\.embedsEditorInShell) private var embedsInShell
     @State private var finderShown = true
-    @State private var detailShown = false
     @State private var finderLoaded = false
     @State private var lastRequest = 0
 
@@ -299,30 +323,16 @@ struct TrailerWorkspace<Editor: View, Finder: View, Detail: View>: View {
             let finderWidth = min(380, max(300, geometry.size.width * 0.27))
             let dockedVisible = dockedFinderTier && finderShown
             let overlayVisible = !dockedFinderTier && finderShown
-            let detailSide = tier == .wide
-            let detailBottom = tier == .medium || (embedsInShell && tier == .compact)
             ZStack(alignment: .topLeading) {
                 HStack(spacing: 0) {
                     if hasRail {
                         TrailerWorkspaceRail(
-                            finderActive: finderShown, detailActive: detailShown, showsDetail: tier == .compact,
-                            toggleFinder: { finderShown.toggle() }, toggleDetail: { detailShown.toggle() },
+                            finderActive: finderShown, detailActive: false, showsDetail: false,
+                            toggleFinder: { finderShown.toggle() }, toggleDetail: {},
                             openSettings: openSettings, leave: leave)
                     }
                     if dockedVisible { Color.clear.frame(width: finderWidth) }
-                    VStack(spacing: 0) {
-                        editor(tier).frame(maxWidth: .infinity, maxHeight: .infinity)
-                        if detailBottom {
-                            Divider()
-                            ScrollView { detail(tier).padding(12) }.frame(height: min(260, geometry.size.height * 0.34))
-                                .background(PorcelainMetrics.paper)
-                        }
-                    }
-                    if detailSide {
-                        Rectangle().fill(PorcelainMetrics.line).frame(width: 0.5)
-                        ScrollView { detail(tier).padding(12) }.frame(width: 320)
-                            .background(PorcelainMetrics.paper)
-                    }
+                    editor(tier).frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
                 // 파인더는 한 번 만들면 계속 둔다. 도킹/겹침/숨김은 위치와 투명도만 바꾼다.
                 if finderLoaded {
@@ -339,15 +349,6 @@ struct TrailerWorkspace<Editor: View, Finder: View, Detail: View>: View {
                         .allowsHitTesting(visible)
                         .accessibilityHidden(!visible)
                         .zIndex(2)
-                }
-                if tier == .compact, !embedsInShell, detailShown {
-                    ScrollView { detail(tier).padding(12) }
-                        .frame(width: min(360, geometry.size.width - railWidth))
-                        .background(PorcelainMetrics.paper)
-                        .overlay(alignment: .leading) { PorcelainMetrics.line.frame(width: 0.5) }
-                        .shadow(color: .black.opacity(0.18), radius: 10, x: -2)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
-                        .zIndex(3)
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
@@ -371,7 +372,6 @@ struct TrailerWorkspace<Editor: View, Finder: View, Detail: View>: View {
                 let wasDocked = old.dockedFinder && !embedsInShell
                 let isDocked = new.dockedFinder && !embedsInShell
                 if wasDocked != isDocked { finderShown = isDocked }
-                if new != .compact { detailShown = false }
                 if isDocked { finderLoaded = true }
             }
         }

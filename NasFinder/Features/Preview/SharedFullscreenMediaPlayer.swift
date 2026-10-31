@@ -115,12 +115,30 @@ struct SharedVideoProgressBar: View {
         .overlay {
             Capsule().stroke(Color.white.opacity(0.18), lineWidth: 1)
         }
-        .onAppear(perform: startObserving)
+        .onAppear {
+            readCurrentPosition()
+            startObserving()
+        }
         .onDisappear(perform: stopObserving)
+        .task {
+            // 멈춘 채 붙으면 주기 관찰이 불리지 않으므로 길이는 여기서 읽는다.
+            guard let asset = player.currentItem?.asset,
+                  let duration = try? await asset.load(.duration),
+                  duration.seconds.isFinite, duration.seconds > 0 else { return }
+            durationSeconds = duration.seconds
+        }
         .accessibilityElement(children: .contain)
     }
 
     private var sliderMaximum: Double { max(durationSeconds, 0.1) }
+
+    private func readCurrentPosition() {
+        let seconds = player.currentTime().seconds
+        if seconds.isFinite { currentSeconds = max(0, seconds) }
+        if let duration = player.currentItem?.duration.seconds, duration.isFinite, duration > 0 {
+            durationSeconds = duration
+        }
+    }
 
     private func seek(to seconds: Double) {
         currentSeconds = min(max(seconds, 0), sliderMaximum)
@@ -181,7 +199,14 @@ struct SharedVideoMiniProgressLine: View {
                     .frame(width: proxy.size.width * progress)
             }
         }
-        .onAppear(perform: startObserving)
+        .onAppear {
+            let seconds = player.currentTime().seconds
+            if seconds.isFinite { currentSeconds = max(seconds, 0) }
+            if let duration = player.currentItem?.duration.seconds, duration.isFinite, duration > 0 {
+                durationSeconds = duration
+            }
+            startObserving()
+        }
         .onDisappear(perform: stopObserving)
         .accessibilityHidden(true)
     }

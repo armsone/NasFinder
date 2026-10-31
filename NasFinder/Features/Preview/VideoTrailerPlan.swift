@@ -14,6 +14,8 @@ struct VideoTrailerScene: Identifiable {
     /// 직접 편집한 사진·영상 장면을 채울 때의 화면 위치(-1...1). 0이 가운데.
     var offsetX = 0.0
     var offsetY = 0.0
+    /// 직접 편집에서 이 장면에 붙인 자막. 미리보기와 내보내기가 같은 값을 그린다.
+    var caption: TrailerCaption? = nil
 }
 
 struct VideoTrailerPlan {
@@ -246,6 +248,7 @@ enum VideoTrailerBatchPlan {
             fittedScene.volume = scene.volume
             fittedScene.offsetX = scene.offsetX
             fittedScene.offsetY = scene.offsetY
+            fittedScene.caption = scene.caption
             result.append(fittedScene)
             used += length
         }
@@ -271,6 +274,7 @@ enum VideoTrailerBatchPlan {
             repeated.volume = source.volume
             repeated.offsetX = source.offsetX
             repeated.offsetY = source.offsetY
+            repeated.caption = source.caption
             result.append(repeated)
             used += ticks
         }
