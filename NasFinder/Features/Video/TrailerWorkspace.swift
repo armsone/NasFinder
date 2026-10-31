@@ -302,7 +302,7 @@ struct TrailerFinderPanel: View {
 /// 선택 장면 상세(인스펙터)는 편집기 안의 고정 탭 + 스크롤 영역에만 있다. 여기서 따로 붙이지 않는다.
 struct TrailerWorkspace<Editor: View, Finder: View>: View {
     let finderOpenRequest: Int
-    /// 항목을 추가한 뒤 겹쳐 뜬 파인더를 닫아 편집기가 보이게 한다. 도킹된 파인더는 그대로 둔다.
+    /// 항목을 추가한 뒤 파인더를 닫아 편집기가 다시 전체 폭을 쓰게 한다(도킹·겹침 모두).
     let finderCloseRequest: Int
     let editor: (TrailerWorkspaceTier) -> Editor
     let finder: (Bool, @escaping () -> Void) -> Finder
@@ -310,7 +310,8 @@ struct TrailerWorkspace<Editor: View, Finder: View>: View {
     let leave: (AppTab?) -> Void
 
     @Environment(\.embedsEditorInShell) private var embedsInShell
-    @State private var finderShown = true
+    /// 모든 폭에서 닫힌 채 시작한다. 레일의 파인더나 머리글의 재료 추가로만 연다.
+    @State private var finderShown = false
     @State private var finderLoaded = false
     @State private var lastRequest = 0
 
@@ -352,11 +353,6 @@ struct TrailerWorkspace<Editor: View, Finder: View>: View {
                 }
             }
             .frame(width: geometry.size.width, height: geometry.size.height, alignment: .topLeading)
-            .onAppear {
-                // 넓은 단계에서는 처음부터 열고, 좁은 단계에서는 사용자가 열기 전까지 닫아 둔다.
-                if !dockedFinderTier { finderShown = false }
-                finderLoaded = dockedFinderTier
-            }
             .onChange(of: finderShown) { _, shown in if shown { finderLoaded = true } }
             .onChange(of: finderOpenRequest) { _, request in
                 guard request != lastRequest else { return }
@@ -365,14 +361,14 @@ struct TrailerWorkspace<Editor: View, Finder: View>: View {
                 finderShown = true
             }
             .onChange(of: finderCloseRequest) { _, _ in
-                if !dockedFinderTier { finderShown = false }
+                finderShown = false
             }
             .onChange(of: tier) { old, new in
-                // 단계가 바뀌어도 파인더는 그대로이고, 겹침으로 바뀔 때만 닫아 편집기를 가리지 않는다.
+                // 회전해도 스스로 열지 않는다. 사용자가 연 파인더는 도킹으로 바뀌면 그대로 두고,
+                // 겹침으로 바뀔 때만 닫아 편집기를 가리지 않는다.
                 let wasDocked = old.dockedFinder && !embedsInShell
                 let isDocked = new.dockedFinder && !embedsInShell
-                if wasDocked != isDocked { finderShown = isDocked }
-                if isDocked { finderLoaded = true }
+                if wasDocked && !isDocked { finderShown = false }
             }
         }
     }

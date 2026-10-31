@@ -568,7 +568,8 @@ struct VideoTrailerView: View {
         let state = projects.state(sessionID)
         var chrome = TrailerEditorChrome()
         chrome.title = projectTitle
-        chrome.showsAdd = !tier.dockedFinder
+        // 파인더는 모든 폭에서 닫힌 채 시작하므로 재료 추가는 늘 보인다(Mac 셸 안에서는 유일한 여는 길).
+        chrome.showsAdd = true
         chrome.onAdd = { finderRequest += 1 }
         chrome.canUndo = history.canUndo
         chrome.canRedo = history.canRedo
@@ -1237,14 +1238,17 @@ private struct TrailerWorkspacePreview: View {
                         if let previewCaption { CaptionOverlayView(caption: previewCaption) }
                     }
                     .overlay(alignment: .bottomLeading) {
-                        Text(firstSource.name)
-                            .font(.ui(.caption2).weight(.medium))
-                            .foregroundStyle(.white)
-                            .lineLimit(1)
-                            .padding(.horizontal, ui(6))
-                            .padding(.vertical, ui(3))
-                            .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: ui(4)))
-                            .padding(ui(8))
+                        // 자막이 있으면 파일 이름을 그리지 않는다. 이름은 인스펙터에 이미 있고 자막과 겹친다.
+                        if previewCaption == nil {
+                            Text(firstSource.name)
+                                .font(.ui(.caption2).weight(.medium))
+                                .foregroundStyle(.white)
+                                .lineLimit(1)
+                                .padding(.horizontal, ui(6))
+                                .padding(.vertical, ui(3))
+                                .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: ui(4)))
+                                .padding(ui(8))
+                        }
                     }
                     .task(id: "\(firstVideo?.id ?? -1)-\(aspectRatio == nil)") {
                         // Reads only the track's size and transform, once per first video; the
