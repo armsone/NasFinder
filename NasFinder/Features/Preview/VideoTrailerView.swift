@@ -1469,8 +1469,11 @@ private struct VideoTrailerSettings: View {
 
     @State private var activeTab: VideoTrailerTab = .clips
     @State private var columns: Int = 3
-    @State private var captionScope: CaptionApplyScope = .current
+    @State private var captionScope: CaptionApplyScope = .all
     @State private var hasInitializedColumns = false
+    @State private var previewingOutput: Bool = false
+    @State private var exportRequested: Bool = false
+    @State private var startingOutputURL: URL? = nil
 
     // Recomputed from the actual retained sources on every access, so removing the last
     // video, a decode-skip exclusion, retry or reopen all flip this immediately instead
@@ -1500,6 +1503,37 @@ private struct VideoTrailerSettings: View {
     /// 영상 만들기 영역의 고정 아래 줄. 지금 편집으로 만든 영상이 없거나 지난 것이면 "만들기" 하나만,
     /// 지금 결과가 있으면 폰하드 저장이 주 행동이고 컬렉션 추가가 보조다(공유는 플레이어 안에 있다).
     /// 렌더가 끝났다고 저장된 것은 아니다: 저장됨은 폰하드가 실제로 받은 뒤에만 표시한다.
+    private func exitOutputPreview() {
+        if previewingOutput {
+            previewingOutput = false
+            pauseRequest += 1
+        }
+    }
+
+    private func completeRequestedExportIfReady() {
+        guard exportRequested,
+              !isBusy,
+              error == nil,
+              isOutputCurrent,
+              let currentURL = outputURL,
+              currentURL != startingOutputURL else {
+            return
+        }
+        previewingOutput = true
+        pauseRequest += 1
+        exportRequested = false
+    }
+
+    private func restoreCaptionDraftFromSelectedScene() {
+        guard !captionDraft.isDirty else { return }
+        guard let scenes,
+              let selectedSceneID,
+              let selectedScene = scenes.first(where: { $0.id == selectedSceneID }) else {
+            return
+        }
+        captionDraft.load(selectedScene)
+    }
+
     private func applyPendingCaptionAction() -> Bool {
         guard captionDraft.isDirty else { return true }
         if let text = captionDraft.caption?.text, text.count > 2000 {
@@ -1510,75 +1544,76 @@ private struct VideoTrailerSettings: View {
         return true
     }
 
+    private func footerButtonLabel(title: String, systemImage: String? = nil, isProminent: Bool = false) -> some View {
+        HStack(spacing: 6) {
+            if let systemImage {
+                Image(systemName: systemImage)
+                    .font(.system(size: 14, weight: .semibold))
+            }
+            Text(title)
+                .font(.system(size: 14, weight: isProminent ? .semibold : .medium))
+                .lineLimit(1)
+        }
+        .foregroundStyle(isProminent ? PorcelainMetrics.onAccent : .primary)
+        .frame(maxWidth: .infinity, minHeight: 44, maxHeight: 44)
+        .background(
+            isProminent ? PorcelainMetrics.solidAction : PorcelainMetrics.card,
+            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .stroke(isProminent ? Color.clear : PorcelainMetrics.line, lineWidth: 0.5)
+        )
+    }
+
     private var createBar: some View {
         let blocked: Bool = proposal.isEmpty || (mode == .mediaMusic && music == nil)
+        let isShowingOutput: Bool = previewingOutput && isOutputCurrent && outputURL != nil
         let saveTitle: String = isSaved ? "폰하드에 저장됨" : isBusy ? "폰하드에 저장 중…" : "폰하드에 저장"
-        return VStack(spacing: ui(6)) {
-            if isBusy {
-                HStack(spacing: ui(8)) {
-                    ProgressView().controlSize(.small)
-                    Text(status.isEmpty ? "처리 중…" : status)
-                        .font(.ui(.caption)).foregroundStyle(.secondary)
-                        .lineLimit(1)
-                    Spacer()
-                    if let exportProgress {
-                        Text("\(Int(exportProgress * 100))%")
-                            .font(.ui(.caption).monospacedDigit())
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
-            if isOutputCurrent, let outputURL {
-                HStack(spacing: ui(8)) {
-                    Button { onSave?() } label: {
-                        Label(saveTitle, interfaceSystemImage: isSaved ? "checkmark.circle" : "square.and.arrow.down")
-                            .frame(maxWidth: .infinity, minHeight: ui(44))
-                    }
-                    .buttonStyle(PorcelainProminentButtonStyle()).controlSize(.large)
-                    .disabled(isBusy || isSaved || onSave == nil)
 
-                    ShareLink(item: outputURL) {
-                        Label("공유", systemImage: "square.and.arrow.up")
-                            .frame(minWidth: ui(80), minHeight: ui(44))
-                    }
-                    .buttonStyle(.bordered)
-                    .disabled(isBusy)
+        return HStack(spacing: 8) {
+            if isShowingOutput, let outputURL {
+                Button { onSave?() } label: {
+                    footerButtonLabel(title: saveTitle, systemImage: isSaved ? "checkmark.circle" : "square.and.arrow.down", isProminent: true)
                 }
-                if let savedFilename {
-                    Text(savedFilename).font(.ui(.caption2)).foregroundStyle(.secondary)
-                        .lineLimit(1).truncationMode(.middle)
+                .buttonStyle(.plain)
+                .disabled(isBusy || isSaved || onSave == nil)
+
+                ShareLink(item: outputURL) {
+                    footerButtonLabel(title: "공유", systemImage: "square.and.arrow.up", isProminent: false)
                 }
-            }
-            HStack(spacing: ui(8)) {
+                .buttonStyle(.plain)
+                .disabled(isBusy)
+            } else {
                 Button {
                     if applyPendingCaptionAction() {
                         chrome.onSaveDraft()
                     }
                 } label: {
                     let saveDraftTitle: String = chrome.isSavingDraft ? "저장 중…"
-                        : chrome.saveFailed ? "저장 실패" : chrome.isDraftSaved ? "저장됨" : "편집본 저장"
-                    Text(saveDraftTitle)
-                        .font(.ui(.subheadline).weight(.medium))
-                        .frame(maxWidth: .infinity, minHeight: ui(44))
+                        : chrome.saveFailed ? "저장 실패"
+                        : (!captionDraft.isDirty && chrome.isDraftSaved) ? "저장됨" : "편집본 저장"
+                    footerButtonLabel(title: saveDraftTitle, isProminent: false)
                 }
-                .buttonStyle(.bordered)
+                .buttonStyle(.plain)
                 .disabled(chrome.isSavingDraft || isBusy)
 
                 Button {
                     if applyPendingCaptionAction() {
+                        startingOutputURL = outputURL
+                        exportRequested = true
                         regenerate()
                     }
                 } label: {
-                    Text(isBusy ? "내보내는 중…" : "저장 후 내보내기")
-                        .font(.ui(.subheadline).weight(.semibold))
-                        .frame(maxWidth: .infinity, minHeight: ui(44))
+                    footerButtonLabel(title: isBusy ? "내보내는 중…" : "저장 후 내보내기", isProminent: true)
                 }
-                .buttonStyle(PorcelainProminentButtonStyle()).controlSize(.large)
+                .buttonStyle(.plain)
                 .disabled(blocked || isBusy)
             }
         }
         .padding(.horizontal, MacUIScale.defaultPadding ?? 16)
-        .padding(.vertical, ui(8))
+        .padding(.vertical, 6)
+        .frame(height: 56)
         .background(.bar)
     }
 
@@ -1788,6 +1823,40 @@ private struct VideoTrailerSettings: View {
                 .frame(width: geometry.size.width, height: available, alignment: .top)
         }
         .background(TrailerWindowBottomReader { windowUsableBottom = $0 })
+        .onAppear {
+            restoreCaptionDraftFromSelectedScene()
+        }
+        .onChange(of: isBusy) { busy in
+            if !busy {
+                completeRequestedExportIfReady()
+            }
+        }
+        .onChange(of: outputURL) { _ in
+            completeRequestedExportIfReady()
+        }
+        .onChange(of: isOutputCurrent) { current in
+            if !current {
+                exitOutputPreview()
+            } else {
+                completeRequestedExportIfReady()
+            }
+        }
+        .onChange(of: error != nil) { hasError in
+            if hasError {
+                exportRequested = false
+            }
+        }
+        .onChange(of: activeTab) { tab in
+            exitOutputPreview()
+            if tab == .caption {
+                restoreCaptionDraftFromSelectedScene()
+            }
+        }
+        .onChange(of: captionDraft.isDirty) { dirty in
+            if dirty {
+                exitOutputPreview()
+            }
+        }
         .background { if isPreviewFullscreen { Color.black.ignoresSafeArea() } }
         // The hidden toolbar no longer owns Escape, so the presenting full-screen cover would
         // take it and dismiss the whole editor. While fullscreen, this responder consumes it.
@@ -1886,7 +1955,7 @@ private struct VideoTrailerSettings: View {
         let bounds = previewBounds(bodyHeight: bodyHeight)
         let height = min(bounds.maximum, max(bounds.minimum, previewHeight ?? bounds.preferred))
         return VStack(spacing: 0) {
-            previewSection(showsOutput: isPreviewFullscreen || isOutputCurrent)
+            previewSection(showsOutput: previewingOutput && isOutputCurrent)
                 .frame(height: isPreviewFullscreen ? bodyHeight : height)
                 .frame(maxWidth: .infinity)
             if !isPreviewFullscreen {
@@ -1902,7 +1971,7 @@ private struct VideoTrailerSettings: View {
         let wide = size.width >= 640
 
         if isPreviewFullscreen {
-            previewSection(showsOutput: true)
+            previewSection(showsOutput: previewingOutput && isOutputCurrent)
                 .frame(width: size.width, height: size.height)
         } else if wide {
             wideLayout(size: inner)
@@ -1910,7 +1979,6 @@ private struct VideoTrailerSettings: View {
                 .onAppear {
                     if !hasInitializedColumns {
                         columns = 4
-                        hasInitializedColumns = true
                     }
                 }
         } else {
@@ -1919,7 +1987,6 @@ private struct VideoTrailerSettings: View {
                 .onAppear {
                     if !hasInitializedColumns {
                         columns = 3
-                        hasInitializedColumns = true
                     }
                 }
         }
@@ -2262,10 +2329,24 @@ private struct VideoTrailerSettings: View {
     }
 
     /// 장면 선택은 적용하지 않은 자막이 있으면 먼저 묻는다.
+    private var gridColumnsBinding: Binding<Int> {
+        Binding(
+            get: { columns },
+            set: { next in
+                columns = next
+                hasInitializedColumns = true
+            }
+        )
+    }
+
     private var guardedSelection: Binding<Int?> {
         Binding(get: { selectedSceneID }, set: { next in
+            exitOutputPreview()
             guard next != selectedSceneID else { return }
-            chrome.guarded { selectedSceneID = next }
+            chrome.guarded {
+                selectedSceneID = next
+                restoreCaptionDraftFromSelectedScene()
+            }
         })
     }
 
@@ -2275,7 +2356,7 @@ private struct VideoTrailerSettings: View {
             TrailerStoryboardGrid(
                 scenes: editScenes, sources: sources,
                 selectedID: guardedSelection, selectedIDs: $selectedSceneIDs,
-                columnsCount: $columns,
+                columnsCount: gridColumnsBinding,
                 scrollable: false,
                 onSelectSceneForDetail: nil,
                 onMoveScenes: { ids, position in

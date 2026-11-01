@@ -855,41 +855,47 @@ struct TrailerCaptionContentLocationCard: View {
                 HStack(spacing: 6) {
                     HStack(spacing: 4) {
                         ForEach(CaptionApplyScope.allCases) { sc in
+                            let isSelected = scope == sc
                             Button {
                                 scope = sc
+                                captionDraft.isDirty = true
                             } label: {
                                 Text(sc.rawValue)
-                                    .font(.system(size: 13, weight: scope == sc ? .bold : .medium))
-                                    .foregroundStyle(scope == sc ? PorcelainMetrics.accent : .primary)
+                                    .font(.system(size: 13, weight: isSelected ? .bold : .medium))
+                                    .foregroundStyle(isSelected ? PorcelainMetrics.accent : .primary)
                                     .frame(maxWidth: .infinity, minHeight: 40)
                                     .background(
-                                        scope == sc ? PorcelainMetrics.accent.opacity(0.12) : Color.clear,
+                                        isSelected ? PorcelainMetrics.accent.opacity(0.12) : Color.clear,
                                         in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     )
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .stroke(scope == sc ? PorcelainMetrics.accent : PorcelainMetrics.line, lineWidth: 1)
+                                            .stroke(isSelected ? PorcelainMetrics.accent : PorcelainMetrics.line, lineWidth: 1)
                                     )
                             }
                             .buttonStyle(.plain)
+                            .accessibilityLabel("적용 범위: \(sc.rawValue)")
+                            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                         }
                     }
 
+                    let isApplyDisabled = !captionDraft.isDirty && captionDraft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     Button {
+                        captionDraft.isDirty = true
                         onApply()
                     } label: {
-                        Text(captionDraft.isDirty ? "적용" : "적용됨")
+                        Text("적용")
                             .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(captionDraft.isDirty ? .white : .secondary)
+                            .foregroundStyle(isApplyDisabled ? .secondary : (captionDraft.isDirty ? .white : PorcelainMetrics.accent))
                             .padding(.horizontal, 12)
                             .frame(minHeight: 40)
                             .background(
-                                captionDraft.isDirty ? PorcelainMetrics.accent : Color(uiColor: .tertiarySystemFill),
+                                isApplyDisabled ? Color(uiColor: .tertiarySystemFill) : (captionDraft.isDirty ? PorcelainMetrics.accent : PorcelainMetrics.accent.opacity(0.15)),
                                 in: RoundedRectangle(cornerRadius: 8, style: .continuous)
                             )
                     }
                     .buttonStyle(.plain)
-                    .disabled(!captionDraft.isDirty)
+                    .disabled(isApplyDisabled)
                 }
 
                 // 2. 전체 폭 텍스트 입력창 (최대 2000자)
@@ -901,7 +907,8 @@ struct TrailerCaptionContentLocationCard: View {
                             captionDraft.isDirty = true
                         }
                     ), axis: .vertical)
-                    .lineLimit(2...5)
+                    .lineLimit(2...)
+                    .lineSpacing(CGFloat(captionDraft.lineSpacing))
                     .font(.system(size: 14))
                     .padding(8)
                     .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
@@ -956,6 +963,17 @@ struct TrailerCaptionContentLocationCard: View {
         }
     }
 
+    private func positionAccessibilityLabel(row: Int, column: Int) -> String {
+        let rowNames = ["맨 위", "위", "가운데", "아래", "맨 아래"]
+        let colNames = ["맨 왼쪽", "왼쪽", "가운데", "오른쪽", "맨 오른쪽"]
+        let rName = rowNames[min(max(row, 0), 4)]
+        let cName = colNames[min(max(column, 0), 4)]
+        if row == 2 && column == 2 {
+            return "자막 위치 정가운데"
+        }
+        return "자막 위치 \(rName) \(cName)"
+    }
+
     private var positionGrid: some View {
         VStack(spacing: 4) {
             ForEach(0..<5, id: \.self) { r in
@@ -984,6 +1002,8 @@ struct TrailerCaptionContentLocationCard: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(positionAccessibilityLabel(row: r, column: c))
+                        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                     }
                 }
             }
@@ -1155,39 +1175,81 @@ struct TrailerCaptionStyleFontCard: View {
     }
 
     private var styleCatalogGrid: some View {
-        GeometryReader { geo in
-            let cols = geo.size.width >= 400 ? 3 : 2
-            let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: cols)
+        let cols = UIDevice.current.userInterfaceIdiom == .phone ? 2 : 3
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: cols)
 
+        return LazyVGrid(columns: columns, spacing: 8) {
+            ForEach(CaptionStylePreset.allCases) { preset in
+                let isSelected = matchingPreset == preset
+                Button {
+                    captionDraft.fontName = preset.fontName
+                    captionDraft.colorHex = preset.previewTextColorHex
+                    captionDraft.shadowColorHex = preset.shadowColorHex
+                    captionDraft.captionSize = preset.fontSize
+                    captionDraft.shadowOpacity = preset.shadowOpacity
+                    captionDraft.lineSpacing = preset.lineSpacing
+                    captionDraft.hasShadow = preset.shadowOpacity > 0
+                    captionDraft.isDirty = true
+                } label: {
+                    HStack(spacing: 8) {
+                        // Aa 뱃지
+                        ZStack {
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(CaptionColorUtil.color(fromHex: preset.shadowColorHex))
+
+                            Text("Aa")
+                                .font(Font(TrailerCaptionFontStore.uiFont(fontName: preset.fontName, size: 14)))
+                                .foregroundStyle(CaptionColorUtil.color(fromHex: preset.previewTextColorHex))
+                        }
+                        .frame(width: 32, height: 32)
+
+                        Text(preset.title)
+                            .font(.system(size: 13, weight: isSelected ? .bold : .medium))
+                            .foregroundStyle(isSelected ? PorcelainMetrics.accent : .primary)
+                            .lineLimit(1)
+
+                        Spacer(minLength: 0)
+
+                        if isSelected {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundStyle(PorcelainMetrics.accent)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                    .frame(maxWidth: .infinity, minHeight: 48)
+                    .background(
+                        isSelected ? PorcelainMetrics.accent.opacity(0.08) : Color(uiColor: .secondarySystemBackground),
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(isSelected ? PorcelainMetrics.accent : PorcelainMetrics.line, lineWidth: isSelected ? 1.5 : 0.5)
+                    )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var fontCatalogGrid: some View {
+        let cols = UIDevice.current.userInterfaceIdiom == .phone ? 2 : 3
+        let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: cols)
+        let allFonts = TrailerCaptionFontStore.bundledFonts + importedFontsList
+
+        return VStack(spacing: 8) {
             LazyVGrid(columns: columns, spacing: 8) {
-                ForEach(CaptionStylePreset.allCases) { preset in
-                    let isSelected = matchingPreset == preset
+                ForEach(allFonts) { item in
+                    let isSelected = captionDraft.fontName == item.id
                     Button {
-                        captionDraft.fontName = preset.fontName
-                        captionDraft.colorHex = preset.previewTextColorHex
-                        captionDraft.shadowColorHex = preset.shadowColorHex
-                        captionDraft.captionSize = preset.fontSize
-                        captionDraft.shadowOpacity = preset.shadowOpacity
-                        captionDraft.lineSpacing = preset.lineSpacing
-                        captionDraft.hasShadow = preset.shadowOpacity > 0
+                        captionDraft.fontName = item.id
                         captionDraft.isDirty = true
                     } label: {
-                        HStack(spacing: 8) {
-                            // Aa 뱃지
-                            ZStack {
-                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                    .fill(CaptionColorUtil.color(fromHex: preset.shadowColorHex))
-
-                                Text("Aa")
-                                    .font(Font(TrailerCaptionFontStore.uiFont(fontName: preset.fontName, size: 14)))
-                                    .foregroundStyle(CaptionColorUtil.color(fromHex: preset.previewTextColorHex))
-                            }
-                            .frame(width: 32, height: 32)
-
-                            Text(preset.title)
-                                .font(.system(size: 13, weight: isSelected ? .bold : .medium))
+                        HStack(spacing: 6) {
+                            Text(item.displayName)
+                                .font(Font(TrailerCaptionFontStore.uiFont(fontName: item.id, size: 14)))
                                 .foregroundStyle(isSelected ? PorcelainMetrics.accent : .primary)
-                                .lineLimit(1)
+                                .lineLimit(2)
 
                             Spacer(minLength: 0)
 
@@ -1197,7 +1259,7 @@ struct TrailerCaptionStyleFontCard: View {
                                     .foregroundStyle(PorcelainMetrics.accent)
                             }
                         }
-                        .padding(.horizontal, 8)
+                        .padding(.horizontal, 10)
                         .frame(maxWidth: .infinity, minHeight: 48)
                         .background(
                             isSelected ? PorcelainMetrics.accent.opacity(0.08) : Color(uiColor: .secondarySystemBackground),
@@ -1211,54 +1273,6 @@ struct TrailerCaptionStyleFontCard: View {
                     .buttonStyle(.plain)
                 }
             }
-        }
-        .frame(minHeight: 48 * 8 + 7 * 8) // 15개 항목 2열 기준 높이
-    }
-
-    private var fontCatalogGrid: some View {
-        VStack(spacing: 8) {
-            GeometryReader { geo in
-                let cols = geo.size.width >= 400 ? 3 : 2
-                let columns = Array(repeating: GridItem(.flexible(), spacing: 8), count: cols)
-                let allFonts = TrailerCaptionFontStore.bundledFonts + importedFontsList
-
-                LazyVGrid(columns: columns, spacing: 8) {
-                    ForEach(allFonts) { item in
-                        let isSelected = captionDraft.fontName == item.id
-                        Button {
-                            captionDraft.fontName = item.id
-                            captionDraft.isDirty = true
-                        } label: {
-                            HStack(spacing: 6) {
-                                Text(item.displayName)
-                                    .font(Font(TrailerCaptionFontStore.uiFont(fontName: item.id, size: 14)))
-                                    .foregroundStyle(isSelected ? PorcelainMetrics.accent : .primary)
-                                    .lineLimit(1)
-
-                                Spacer(minLength: 0)
-
-                                if isSelected {
-                                    Image(systemName: "checkmark")
-                                        .font(.system(size: 12, weight: .bold))
-                                        .foregroundStyle(PorcelainMetrics.accent)
-                                }
-                            }
-                            .padding(.horizontal, 10)
-                            .frame(maxWidth: .infinity, minHeight: 48)
-                            .background(
-                                isSelected ? PorcelainMetrics.accent.opacity(0.08) : Color(uiColor: .secondarySystemBackground),
-                                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    .stroke(isSelected ? PorcelainMetrics.accent : PorcelainMetrics.line, lineWidth: isSelected ? 1.5 : 0.5)
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-            .frame(minHeight: 48 * 9 + 8 * 8) // 18개 항목 2열 기준
 
             Button {
                 isShowingFileImporter = true
@@ -1497,6 +1511,21 @@ struct TrailerCaptionDetailedAdjustmentCard: View {
         }
     }
 
+    private func swatchColorName(hex: String) -> String {
+        let clean = hex.trimmingCharacters(in: CharacterSet.alphanumerics.inverted).uppercased()
+        switch clean {
+        case "FFFFFF": return "흰색"
+        case "000000": return "검은색"
+        case "FFFF00", "FFE600", "FFD700": return "노란색"
+        case "FF0000", "FF3B30", "E53935": return "빨간색"
+        case "00FF00", "34C759", "4CAF50": return "초록색"
+        case "0000FF", "007AFF", "2196F3": return "파란색"
+        case "8E8E93", "808080", "9E9E9E": return "회색"
+        case "FF9500", "FF9800": return "주황색"
+        default: return "#\(clean)"
+        }
+    }
+
     private func quickSwatchesRow(swatches: [String], selectedHex: String, onSelect: @escaping (String) -> Void) -> some View {
         HStack(spacing: 6) {
             ForEach(swatches, id: \.self) { hex in
@@ -1511,10 +1540,12 @@ struct TrailerCaptionDetailedAdjustmentCard: View {
                             Circle()
                                 .stroke(isSelected ? PorcelainMetrics.accent : Color.gray.opacity(0.35), lineWidth: isSelected ? 2.5 : 1)
                         )
-                        .frame(maxWidth: .infinity, minHeight: 36)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("\(swatchColorName(hex: hex)) 색상")
+                .accessibilityAddTraits(isSelected ? [.isSelected] : [])
             }
         }
     }
