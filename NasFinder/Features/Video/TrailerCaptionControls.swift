@@ -1191,7 +1191,7 @@ struct TrailerCaptionStyleFontCard: View {
                     captionDraft.hasShadow = preset.shadowOpacity > 0
                     captionDraft.isDirty = true
                 } label: {
-                    HStack(spacing: 8) {
+                    HStack(spacing: 4) {
                         // Aa 뱃지
                         ZStack {
                             RoundedRectangle(cornerRadius: 6, style: .continuous)
@@ -1201,12 +1201,12 @@ struct TrailerCaptionStyleFontCard: View {
                                 .font(Font(TrailerCaptionFontStore.uiFont(fontName: preset.fontName, size: 14)))
                                 .foregroundStyle(CaptionColorUtil.color(fromHex: preset.previewTextColorHex))
                         }
-                        .frame(width: 32, height: 32)
+                        .frame(width: 24, height: 24)
 
                         Text(preset.title)
                             .font(.system(size: 13, weight: isSelected ? .bold : .medium))
                             .foregroundStyle(isSelected ? PorcelainMetrics.accent : .primary)
-                            .lineLimit(1)
+                            .lineLimit(2)
 
                         Spacer(minLength: 0)
 
@@ -1345,6 +1345,7 @@ struct TrailerCaptionDetailedAdjustmentCard: View {
                         Text("글자 색상")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(.primary)
+                            .frame(height: 32, alignment: .leading)
 
                         // 정확히 6개 퀵 스와치
                         quickSwatchesRow(
@@ -1387,6 +1388,7 @@ struct TrailerCaptionDetailedAdjustmentCard: View {
                             .labelsHidden()
                             .controlSize(.small)
                         }
+                        .frame(height: 32, alignment: .leading)
 
                         // 정확히 6개 퀵 스와치
                         quickSwatchesRow(

@@ -2024,6 +2024,7 @@ private struct VideoTrailerSettings: View {
                     previewAndTabStrip(bodyHeight: size.height)
                     wideLeftContent
                 }
+                .frame(width: half, alignment: .leading)
             }
             .scrollBounceBehavior(.basedOnSize, axes: .vertical)
             .frame(width: half)
@@ -2032,6 +2033,7 @@ private struct VideoTrailerSettings: View {
                 VStack(alignment: .leading, spacing: ui(12)) {
                     wideRightContent
                 }
+                .frame(width: half, alignment: .leading)
             }
             .scrollBounceBehavior(.basedOnSize, axes: .vertical)
             .frame(width: half)
