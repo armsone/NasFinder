@@ -1,0 +1,31 @@
+DdulgiMayo license notes for HanClip
+
+Official source checked:
+- Dovemayo creator NAVER Blog, "둘기마요체 완성판 무료배포!"
+  https://blog.naver.com/dovemayo_/221300837221
+
+Copyright:
+- Dovemayo
+
+License / usage statement found:
+- The creator states that personal and corporate commercial use is allowed and
+  that the font may be used freely.
+
+HanClip usage check:
+- Commercial use: allowed by the creator's statement.
+- User-created video output: treated as allowed because commercial use is
+  allowed and no video-output restriction was found in the official post.
+- App/software embedding: no explicit prohibition was found in the creator's
+  official post. FontBee also lists embedding as allowed for Dovemayo, but the
+  creator blog is the primary source used for the bundled OTF file.
+- Modification/redistribution: the official post does not provide detailed
+  OFL-style redistribution terms for the original Dovemayo OTF, so HanClip
+  should redistribute only the unmodified official font file with this notice.
+- Paid sale of the font file by itself: do not sell the font file by itself.
+- Copyright notice: keep this notice with the app bundle.
+
+Bundled file:
+- Resources/Fonts/DdulgiMayo.otf
+
+Original file name from the creator download:
+- dovemayo.otf

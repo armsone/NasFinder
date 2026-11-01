@@ -1488,6 +1488,30 @@ capabilities:
       android: {status: source_implemented_runtime_partial, source_refs: ["NasFinder-Android@52633ced830f415bc3c5e1dad6ebde2558527a90"], tests: [], evidence: ["Android 2.34.2 released at 52633ced830f415bc3c5e1dad6ebde2558527a90 implements tablet portrait/landscape 1:1 fixed-vs-scroll panes, phone 2-col board->detail with scroll preservation, rotation state retention, safe-area clearance, and 24/28dp + 48dp action icon targets"]}
     dependencies: [editing.storyboard_grid_and_captions, editing.preview_resize_and_output_naming, product.accessibility_privacy_support_matrix]
     parity_row_ids: [trailer, accessibility-support]
+  - id: editing.compact_four_tab_inspector_20261101
+    purpose: "확정된 Android 편집 화면을 iPhone·iPad·Mac에 적용한다. 이전 보드/상세 왕복 및 두 영역 헤더 규칙보다 이 최신 지시가 우선한다."
+    source_refs: ["NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/AdaptiveEditorWorkspace.kt", "NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/SceneCaptionSection.kt", "NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/SceneCaption.kt"]
+    entry_points: ["영상 만들기 > 편집본 > 편집"]
+    preconditions: ["편집 가능한 클립이 하나 이상 있음"]
+    inputs: ["클립·자막·음악·화면 탭", "2~6열 클립 격자", "자막 문구·전체/선택/현재 범위·25개 위치·스타일·글꼴·크기·색상·그림자·줄 간격", "편집본 저장", "저장 후 내보내기"]
+    normal_result: "미리보기와 네 탭은 한 묶음이며 탭을 누르면 해당 설정만 보인다. 폰은 한 페이지 스크롤을 쓰고 기본 3열 격자다. iPad 가로·세로와 넓은 Mac은 독립 스크롤하는 두 열이며 자막 탭의 왼쪽은 미리보기·탭과 내용/위치만, 오른쪽은 스타일/글꼴 다음 세부 조절이다."
+    states: [clip_grid, caption_content, style_expanded, font_expanded, caption_details, music, picture, draft_dirty, draft_saved, saving_failed, rendering, rendered, render_failed, cancelled]
+    algorithms_and_thresholds: ["각 묶음 제목은 카드 바깥, 둥근 사각 카드와 일관된 44~48pt 터치 행", "위치판 160 높이와 날짜 버튼 76+8+76 높이 정렬", "새 자막 기본 전체 영상·맨 위 왼쪽", "스타일 우선, 글꼴은 그 다음 인라인 접기/펼치기", "글자색과 그림자색 각각 SV/색상띠 및 6개 샘플", "글자색 직접 변경 시 그림자 RGB를 반전하고 수동 그림자 변경은 다시 열어도 보존", "자막 크기 4단계, 줄간격 0.5~2.0", "내보내기 전 미적용 자막 처리와 내구성 편집본 저장 성공 대기"]
+    data_contracts: ["기존 프로젝트 역호환 디코딩", "자막의 폰트·25개 위치·글자색·그림자색·투명도·줄간격 저장", "원본 미디어 보존"]
+    producer_consumer_routes: ["자막 입력 -> 초안 -> 범위 적용 -> 장면 모델 -> 편집본 디스크 -> 재열기", "동일 장면 자막 모델 -> 화면 미리보기 및 MP4 자막 래스터"]
+    persistence_relaunch: "수동 그림자색과 사용자 글꼴을 포함한 편집 설정을 보존한다."
+    permissions_privacy_security: ["원본 미디어·기존 사용자 편집본을 검증용으로 변경하지 않는다."]
+    background_lifecycle: "회전·크기 변경으로 미적용 자막을 잃지 않으며 전체화면 진입 시 원래 플레이어를 멈춘다."
+    gestures_accessibility: ["네 탭 묶음 세로 드래그로 미리보기 높이 조절", "의미 있는 레이블과 선택 상태", "HEX 숫자 대신 시각 팔레트"]
+    supported_devices_layouts: ["Android Fold6 phone", "Android TriFold portrait/landscape", "iPhone", "iPad portrait/landscape", "Mac responsive"]
+    visual_reference: "Android 2.37.7 candidate; latest direct user instruction on 2026-11-01"
+    platform_adaptations: {ios: ["SwiftUI/Catalyst native implementation"], android: ["Compose native implementation"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: in_progress, source_refs: ["NasFinder/Features/Video/TrailerSceneEditing.swift", "NasFinder/Features/Preview/VideoTrailerView.swift", "NasFinder/Features/Video/TrailerProjectStore.swift"], tests: [], evidence: []}
+      android: {status: source_implemented_runtime_partial, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/SceneCaptionSection.kt"], tests: [], evidence: ["2.37.6 Fold6 palette auto-inverse, manual override and save/reopen observed; 2.37.7 final 6 swatches and portrait placement awaiting capture"]}
+    dependencies: [editing.storyboard_grid_and_captions, editing.simple_two_area_flow_and_draft_save]
+    parity_row_ids: [editor_20261101.preview_tabs.layout, editor_20261101.phone_scroll.behavior, editor_20261101.tablet_columns.layout, editor_20261101.caption_palettes.layout, editor_20261101.auto_shadow.behavior, editor_20261101.caption_persistence.behavior, editor_20261101.draft_export.behavior, editor_20261101.caption_output.behavior]
 known_unknowns:
   - id: UNKNOWN-RUNTIME-NAS-MATRIX
     description: "No live Synology/SFTP/SMB/WebDAV/FTP/cloud endpoint matrix was exercised; firmware-specific authentication, thumbnails, mutations and cancellation remain runtime-unverified."

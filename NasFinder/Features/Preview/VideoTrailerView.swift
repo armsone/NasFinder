@@ -340,56 +340,28 @@ extension Color {
 struct CaptionOverlayView: View {
     let caption: TrailerCaption
 
-    /// 글자 크기·여백 pt 값이 그대로 맞는 기준 화면 높이.
-    static let referenceHeight: CGFloat = 360
-    static let horizontalInset: CGFloat = 16
-    static let topInset: CGFloat = 16
-    static let bottomInset: CGFloat = 20
-    static let textPadding = CGSize(width: 10, height: 4)
-
-    static func uiFont(_ caption: TrailerCaption, scale: CGFloat) -> UIFont {
-        let base = UIFont.systemFont(ofSize: max(1, CGFloat(caption.fontSize) * scale), weight: .bold)
-        let design: UIFontDescriptor.SystemDesign
-        switch caption.fontDesign {
-        case .serif: design = .serif
-        case .rounded: design = .rounded
-        case .monospaced: design = .monospaced
-        case .standard: design = .default
-        }
-        guard let descriptor = base.fontDescriptor.withDesign(design) else { return base }
-        return UIFont(descriptor: descriptor, size: base.pointSize)
-    }
-
     var body: some View {
         GeometryReader { geometry in
-            let scale = geometry.size.height > 0 ? geometry.size.height / Self.referenceHeight : 1
-            VStack(spacing: 0) {
-                if caption.position == .top {
-                    captionText(scale).padding(.top, Self.topInset * scale)
-                    Spacer(minLength: 0)
-                } else if caption.position == .center {
-                    Spacer(minLength: 0)
-                    captionText(scale)
-                    Spacer(minLength: 0)
-                } else {
-                    Spacer(minLength: 0)
-                    captionText(scale).padding(.bottom, Self.bottomInset * scale)
-                }
+            if let image = TrailerCaptionRenderer.renderImage(
+                text: caption.text,
+                fontName: caption.fontName,
+                captionSize: caption.captionSize,
+                textColorHex: caption.colorHex,
+                hasShadow: caption.hasShadow,
+                shadowColorHex: caption.shadowColorHex,
+                shadowOpacity: caption.shadowOpacity,
+                lineSpacing: caption.lineSpacing,
+                column: caption.column,
+                row: caption.row,
+                renderSize: geometry.size
+            ) {
+                Image(uiImage: image)
+                    .resizable()
+                    .frame(width: geometry.size.width, height: geometry.size.height)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .padding(.horizontal, Self.horizontalInset * scale)
         }
         .allowsHitTesting(false)
         .accessibilityHidden(true)
-    }
-
-    private func captionText(_ scale: CGFloat) -> some View {
-        Text(caption.text)
-            .font(Font(Self.uiFont(caption, scale: scale)))
-            .multilineTextAlignment(.center)
-            .foregroundStyle(Color(captionHex: caption.colorHex))
-            .shadow(color: .black.opacity(caption.hasShadow ? 0.85 : 0), radius: 3 * scale, x: 1 * scale, y: 1 * scale)
-            .padding(.horizontal, Self.textPadding.width * scale).padding(.vertical, Self.textPadding.height * scale)
     }
 }
 
@@ -441,10 +413,6 @@ struct VideoTrailerView: View {
     @State private var persistedRecord: TrailerProjectRecord?
     /// 아직 저장 기록이 없는 새 편집본의 기본 이름 기준 시각.
     @State private var sessionStartedAt = Date()
-    /// 편집(장면 보드·인스펙터)과 영상 만들기(전체 설정·만들기·완성 영상) 두 영역.
-    @State private var area: TrailerEditorArea = .edit
-    /// 폰: 장면 보드에서 장면을 눌러 들어간 상세 화면. 보드는 트리에 남아 스크롤 위치가 그대로다.
-    @State private var showsPhoneDetail = false
     /// 자막 탭의 입력 초안. 적용/입력 취소를 고르기 전에는 장면에 들어가지도 버려지지도 않는다.
     @StateObject private var captionDraft = TrailerCaptionDraft()
     @State private var guardedAction: TrailerGuardedAction?
@@ -705,11 +673,6 @@ struct VideoTrailerView: View {
                 apply: { _ in runGuarded { apply(currentDraft()) } },
                 selectedSceneID: $selectedSceneID,
                 chrome: chrome(for: tier),
-                area: Binding(get: { area }, set: { next in
-                    guard next != area else { return }
-                    runGuarded { area = next }
-                }),
-                showsPhoneDetail: $showsPhoneDetail,
                 captionDraft: captionDraft,
                 isOutputCurrent: isOutputCurrent,
                 renderPlan: model.isBusy ? model.renderPlan : [],
@@ -1014,11 +977,11 @@ struct VideoTrailerView: View {
 
     /// Makes the video from the draft exactly as it stands. The draft is kept whatever
     /// the outcome, so a failure never costs the user their order, lengths or music.
-    private func apply(_ draft: TrailerSettingsDraft) {
+        private func apply(_ draft: TrailerSettingsDraft) {
         guard !draft.sources.isEmpty else { return }
         presentedSettings = nil
         outputMode = mode
-        if self.draft == nil { self.draft = draft }
+        self.draft = draft
         // Sources the user took out leave the session for good, so earlier undo steps that
         // still point at them are dropped.
         let dropsSources = model.sources.contains { staged in !draft.sources.contains { $0.id == staged.id } }
@@ -1029,10 +992,13 @@ struct VideoTrailerView: View {
         let revision = TrailerOutputRevision(signature: snapshot.signature, mode: mode)
         // Value copies of everything the render reads (scenes with their captions, options,
         // music): later edits never change a running render.
-        model.start(items: items, service: service, mode: mode, generate: true, sourceOrder: reconciled.map(\.id),
-                    total: draft.total, clipLength: draft.clipLength, aspectRatio: draft.aspectRatio, music: draft.music,
-                    manualScenes: draft.scenes, draftSources: reconciled, revision: revision)
-        if dropsSources { history.reset(to: draft) }
+        Task { @MainActor in
+            guard await saveDraftNow() else { return }
+            model.start(items: items, service: service, mode: mode, generate: true, sourceOrder: reconciled.map(\.id),
+                        total: draft.total, clipLength: draft.clipLength, aspectRatio: draft.aspectRatio, music: draft.music,
+                        manualScenes: draft.scenes, draftSources: reconciled, revision: revision)
+            if dropsSources { history.reset(to: draft) }
+        }
     }
 
     /// After a failed attempt with the sources still staged this repeats that attempt;
@@ -1389,8 +1355,6 @@ private struct TrailerSettingsHost: View {
     let apply: (TrailerSettingsDraft) -> Void
     var selectedSceneID: Binding<Int?> = .constant(nil)
     var chrome = TrailerEditorChrome()
-    @Binding var area: TrailerEditorArea
-    @Binding var showsPhoneDetail: Bool
     @ObservedObject var captionDraft: TrailerCaptionDraft
     let isOutputCurrent: Bool
     let renderPlan: [VideoTrailerScene]
@@ -1414,7 +1378,7 @@ private struct TrailerSettingsHost: View {
             onSave: onSave, isSaved: isSaved,
             regenerate: { apply(draft ?? opening) },
             scenes: binding.scenes, nextSceneID: binding.nextSceneID, selectedSceneID: selectedSceneID,
-            chrome: chrome, area: $area, showsPhoneDetail: $showsPhoneDetail, captionDraft: captionDraft,
+            chrome: chrome, captionDraft: captionDraft,
             isOutputCurrent: isOutputCurrent, renderPlan: renderPlan, outputName: outputName,
             savedFilename: savedFilename
         )
@@ -1460,8 +1424,6 @@ private struct VideoTrailerSettings: View {
     @Binding var nextSceneID: Int
     @Binding var selectedSceneID: Int?
     let chrome: TrailerEditorChrome
-    @Binding var area: TrailerEditorArea
-    @Binding var showsPhoneDetail: Bool
     @ObservedObject var captionDraft: TrailerCaptionDraft
     /// 완성 영상이 지금 편집 상태로 만들어졌는지. 아니면 영상은 보이지도 저장되지도 않는다.
     let isOutputCurrent: Bool
@@ -1496,6 +1458,20 @@ private struct VideoTrailerSettings: View {
     /// 전체 화면 들어가기·나오기마다 늘려 재생을 그 자리에서 멈춘다.
     @State private var pauseRequest = 0
 
+    private enum VideoTrailerTab: String, CaseIterable, Identifiable {
+        case clips = "클립"
+        case caption = "자막"
+        case music = "음악"
+        case screen = "화면"
+
+        var id: String { rawValue }
+    }
+
+    @State private var activeTab: VideoTrailerTab = .clips
+    @State private var columns: Int = 3
+    @State private var captionScope: CaptionApplyScope = .current
+    @State private var hasInitializedColumns = false
+
     // Recomputed from the actual retained sources on every access, so removing the last
     // video, a decode-skip exclusion, retry or reopen all flip this immediately instead
     // of freezing whatever the initial items looked like.
@@ -1524,43 +1500,86 @@ private struct VideoTrailerSettings: View {
     /// 영상 만들기 영역의 고정 아래 줄. 지금 편집으로 만든 영상이 없거나 지난 것이면 "만들기" 하나만,
     /// 지금 결과가 있으면 폰하드 저장이 주 행동이고 컬렉션 추가가 보조다(공유는 플레이어 안에 있다).
     /// 렌더가 끝났다고 저장된 것은 아니다: 저장됨은 폰하드가 실제로 받은 뒤에만 표시한다.
+    private func applyPendingCaptionAction() -> Bool {
+        guard captionDraft.isDirty else { return true }
+        if let text = captionDraft.caption?.text, text.count > 2000 {
+            return false
+        }
+        var batchCaption: TrailerCaption? = nil
+        captionDraft.apply(to: &scenes, scope: captionScope, selectedIDs: selectedSceneIDs, batchCaption: &batchCaption)
+        return true
+    }
+
     private var createBar: some View {
         let blocked: Bool = proposal.isEmpty || (mode == .mediaMusic && music == nil)
         let saveTitle: String = isSaved ? "폰하드에 저장됨" : isBusy ? "폰하드에 저장 중…" : "폰하드에 저장"
-        return VStack(spacing: ui(4)) {
+        return VStack(spacing: ui(6)) {
+            if isBusy {
+                HStack(spacing: ui(8)) {
+                    ProgressView().controlSize(.small)
+                    Text(status.isEmpty ? "처리 중…" : status)
+                        .font(.ui(.caption)).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer()
+                    if let exportProgress {
+                        Text("\(Int(exportProgress * 100))%")
+                            .font(.ui(.caption).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
             if isOutputCurrent, let outputURL {
                 HStack(spacing: ui(8)) {
                     Button { onSave?() } label: {
                         Label(saveTitle, interfaceSystemImage: isSaved ? "checkmark.circle" : "square.and.arrow.down")
-                            .frame(maxWidth: .infinity)
+                            .frame(maxWidth: .infinity, minHeight: ui(44))
                     }
                     .buttonStyle(PorcelainProminentButtonStyle()).controlSize(.large)
                     .disabled(isBusy || isSaved || onSave == nil)
-                    Button { showingCollectionAdd = true } label: {
-                        InterfaceToolbarIcon(systemName: "photo.stack")
-                            .frame(minWidth: ui(48), minHeight: ui(48))
-                            .contentShape(Rectangle())
+
+                    ShareLink(item: outputURL) {
+                        Label("공유", systemImage: "square.and.arrow.up")
+                            .frame(minWidth: ui(80), minHeight: ui(44))
                     }
                     .buttonStyle(.bordered)
                     .disabled(isBusy)
-                    .accessibilityLabel("컬렉션에 추가")
-                    .sheet(isPresented: $showingCollectionAdd) {
-                        CollectionAddSheet(videoURL: outputURL, suggestedTitle: "내 영상", sourceProjectID: chrome.projectID)
-                    }
                 }
                 if let savedFilename {
                     Text(savedFilename).font(.ui(.caption2)).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.middle)
                 }
-            } else {
-                Button(action: regenerate) {
-                    Text(createTitle).frame(maxWidth: .infinity)
+            }
+            HStack(spacing: ui(8)) {
+                Button {
+                    if applyPendingCaptionAction() {
+                        chrome.onSaveDraft()
+                    }
+                } label: {
+                    let saveDraftTitle: String = chrome.isSavingDraft ? "저장 중…"
+                        : chrome.saveFailed ? "저장 실패" : chrome.isDraftSaved ? "저장됨" : "편집본 저장"
+                    Text(saveDraftTitle)
+                        .font(.ui(.subheadline).weight(.medium))
+                        .frame(maxWidth: .infinity, minHeight: ui(44))
+                }
+                .buttonStyle(.bordered)
+                .disabled(chrome.isSavingDraft || isBusy)
+
+                Button {
+                    if applyPendingCaptionAction() {
+                        regenerate()
+                    }
+                } label: {
+                    Text(isBusy ? "내보내는 중…" : "저장 후 내보내기")
+                        .font(.ui(.subheadline).weight(.semibold))
+                        .frame(maxWidth: .infinity, minHeight: ui(44))
                 }
                 .buttonStyle(PorcelainProminentButtonStyle()).controlSize(.large)
                 .disabled(blocked || isBusy)
             }
         }
-        .padding(.horizontal, MacUIScale.defaultPadding).padding(.vertical, ui(8)).background(.bar)
+        .padding(.horizontal, MacUIScale.defaultPadding ?? 16)
+        .padding(.vertical, ui(8))
+        .background(.bar)
     }
 
     private var autoDuckToggle: some View {
@@ -1825,78 +1844,337 @@ private struct VideoTrailerSettings: View {
         VStack(spacing: 0) {
             if !isPreviewFullscreen {
                 projectBar
-                    .padding(.horizontal, MacUIScale.defaultPadding).padding(.vertical, ui(6))
+                    .padding(.horizontal, MacUIScale.defaultPadding ?? 16).padding(.vertical, ui(6))
                 Divider()
             }
             GeometryReader { proxy in
                 areaContent(size: proxy.size)
                     .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             }
-        }
-    }
-
-    /// 편집: 태블릿 세로는 위 고정 미리보기 + 아래 1:1(왼쪽 4열 보드, 오른쪽 인스펙터),
-    /// 태블릿 가로·Mac은 1:1(왼쪽 4열 보드, 오른쪽 미리보기 + 인스펙터), 폰은 2열 보드 → 장면 상세.
-    /// 보드와 인스펙터 본문은 각자 따로 스크롤된다.
-    @ViewBuilder
-    private func areaContent(size: CGSize) -> some View {
-        // defaultPadding이 nil이면 시스템 기본 여백(16pt)을 쓴다.
-        let pad: CGFloat = isPreviewFullscreen ? 0 : (MacUIScale.defaultPadding ?? 16)
-        let inner = CGSize(width: max(0, size.width - pad * 2), height: max(0, size.height - pad * 2))
-        let gap: CGFloat = 12
-        let half = max(0, (inner.width - gap) / 2)
-        if area == .make || isPreviewFullscreen {
-            makeArea(size: inner).padding(pad)
-        } else {
-            switch TrailerWorkspaceMode.mode(size: size, isPhoneDetail: showsPhoneDetail, usesShellSidebar: false) {
-            case .tabletPortrait:
-                VStack(spacing: 8) {
-                    resizablePreview(bodyHeight: inner.height)
-                    HStack(alignment: .top, spacing: gap) {
-                        boardPane(columns: 4).frame(width: half).frame(maxHeight: .infinity)
-                        inspectorPane.frame(width: half).frame(maxHeight: .infinity)
-                    }
-                }
-                .padding(pad)
-            case .tabletLandscape, .macResponsive:
-                HStack(alignment: .top, spacing: gap) {
-                    boardPane(columns: 4).frame(width: half).frame(maxHeight: .infinity)
-                    VStack(spacing: 8) {
-                        resizablePreview(bodyHeight: inner.height)
-                        inspectorPane.frame(maxHeight: .infinity)
-                    }
-                    .frame(width: half)
-                }
-                .padding(pad)
-            case .phoneBoard, .phoneDetail:
-                ZStack(alignment: .top) {
-                    // 상세에 들어가도 보드는 트리에 남겨 두어 돌아왔을 때 스크롤 위치가 그대로다.
-                    boardPane(columns: 2)
-                        .opacity(showsPhoneDetail ? 0 : 1)
-                        .allowsHitTesting(!showsPhoneDetail)
-                        .accessibilityHidden(showsPhoneDetail)
-                    if showsPhoneDetail {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Button { chrome.guarded { showsPhoneDetail = false } } label: {
-                                Label("장면 목록", interfaceSystemImage: "chevron.left")
-                                    .font(.ui(.subheadline).weight(.semibold))
-                                    .frame(minHeight: ui(44)).contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            resizablePreview(bodyHeight: inner.height)
-                            inspectorPane.frame(maxHeight: .infinity)
-                        }
-                        .background(PorcelainMetrics.paper)
-                    }
-                }
-                .padding(pad)
+            if !isPreviewFullscreen {
+                Divider()
+                createBar
             }
         }
     }
 
-    /// 영상 만들기: 위 미리보기(렌더 중에는 소리 없는 정지 장면, 지금 결과가 있으면 처음엔 멈춘 플레이어),
-    /// 그 아래 전체 설정이 따로 스크롤되고, 맨 아래 고정 줄에 만들기 또는 저장이 있다.
-    /// 전체 화면은 같은 미리보기 자리를 창 크기로 키운다(형제만 사라진다).
+    private func tabStrip(bounds: (minimum: CGFloat, preferred: CGFloat, maximum: CGFloat), currentHeight: CGFloat) -> some View {
+        HStack {
+            Picker("편집 탭", selection: $activeTab) {
+                ForEach(VideoTrailerTab.allCases) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+        }
+        .padding(.horizontal, MacUIScale.defaultPadding ?? 16)
+        .padding(.vertical, ui(6))
+        .background(PorcelainMetrics.paper)
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 3)
+                .onChanged { value in
+                    let start = gripStartHeight ?? currentHeight
+                    if gripStartHeight == nil { gripStartHeight = currentHeight }
+                    previewHeight = min(bounds.maximum, max(bounds.minimum, start + value.translation.height))
+                }
+                .onEnded { _ in gripStartHeight = nil }
+        )
+    }
+
+    private func previewAndTabStrip(bodyHeight: CGFloat) -> some View {
+        let bounds = previewBounds(bodyHeight: bodyHeight)
+        let height = min(bounds.maximum, max(bounds.minimum, previewHeight ?? bounds.preferred))
+        return VStack(spacing: 0) {
+            previewSection(showsOutput: isPreviewFullscreen || isOutputCurrent)
+                .frame(height: isPreviewFullscreen ? bodyHeight : height)
+                .frame(maxWidth: .infinity)
+            if !isPreviewFullscreen {
+                tabStrip(bounds: bounds, currentHeight: height)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func areaContent(size: CGSize) -> some View {
+        let pad: CGFloat = isPreviewFullscreen ? 0 : (MacUIScale.defaultPadding ?? 16)
+        let inner = CGSize(width: max(0, size.width - pad * 2), height: max(0, size.height - pad * 2))
+        let wide = size.width >= 640
+
+        if isPreviewFullscreen {
+            previewSection(showsOutput: true)
+                .frame(width: size.width, height: size.height)
+        } else if wide {
+            wideLayout(size: inner)
+                .padding(pad)
+                .onAppear {
+                    if !hasInitializedColumns {
+                        columns = 4
+                        hasInitializedColumns = true
+                    }
+                }
+        } else {
+            phoneLayout(size: inner)
+                .padding(pad)
+                .onAppear {
+                    if !hasInitializedColumns {
+                        columns = 3
+                        hasInitializedColumns = true
+                    }
+                }
+        }
+    }
+
+    private func phoneLayout(size: CGSize) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: ui(12)) {
+                previewAndTabStrip(bodyHeight: size.height)
+                phoneTabContent
+            }
+        }
+        .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+    }
+
+    @ViewBuilder
+    private var phoneTabContent: some View {
+        switch activeTab {
+        case .clips:
+            VStack(alignment: .leading, spacing: ui(12)) {
+                boardPane
+                inspectorPane
+            }
+        case .caption:
+            VStack(alignment: .leading, spacing: ui(12)) {
+                captionCardA
+                captionCardB
+                captionCardC
+            }
+        case .music:
+            musicTabContent
+        case .screen:
+            screenTabContent
+        }
+    }
+
+    private func wideLayout(size: CGSize) -> some View {
+        let gap: CGFloat = 12
+        let half = max(0, (size.width - gap) / 2)
+        return HStack(alignment: .top, spacing: gap) {
+            ScrollView {
+                VStack(alignment: .leading, spacing: ui(12)) {
+                    previewAndTabStrip(bodyHeight: size.height)
+                    wideLeftContent
+                }
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+            .frame(width: half)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: ui(12)) {
+                    wideRightContent
+                }
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+            .frame(width: half)
+        }
+    }
+
+    @ViewBuilder
+    private var wideLeftContent: some View {
+        switch activeTab {
+        case .clips:
+            boardPane
+        case .caption:
+            captionCardA
+        case .music:
+            musicSection
+        case .screen:
+            screenLeftContent
+        }
+    }
+
+    @ViewBuilder
+    private var wideRightContent: some View {
+        switch activeTab {
+        case .clips:
+            inspectorPane
+        case .caption:
+            VStack(alignment: .leading, spacing: ui(12)) {
+                captionCardB
+                captionCardC
+            }
+        case .music:
+            musicRightContent
+        case .screen:
+            screenRightContent
+        }
+    }
+
+    private var captionCardA: some View {
+        TrailerCaptionContentLocationCard(
+            captionDraft: captionDraft,
+            sources: sources,
+            selectedIDs: selectedSceneIDs,
+            scope: $captionScope,
+            onApply: {
+                _ = applyPendingCaptionAction()
+            }
+        )
+    }
+
+    private var captionCardB: some View {
+        TrailerCaptionStyleFontCard(captionDraft: captionDraft)
+    }
+
+    private var captionCardC: some View {
+        TrailerCaptionDetailedAdjustmentCard(captionDraft: captionDraft)
+    }
+
+    private var musicTabContent: some View {
+        VStack(alignment: .leading, spacing: ui(12)) {
+            musicSection
+            Divider()
+            if let selectedSceneID,
+               let scenes,
+               let index = TrailerSceneEditor.index(of: selectedSceneID, in: scenes),
+               let source = sources.first(where: { $0.id == scenes[index].sourceID }),
+               !source.isImage {
+                TrailerClipInspectorView(
+                    sources: sources,
+                    scenes: $scenes,
+                    selectedID: $selectedSceneID,
+                    aspectRatio: aspectRatio,
+                    section: .audio
+                )
+                Divider()
+            }
+            musicSummarySection
+        }
+    }
+
+    private var musicRightContent: some View {
+        VStack(alignment: .leading, spacing: ui(12)) {
+            if let selectedSceneID,
+               let scenes,
+               let index = TrailerSceneEditor.index(of: selectedSceneID, in: scenes),
+               let source = sources.first(where: { $0.id == scenes[index].sourceID }),
+               !source.isImage {
+                TrailerClipInspectorView(
+                    sources: sources,
+                    scenes: $scenes,
+                    selectedID: $selectedSceneID,
+                    aspectRatio: aspectRatio,
+                    section: .audio
+                )
+                Divider()
+            }
+            musicSummarySection
+        }
+    }
+
+    private var musicSummarySection: some View {
+        VStack(alignment: .leading, spacing: ui(6)) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(trailerFullDurationTitle(actualTotal)).font(.ui(.title2).weight(.semibold)).monospacedDigit()
+                Spacer()
+                Text(sceneSummary).font(.ui(.subheadline)).foregroundStyle(.secondary)
+            }
+            if !photoOnly && (mode == .mediaMusic || actualTotal <= originalTotal + 0.000001) {
+                Text(originalSummary).font(.ui(.caption)).foregroundStyle(.secondary)
+            }
+            if let music {
+                Text("음악 반복: \(musicRepeatCount)회").font(.ui(.caption)).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private var screenTabContent: some View {
+        VStack(alignment: .leading, spacing: ui(12)) {
+            screenLeftContent
+            Divider()
+            screenRightContent
+        }
+    }
+
+    private var screenLeftContent: some View {
+        VStack(alignment: .leading, spacing: ui(12)) {
+            Picker("제작 방식", selection: Binding(get: { mode }, set: onModeChange)) {
+                Text("예고편").tag(VideoTrailerMode.trailer)
+                Text("뮤직비디오").tag(VideoTrailerMode.mediaMusic)
+            }
+            .pickerStyle(.segmented)
+            .disabled(isBusy)
+
+            Divider()
+
+            aspectSection
+        }
+    }
+
+    private var screenRightContent: some View {
+        VStack(alignment: .leading, spacing: ui(12)) {
+            VStack(alignment: .leading, spacing: ui(3)) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(trailerFullDurationTitle(actualTotal)).font(.ui(.title2).weight(.semibold)).monospacedDigit()
+                    Spacer()
+                    Text(sceneSummary).font(.ui(.subheadline)).foregroundStyle(.secondary)
+                }
+                if !photoOnly && (mode == .mediaMusic || actualTotal <= originalTotal + 0.000001) {
+                    Text(originalSummary).font(.ui(.caption)).foregroundStyle(.secondary)
+                }
+            }
+
+            if mode == .trailer {
+                Divider()
+                durationControls
+            }
+
+            TrailerClipInspectorView(
+                sources: sources,
+                scenes: $scenes,
+                selectedID: $selectedSceneID,
+                aspectRatio: aspectRatio,
+                section: .framing
+            )
+
+            if sources.isEmpty {
+                Text("모든 영상이 제거되어 예고편을 만들 수 없습니다. 영상을 다시 추가해 주세요.")
+                    .font(.ui(.caption)).foregroundStyle(.red)
+            }
+            if mode == .trailer, scenes == nil, music?.policy != .fitMusic, abs(total - baseTotal) >= 0.5 {
+                Text("선택한 \(trailerFullDurationTitle(total))에 가장 가까운 길이로 맞췄어요")
+                    .font(.ui(.caption)).foregroundStyle(.secondary)
+            }
+            if recoveredCount > 0 {
+                Text("복구됨 \(recoveredCount)개 · 멈춘 화면으로 대체된 영상").font(.ui(.caption)).foregroundStyle(.secondary)
+            }
+            if skippedCount > 0 {
+                Text(trailerSkippedTitle(skippedCount)).font(.ui(.caption)).foregroundStyle(.secondary)
+            }
+            if excludedCount > 0 {
+                Text("\(excludedCount)개 영상은 담기지 않아요. 총길이를 늘리거나 장면 길이를 줄여보세요.")
+                    .font(.ui(.caption)).foregroundStyle(.secondary)
+            }
+            HStack {
+                if mode == .trailer || scenes != nil {
+                    Button("자동 추천으로 되돌리기") {
+                        scenes = nil
+                        selectedSceneID = nil
+                        clipLength = VideoTrailerModel.recommendedLength(sources)
+                        total = VideoTrailerBatchPlan.recommendedTotal(sources: sources, clipLength: clipLength)
+                        syncTotalToFit(music)
+                        showingDuration = false
+                        showingClipLength = false
+                    }
+                    .font(.ui(.caption)).frame(minHeight: ui(30))
+                }
+                Spacer()
+                Button("이 편집 버리기", role: .destructive) { confirmingDiscard = true }
+                    .font(.ui(.caption)).frame(minHeight: ui(30))
+            }
+        }
+    }
+
     private func makeArea(size: CGSize) -> some View {
         let wide = size.width >= 640 && size.width > size.height
         let half = max(0, (size.width - 12) / 2)
@@ -1992,15 +2270,14 @@ private struct VideoTrailerSettings: View {
     }
 
     @ViewBuilder
-    private func boardPane(columns: Int) -> some View {
+    private var boardPane: some View {
         if let editScenes = scenes {
-            // 폰 2열, 태블릿·Mac 4열. 이동·복제·삭제는 이 선택 도구줄에만 있고, 모두 초안을 바꾸므로
-            // 되돌리기·자동 저장에 그대로 잡힌다.
             TrailerStoryboardGrid(
                 scenes: editScenes, sources: sources,
                 selectedID: guardedSelection, selectedIDs: $selectedSceneIDs,
-                columnsCount: columns,
-                onSelectSceneForDetail: columns == 2 ? { _ in showsPhoneDetail = true } : nil,
+                columnsCount: $columns,
+                scrollable: false,
+                onSelectSceneForDetail: nil,
                 onMoveScenes: { ids, position in
                     guard var next = scenes else { return }
                     TrailerSceneEditor.moveScenes(ids: ids, toOneBasedPosition: position, in: &next)
@@ -2029,19 +2306,24 @@ private struct VideoTrailerSettings: View {
                     }
                 })
         } else {
-            // 준비가 끝나면 편집기가 자동 계획을 장면 목록으로 옮긴다. 그 전에는 준비 진행만 보인다.
-            ScrollView {
-                sourceOrderSection
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            sourceOrderSection
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
+    @ViewBuilder
+    private func boardPane(columns: Int) -> some View {
+        boardPane
+    }
+
     private var inspectorPane: some View {
-        TrailerSceneInspector(
-            mode: mode, sources: sources, scenes: $scenes, nextSceneID: $nextSceneID,
-            selectedID: $selectedSceneID, clipLength: clipLength, chrome: chrome,
-            aspectRatio: aspectRatio, captionDraft: captionDraft)
+        TrailerClipInspectorView(
+            sources: sources,
+            scenes: $scenes,
+            selectedID: $selectedSceneID,
+            aspectRatio: aspectRatio,
+            section: .timing
+        )
     }
 
     private var activePreviewContext: (source: VideoTrailerSource?, duration: Double, framing: VideoTrailerImageClip.Framing?,
@@ -2054,7 +2336,8 @@ private struct VideoTrailerSettings: View {
                 ? .init(fitsFrame: selectedScene.fitsFrame, offsetX: selectedScene.offsetX, offsetY: selectedScene.offsetY)
                 : nil
             // 내보내기(`TrailerPreparedPlan.manual`)와 같은 규칙: 빈 문구는 그리지 않는다.
-            let caption = selectedScene.caption.flatMap {
+            let candidateCaption = (captionDraft.sceneID == selectedScene.id) ? captionDraft.caption : selectedScene.caption
+            let caption = candidateCaption.flatMap {
                 $0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0
             }
             return (source, selectedScene.length, framing, caption)
@@ -2142,38 +2425,19 @@ private struct VideoTrailerSettings: View {
     /// 고정 머리글: 프로젝트 이름, 되돌리기/다시 실행, 편집본 저장 버튼 하나(저장/저장 중…/저장됨/저장 실패),
     /// 그리고 편집 · 영상 만들기 두 영역 전환.
     private var projectBar: some View {
-        let saveTitle: String = chrome.isSavingDraft ? "저장 중…"
-            : chrome.saveFailed ? "저장 실패" : chrome.isDraftSaved ? "저장됨" : "저장"
-        return VStack(spacing: ui(4)) {
-            HStack(spacing: ui(4)) {
-                Text(chrome.title).font(.ui(.footnote).weight(.semibold)).lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: ui(4))
-                Button(action: chrome.onUndo) {
-                    InterfaceIcon(systemName: "arrow.uturn.backward", size: 24)
-                        .frame(minWidth: ui(44), minHeight: ui(44)).contentShape(Rectangle())
-                }
-                .disabled(!chrome.canUndo).accessibilityLabel("되돌리기")
-                Button(action: chrome.onRedo) {
-                    InterfaceIcon(systemName: "arrow.uturn.forward", size: 24)
-                        .frame(minWidth: ui(44), minHeight: ui(44)).contentShape(Rectangle())
-                }
-                .disabled(!chrome.canRedo).accessibilityLabel("다시 실행")
-                // 렌더와 무관한 편집본 저장. 실패하면 같은 버튼이 "저장 실패"가 되고, 누르면 다시 저장한다.
-                Button(action: chrome.onSaveDraft) {
-                    Text(saveTitle).font(.ui(.footnote).weight(.semibold)).lineLimit(1)
-                        .foregroundStyle(chrome.saveFailed ? Color.red
-                                         : chrome.isDraftSaved ? Color.secondary : Color.accentColor)
-                        .frame(minWidth: ui(48), minHeight: ui(44)).contentShape(Rectangle())
-                }
-                .disabled(chrome.isSavingDraft)
-                .accessibilityLabel(chrome.saveFailed ? "편집본 저장 실패, 다시 저장" : "편집본 \(saveTitle)")
+        HStack(spacing: ui(4)) {
+            Text(chrome.title).font(.ui(.footnote).weight(.semibold)).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: ui(4))
+            Button(action: chrome.onUndo) {
+                InterfaceIcon(systemName: "arrow.uturn.backward", size: 24)
+                    .frame(minWidth: ui(44), minHeight: ui(44)).contentShape(Rectangle())
             }
-            Picker("", selection: $area) {
-                ForEach(TrailerEditorArea.allCases) { Text($0.rawValue).tag($0) }
+            .disabled(!chrome.canUndo).accessibilityLabel("되돌리기")
+            Button(action: chrome.onRedo) {
+                InterfaceIcon(systemName: "arrow.uturn.forward", size: 24)
+                    .frame(minWidth: ui(44), minHeight: ui(44)).contentShape(Rectangle())
             }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: ui(420))
-            .disabled(isPreviewFullscreen)
+            .disabled(!chrome.canRedo).accessibilityLabel("다시 실행")
         }
         .buttonStyle(.plain)
     }
@@ -3489,62 +3753,30 @@ final class VideoTrailerModel: ObservableObject {
         let videoLayer = CALayer()
         videoLayer.frame = frame
         parent.addSublayer(videoLayer)
-        let scale = renderSize.height / CaptionOverlayView.referenceHeight
-        // 미리보기와 같은 상자: 좌우 16pt 안쪽, 글자 둘레 10×4pt 여백, 위 16pt / 아래 20pt.
-        let padding = CGSize(width: CaptionOverlayView.textPadding.width * scale,
-                             height: CaptionOverlayView.textPadding.height * scale)
-        let boxX = CaptionOverlayView.horizontalInset * scale
-        let boxWidth = max(1, ceil(renderSize.width - boxX * 2))
-        let textWidth = max(1, boxWidth - padding.width * 2)
-        let topEdge = CaptionOverlayView.topInset * scale
-        let bottomEdge = CaptionOverlayView.bottomInset * scale
-        let maxTextHeight = max(1, renderSize.height - topEdge - bottomEdge - padding.height * 2)
-        let drawing: NSStringDrawingOptions = [.usesLineFragmentOrigin, .usesFontLeading]
-        let format = UIGraphicsImageRendererFormat()
-        format.scale = 1
-        format.opaque = false
+
         for window in windows where window.duration > 0 {
             let caption = window.caption
-            let text = caption.text.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !text.isEmpty else { continue }
-            let font = CaptionOverlayView.uiFont(caption, scale: scale)
-            let paragraph = NSMutableParagraphStyle()
-            paragraph.alignment = .center
-            paragraph.lineBreakMode = .byWordWrapping
-            let attributes: [NSAttributedString.Key: Any] = [
-                .font: font, .foregroundColor: UIColor(Color(captionHex: caption.colorHex)), .paragraphStyle: paragraph
-            ]
-            // 재는 것과 그리는 것을 같은 UIKit 글자 배치로 해서 줄바꿈·글자 폭이 어긋나 잘리지 않는다.
-            let measured = (text as NSString).boundingRect(
-                with: CGSize(width: textWidth, height: .greatestFiniteMagnitude),
-                options: drawing, attributes: attributes, context: nil)
-            let textHeight = min(maxTextHeight, ceil(measured.height))
-            let boxSize = CGSize(width: boxWidth, height: ceil(textHeight + padding.height * 2))
-            // 자막마다 한 번만 그린다(프레임마다 그리지 않는다). 여백 안에 글자와 아래 획이 모두 들어간다.
-            let image = UIGraphicsImageRenderer(size: boxSize, format: format).image { _ in
-                (text as NSString).draw(
-                    with: CGRect(x: padding.width, y: padding.height, width: textWidth, height: textHeight),
-                    options: drawing.union(.truncatesLastVisibleLine), attributes: attributes, context: nil)
-            }
-            let y: CGFloat
-            switch caption.position {
-            case .top: y = topEdge
-            case .center: y = (renderSize.height - boxSize.height) / 2
-            case .bottom: y = renderSize.height - bottomEdge - boxSize.height
-            }
+            guard let image = TrailerCaptionRenderer.renderImage(
+                text: caption.text,
+                fontName: caption.fontName,
+                captionSize: caption.captionSize,
+                textColorHex: caption.colorHex,
+                hasShadow: caption.hasShadow,
+                shadowColorHex: caption.shadowColorHex,
+                shadowOpacity: caption.shadowOpacity,
+                lineSpacing: caption.lineSpacing,
+                column: caption.column,
+                row: caption.row,
+                renderSize: renderSize
+            ) else { continue }
+
             let textLayer = CALayer()
-            textLayer.frame = CGRect(x: boxX, y: y, width: boxSize.width, height: boxSize.height)
+            textLayer.frame = frame
             textLayer.contents = image.cgImage
             textLayer.contentsGravity = .resize
             textLayer.contentsScale = 1
-            if caption.hasShadow {
-                textLayer.shadowColor = UIColor.black.cgColor
-                textLayer.shadowOpacity = 0.85
-                textLayer.shadowRadius = 3 * scale
-                textLayer.shadowOffset = CGSize(width: 1 * scale, height: 1 * scale)
-            }
-            // 이 장면 동안만 보인다.
             textLayer.opacity = 0
+
             let show = CAKeyframeAnimation(keyPath: "opacity")
             show.values = [1, 1]
             show.keyTimes = [0, 1]

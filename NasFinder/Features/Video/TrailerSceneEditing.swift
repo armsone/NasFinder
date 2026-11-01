@@ -435,6 +435,8 @@ struct TrailerEditorChrome {
     var isDraftSaved = false
     /// 렌더와 무관하게 지금 편집본을 디스크에 저장한다(끝날 때까지 기다리는 내구성 저장).
     var onSaveDraft: () -> Void = {}
+    /// 적용 대기 자막 적용 후 내구성 저장 성공 시 렌더링을 시작한다.
+    var onSaveAndExport: () -> Void = {}
     var onCancelWork: () -> Void = {}
     var onRetryRender: () -> Void = {}
     var projectID: UUID?
@@ -449,11 +451,18 @@ struct TrailerEditorChrome {
 @MainActor
 final class TrailerCaptionDraft: ObservableObject {
     @Published var text = ""
-    @Published var position: TrailerCaption.Position = .bottom
+    @Published var position: TrailerCaption.Position = .top
     @Published var fontDesign: TrailerCaption.FontDesign = .standard
     @Published var fontSize: Double = 22
     @Published var colorHex = "#FFFFFF"
     @Published var hasShadow = true
+    @Published var column: Int = 0
+    @Published var row: Int = 0
+    @Published var fontName: String = "pretendard_bold"
+    @Published var captionSize: CaptionSize = .normal
+    @Published var shadowColorHex: String = "#000000"
+    @Published var shadowOpacity: Double = 0.7
+    @Published var lineSpacing: Double = 1.0
     @Published var isDirty = false
     /// 이 초안을 불러온 장면.
     @Published private(set) var sceneID: Int?
@@ -466,13 +475,27 @@ final class TrailerCaptionDraft: ObservableObject {
             fontSize = caption.fontSize
             colorHex = caption.colorHex
             hasShadow = caption.hasShadow
+            column = caption.column
+            row = caption.row
+            fontName = caption.fontName
+            captionSize = caption.captionSize
+            shadowColorHex = caption.shadowColorHex
+            shadowOpacity = caption.shadowOpacity
+            lineSpacing = caption.lineSpacing
         } else {
             text = ""
-            position = .bottom
+            position = .top
             fontDesign = .standard
             fontSize = 22
             colorHex = "#FFFFFF"
             hasShadow = true
+            column = 0
+            row = 0
+            fontName = "pretendard_bold"
+            captionSize = .normal
+            shadowColorHex = "#000000"
+            shadowOpacity = 0.7
+            lineSpacing = 1.0
         }
         isDirty = false
         sceneID = scene.id
@@ -482,15 +505,59 @@ final class TrailerCaptionDraft: ObservableObject {
     var caption: TrailerCaption? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        return TrailerCaption(text: trimmed, position: position, fontDesign: fontDesign,
-                              fontSize: fontSize, colorHex: colorHex, hasShadow: hasShadow)
+        let pos: TrailerCaption.Position
+        if row <= 1 { pos = .top }
+        else if row == 2 { pos = .center }
+        else { pos = .bottom }
+        return TrailerCaption(
+            text: trimmed,
+            position: pos,
+            fontDesign: fontDesign,
+            fontSize: fontSize,
+            colorHex: colorHex,
+            hasShadow: hasShadow,
+            column: column,
+            row: row,
+            fontName: fontName,
+            captionSize: captionSize,
+            shadowColorHex: shadowColorHex,
+            shadowOpacity: shadowOpacity,
+            lineSpacing: lineSpacing
+        )
     }
 
-    /// 불러온 장면에 지금 값을 넣는다. 장면이 사라졌으면 넣을 곳이 없으므로 초안만 닫는다.
+    /// 불러온 장면에 지금 값을 넣는다.
     func apply(to scenes: inout [TrailerEditScene]?) {
-        if let id = sceneID, scenes?.contains(where: { $0.id == id }) == true {
-            let value = caption
-            TrailerSceneEditor.update(id, in: &scenes!) { $0.caption = value }
+        var batch: TrailerCaption? = nil
+        apply(to: &scenes, scope: .current, selectedIDs: [], batchCaption: &batch)
+    }
+
+    /// 범위(현재 클립/선택 클립/전체 영상)에 맞춰 자막을 원자적으로 적용한다.
+    func apply(
+        to scenes: inout [TrailerEditScene]?,
+        scope: CaptionApplyScope,
+        selectedIDs: Set<Int>,
+        batchCaption: inout TrailerCaption?
+    ) {
+        guard scenes != nil else { isDirty = false; return }
+        let value = caption
+        switch scope {
+        case .current:
+            if let id = sceneID, scenes?.contains(where: { $0.id == id }) == true {
+                TrailerSceneEditor.update(id, in: &scenes!) { $0.caption = value }
+            }
+        case .selected:
+            let targets = selectedIDs.isEmpty ? (sceneID.map { Set([$0]) } ?? []) : selectedIDs
+            for id in targets {
+                if scenes?.contains(where: { $0.id == id }) == true {
+                    TrailerSceneEditor.update(id, in: &scenes!) { $0.caption = value }
+                }
+            }
+        case .all:
+            for index in scenes!.indices {
+                scenes![index].caption = value
+            }
+            batchCaption = value
         }
         isDirty = false
     }
@@ -591,14 +658,15 @@ struct TrailerSceneStrip: View {
     }
 }
 
-/// 반응형 스토리보드 격자 (태블릿/Mac 4열, 폰 2열 보드).
+/// 반응형 스토리보드 격자 (태블릿/Mac 4열, 폰 3열 기본, 2...6열 조절).
 /// 다중 선택, 임의 1기준 위치 이동(420 -> 3), 복제, 삭제 기능 내장.
 struct TrailerStoryboardGrid: View {
     let scenes: [TrailerEditScene]
     let sources: [VideoTrailerSource]
     @Binding var selectedID: Int?
     @Binding var selectedIDs: Set<Int>
-    var columnsCount: Int = 4
+    @Binding var columnsCount: Int
+    var scrollable: Bool = true
     var onSelectSceneForDetail: ((Int) -> Void)? = nil
     var onMoveScenes: ((Set<Int>, Int) -> Void)? = nil
     var onDuplicateScenes: ((Set<Int>) -> Void)? = nil
@@ -608,43 +676,102 @@ struct TrailerStoryboardGrid: View {
     @State private var targetPositionString = "1"
     @State private var isMultiSelectMode = false
 
+    init(
+        scenes: [TrailerEditScene],
+        sources: [VideoTrailerSource],
+        selectedID: Binding<Int?>,
+        selectedIDs: Binding<Set<Int>>,
+        columnsCount: Binding<Int>,
+        scrollable: Bool = true,
+        onSelectSceneForDetail: ((Int) -> Void)? = nil,
+        onMoveScenes: ((Set<Int>, Int) -> Void)? = nil,
+        onDuplicateScenes: ((Set<Int>) -> Void)? = nil,
+        onDeleteScenes: ((Set<Int>) -> Void)? = nil
+    ) {
+        self.scenes = scenes
+        self.sources = sources
+        self._selectedID = selectedID
+        self._selectedIDs = selectedIDs
+        self._columnsCount = columnsCount
+        self.scrollable = scrollable
+        self.onSelectSceneForDetail = onSelectSceneForDetail
+        self.onMoveScenes = onMoveScenes
+        self.onDuplicateScenes = onDuplicateScenes
+        self.onDeleteScenes = onDeleteScenes
+    }
+
+    init(
+        scenes: [TrailerEditScene],
+        sources: [VideoTrailerSource],
+        selectedID: Binding<Int?>,
+        selectedIDs: Binding<Set<Int>>,
+        columnsCount: Int = 4,
+        scrollable: Bool = true,
+        onSelectSceneForDetail: ((Int) -> Void)? = nil,
+        onMoveScenes: ((Set<Int>, Int) -> Void)? = nil,
+        onDuplicateScenes: ((Set<Int>) -> Void)? = nil,
+        onDeleteScenes: ((Set<Int>) -> Void)? = nil
+    ) {
+        self.init(
+            scenes: scenes,
+            sources: sources,
+            selectedID: selectedID,
+            selectedIDs: selectedIDs,
+            columnsCount: .constant(columnsCount),
+            scrollable: scrollable,
+            onSelectSceneForDetail: onSelectSceneForDetail,
+            onMoveScenes: onMoveScenes,
+            onDuplicateScenes: onDuplicateScenes,
+            onDeleteScenes: onDeleteScenes
+        )
+    }
+
     private var columns: [GridItem] {
-        Array(repeating: GridItem(.flexible(), spacing: 10), count: max(2, columnsCount))
+        Array(repeating: GridItem(.flexible(), spacing: 10), count: min(6, max(2, columnsCount)))
     }
 
     var body: some View {
         let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         VStack(alignment: .leading, spacing: 8) {
             toolbarSection
-            ScrollViewReader { proxy in
-                ScrollView(.vertical, showsIndicators: true) {
-                    LazyVGrid(columns: columns, spacing: 10) {
-                        ForEach(Array(scenes.enumerated()), id: \.element.id) { index, scene in
-                            if let source = byID[scene.sourceID] {
-                                let isSelected = selectedIDs.contains(scene.id) || selectedID == scene.id
-                                Button {
-                                    handleSceneTap(scene: scene, index: index)
-                                } label: {
-                                    gridCell(index: index, scene: scene, source: source, isSelected: isSelected)
-                                }
-                                .buttonStyle(.plain)
-                                .id(scene.id)
-                                .accessibilityLabel("장면 \(index + 1), \(source.name), \(String(format: "%.1f", scene.length))초"
-                                    + (scene.excluded ? ", 제외됨" : "")
-                                    + (scene.caption != nil && !scene.caption!.text.isEmpty ? ", 자막 있음" : ""))
-                                .accessibilityAddTraits(isSelected ? .isSelected : [])
-                            }
-                        }
+            if scrollable {
+                ScrollViewReader { proxy in
+                    ScrollView(.vertical, showsIndicators: true) {
+                        gridContent(byID: byID)
+                            .padding(.vertical, 4)
                     }
+                    .onChange(of: selectedID) { _, id in
+                        if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
+                    }
+                }
+            } else {
+                gridContent(byID: byID)
                     .padding(.vertical, 4)
-                }
-                .onChange(of: selectedID) { _, id in
-                    if let id { withAnimation { proxy.scrollTo(id, anchor: .center) } }
-                }
             }
         }
         .sheet(isPresented: $showingMoveSheet) {
             movePositionSheet
+        }
+    }
+
+    private func gridContent(byID: [Int: VideoTrailerSource]) -> some View {
+        LazyVGrid(columns: columns, spacing: 10) {
+            ForEach(Array(scenes.enumerated()), id: \.element.id) { index, scene in
+                if let source = byID[scene.sourceID] {
+                    let isSelected = selectedIDs.contains(scene.id) || selectedID == scene.id
+                    Button {
+                        handleSceneTap(scene: scene, index: index)
+                    } label: {
+                        gridCell(index: index, scene: scene, source: source, isSelected: isSelected)
+                    }
+                    .buttonStyle(.plain)
+                    .id(scene.id)
+                    .accessibilityLabel("장면 \(index + 1), \(source.name), \(String(format: "%.1f", scene.length))초"
+                        + (scene.excluded ? ", 제외됨" : "")
+                        + (scene.caption != nil && !scene.caption!.text.isEmpty ? ", 자막 있음" : ""))
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                }
+            }
         }
     }
 
@@ -665,7 +792,6 @@ struct TrailerStoryboardGrid: View {
                 .buttonStyle(.bordered).controlSize(.small)
                 if !selectedIDs.isEmpty {
                     Button {
-                        // 지금 순서에서 가장 앞의 선택 장면 번호를 기본값으로 둔다.
                         if let idx = scenes.firstIndex(where: { selectedIDs.contains($0.id) }) {
                             targetPositionString = "\(idx + 1)"
                         } else {
@@ -694,6 +820,23 @@ struct TrailerStoryboardGrid: View {
                 Text("장면 (\(scenes.count))")
                     .font(.subheadline.weight(.semibold))
                 Spacer()
+
+                // 격자 열 조절 2...6
+                Menu {
+                    ForEach(2...6, id: \.self) { c in
+                        Button("\(c)열") { columnsCount = c }
+                    }
+                } label: {
+                    HStack(spacing: 2) {
+                        Image(systemName: "square.grid.2x2")
+                        Text("\(columnsCount)열")
+                    }
+                    .font(.caption.weight(.medium))
+                    .frame(minHeight: 36)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+
                 Button {
                     isMultiSelectMode = true
                     if let current = selectedID { selectedIDs.insert(current) }
@@ -818,6 +961,168 @@ struct TrailerStoryboardGrid: View {
             }
         }
         .presentationDetents([.fraction(0.35), .medium])
+    }
+}
+
+// MARK: - 선택 클립 인스펙터 (클립 탭 전용)
+
+/// '클립' 탭에서 선택한 클립 하나의 시작/끝/길이, 소리, 화면 맞춤 조절.
+struct TrailerClipInspectorView: View {
+    enum Section {
+        case timing
+        case audio
+        case framing
+    }
+
+    let sources: [VideoTrailerSource]
+    @Binding var scenes: [TrailerEditScene]?
+    @Binding var selectedID: Int?
+    var aspectRatio: OutputAspectRatio? = nil
+    var section: Section = .timing
+
+    private var selectedIndex: Int? { TrailerSceneEditor.index(of: selectedID, in: scenes ?? []) }
+
+    init(
+        sources: [VideoTrailerSource],
+        scenes: Binding<[TrailerEditScene]?>,
+        selectedID: Binding<Int?>,
+        aspectRatio: OutputAspectRatio? = nil,
+        section: Section = .timing
+    ) {
+        self.sources = sources
+        self._scenes = scenes
+        self._selectedID = selectedID
+        self.aspectRatio = aspectRatio
+        self.section = section
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let index = selectedIndex, let scene = scenes?[index],
+               let source = sources.first(where: { $0.id == scene.sourceID }) {
+                switch section {
+                case .timing:
+                    // 헤더
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(source.name)
+                                .font(.system(size: 15, weight: .semibold))
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Text("장면 \(index + 1) / \(scenes?.count ?? 0) · \(source.isImage ? "사진" : "영상")" + (scene.excluded ? " · 제외됨" : ""))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Button {
+                            set { $0.excluded.toggle() }
+                        } label: {
+                            Label(scene.excluded ? "포함" : "제외", systemImage: scene.excluded ? "eye" : "eye.slash")
+                                .font(.system(size: 13, weight: .medium))
+                                .frame(minHeight: 36)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
+
+                    Divider()
+
+                    // 트리밍 / 길이 조절
+                    if source.isImage {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("사진 표시 시간 \(String(format: "%.1f", scene.length))초")
+                                .font(.subheadline).monospacedDigit()
+                            Slider(value: Binding(get: { scene.length }, set: { val in set { $0.length = val } }),
+                                   in: (1.0 / 30.0)...30)
+                                .accessibilityLabel("사진 표시 시간")
+                        }
+                    } else {
+                        let duration = max(source.duration, 0.4)
+                        let end = min(duration, scene.start + scene.length)
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("시작 \(videoTrailerTime(scene.start)) · 끝 \(videoTrailerTime(end)) · 길이 \(String(format: "%.1f", scene.length))초")
+                                .font(.subheadline).monospacedDigit()
+
+                            Text("시작").font(.caption).foregroundStyle(.secondary)
+                            Slider(value: Binding(get: { min(scene.start, duration - 0.2) }, set: { val in
+                                set {
+                                    let curEnd = min(duration, $0.start + $0.length)
+                                    $0.start = min(val, curEnd - 0.2)
+                                    $0.length = max(0.2, curEnd - $0.start)
+                                }
+                            }), in: 0...(duration - 0.2))
+                            .accessibilityLabel("시작 지점")
+
+                            Text("끝").font(.caption).foregroundStyle(.secondary)
+                            Slider(value: Binding(get: { end }, set: { val in
+                                set { $0.length = max(0.2, min(duration, val) - $0.start) }
+                            }), in: 0.2...duration)
+                            .accessibilityLabel("끝 지점")
+                        }
+                    }
+
+                case .audio:
+                    // 소리 조절 (비디오만: 사진인 경우 뷰를 렌더하지 않음)
+                    if !source.isImage {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Toggle("이 장면의 원본 소리 끄기", isOn: Binding(get: { scene.muted }, set: { val in set { $0.muted = val } }))
+                                .font(.system(size: 14))
+
+                            if !scene.muted {
+                                HStack {
+                                    Text("원본 소리 음량 \(Int((scene.volume * 100).rounded()))%")
+                                        .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                                    Spacer()
+                                }
+                                Slider(value: Binding(get: { scene.volume }, set: { val in set { $0.volume = val } }), in: 0...1)
+                                    .accessibilityLabel("원본 소리 음량")
+                            }
+                        }
+                    }
+
+                case .framing:
+                    // 화면 맞춤 및 위치
+                    VStack(alignment: .leading, spacing: 4) {
+                        Toggle("화면 안에 맞추기(여백 생김)", isOn: Binding(get: { scene.fitsFrame }, set: { val in set { $0.fitsFrame = val } }))
+                            .font(.system(size: 14))
+
+                        if !scene.fitsFrame {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("좌우 위치 \(Int((scene.offsetX * 100).rounded()))")
+                                    .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                                Slider(value: Binding(get: { scene.offsetX }, set: { val in set { $0.offsetX = val } }), in: -1...1)
+
+                                Text("상하 위치 \(Int((scene.offsetY * 100).rounded()))")
+                                    .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                                Slider(value: Binding(get: { scene.offsetY }, set: { val in set { $0.offsetY = val } }), in: -1...1)
+
+                                if scene.offsetX != 0 || scene.offsetY != 0 {
+                                    Button("가운데로") {
+                                        set { $0.offsetX = 0; $0.offsetY = 0 }
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                Text("장면 목록에서 클립을 선택하면 상세 조절이 나타납니다.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, 8)
+            }
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background(PorcelainMetrics.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(PorcelainMetrics.line, lineWidth: 0.5))
+    }
+
+    private func set(_ change: @escaping (inout TrailerEditScene) -> Void) {
+        guard let id = selectedID else { return }
+        TrailerSceneEditor.update(id, in: &scenes!, change)
     }
 }
 

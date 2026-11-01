@@ -28,13 +28,29 @@ struct TrailerCaption: Codable, Equatable, Sendable {
     var colorHex: String
     var hasShadow: Bool
 
+    // 5x5 위치 격자 (column: 0...4, row: 0...4)
+    var column: Int
+    var row: Int
+    var fontName: String
+    var captionSize: CaptionSize
+    var shadowColorHex: String
+    var shadowOpacity: Double
+    var lineSpacing: Double
+
     init(
         text: String = "",
-        position: Position = .bottom,
+        position: Position = .top,
         fontDesign: FontDesign = .standard,
         fontSize: Double = 24.0,
         colorHex: String = "#FFFFFF",
-        hasShadow: Bool = true
+        hasShadow: Bool = true,
+        column: Int = 0,
+        row: Int = 0,
+        fontName: String = "pretendard_bold",
+        captionSize: CaptionSize = .normal,
+        shadowColorHex: String = "#000000",
+        shadowOpacity: Double = 0.7,
+        lineSpacing: Double = 1.0
     ) {
         self.text = text
         self.position = position
@@ -42,6 +58,49 @@ struct TrailerCaption: Codable, Equatable, Sendable {
         self.fontSize = fontSize
         self.colorHex = colorHex
         self.hasShadow = hasShadow
+        self.column = min(4, max(0, column))
+        self.row = min(4, max(0, row))
+        self.fontName = fontName
+        self.captionSize = captionSize
+        self.shadowColorHex = shadowColorHex
+        self.shadowOpacity = min(1.0, max(0.0, shadowOpacity))
+        self.lineSpacing = min(2.0, max(0.5, lineSpacing))
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case text, position, fontDesign, fontSize, colorHex, hasShadow
+        case column, row, fontName, captionSize, shadowColorHex, shadowOpacity, lineSpacing
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        text = try c.decodeIfPresent(String.self, forKey: .text) ?? ""
+        position = try c.decodeIfPresent(Position.self, forKey: .position) ?? .top
+        fontDesign = try c.decodeIfPresent(FontDesign.self, forKey: .fontDesign) ?? .standard
+        fontSize = try c.decodeIfPresent(Double.self, forKey: .fontSize) ?? 24.0
+        colorHex = try c.decodeIfPresent(String.self, forKey: .colorHex) ?? "#FFFFFF"
+        hasShadow = try c.decodeIfPresent(Bool.self, forKey: .hasShadow) ?? true
+
+        if let col = try c.decodeIfPresent(Int.self, forKey: .column),
+           let r = try c.decodeIfPresent(Int.self, forKey: .row) {
+            column = min(4, max(0, col))
+            row = min(4, max(0, r))
+        } else {
+            switch position {
+            case .top:
+                column = 0; row = 0
+            case .center:
+                column = 2; row = 2
+            case .bottom:
+                column = 2; row = 4
+            }
+        }
+
+        fontName = try c.decodeIfPresent(String.self, forKey: .fontName) ?? "pretendard_bold"
+        captionSize = try c.decodeIfPresent(CaptionSize.self, forKey: .captionSize) ?? .normal
+        shadowColorHex = try c.decodeIfPresent(String.self, forKey: .shadowColorHex) ?? "#000000"
+        shadowOpacity = try c.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? 0.7
+        lineSpacing = try c.decodeIfPresent(Double.self, forKey: .lineSpacing) ?? 1.0
     }
 }
 

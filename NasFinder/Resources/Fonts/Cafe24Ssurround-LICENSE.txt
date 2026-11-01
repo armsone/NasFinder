@@ -1,0 +1,30 @@
+Cafe24 Ssurround license notes for HanClip
+
+Official source checked:
+- Cafe24 free font site
+  https://fonts.cafe24.com/
+- Cafe24 help, "카페24에서 제공되는 폰트를 사용할 수 있나요?"
+  https://cafe24.zendesk.com/hc/ko/articles/18299360301593
+
+Copyright:
+- Cafe24 Corp.
+
+License / usage statement found:
+- Cafe24 permits commercial use of its free fonts and allows use in video
+  subtitles, software bundling, and program/app embedding according to its
+  official help page.
+
+HanClip usage check:
+- Commercial use: allowed.
+- App/software bundling and embedding: allowed.
+- User-created video output: allowed, including video subtitles.
+- Modification/redistribution: follow Cafe24's license terms in the downloaded
+  license PDF; do not sell the font file by itself.
+- Copyright notice: keep this notice and the Cafe24 license information with
+  the app bundle.
+
+Bundled file:
+- Resources/Fonts/Cafe24Ssurround.ttf
+
+Original download package also contained:
+- License-Ssurround.pdf

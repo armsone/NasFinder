@@ -1,0 +1,23 @@
+NEXON Lv.1 Gothic license notice for HanClip
+
+Copyright (c) 2017 NEXON. All rights reserved.
+Font designed by FONTRIX Inc.
+
+Official source checked:
+- https://brand.nexon.com/ko/ci-brand-guidelines/typeface#section-lv1-gothic
+- https://brand.nexon.com/resources/NEXON_Lv1_Gothic.zip
+
+Official usage terms:
+- All intellectual-property rights in the typeface belong to NEXON Korea.
+- The typeface is provided free of charge to personal and corporate users and
+  may be used for commercial purposes.
+- The original font files may be distributed and may be bundled with other
+  software or used as embedded fonts when this copyright notice is included.
+- The font files must not be modified or edited and redistributed under the
+  original name. HanClip includes the unmodified official TTF file.
+- Selling the font by itself is prohibited.
+- Source attribution is recommended.
+
+Bundled file:
+- NEXONLv1GothicRegular.ttf
+- SHA-256: 1cdab384930c49f8a7ee53001d0a46e2c2bd5d88b68153d6c7c6977a294f97e2

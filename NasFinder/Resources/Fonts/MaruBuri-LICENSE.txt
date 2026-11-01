@@ -1,0 +1,30 @@
+MaruBuri license notes for HanClip
+
+Official source checked:
+- NAVER Help, "네이버 나눔글꼴 라이선스안내"
+  https://help.naver.com/service/30016/contents/18088?lang=ko&osType=PC
+- NAVER Hangeul campaign font download page
+  https://hangeul.naver.com/fonts/search
+
+Copyright:
+- NAVER Corporation / NAVER Cultural Foundation
+
+License:
+- SIL Open Font License, Version 1.1.
+- NAVER states that MaruBuri is governed by the same open-license terms as
+  the Nanum font family.
+
+HanClip usage check:
+- Commercial use: allowed.
+- App/software bundling and redistribution: allowed when the copyright notice
+  and license are included.
+- Embedding with software: allowed under the SIL OFL terms.
+- User-created video output: allowed; documents or media created with the font
+  are not required to be licensed under the font license.
+- Modification/redistribution: allowed under SIL OFL terms, but Reserved Font
+  Names may not be used for modified versions without permission.
+- Copyright notice: include this notice and the license when redistributing
+  the font with the app.
+
+Bundled file:
+- Resources/Fonts/MaruBuri-Regular.ttf

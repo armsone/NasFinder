@@ -1,0 +1,29 @@
+Tenada license notes for HanClip
+
+Official/source pages checked:
+- Tenada author page on DaFont
+  https://www.dafont.com/tenada.font
+- Tenada homepage linked by the author page
+  https://en.tenada.co.kr/
+
+Copyright:
+- Tenada
+
+License:
+- SIL Open Font License, Version 1.1.
+
+HanClip usage check:
+- Commercial use: allowed.
+- App/software embedding and bundling: allowed under SIL OFL terms.
+- User-created video output: allowed; documents or media created with the font
+  are not required to be licensed under the font license.
+- Modification/redistribution: allowed under SIL OFL terms.
+- Paid sale of the font file by itself: prohibited.
+- Copyright notice: include this notice and the license when redistributing
+  the font with the app.
+
+Bundled file:
+- Resources/Fonts/Tenada.ttf
+
+Original download package also contained:
+- readme_tenada_font.pdf

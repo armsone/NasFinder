@@ -1,0 +1,34 @@
+Puradak Gentle Gothic license notes for HanClip
+
+Official/source pages checked:
+- Puradak Chicken official font page
+  https://puradakchicken.com/company/font.asp
+- Puradak official press page announcing the font
+  https://www.puradakchicken.com/mobile/news/press.asp?idx=19896&mode=view
+- Noonnu page preserving the copyright and usage guide text
+  https://noonnu.cc/en/font_page/1057
+
+Copyright:
+- IDUSKOREA Co., Ltd. / Puradak Chicken
+
+License / usage statement found:
+- The official Puradak page provides the font as a free download.
+- The usage guide allows commercial and non-commercial use, video subtitles,
+  app UI, and bundling/redistribution with other software when the full
+  copyright and license notice is displayed.
+
+HanClip usage check:
+- Commercial use: allowed.
+- App/software bundling and redistribution: allowed with copyright/license
+  notice.
+- User-created video output: allowed, including video subtitles.
+- Modification: allowed by the usage guide, but HanClip bundles the unmodified
+  official TTF file.
+- Paid sale of the font file by itself: prohibited.
+- Copyright notice: include this notice with the app bundle.
+
+Bundled file:
+- Resources/Fonts/PuradakGentleGothic.ttf
+
+Original file name from official download:
+- Puradak Gentle Gothic.ttf
