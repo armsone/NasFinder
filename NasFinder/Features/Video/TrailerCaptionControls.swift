@@ -1529,7 +1529,7 @@ struct TrailerCaptionDetailedAdjustmentCard: View {
     }
 
     private func quickSwatchesRow(swatches: [String], selectedHex: String, onSelect: @escaping (String) -> Void) -> some View {
-        HStack(spacing: 6) {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 44), spacing: 6)], spacing: 0) {
             ForEach(swatches, id: \.self) { hex in
                 let isSelected = selectedHex.uppercased() == hex.uppercased()
                 Button {
