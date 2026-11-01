@@ -1510,18 +1510,13 @@ private struct VideoTrailerSettings: View {
         }
     }
 
-    private func completeRequestedExportIfReady() {
-        guard exportRequested,
-              !isBusy,
-              error == nil,
-              isOutputCurrent,
-              let currentURL = outputURL,
-              currentURL != startingOutputURL else {
-            return
-        }
-        previewingOutput = true
-        pauseRequest += 1
-        exportRequested = false
+    private var isRequestedExportReady: Bool {
+        exportRequested &&
+            !isBusy &&
+            error == nil &&
+            isOutputCurrent &&
+            outputURL != nil &&
+            outputURL != startingOutputURL
     }
 
     private func restoreCaptionDraftFromSelectedScene() {
@@ -1826,19 +1821,15 @@ private struct VideoTrailerSettings: View {
         .onAppear {
             restoreCaptionDraftFromSelectedScene()
         }
-        .onChange(of: isBusy) { busy in
-            if !busy {
-                completeRequestedExportIfReady()
-            }
-        }
-        .onChange(of: outputURL) { _ in
-            completeRequestedExportIfReady()
+        .onChange(of: isRequestedExportReady) { ready in
+            guard ready else { return }
+            previewingOutput = true
+            pauseRequest += 1
+            exportRequested = false
         }
         .onChange(of: isOutputCurrent) { current in
             if !current {
                 exitOutputPreview()
-            } else {
-                completeRequestedExportIfReady()
             }
         }
         .onChange(of: error != nil) { hasError in
@@ -1998,6 +1989,7 @@ private struct VideoTrailerSettings: View {
                 previewAndTabStrip(bodyHeight: size.height)
                 phoneTabContent
             }
+            .frame(width: size.width, alignment: .leading)
         }
         .scrollBounceBehavior(.basedOnSize, axes: .vertical)
     }
