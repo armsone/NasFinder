@@ -334,6 +334,30 @@ enum InterfaceDesignArtwork {
     ]
     nonisolated(unsafe) private static let fittedCache = NSCache<NSString, UIImage>()
 
+    /// Android isActionGlyph 59개와 같은 목록. 액션은 어느 팩에서도 심플로 그린다.
+    private static let actionCanonicals: Set<String> = [
+        "back", "close", "play", "pause", "share", "save", "undo", "redo", "check", "trash",
+        "copy", "move", "more", "search", "search_file", "fullscreen", "fullscreen_exit", "forward", "previous", "next",
+        "stop", "refresh", "add", "edit", "select_all", "deselect_all", "expand_down", "collapse_up", "expand_collapse", "paste",
+        "pin", "shuffle", "repeat", "repeat_one", "mute", "volume", "sort", "grid", "list", "download",
+        "upload", "export", "import", "duplicate", "sliders", "selected", "unselected", "send", "receive", "arrow_left",
+        "arrow_right", "browser_back", "menu", "visibility", "compress", "file_add", "folder_add", "folder_upload", "unfavorite",
+    ]
+    static func isActionCanonical(_ canonical: String) -> Bool { actionCanonicals.contains(canonical) }
+    /// square.and.arrow.down은 저장(액션), tray.2는 작업대(비액션)다.
+    static func isAction(symbol: String) -> Bool {
+        if symbol == "square.and.arrow.down" { return true }
+        if symbol == "tray.2" { return false }
+        guard let id = canonical(symbol) else { return false }
+        return isActionCanonical(id)
+    }
+    static func effectiveStyle(_ style: InterfaceIconStyle, isAction: Bool) -> InterfaceIconStyle {
+        isAction ? .simple : style
+    }
+    static func isMonochrome(_ canonical: String, style: InterfaceIconStyle) -> Bool {
+        style == .simple || usesSimpleArtwork(canonical, style: style)
+    }
+
     static var selectedStyle: InterfaceIconStyle {
         InterfaceIconStyle(rawValue: UserDefaults.standard.string(forKey: InterfaceIconStyle.storageKey) ?? "simple") ?? .simple
     }
@@ -345,15 +369,43 @@ enum InterfaceDesignArtwork {
         guard name.hasPrefix("nf.") else { return name }
         return originalSymbols[String(name.dropFirst(3))] ?? "square.grid.2x2"
     }
-    static func asset(_ canonical: String, style: InterfaceIconStyle) -> UIImage? {
-        UIImage(named: "ThemeIconDesign-\(style.rawValue)-\(canonical)")?.withRenderingMode(.alwaysOriginal)
+    /// Android PackIcon과 같은 Solid 레거시 24개 아트워크 매핑. 액션 글리프와 레거시가 없는 글리프는 nil이다.
+    static func solidLegacyName(_ canonical: String) -> String? {
+        let core: String
+        switch canonical {
+        case "home", "nas", "photos", "phonehard", "cloud", "browser", "video", "drafts", "transfer", "storage", "settings", "favorites":
+            core = canonical
+        case "connections": core = "transfer"
+        case "workbench": core = "save"
+        case "device_files": core = "storage"
+        case "collection": core = "video"
+        case "photo_selection", "super_thumbnail", "thumbnail_storage", "thumbnail_cache": core = "photos"
+        case "folder", "pocket": core = "phonehard"
+        default: return nil
+        }
+        return core == "nas" ? "ThemeIconMac-solid-nas" : "ThemeIcon-solid-\(core)"
     }
-    static func uiImage(systemName name: String, pointSize: CGFloat = 20) -> UIImage? {
-        let style = selectedStyle
+    /// Solid에서 레거시 그림이 없어 같은 모양의 심플 그림을 단색으로 쓰는 경우(Android solidFallbackDrawable과 동일).
+    static func usesSimpleArtwork(_ canonical: String, style: InterfaceIconStyle) -> Bool {
+        style == .solid && canonical != "brand" && solidLegacyName(canonical) == nil
+    }
+    static func asset(_ canonical: String, style: InterfaceIconStyle) -> UIImage? {
+        if style == .solid {
+            // 브랜드 예외 유지: Solid는 전용 브랜드 그림이 없다.
+            if canonical == "brand" { return nil }
+            if let name = solidLegacyName(canonical), let legacy = UIImage(named: name) {
+                return legacy.withRenderingMode(.alwaysOriginal)
+            }
+            return UIImage(named: "ThemeIconDesign-simple-\(canonical)")?.withRenderingMode(.alwaysOriginal)
+        }
+        return UIImage(named: "ThemeIconDesign-\(style.rawValue)-\(canonical)")?.withRenderingMode(.alwaysOriginal)
+    }
+    static func uiImage(systemName name: String, pointSize: CGFloat = 20, tintable: Bool = false) -> UIImage? {
+        let style = effectiveStyle(selectedStyle, isAction: isAction(symbol: name))
         guard let id = canonical(name), let artwork = asset(id, style: style) else {
             return UIImage(systemName: originalSymbol(name))
         }
-        let cacheKey = "\(style.rawValue)-\(id)-\(pointSize)-\(AppThemePreference.current.rawValue)" as NSString
+        let cacheKey = "\(style.rawValue)-\(id)-\(pointSize)-\(tintable)-\(AppThemePreference.current.rawValue)" as NSString
         if let cached = fittedCache.object(forKey: cacheKey) { return cached }
         let size = max(1, pointSize)
         let format = UIGraphicsImageRendererFormat.preferred()
@@ -361,13 +413,13 @@ enum InterfaceDesignArtwork {
         let displayed = UIGraphicsImageRenderer(size: CGSize(width: size, height: size), format: format).image { renderer in
             let bounds = CGRect(x: 0, y: 0, width: size, height: size)
             artwork.draw(in: bounds)
-            if style == .simple {
+            if !tintable && isMonochrome(id, style: style) {
                 // Bake monochrome pixels, rather than UIImage tint metadata which SwiftUI can ignore.
                 renderer.cgContext.setBlendMode(.sourceIn)
                 (AppThemePreference.current.isDark ? UIColor.white : UIColor.black).setFill()
                 renderer.cgContext.fill(bounds)
             }
-        }.withRenderingMode(.alwaysOriginal)
+        }.withRenderingMode(tintable && isMonochrome(id, style: style) ? .alwaysTemplate : .alwaysOriginal)
         fittedCache.setObject(displayed, forKey: cacheKey)
         return displayed
     }
@@ -375,10 +427,12 @@ enum InterfaceDesignArtwork {
 
 extension Image {
     /// An Image (not a replacement View), preserving resizable/rotation/Label APIs and original SF behaviour in other packs.
-    init(interfaceSystemName name: String, pointSize: CGFloat = 20, fallbackNamed: String? = nil) {
+    init(interfaceSystemName name: String, pointSize: CGFloat = 20, fallbackNamed: String? = nil, tintable: Bool = false) {
+        let style = InterfaceDesignArtwork.effectiveStyle(
+            InterfaceDesignArtwork.selectedStyle, isAction: InterfaceDesignArtwork.isAction(symbol: name))
         if let canonical = InterfaceDesignArtwork.canonical(name),
-           InterfaceDesignArtwork.asset(canonical, style: InterfaceDesignArtwork.selectedStyle) != nil,
-           let image = InterfaceDesignArtwork.uiImage(systemName: name, pointSize: pointSize) {
+           InterfaceDesignArtwork.asset(canonical, style: style) != nil,
+           let image = InterfaceDesignArtwork.uiImage(systemName: name, pointSize: pointSize, tintable: tintable) {
             self.init(uiImage: image)
         } else if let fallbackNamed {
             self.init(fallbackNamed)

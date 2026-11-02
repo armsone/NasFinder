@@ -1194,23 +1194,64 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
         }
 
         private func openPreview(asset: PHAsset, sourcePoint: CGPoint) {
-            guard presentedViewController == nil else { return }
-            let isSelected = selectedIdentifierSet.contains(asset.localIdentifier)
+            guard presentedViewController == nil else {
+                return
+            }
+            if asset.mediaSubtypes.contains(.photoLive) {
+                let isSelected = selectedIdentifierSet.contains(asset.localIdentifier)
+                let preview = MediaAssetPreviewViewController(
+                    asset: asset,
+                    imageManager: imageManager,
+                    showsCloseButton: false,
+                    sourcePoint: sourcePoint,
+                    onDelete: isSelected
+                        ? { [weak self] in
+                            self?.deselectAsset(identifier: asset.localIdentifier)
+                        }
+                        : nil
+                )
+                preview.modalPresentationStyle = .overFullScreen
+                preview.modalTransitionStyle = .crossDissolve
+                present(preview, animated: true)
+                return
+            }
 
-            let preview = MediaAssetPreviewViewController(
-                asset: asset,
-                imageManager: imageManager,
-                showsCloseButton: false,
-                sourcePoint: sourcePoint,
-                onDelete: isSelected
-                    ? { [weak self] in
-                        self?.deselectAsset(identifier: asset.localIdentifier)
+            let initialAsset = asset
+            let candidateAssets = assetSections.flatMap(\.assets)
+            let displayAssets = candidateAssets.filter { $0.mediaType == .image || $0.mediaType == .video }
+            let effectiveAssets = displayAssets.contains(where: { $0.localIdentifier == initialAsset.localIdentifier })
+                ? displayAssets
+                : [initialAsset] + displayAssets
+            let assetList = initialAsset.mediaType == .video ? [initialAsset] : effectiveAssets
+
+            let host = UIHostingController<AnyView>(rootView: AnyView(EmptyView()))
+            let assetMap = Dictionary(uniqueKeysWithValues: assetList.map { ($0.localIdentifier, $0) })
+            let service = NasFinderPhotoLibraryAssetFileService(assetsByPath: assetMap)
+            let items = assetList.map { service.remoteFileItem(for: $0) }
+            guard let initialItem = items.first(where: { $0.path == initialAsset.localIdentifier }) ?? items.first else {
+                return
+            }
+
+            let previewView = NasFinderPhotoLibraryAssetPreviewContainer(
+                initialAsset: initialAsset,
+                initialItem: initialItem,
+                items: items,
+                service: service,
+                selectedIdentifiers: selectedIdentifierSet,
+                onToggleSelection: { [weak self] selectedAsset in
+                    guard let self else { return }
+                    if self.selectedIdentifierSet.contains(selectedAsset.localIdentifier) {
+                        self.deselectAsset(identifier: selectedAsset.localIdentifier)
                     }
-                    : nil
+                },
+                onDismiss: { [weak host] in
+                    host?.dismiss(animated: true)
+                }
             )
-            preview.modalPresentationStyle = .overFullScreen
-            preview.modalTransitionStyle = .crossDissolve
-            present(preview, animated: true)
+            host.rootView = AnyView(previewView)
+            host.modalPresentationStyle = .overFullScreen
+            host.modalTransitionStyle = .crossDissolve
+            present(host, animated: true)
         }
 
         private func deselectAsset(identifier: String) {
@@ -2532,15 +2573,220 @@ struct NasFinderPhotoGrid: UIViewControllerRepresentable {
 
 struct NasFinderAssetPreview: UIViewControllerRepresentable {
     let asset: PHAsset
-    let onRemoveSelection: (() -> Void)?
+    let candidateAssets: [PHAsset]
+    let selectedIdentifiers: Set<String>
+    let onToggleSelection: ((PHAsset) -> Void)?
     let onDismiss: () -> Void
-    func makeUIViewController(context: Context) -> NasFinderPhotoGrid.MediaAssetPreviewViewController {
-        NasFinderPhotoGrid.MediaAssetPreviewViewController(asset: asset, imageManager: PHCachingImageManager(),
-            showsCloseButton: false, onDelete: onRemoveSelection, onDismiss: onDismiss)
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        if asset.mediaSubtypes.contains(.photoLive) {
+            let isSelected = selectedIdentifiers.contains(asset.localIdentifier)
+            return NasFinderPhotoGrid.MediaAssetPreviewViewController(
+                asset: asset,
+                imageManager: PHCachingImageManager(),
+                showsCloseButton: false,
+                onDelete: isSelected && onToggleSelection != nil ? { onToggleSelection?(asset) } : nil,
+                onDismiss: onDismiss
+            )
+        }
+
+        let displayAssets = candidateAssets.filter { $0.mediaType == .image || $0.mediaType == .video }
+        let effectiveAssets = displayAssets.contains(where: { $0.localIdentifier == asset.localIdentifier })
+            ? displayAssets
+            : [asset] + displayAssets
+        let assetList = asset.mediaType == .video ? [asset] : effectiveAssets
+
+        let host = UIHostingController<AnyView>(rootView: AnyView(EmptyView()))
+        let assetMap = Dictionary(uniqueKeysWithValues: assetList.map { ($0.localIdentifier, $0) })
+        let service = NasFinderPhotoLibraryAssetFileService(assetsByPath: assetMap)
+        let items = assetList.map { service.remoteFileItem(for: $0) }
+        guard let initialItem = items.first(where: { $0.path == asset.localIdentifier }) ?? items.first else {
+            return host
+        }
+
+        let previewView = NasFinderPhotoLibraryAssetPreviewContainer(
+            initialAsset: asset,
+            initialItem: initialItem,
+            items: items,
+            service: service,
+            selectedIdentifiers: selectedIdentifiers,
+            onToggleSelection: onToggleSelection,
+            onDismiss: onDismiss
+        )
+        host.rootView = AnyView(previewView)
+        host.modalPresentationStyle = .overFullScreen
+        host.modalTransitionStyle = .crossDissolve
+        return host
     }
-    func updateUIViewController(_ controller: NasFinderPhotoGrid.MediaAssetPreviewViewController, context: Context) {}
-    static func dismantleUIViewController(_ controller: NasFinderPhotoGrid.MediaAssetPreviewViewController, coordinator: ()) {
-        controller.tearDown()
+
+    func updateUIViewController(_ controller: UIViewController, context: Context) {}
+
+    static func dismantleUIViewController(_ controller: UIViewController, coordinator: ()) {
+        if let legacy = controller as? NasFinderPhotoGrid.MediaAssetPreviewViewController {
+            legacy.tearDown()
+        }
+    }
+}
+
+private final class NasFinderPhotoLibraryAssetExportCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var urlsByPath: [String: URL] = [:]
+    private var ownedURLs: Set<URL> = []
+    private var isClosed = false
+
+    func cachedURL(for path: String) -> URL? {
+        lock.withLock {
+            urlsByPath[path]
+        }
+    }
+
+    func store(url: URL, for path: String) -> Bool {
+        lock.withLock {
+            if isClosed {
+                try? FileManager.default.removeItem(at: url)
+                return false
+            }
+            ownedURLs.insert(url)
+            urlsByPath[path] = url
+            return true
+        }
+    }
+
+    func cleanUp() {
+        let urlsToClean: [URL] = lock.withLock {
+            isClosed = true
+            let urls = Array(ownedURLs)
+            ownedURLs.removeAll()
+            urlsByPath.removeAll()
+            return urls
+        }
+        for url in urlsToClean {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
+    deinit {
+        cleanUp()
+    }
+}
+
+struct NasFinderPhotoLibraryAssetFileService: RemoteFileService, Sendable {
+    let connection = RemoteConnection(
+        id: LocalPhotoLibraryFileService.connectionID,
+        name: "내 미디어",
+        kind: .synology,
+        host: "localhost",
+        username: ""
+    )
+
+    private let assetsByPath: [String: PHAsset]
+    private let cache = NasFinderPhotoLibraryAssetExportCache()
+
+    init(assetsByPath: [String: PHAsset]) {
+        self.assetsByPath = assetsByPath
+    }
+
+    func list(directory path: String?) async throws -> [RemoteFileItem] {
+        assetsByPath.values.map { remoteFileItem(for: $0) }
+    }
+
+    func download(_ item: RemoteFileItem) async throws -> URL {
+        if let cached = cache.cachedURL(for: item.path), FileManager.default.fileExists(atPath: cached.path) {
+            return cached
+        }
+        guard let asset = assetsByPath[item.path] else {
+            throw LocalPhotoLibraryError.fileUnavailable
+        }
+        let exportResult = try await LocalPhotoLibraryCalendarService.exportOriginal(for: asset)
+        if Task.isCancelled {
+            try? FileManager.default.removeItem(at: exportResult.url)
+            throw CancellationError()
+        }
+        if !cache.store(url: exportResult.url, for: item.path) {
+            try? FileManager.default.removeItem(at: exportResult.url)
+            throw LocalPhotoLibraryError.fileUnavailable
+        }
+        return exportResult.url
+    }
+
+    func testConnection() async throws {}
+
+    func remoteFileItem(for asset: PHAsset) -> RemoteFileItem {
+        let filename = LocalPhotoLibraryCalendarService.originalFilename(for: asset) ?? (asset.mediaType == .video ? "video.mov" : "photo.jpg")
+        return RemoteFileItem(
+            connectionID: connection.id,
+            path: asset.localIdentifier,
+            remoteIdentifier: nil,
+            parentRemoteIdentifier: nil,
+            revisionIdentifier: nil,
+            name: filename,
+            kind: .file,
+            size: nil,
+            modifiedAt: asset.modificationDate ?? asset.creationDate,
+            contentTypeIdentifier: nil
+        )
+    }
+}
+
+private struct NasFinderPhotoLibraryAssetPreviewContainer: View {
+    let initialAsset: PHAsset
+    let initialItem: RemoteFileItem
+    let items: [RemoteFileItem]
+    let service: NasFinderPhotoLibraryAssetFileService
+    let selectedIdentifiers: Set<String>
+    let onToggleSelection: ((PHAsset) -> Void)?
+    let onDismiss: () -> Void
+
+    @State private var currentAssetID: String
+
+    init(
+        initialAsset: PHAsset,
+        initialItem: RemoteFileItem,
+        items: [RemoteFileItem],
+        service: NasFinderPhotoLibraryAssetFileService,
+        selectedIdentifiers: Set<String>,
+        onToggleSelection: ((PHAsset) -> Void)?,
+        onDismiss: @escaping () -> Void
+    ) {
+        self.initialAsset = initialAsset
+        self.initialItem = initialItem
+        self.items = items
+        self.service = service
+        self.selectedIdentifiers = selectedIdentifiers
+        self.onToggleSelection = onToggleSelection
+        self.onDismiss = onDismiss
+        _currentAssetID = State(initialValue: initialAsset.localIdentifier)
+    }
+
+    private var isCurrentSelected: Bool {
+        selectedIdentifiers.contains(currentAssetID)
+    }
+
+    @ViewBuilder
+    private var accessoryView: some View {
+        if isCurrentSelected, let onToggleSelection {
+            Button(role: .destructive) {
+                if let asset = items.first(where: { $0.path == currentAssetID }).flatMap({ _ in PHAsset.fetchAssets(withLocalIdentifiers: [currentAssetID], options: nil).firstObject }) ?? (currentAssetID == initialAsset.localIdentifier ? initialAsset : nil) {
+                    onToggleSelection(asset)
+                }
+                onDismiss()
+            } label: {
+                Label("선택 해제", systemImage: "minus.circle")
+            }
+        }
+    }
+
+    var body: some View {
+        RemotePreviewView(
+            item: initialItem,
+            sequentialItems: items,
+            service: service,
+            accessoryControls: AnyView(accessoryView),
+            onClose: onDismiss,
+            onCurrentItemChanged: { item in
+                currentAssetID = item.path
+            }
+        )
     }
 }
 

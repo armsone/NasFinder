@@ -44,6 +44,8 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         }
     }
 
+    static let didChangeNotification = Notification.Name("NasFinder.appIconDidChange")
+
     static func current(alternateIconName: String?) -> AppIconChoice {
         allCases.first { $0.alternateIconName == alternateIconName } ?? .blueNAS
     }
@@ -70,7 +72,12 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
         }
         UIApplication.shared.setAlternateIconName(icon.alternateIconName) { error in
             let message = error?.localizedDescription
-            Task { @MainActor in completion(message) }
+            Task { @MainActor in
+                if message == nil {
+                    NotificationCenter.default.post(name: AppIconChoice.didChangeNotification, object: nil)
+                }
+                completion(message)
+            }
         }
     }
 }
@@ -195,7 +202,7 @@ struct AppIconPickerSection: View {
                     }
 
                     Divider()
-                    SettingsPanelDescription("선택한 아이콘은 홈 화면과 앱 보관함에 적용됩니다.")
+                    SettingsPanelDescription("선택한 앱 아이콘은 상단에도 반영됩니다. 테마를 바꿔도 선택한 아이콘은 유지됩니다.")
                 }
                 .padding(.vertical, ui(6))
                 .listRowInsets(EdgeInsets(top: ui(10), leading: ui(12), bottom: ui(10), trailing: ui(12)))

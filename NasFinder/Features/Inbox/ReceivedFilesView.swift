@@ -1686,7 +1686,7 @@ struct LocalInboxFileService: RemoteFileService {
 
     /// 이 서비스를 만든 시점의 모드. 프라이버시 모드에서 시작한 작업은 모드가 바뀐 뒤에도 자기 파일을 계속 읽는다
     /// (화면은 모드 전환 때 새 서비스로 다시 만들어지므로 일반 모드 화면은 비공개를 읽지 못한다).
-    private let startedInPrivacyMode = PrivacyMode.currentlyActive
+    private let startedInPrivacyMode: Bool
     private var newRecordFlag: Bool? { startedInPrivacyMode ? true : nil }
     private func isHidden(connectionID: UUID, path: String) -> Bool {
         // 생성 시점 모드만 따른다: 일반 모드에서 만든 서비스는 전역 모드가 나중에 켜져도 비공개를 읽지 못한다.
@@ -1708,7 +1708,9 @@ struct LocalInboxFileService: RemoteFileService {
     /// Records handed over by a caller that addresses files by record id.
     private let recordsByPath: [String: SharedInboxRecord]
 
-    init(records: [SharedInboxRecord] = []) {
+    /// `startedInPrivacyMode`는 진행 중인 작업이 시작 시점의 모드를 그대로 넘길 때만 지정한다. 화면은 기본값(현재 모드)을 쓴다.
+    init(records: [SharedInboxRecord] = [], startedInPrivacyMode: Bool = PrivacyMode.currentlyActive) {
+        self.startedInPrivacyMode = startedInPrivacyMode
         recordsByPath = Dictionary(
             uniqueKeysWithValues: records.map { ($0.id.uuidString, $0) }
         )

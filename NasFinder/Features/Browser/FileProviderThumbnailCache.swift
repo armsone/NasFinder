@@ -73,6 +73,7 @@ actor FileProviderThumbnailCache {
                     }
                 }
             }
+            // 완료 기록일 뿐 이후 동기화를 막지 않는다. 먼저 저장된 뒤 새로 생긴 사본도 다시 맞춰야 한다.
             if !hadCopyFailure {
                 migrationDefaults.set(true, forKey: Self.migrationDefaultsKey)
             }
@@ -102,6 +103,18 @@ actor FileProviderThumbnailCache {
     func removeAll() {
         guard let directoryURL else { return }
         try? fileManager.removeItem(at: directoryURL)
+    }
+
+    /// 앱 썸네일 캐시를 지운 뒤에 부른다. 공유 폴더의 사본은 어느 캐시에서 왔는지 구분할 수 없으므로
+    /// 모두 지우고, 비우지 않은 캐시에 남아 있는 미리보기만 다시 채운다.
+    func removeCopiesOfClearedCache() {
+        removeAll()
+        migrateExistingCachesIfNeeded()
+    }
+
+    func remove(forKey key: String) {
+        guard let directoryURL else { return }
+        try? fileManager.removeItem(at: fileURL(forKey: key, directoryURL: directoryURL))
     }
 
     private func scheduleFilesRefresh() {

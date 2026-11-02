@@ -376,12 +376,17 @@ struct TrailerWorkspace<Editor: View, Finder: View>: View {
 
 // MARK: - 앱 셸 이동 요청
 
+/// 영상 허브 스택의 하위 화면. 넓은 사이드바가 만들기 아래 선택 표시를 맞출 때 쓴다.
+enum VideoHubChild { case mediaPicker, draftManager }
+
 /// 편집기 레일에서 다른 탭으로 나갈 때 앱 셸에 알린다. Mac 넓은 창의 하나뿐인 사이드바도
 /// 이 통로로 파인더에 이동을 요청하고, 파인더·영상·도구의 현재 위치를 읽어 선택 표시를 한다.
 @MainActor
 final class AppShellRouter: ObservableObject {
     static let shared = AppShellRouter()
     @Published var request: AppTab?
+    @Published var videoHubResetToken = 0
+    @Published var workbenchCreateRequest = false
     @Published var finderRequest: FinderSidebarRequest?
     @Published var finderLocation: FinderSidebarLocation = .home
     @Published var googlePhotosConnected = false
@@ -389,18 +394,32 @@ final class AppShellRouter: ObservableObject {
     /// 옛 `.basket`(재료함) 값은 작업대와 같은 곳이라, 설정되면 영상 목적지는 그대로 두고 작업대를 연다.
     @Published var videoDestination: VideoDestination = .make {
         didSet {
-            guard videoDestination == .basket else { return }
-            videoDestination = .make
-            request = .workbench
+            switch videoDestination {
+            case .basket:
+                videoDestination = .make
+                request = .workbench
+            case .drafts, .collection:
+                // 사이드바에는 만들기 대표 항목 하나만 있으므로 옛 값은 .make로 맞춘다.
+                videoDestination = .make
+            default:
+                break
+            }
         }
     }
-    @Published var toolsDestination: ToolsDestination = .storage
+    @Published var toolsDestination: ToolsDestination = .hub
+    @Published var toolsHostRequest: UUID? = nil
     /// 좁은 화면에서 도구 목록 위에 올릴 하위 화면 요청. 도구 화면이 처리하면 nil로 돌린다.
     @Published var toolsPushRequest: ToolsDestination?
     /// 홈 "이어서 편집"에서 특정 편집본을 바로 열라는 요청. 영상 허브가 처리하면 nil로 돌린다.
     @Published var resumeDraftRequest: UUID?
+    /// 홈의 포켓 행이 작업대에서 해당 포켓을 바로 열라는 요청. 작업대 화면이 처리하면 nil로 돌린다.
+    @Published var workbenchPocketRequest: UUID?
     /// 홈의 "예고편 보기"·"뮤직비디오"가 영상 제작의 기존 미디어 고르기를 바로 열라는 요청. 영상 허브가 처리하면 nil로 돌린다.
     @Published var videoPickRequest: VideoTrailerMode?
+    /// 넓은 사이드바 "편집본 전체"가 전체 편집본 관리 화면을 바로 열라는 요청. 영상 허브가 처리하면 false로 돌린다.
+    @Published var videoDraftManagerRequest = false
+    /// 영상 허브 스택에 지금 올라온 하위 화면(사이드바 선택 표시용). 허브가 갱신한다.
+    @Published var videoHubChild: VideoHubChild?
     /// Mac 셸 내용 영역 위에 올라온 영상 편집기. 앱 셸이 그립니다.
     @Published var hostedEditor: HostedTrailerEditor?
 
@@ -433,6 +452,13 @@ final class AppShellRouter: ObservableObject {
         toolsPushRequest = destination
     }
 
+    func openToolsHost(_ id: UUID, destination: ToolsDestination) {
+        toolsHostRequest = id
+        toolsDestination = destination
+        request = .tools
+        toolsPushRequest = destination
+    }
+
     func openPhotoSelection() { openTools(.selection) }
 
     func openVideo(_ destination: VideoDestination) {
@@ -444,6 +470,13 @@ final class AppShellRouter: ObservableObject {
     func openVideoPicker(_ mode: VideoTrailerMode) {
         videoDestination = .make
         videoPickRequest = mode
+        request = .video
+    }
+
+    /// 편집본 전체 관리 화면을 영상 허브 스택 위에 연다.
+    func openVideoDraftManager() {
+        videoDestination = .make
+        videoDraftManagerRequest = true
         request = .video
     }
 

@@ -472,19 +472,68 @@ struct SFTPProviderBackend: ProviderRemoteBackend {
         }
     }
 
+    /// 새 파일만 만든다. 대상을 직접 열지 않고 같은 폴더의 임시 파일에 먼저 올려 크기를 확인한 뒤 게시한다.
+    /// Citadel 0.12.1은 v3 rename만 제공해 기존 파일을 안전하게 교체할 수 없으므로 내용 교체는 지원하지 않는다.
     func upload(localURL: URL, to path: String) async throws {
+        let source = try ProviderSFTPUploadSource(url: localURL)
         try await withSFTP { sftp in
-            let localFile = try FileHandle(forReadingFrom: localURL)
-            defer { try? localFile.close() }
-            let remoteFile = try await sftp.openFile(
-                filePath: path,
-                flags: [.write, .create, .truncate]
+            let parent = Self.parentDirectory(of: path)
+            let name = (path as NSString).lastPathComponent
+            guard try await !Self.listing(of: parent, using: sftp)
+                .contains(where: { $0.filename == name }) else {
+                throw NasFinderFileProviderErrors.filenameCollision
+            }
+
+            let stagingPath = Self.appending(
+                ".nasfinder-upload-\(UUID().uuidString.lowercased()).tmp",
+                to: parent
             )
+            try await Self.stage(source, at: stagingPath, using: sftp)
+
+            do {
+                try Task.checkCancellation()
+                // 업로드하는 동안 다른 클라이언트가 같은 이름을 만들었으면 덮어쓰지 않는다.
+                guard try await !Self.listing(of: parent, using: sftp)
+                    .contains(where: { $0.filename == name }) else {
+                    throw NasFinderFileProviderErrors.filenameCollision
+                }
+                try Task.checkCancellation()
+            } catch {
+                try? await sftp.remove(at: stagingPath)
+                throw error
+            }
+
+            try await Self.commitNewFile(
+                stagingPath: stagingPath,
+                path: path,
+                expectedSize: source.size,
+                using: sftp
+            )
+        }
+    }
+
+    /// 배타적으로 만든 이 임시 파일만 이 작업의 소유이므로, 실패하면 그것만 지운다.
+    private static func stage(
+        _ source: ProviderSFTPUploadSource,
+        at stagingPath: String,
+        using sftp: SFTPClient
+    ) async throws {
+        let localFile = try FileHandle(forReadingFrom: source.url)
+        defer { try? localFile.close() }
+        let remoteFile = try await sftp.openFile(
+            filePath: stagingPath,
+            flags: [.write, .create, .forceCreate]
+        )
+
+        do {
             var offset: UInt64 = 0
             do {
                 while let data = try localFile.read(upToCount: 256 * 1_024),
                       !data.isEmpty {
                     try Task.checkCancellation()
+                    guard UInt64(data.count) <= source.size - offset else {
+                        throw ProviderSFTPUploadError.sourceChanged
+                    }
                     var buffer = ByteBuffer()
                     buffer.writeBytes(data)
                     try await remoteFile.write(buffer, at: offset)
@@ -495,11 +544,84 @@ struct SFTPProviderBackend: ProviderRemoteBackend {
                 try? await remoteFile.close()
                 throw error
             }
-            let attributes = try await sftp.getAttributes(at: path)
-            guard attributes.size == offset else {
-                throw CocoaError(.fileWriteUnknown)
+            guard offset == source.size else {
+                throw ProviderSFTPUploadError.sourceChanged
+            }
+            try source.requireUnchanged()
+
+            let staged = try await sftp.getAttributes(at: stagingPath)
+            guard staged.size == offset else {
+                throw ProviderSFTPUploadError.verificationFailed
+            }
+        } catch {
+            try? await sftp.remove(at: stagingPath)
+            throw error
+        }
+    }
+
+    /// SFTP v3 rename은 대상이 있으면 실패해야 하므로, 그 사이 생긴 파일을 덮어쓰지 않는다.
+    private static func commitNewFile(
+        stagingPath: String,
+        path: String,
+        expectedSize: UInt64,
+        using sftp: SFTPClient
+    ) async throws {
+        let parent = parentDirectory(of: path)
+        let name = (path as NSString).lastPathComponent
+        let stagingName = (stagingPath as NSString).lastPathComponent
+        do {
+            try await sftp.rename(at: stagingPath, to: path)
+        } catch {
+            // 응답만 유실됐을 수 있다. 임시 이름이 남아 있을 때만 실제 실패로 보고 임시 파일을 지운다.
+            guard let entries = try? await listing(of: parent, using: sftp) else { throw error }
+            if entries.contains(where: { $0.filename == stagingName }) {
+                try? await sftp.remove(at: stagingPath)
+                if entries.contains(where: { $0.filename == name }) {
+                    throw NasFinderFileProviderErrors.filenameCollision
+                }
+                throw error
             }
         }
+        try await verifyPublished(
+            name: name,
+            stagingName: stagingName,
+            in: parent,
+            expectedSize: expectedSize,
+            using: sftp
+        )
+    }
+
+    private static func verifyPublished(
+        name: String,
+        stagingName: String,
+        in parent: String,
+        expectedSize: UInt64,
+        using sftp: SFTPClient
+    ) async throws {
+        let entries = try await listing(of: parent, using: sftp)
+        guard !entries.contains(where: { $0.filename == stagingName }),
+              let published = entries.first(where: { $0.filename == name }),
+              isRegularFile(published),
+              published.attributes.size == expectedSize else {
+            throw ProviderSFTPUploadError.verificationFailed
+        }
+    }
+
+    private static func listing(
+        of directory: String,
+        using sftp: SFTPClient
+    ) async throws -> [SFTPPathComponent] {
+        try await sftp.listDirectory(atPath: directory).flatMap(\.components)
+    }
+
+    private static func parentDirectory(of path: String) -> String {
+        let parent = (path as NSString).deletingLastPathComponent
+        return parent.isEmpty ? "." : parent
+    }
+
+    private static func isRegularFile(_ component: SFTPPathComponent) -> Bool {
+        component.attributes.permissions.map { ($0 & 0o170000) == 0o100000 }
+            ?? component.longname.hasPrefix("-")
     }
 
     func rename(from sourcePath: String, to destinationPath: String) async throws {
@@ -646,6 +768,49 @@ private final class ProviderSSHHostKeyValidator:
             .base64EncodedString()
             .replacingOccurrences(of: "=", with: "")
         return "SHA256:\(encoded)"
+    }
+}
+
+/// 업로드할 로컬 파일의 시작 시점 상태. 전송이 끝난 뒤 그대로인지 확인하는 데 쓴다.
+private struct ProviderSFTPUploadSource: Sendable {
+    let url: URL
+    let size: UInt64
+    private let modifiedAt: Date?
+
+    init(url: URL) throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard attributes[.type] as? FileAttributeType == .typeRegular,
+              let size = (attributes[.size] as? NSNumber)?.uint64Value else {
+            throw ProviderSFTPUploadError.sourceNotRegularFile
+        }
+        self.url = url
+        self.size = size
+        modifiedAt = attributes[.modificationDate] as? Date
+    }
+
+    func requireUnchanged() throws {
+        let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
+        guard (attributes[.size] as? NSNumber)?.uint64Value == size,
+              attributes[.modificationDate] as? Date == modifiedAt else {
+            throw ProviderSFTPUploadError.sourceChanged
+        }
+    }
+}
+
+private enum ProviderSFTPUploadError: LocalizedError, Sendable {
+    case sourceNotRegularFile
+    case sourceChanged
+    case verificationFailed
+
+    var errorDescription: String? {
+        switch self {
+        case .sourceNotRegularFile:
+            "Only regular files can be uploaded."
+        case .sourceChanged:
+            "The file changed while it was being uploaded. Try again."
+        case .verificationFailed:
+            "The server could not confirm the upload."
+        }
     }
 }
 

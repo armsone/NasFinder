@@ -78,18 +78,24 @@ final class URLSessionBoundedRangeReader: NSObject,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        switch challenge.protectionSpace.authenticationMethod {
-        case NSURLAuthenticationMethodHTTPBasic,
-             NSURLAuthenticationMethodHTTPDigest,
-             NSURLAuthenticationMethodDefault:
-            if let authenticationCredential, challenge.previousFailureCount == 0 {
-                completionHandler(.useCredential, authenticationCredential)
-            } else {
-                completionHandler(.performDefaultHandling, nil)
-            }
-        default:
-            completionHandler(.performDefaultHandling, nil)
-        }
+        let (disposition, credential) = HTTPCredentialOrigin.response(
+            to: challenge,
+            originalRequest: task.originalRequest,
+            credential: authenticationCredential
+        )
+        completionHandler(disposition, credential)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        completionHandler(
+            HTTPCredentialOrigin.redirectedRequest(request, originalRequest: task.originalRequest)
+        )
     }
 
     func urlSession(

@@ -11,9 +11,17 @@ enum VideoDestination: String, CaseIterable, Identifiable {
     case collection = "컬렉션"
     var id: String { rawValue }
     /// 사이드바·가로 막대·홈에 보이는 목적지. 재료함은 작업대와 같은 곳이라 중복 메뉴로 보이지 않는다.
-    static var allCases: [VideoDestination] { [.make, .drafts, .collection] }
+    /// 옛 `.drafts`·`.collection` 값은 호환용 별칭이며 모두 하나로 합쳐진 영상 만들기 페이지를 보여 준다.
+    static var allCases: [VideoDestination] { [.make] }
     /// 화면에 보이는 이름. rawValue는 사이드바 순서 저장 키라 바꾸지 않는다.
-    var title: String { self == .basket ? "작업대" : rawValue }
+    var title: String {
+        switch self {
+        case .make: "영상 만들기"
+        case .basket: "작업대"
+        case .drafts: "이어서 편집"
+        case .collection: "영상 만들기"
+        }
+    }
 }
 
 struct VideoHubView: View {
@@ -30,42 +38,49 @@ struct VideoHubView: View {
     @State private var isPickingMedia = false
     @State private var isPickingMusicMedia = false
     @State private var isAddingFromLibrary = false
+    @State private var isShowingDraftManager = false
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 0) {
-                // Mac 넓은 창에서는 사이드바가 하위 목적지를 고르므로 가로 막대를 겹쳐 두지 않는다.
-                if !usesShellSidebar { destinationPicker }
-                Group {
-                    switch destination {
-                    case .make: makeDestination
-                    case .basket: makeDestination
-                    case .drafts:
-                        TrailerDraftManagerView { entry in resumingDraft = entry }
-                    case .collection: MovieCollectionView()
-                    }
-                }
+            // 옛 목적지 값(.basket·.drafts·.collection)도 모두 같은 한 페이지를 보여 준다.
+            makeDestination
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
             .background(PorcelainMetrics.paper)
-            .navigationTitle(usesShellSidebar ? destination.title : "영상")
+            .navigationTitle("영상 만들기")
             .navigationBarTitleDisplayMode(.inline)
             .phoneRootHeader("영상", enabled: PhoneRootHeaderPolicy.isEnabled(usesShellSidebar: usesShellSidebar)) {
                 ByungkiThemeControlButton(selectedThemeRawValue: $selectedThemeRawValue, isBadgeStyle: false, isRunningOnMac: false)
             }
+            .toolbar(.hidden, for: .navigationBar)
             // 길게 누른 뒤로가기는 홈으로 간다. 고르던 항목은 맥락별 선택 세션이 보관한다.
             .environment(\.returnToDashboard) { router.request = .home }
-            .navigationDestination(isPresented: $isPickingMedia) { LocalPhotoLibraryView(initialMode: .trailer) }
-            .navigationDestination(isPresented: $isPickingMusicMedia) { LocalPhotoLibraryView(initialMode: .mediaMusic) }
-            .navigationDestination(isPresented: $isAddingFromLibrary) { LocalPhotoLibraryView() }
+            .navigationDestination(isPresented: $isPickingMedia) {
+                LocalPhotoLibraryView(initialMode: .trailer).toolbar(.hidden, for: .navigationBar)
+            }
+            .navigationDestination(isPresented: $isPickingMusicMedia) {
+                LocalPhotoLibraryView(initialMode: .mediaMusic).toolbar(.hidden, for: .navigationBar)
+            }
+            .navigationDestination(isPresented: $isAddingFromLibrary) {
+                LocalPhotoLibraryView().toolbar(.hidden, for: .navigationBar)
+            }
+            .navigationDestination(isPresented: $isShowingDraftManager) {
+                TrailerDraftManagerView(embedded: false) { resumingDraft = $0 }
+                    .navigationTitle("편집본 전체")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar(.visible, for: .navigationBar)
+            }
             .onChange(of: router.videoDestination) { _, _ in
                 // 홈에서 고르기 화면을 함께 요청한 이동이면 요청 처리가 그 화면을 연다.
-                guard router.videoPickRequest == nil else { return }
+                guard router.videoPickRequest == nil, !router.videoDraftManagerRequest else { return }
                 isPickingMedia = false
                 isPickingMusicMedia = false
                 isAddingFromLibrary = false
+                isShowingDraftManager = false
             }
         }
+        .onChange(of: isPickingMedia) { _, _ in publishChild() }
+        .onChange(of: isShowingDraftManager) { _, _ in publishChild() }
+        .onDisappear { router.videoHubChild = nil }
         .trailerEditorCover(item: $resumingDraft) { entry in
             VideoTrailerView(items: entry.items, service: entry.service, mode: entry.mode, resuming: entry)
                 .environmentObject(inboxStore)
@@ -80,9 +95,35 @@ struct VideoHubView: View {
             shareIntents.refresh()
             resumeRequestedDraft(router.resumeDraftRequest)
             openRequestedPicker(router.videoPickRequest)
+            openRequestedDraftManager(router.videoDraftManagerRequest)
         }
         .onChange(of: router.resumeDraftRequest) { _, id in resumeRequestedDraft(id) }
+        .onChange(of: router.videoHubResetToken) { _, _ in
+            isPickingMedia = false
+            isPickingMusicMedia = false
+            isAddingFromLibrary = false
+            isShowingDraftManager = false
+            resumingDraft = nil
+        }
         .onChange(of: router.videoPickRequest) { _, mode in openRequestedPicker(mode) }
+        .onChange(of: router.videoDraftManagerRequest) { _, requested in openRequestedDraftManager(requested) }
+    }
+
+    private func publishChild() {
+        router.videoHubChild = isShowingDraftManager ? .draftManager : isPickingMedia ? .mediaPicker : nil
+    }
+
+    /// 사이드바 "편집본 전체"가 요청한 전체 편집본 화면을 한 번만 연다.
+    private func openRequestedDraftManager(_ requested: Bool) {
+        guard requested else { return }
+        router.videoDraftManagerRequest = false
+        Task { @MainActor in
+            await Task.yield()
+            isPickingMedia = false
+            isPickingMusicMedia = false
+            isAddingFromLibrary = false
+            isShowingDraftManager = true
+        }
     }
 
     /// 홈의 "예고편 보기"·"뮤직비디오"가 요청한 미디어 고르기를 연다. 선택 세션은 맥락별로 이미 유지되므로 새로 만들거나 비우지 않는다.
@@ -93,6 +134,7 @@ struct VideoHubView: View {
         Task { @MainActor in
             await Task.yield()
             isAddingFromLibrary = false
+            isShowingDraftManager = false
             switch mode {
             case .trailer:
                 isPickingMusicMedia = false
@@ -119,63 +161,66 @@ struct VideoHubView: View {
         nonmutating set { router.videoDestination = newValue }
     }
 
-    private var destinationPicker: some View {
-        HStack(spacing: 0) {
-            ForEach(VideoDestination.allCases) { item in
-                Button { destination = item } label: {
-                    VStack(spacing: 2) {
-                        Text(item.title)
-                            .porcelainFont(.tile)
-                            .foregroundStyle(destination == item ? PorcelainMetrics.accent : PorcelainMetrics.secondary)
-                            .lineLimit(1).minimumScaleFactor(0.8)
-                        Capsule().fill(destination == item ? PorcelainMetrics.accent : .clear).frame(height: 3)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 44)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(destination == item ? .isSelected : [])
-            }
-        }
-        .padding(.horizontal, 8)
-        .background(PorcelainMetrics.paper)
-        .overlay(alignment: .bottom) { PorcelainMetrics.line.frame(height: 0.5) }
-    }
-
     // MARK: 영상 제작
 
     private var makeDestination: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("새 영상을 만들 때만 편집본이 생깁니다. 작업대의 포켓은 그대로 남습니다.")
-                    .porcelainFont(.body).foregroundStyle(PorcelainMetrics.secondary)
-                PorcelainGroupCard {
-                    Button { router.request = .workbench } label: {
-                        PorcelainRow(
-                            title: "작업대에서 시작",
-                            subtitle: "포켓에 담아 둔 사진·영상으로 제작합니다 (시작할 때 원본을 가져옵니다)",
-                            subtitleLineLimit: 2, showsChevron: true
-                        ) { InterfaceIcon(systemName: "tray.2", size: PorcelainMetrics.rowIconSize) } trailing: { EmptyView() }
+                VStack(alignment: .leading, spacing: 8) {
+                    PorcelainSectionHeader(title: "영상 만들기")
+                    PorcelainGroupCard {
+                        Button { isPickingMedia = true } label: {
+                            PorcelainRow(title: "미디어 고르기", showsChevron: true) {
+                                InterfaceIcon(systemName: "square.grid.2x2", size: PorcelainMetrics.rowIconSize)
+                            } trailing: { EmptyView() }
+                        }
+                        .buttonStyle(.plain)
+                        PorcelainDivider()
+                        Button { router.request = .workbench } label: {
+                            PorcelainRow(title: "작업대에서 가져오기", showsChevron: true) {
+                                InterfaceIcon(systemName: "video", size: PorcelainMetrics.rowIconSize)
+                            } trailing: { EmptyView() }
+                        }
+                        .buttonStyle(.plain)
+                        PorcelainDivider()
+                        Button { isPickingMusicMedia = true } label: {
+                            PorcelainRow(title: "뮤직비디오", showsChevron: true) {
+                                InterfaceIcon(systemName: "video", size: PorcelainMetrics.rowIconSize)
+                            } trailing: { EmptyView() }
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-                    PorcelainDivider()
-                    Button { isPickingMedia = true } label: {
-                        PorcelainRow(
-                            title: "미디어 고르기",
-                            subtitle: "내 미디어·폰하드·NAS 등에서 골라 바로 제작하거나 작업대에 담습니다",
-                            subtitleLineLimit: 2, showsChevron: true
-                        ) { InterfaceIcon(systemName: "photo.on.rectangle.angled", size: PorcelainMetrics.rowIconSize) } trailing: { EmptyView() }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    PorcelainSectionHeader(title: "이어서 편집")
+                    TrailerDraftManagerView(embedded: true) { resumingDraft = $0 }
+                }
+
+                VStack(alignment: .leading, spacing: 8) {
+                    PorcelainSectionHeader(title: "작업대")
+                    PorcelainGroupCard {
+                        Button { router.request = .workbench } label: {
+                            PorcelainRow(title: "포켓 목록", subtitle: "작업대 화면으로 이동", showsChevron: true) {
+                                InterfaceIcon(systemName: "tray.2", size: PorcelainMetrics.rowIconSize)
+                            } trailing: {
+                                EmptyView()
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        PorcelainDivider()
+                        Button {
+                            router.workbenchCreateRequest = true
+                            router.request = .workbench
+                        } label: {
+                            PorcelainRow(title: "포켓 만들기", subtitle: "새 작업대 포켓 생성", showsChevron: true) {
+                                InterfaceIcon(systemName: "plus", size: PorcelainMetrics.rowIconSize)
+                            } trailing: {
+                                EmptyView()
+                            }
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
-                    PorcelainDivider()
-                    Button { isPickingMusicMedia = true } label: {
-                        PorcelainRow(
-                            title: "뮤직비디오",
-                            subtitle: "고른 사진·영상을 음악에 맞춰 이어 붙입니다",
-                            subtitleLineLimit: 2, showsChevron: true
-                        ) { InterfaceIcon(systemName: "music.note", size: PorcelainMetrics.rowIconSize) } trailing: { EmptyView() }
-                    }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(16)

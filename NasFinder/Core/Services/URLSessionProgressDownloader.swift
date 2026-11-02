@@ -5,6 +5,82 @@ struct URLSessionProgressDownload: @unchecked Sendable {
     let response: URLResponse
 }
 
+/// HTTP 자격 증명을 보낼 수 있는 출처. scheme·host·유효 port가 모두 같아야 같은 출처다.
+struct HTTPCredentialOrigin: Equatable, Sendable {
+    let scheme: String
+    let host: String
+    let port: Int
+
+    init?(url: URL?) {
+        self.init(scheme: url?.scheme, host: url?.host, port: url?.port)
+    }
+
+    /// 프록시 인증은 서버 자격 증명의 대상이 아니므로 출처로 인정하지 않는다.
+    init?(protectionSpace: URLProtectionSpace) {
+        guard !protectionSpace.isProxy() else { return nil }
+        self.init(
+            scheme: protectionSpace.protocol,
+            host: protectionSpace.host,
+            port: protectionSpace.port
+        )
+    }
+
+    private init?(scheme: String?, host: String?, port: Int?) {
+        let defaultPort: Int
+        switch scheme?.lowercased() {
+        case "http": defaultPort = 80
+        case "https": defaultPort = 443
+        default: return nil
+        }
+        // 주소 표기에 따라 IPv6 host에 대괄호가 붙기도 한다.
+        guard let normalizedHost = host?.lowercased()
+            .trimmingCharacters(in: CharacterSet(charactersIn: "[]")),
+              !normalizedHost.isEmpty,
+              let normalizedScheme = scheme?.lowercased() else {
+            return nil
+        }
+        self.scheme = normalizedScheme
+        self.host = normalizedHost
+        self.port = port.flatMap { $0 > 0 ? $0 : nil } ?? defaultPort
+    }
+
+    /// HTTP 인증 챌린지 처리: 원래 요청의 출처에서 온 첫 챌린지에만 자격 증명을 쓴다.
+    /// 서버 신뢰 등 다른 챌린지와 자격 증명이 없는 다운로드는 시스템 기본 처리를 따른다.
+    static func response(
+        to challenge: URLAuthenticationChallenge,
+        originalRequest: URLRequest?,
+        credential: URLCredential?
+    ) -> (URLSession.AuthChallengeDisposition, URLCredential?) {
+        let method = challenge.protectionSpace.authenticationMethod
+        guard let credential,
+              method == NSURLAuthenticationMethodHTTPBasic
+                || method == NSURLAuthenticationMethodHTTPDigest
+                || method == NSURLAuthenticationMethodDefault else {
+            return (.performDefaultHandling, nil)
+        }
+        guard challenge.previousFailureCount == 0,
+              let authorizedOrigin = HTTPCredentialOrigin(url: originalRequest?.url),
+              HTTPCredentialOrigin(protectionSpace: challenge.protectionSpace) == authorizedOrigin else {
+            return (.rejectProtectionSpace, nil)
+        }
+        return (.useCredential, credential)
+    }
+
+    /// 다른 출처로 넘어가는 리다이렉트에는 요청에 직접 넣은 Authorization 헤더를 싣지 않는다.
+    static func redirectedRequest(
+        _ request: URLRequest,
+        originalRequest: URLRequest?
+    ) -> URLRequest {
+        if let authorizedOrigin = HTTPCredentialOrigin(url: originalRequest?.url),
+           HTTPCredentialOrigin(url: request.url) == authorizedOrigin {
+            return request
+        }
+        var stripped = request
+        stripped.setValue(nil, forHTTPHeaderField: "Authorization")
+        return stripped
+    }
+}
+
 /// Uses a dedicated download session so byte progress is available without
 /// buffering the remote file in memory. The returned file remains valid after
 /// the delegate callback and is owned by the caller.
@@ -84,15 +160,24 @@ final class URLSessionProgressDownloader: NSObject,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        let method = challenge.protectionSpace.authenticationMethod
-        if let authenticationCredential,
-           method == NSURLAuthenticationMethodHTTPBasic
-                || method == NSURLAuthenticationMethodHTTPDigest
-                || method == NSURLAuthenticationMethodDefault {
-            completionHandler(.useCredential, authenticationCredential)
-        } else {
-            completionHandler(.performDefaultHandling, nil)
-        }
+        let (disposition, credential) = HTTPCredentialOrigin.response(
+            to: challenge,
+            originalRequest: task.originalRequest,
+            credential: authenticationCredential
+        )
+        completionHandler(disposition, credential)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        completionHandler(
+            HTTPCredentialOrigin.redirectedRequest(request, originalRequest: task.originalRequest)
+        )
     }
 
     func urlSession(

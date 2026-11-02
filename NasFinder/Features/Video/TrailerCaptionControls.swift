@@ -598,6 +598,9 @@ enum TrailerCaptionRenderer {
         var attributes: [NSAttributedString.Key: Any] = [:]
         var measuredSize: CGSize = .zero
         var shadowPad: CGFloat = 0
+        // 1보다 좁은 줄 간격의 배수(Android StaticLayout 배수와 같은 기준). 보통·넓게는 1이라 아래 값이 모두 그대로다.
+        let narrowFactor = lineSpacing < 1.0 ? max(0.5, lineSpacing) : 1.0
+        var firstLineInset: CGFloat = 0
 
         // 안전 영역 안에 들어가도록 폰트 크기 축소 반복
         while true {
@@ -607,6 +610,9 @@ enum TrailerCaptionRenderer {
             paragraph.lineBreakMode = .byWordWrapping
             let spacingBonus = max(0, (lineSpacing - 1.0) * Double(textSize) * 0.4)
             paragraph.lineSpacing = CGFloat(spacingBonus)
+            // lineSpacing은 음수를 쓸 수 없어 줄 높이 배수로 줄인다. 줄은 위쪽부터 줄어 첫 줄 글자가 블록 위로 나가므로 그만큼 아래로 내린다.
+            if narrowFactor < 1.0 { paragraph.lineHeightMultiple = CGFloat(narrowFactor) }
+            firstLineInset = narrowFactor < 1.0 ? ceil(layoutFont.lineHeight * CGFloat(1.0 - narrowFactor)) : 0
 
             let textColor = UIColor(CaptionColorUtil.color(fromHex: textColorHex))
             attributes = [
@@ -624,13 +630,13 @@ enum TrailerCaptionRenderer {
             )
             measuredSize = CGSize(width: min(safeWidth, ceil(bounding.width)), height: ceil(bounding.height))
 
-            if measuredSize.height + shadowPad <= safeHeight || textSize <= minTextSize {
+            if measuredSize.height + firstLineInset + shadowPad <= safeHeight || textSize <= minTextSize {
                 break
             }
             textSize = max(minTextSize, textSize * 0.88)
         }
 
-        let fullHeight = measuredSize.height + shadowPad
+        let fullHeight = measuredSize.height + firstLineInset + shadowPad
         let drawScale: CGFloat = fullHeight > safeHeight ? safeHeight / fullHeight : 1.0
         let blockWidth = min(safeWidth, measuredSize.width)
         let free = safeWidth - blockWidth
@@ -666,12 +672,12 @@ enum TrailerCaptionRenderer {
                 cg.translateBy(x: drawX, y: drawY)
                 cg.scaleBy(x: drawScale, y: drawScale)
                 (trimmed as NSString).draw(
-                    in: CGRect(origin: .zero, size: CGSize(width: safeWidth, height: measuredSize.height)),
+                    in: CGRect(x: 0, y: firstLineInset, width: safeWidth, height: measuredSize.height),
                     withAttributes: attributes
                 )
             } else {
                 (trimmed as NSString).draw(
-                    in: CGRect(x: drawX, y: drawY, width: safeWidth, height: measuredSize.height),
+                    in: CGRect(x: drawX, y: drawY + firstLineInset, width: safeWidth, height: measuredSize.height),
                     withAttributes: attributes
                 )
             }
@@ -1023,7 +1029,7 @@ struct TrailerCaptionContentLocationCard: View {
             captionDraft.isDirty = true
         } label: {
             VStack(spacing: 4) {
-                Image(systemName: "calendar")
+                Image(interfaceSystemName: "calendar", pointSize: 18, tintable: true)
                     .font(.system(size: 18, weight: .semibold))
                 Text("오늘 날짜")
                     .font(.system(size: 13, weight: .semibold))
@@ -1164,7 +1170,7 @@ struct TrailerCaptionStyleFontCard: View {
                     .font(.system(size: 13))
                     .foregroundStyle(.secondary)
 
-                Image(systemName: isOpen ? "chevron.up" : "chevron.down")
+                Image(interfaceSystemName: isOpen ? "chevron.up" : "chevron.down", pointSize: 13, tintable: true)
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
             }
@@ -1211,7 +1217,7 @@ struct TrailerCaptionStyleFontCard: View {
                         Spacer(minLength: 0)
 
                         if isSelected {
-                            Image(systemName: "checkmark")
+                            Image(interfaceSystemName: "checkmark", pointSize: 12, tintable: true)
                                 .font(.system(size: 12, weight: .bold))
                                 .foregroundStyle(PorcelainMetrics.accent)
                         }
@@ -1254,7 +1260,7 @@ struct TrailerCaptionStyleFontCard: View {
                             Spacer(minLength: 0)
 
                             if isSelected {
-                                Image(systemName: "checkmark")
+                                Image(interfaceSystemName: "checkmark", pointSize: 12, tintable: true)
                                     .font(.system(size: 12, weight: .bold))
                                     .foregroundStyle(PorcelainMetrics.accent)
                             }
@@ -1495,7 +1501,7 @@ struct TrailerCaptionDetailedAdjustmentCard: View {
                                 captionDraft.lineSpacing = min(2.0, captionDraft.lineSpacing + 0.1)
                                 captionDraft.isDirty = true
                             } label: {
-                                Image(systemName: "plus")
+                                Image(interfaceSystemName: "plus", pointSize: 14, tintable: true)
                                     .font(.system(size: 14, weight: .bold))
                                     .frame(width: 38, height: 40)
                                     .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))

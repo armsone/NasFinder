@@ -303,6 +303,7 @@ struct ThemeIcon: View {
     let style: InterfaceIconStyle
     var fallbackSystemName: String? = nil
     var fittedSize: CGFloat? = nil
+    var isActionOverride: Bool? = nil
 
     @AppStorage(AppThemePreference.storageKey) private var themeRawValue =
         AppThemePreference.light.rawValue
@@ -311,23 +312,40 @@ struct ThemeIcon: View {
 
     init(
         _ id: ThemeIconID, style: InterfaceIconStyle, fallbackSystemName: String? = nil,
-        fittedSize: CGFloat? = nil
+        fittedSize: CGFloat? = nil, isAction: Bool? = nil
     ) {
         self.id = id
         self.style = style
         self.fallbackSystemName = fallbackSystemName
         self.fittedSize = fittedSize
+        self.isActionOverride = isAction
     }
 
-    /// 어두운 테마의 Simple/Solid만 실루엣 그대로 테마 글자색 한 색으로 칠한다. 밝은 테마의 원색,
-    /// 입체·리얼리스틱 아틀라스는 원본 색을 그대로 둔다.
+    private var canonicalName: String {
+        id == .save ? "workbench" : id == .storage ? "device_files" : id.rawValue
+    }
+
+    /// Android isActionGlyph 기준. .save는 작업대(비액션)가 기본이고 저장 맥락은 isActionOverride로 받는다.
+    private var isAction: Bool {
+        if let isActionOverride { return isActionOverride }
+        return id != .save && InterfaceDesignArtwork.isActionCanonical(canonicalName)
+    }
+
+    /// 액션 글리프는 선택한 팩과 상관없이 심플로 그린다.
+    private var effectiveStyle: InterfaceIconStyle {
+        InterfaceDesignArtwork.effectiveStyle(style, isAction: isAction)
+    }
+
+    /// 심플(과 솔리드의 심플 대체 그림)만 밝기와 상관없이 테마 글자색 한 색으로 칠한다.
+    /// 입체·리얼리스틱과 솔리드 레거시(NAS 포함)는 어두운 테마에서도 원본 색을 그대로 둔다.
     private var tintTheme: AppThemePreference? {
-        let theme = AppThemePreference.resolved(themeRawValue)
-        return !style.isAtlas && theme.isDark ? theme : nil
+        guard InterfaceDesignArtwork.isMonochrome(canonicalName, style: effectiveStyle) else { return nil }
+        return AppThemePreference.resolved(themeRawValue)
     }
 
     private var image: UIImage? {
         // 새 스타일이 로드되기 전 이전 그림을 새 스타일 키로 툴바 캐시에 넣지 않는다.
+        let style = effectiveStyle
         let raw = style.isAtlas ? (loadedAtlasStyle == style ? atlasImage : nil) : ThemeIconArtwork.image(id, style: style)
         guard let raw else { return nil }
         guard let fittedSize else { return raw }
@@ -352,9 +370,9 @@ struct ThemeIcon: View {
                 Color.clear
             }
         }
-        .task(id: style) {
-            guard style.isAtlas else { return }
-            let style = style, id = id
+        .task(id: effectiveStyle) {
+            guard effectiveStyle.isAtlas else { return }
+            let style = effectiveStyle, id = id
             let image = await Task.detached(priority: .userInitiated) {
                 ThemeIconArtwork.image(id, style: style)
             }.value
@@ -401,25 +419,41 @@ struct InterfaceIcon: View {
     @AppStorage(AppThemePreference.storageKey) private var themeRawValue =
         AppThemePreference.light.rawValue
     @AppStorage(InterfaceIconStyle.storageKey) private var styleRawValue = ""
+    @Environment(\.shellSidebarChild) private var sidebarChild
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let style = InterfaceIconStyle.resolved(
-            styleRawValue, theme: AppThemePreference.resolved(themeRawValue)
-        )
+        let theme = AppThemePreference.resolved(themeRawValue)
+        let selected = InterfaceIconStyle.resolved(styleRawValue, theme: theme)
+        // 액션은 어느 팩에서도 심플. square.and.arrow.down은 저장(액션), tray.2는 작업대(비액션)로 호출 맥락에서 구분한다.
+        let action = InterfaceDesignArtwork.isAction(symbol: systemName)
+        let style = selected.map { InterfaceDesignArtwork.effectiveStyle($0, isAction: action) }
+        let drawSize = sidebarChild ? min(size, PorcelainMetrics.shellSidebarChildIconSize) : size
         if let style, let canonical = InterfaceDesignArtwork.canonical(systemName),
            let art = InterfaceDesignArtwork.asset(canonical, style: style) {
-            Image(uiImage: art).renderingMode(style == .simple || (!style.isAtlas && AppThemePreference.current.isDark) ? .template : .original).resizable().scaledToFit()
-                .foregroundStyle(style == .simple ? AppThemePreference.current.palette.text : .primary)
-                .frame(width: size, height: size)
-        } else if let style, let id = ThemeIconID(systemName: InterfaceDesignArtwork.originalSymbol(systemName)) {
+            if InterfaceDesignArtwork.isMonochrome(canonical, style: style) {
+                templateArt(art, size: drawSize, theme: theme)
+            } else {
+                Image(uiImage: art).renderingMode(.original).resizable().scaledToFit()
+                    .frame(width: drawSize, height: drawSize)
+            }
+        } else if let selected, let id = ThemeIconID(systemName: InterfaceDesignArtwork.originalSymbol(systemName)) {
             ThemeIcon(
-                id, style: style, fallbackSystemName: systemName,
-                fittedSize: fitsBitmap ? size : nil
+                id, style: selected, fallbackSystemName: systemName,
+                fittedSize: fitsBitmap ? drawSize : nil, isAction: action
             )
-            .frame(width: size, height: size)
+            .frame(width: drawSize, height: drawSize)
         } else {
             Image(interfaceSystemName: systemName)
         }
+    }
+
+    /// 단색 그림은 template으로 그려 호출부의 foregroundStyle(예: 플레이어의 흰색)을 따른다.
+    /// 호출부 foregroundStyle을 항상 우선하고, 지정이 없으면 뷰 환경의 기본 전경색을 쓴다.
+    @ViewBuilder
+    private func templateArt(_ art: UIImage, size: CGFloat, theme: AppThemePreference) -> some View {
+        Image(uiImage: art).renderingMode(.template).resizable().scaledToFit()
+            .frame(width: size, height: size)
     }
 }
 
@@ -431,6 +465,7 @@ struct InterfaceToolbarIcon: View {
 
     var body: some View {
         InterfaceIcon(systemName: systemName, size: artSize, fitsBitmap: true)
+            .foregroundStyle(PorcelainMetrics.graphite)
             .frame(width: 44, height: 44)
             .contentShape(Rectangle())
             .fixedSize()

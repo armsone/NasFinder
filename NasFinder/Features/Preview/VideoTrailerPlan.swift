@@ -165,6 +165,7 @@ struct VideoTrailerSource: Identifiable {
     var imageDurationRatio: Double = 0.55
     /// 1 = 레거시(0.35...0.75 범위), 2 = 현재 정책(0.10...0.95 + 보너스). 새 소스는 2.
     var imageDurationPolicyVersion: Int = 2
+    var isImportant: Bool = false
     var duration: Double { plan.duration }
 
     /// 추천 및 자동 계획 계산 시 구버전 비율을 안전하게 마이그레이션된 값으로 평가한다.
@@ -173,6 +174,24 @@ struct VideoTrailerSource: Identifiable {
             return VideoTrailerPhotoQuality.migrateV1ToV2Ratio(imageDurationRatio)
         }
         return imageDurationRatio
+    }
+
+    /// 사진 소스의 가중치 적용 길이 계산 (isImportant 우선순위 반영)
+    /// 기본: clipLength * ratio (1/30...30초)
+    /// 중요: ratio = 0.85 + 0.15 * clamp(effectiveHanYangRatio / 0.95, 0...1), min 3.0, max = max(clipLength, 3.0) bounded by hard 30.0
+    func weightedImageLength(clipLength: Double) -> Double {
+        guard isImage else { return max(0.001, min(clipLength, duration)) }
+        let rawRatio = effectiveImageDurationRatio
+        let validRatio = rawRatio.isFinite && rawRatio > 0 ? rawRatio : 0.55
+        if isImportant {
+            let clampedHanYang = min(1.0, max(0.0, validRatio / 0.95))
+            let importantRatio = 0.85 + 0.15 * clampedHanYang
+            let configuredMax = min(30.0, max(3.0, clipLength))
+            let calculated = clipLength * importantRatio
+            return min(configuredMax, max(3.0, calculated))
+        } else {
+            return min(30.0, max(1.0 / 30.0, clipLength * validRatio))
+        }
     }
 }
 
@@ -295,8 +314,7 @@ enum VideoTrailerBatchPlan {
     /// fraction of it, a video the common length (its whole length when it is shorter).
     static func sceneLength(_ source: VideoTrailerSource, clipLength: Double) -> Double {
         if source.isImage {
-            let ratio = source.imageDurationRatio.isFinite && source.imageDurationRatio > 0 ? source.imageDurationRatio : 0.55
-            return min(30.0, max(1.0 / 30.0, clipLength * ratio))
+            return source.weightedImageLength(clipLength: clipLength)
         } else {
             return max(0.001, min(clipLength, source.duration))
         }

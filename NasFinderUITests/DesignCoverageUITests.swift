@@ -118,23 +118,27 @@ final class DesignCoverageUITests: XCTestCase {
 
     /// 아이폰은 아래 막대, 넓은 창은 사이드바에서 루트를 연다.
     private func openRoot(_ app: XCUIApplication, _ name: String) {
-        if isPad {
-            let map = ["홈": "홈", "작업대": "작업대", "파인더": "즐겨찾기", "영상": "영상 제작", "도구": "미디어 전송"]
-            _ = tap(app, map[name] ?? name)
-        } else {
-            _ = tap(app, name)
-        }
+        // 현재 루트는 도구/파인더/홈/만들기/설정이며 아이폰·넓은 창 모두 같은 이름이다(옛 영상 루트는 만들기).
+        let map = ["영상": "만들기"]
+        _ = tap(app, map[name] ?? name)
     }
 
     func testRoots() {
         configure("roots-\(isPad ? "ipad" : "iphone")-\(variant)")
         var app: XCUIApplication!
         visit(&app, "home", root: nil, steps: [], theme: theme, size: size)
-        for root in ["작업대", "파인더", "영상", "도구"] {
+        for root in ["파인더", "만들기", "도구", "설정"] {
             visit(&app, "root-" + root, root: root, steps: [], theme: theme, size: size)
         }
-        visit(&app, "video-drafts", root: "영상", steps: ["편집본"], theme: theme, size: size)
-        visit(&app, "video-collections", root: "영상", steps: ["컬렉션"], theme: theme, size: size)
+        // 작업대는 루트가 아니다. 만들기의 "포켓 목록"으로 따로 캡처한다.
+        visit(&app, "workbench", root: "만들기", steps: ["포켓 목록"], theme: theme, size: size)
+        // 만들기 한 페이지에 새 작업과 편집본이 함께 있다. 넓은 창은 사이드바 "편집본 전체", 아이폰은 같은 페이지의 인라인 "이어서 편집" 섹션.
+        visit(&app, "video-drafts", root: "만들기", steps: isPad ? ["편집본 전체"] : [], theme: theme, size: size)
+        visit(&app, "video-create-drafts-inline", root: "만들기", steps: [], theme: theme, size: size)
+        XCTAssertTrue(
+            app.staticTexts["이어서 편집"].firstMatch.waitForExistence(timeout: 5),
+            "만들기 페이지에 인라인 '이어서 편집' 섹션 제목이 보여야 한다"
+        )
         finish()
     }
 
@@ -144,11 +148,11 @@ final class DesignCoverageUITests: XCTestCase {
         visit(&app, "transfer", root: "도구", steps: ["미디어 전송"], theme: theme, size: size)
         visit(&app, "transfer-send", root: "도구", steps: ["미디어 전송", "보내기"], theme: theme, size: size)
         visit(&app, "selection", root: "도구", steps: ["사진 선별"], theme: theme, size: size)
-        visit(&app, "settings", root: "도구", steps: ["설정"], theme: theme, size: size)
+        visit(&app, "settings", root: "설정", steps: [], theme: theme, size: size)
         app.swipeUp(); shot(app, "settings-2")
         app.swipeUp(); shot(app, "settings-3")
         app.swipeUp(); shot(app, "settings-4")
-        if isPad { visit(&app, "storage", root: "도구", steps: ["저장공간"], theme: theme, size: size) }
+        if isPad { visit(&app, "thumbnail-cache", root: "도구", steps: ["썸네일 캐시"], theme: theme, size: size) }
         finish()
     }
 
@@ -184,7 +188,7 @@ final class DesignCoverageUITests: XCTestCase {
     func testVideoPicker() {
         configure("videopick-\(isPad ? "ipad" : "iphone")-\(variant)")
         var app: XCUIApplication!
-        visit(&app, "picker-media", root: "영상", steps: ["미디어 고르기"], theme: theme, size: size)
+        visit(&app, "picker-media", root: "만들기", steps: ["미디어 고르기"], theme: theme, size: size)
         if !isPad {
             // 탭 막대 좌표(질의 없이): 헤더 아래 첫 줄
             let tabs: [(String, CGFloat)] = [("calendar", 0.25), ("phonehard", 0.40), ("favorites", 0.58), ("nas", 0.82)]
@@ -274,5 +278,35 @@ final class DesignCoverageUITests: XCTestCase {
             }
         }
         finish()
+    }
+}
+
+
+@MainActor
+final class PlayerDeviceSmokeUITests: XCTestCase {
+    func testCaptureBothCurrentAppScreens() {
+        let nfaApp = XCUIApplication(bundleIdentifier: "com.armsone.nasfinder")
+        nfaApp.launch()
+        XCTAssertTrue(nfaApp.wait(for: .runningForeground, timeout: 10))
+        let nfaAttachment = XCTAttachment(screenshot: nfaApp.screenshot())
+        nfaAttachment.name = "NFA-home"
+        nfaAttachment.lifetime = .keepAlways
+        add(nfaAttachment)
+        let nfaHierarchy = XCTAttachment(string: nfaApp.debugDescription)
+        nfaHierarchy.name = "NFA-home-hierarchy"
+        nfaHierarchy.lifetime = .keepAlways
+        add(nfaHierarchy)
+
+        let hcApp = XCUIApplication(bundleIdentifier: "com.intosharp.hanclip")
+        hcApp.launch()
+        XCTAssertTrue(hcApp.wait(for: .runningForeground, timeout: 10))
+        let hcAttachment = XCTAttachment(screenshot: hcApp.screenshot())
+        hcAttachment.name = "HC-home"
+        hcAttachment.lifetime = .keepAlways
+        add(hcAttachment)
+        let hcHierarchy = XCTAttachment(string: hcApp.debugDescription)
+        hcHierarchy.name = "HC-home-hierarchy"
+        hcHierarchy.lifetime = .keepAlways
+        add(hcHierarchy)
     }
 }

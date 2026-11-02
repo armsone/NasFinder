@@ -217,12 +217,15 @@ private struct LocalPhotoLibraryPicker: View {
         .overlay {
             if let asset = nativePreviewAsset {
                 GeometryReader { geometry in
-                    NasFinderAssetPreview(asset: asset,
-                        onRemoveSelection: selectedIdentifiers.contains(asset.localIdentifier) ? {
-                            toggleAsset(asset)
-                            nativePreviewAsset = nil
-                        } : nil,
-                        onDismiss: { nativePreviewAsset = nil })
+                    NasFinderAssetPreview(
+                        asset: asset,
+                        candidateAssets: entries.compactMap(\.asset),
+                        selectedIdentifiers: Set(selectedIdentifiers),
+                        onToggleSelection: { toggledAsset in
+                            toggleAsset(toggledAsset)
+                        },
+                        onDismiss: { nativePreviewAsset = nil }
+                    )
                         .frame(width: geometry.size.width, height: geometry.size.height)
                 }
                 .ignoresSafeArea()

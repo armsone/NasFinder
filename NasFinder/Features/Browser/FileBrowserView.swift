@@ -254,7 +254,6 @@ struct FileBrowserView: View {
     @State private var previewItem: RemoteFileItem?
     @State private var inlineMusic = InlineMusicPlayback()
     @State private var trailerSelection: VideoTrailerSelection?
-    @State private var collectionNotice: String?
     /// '작업대에 담기'가 만든 참조 요청. 대상 포켓은 사용자가 시트에서 직접 고른다.
     @State private var workbenchRequest: WorkbenchAddRequest?
     @Environment(\.trailerProjectSink) private var projectSink
@@ -722,9 +721,6 @@ struct FileBrowserView: View {
         ) { preparedShare in
             RemoteFileActivityView(fileURLs: preparedShare.fileURLs)
         }
-        .alert("컬렉션 알림", isPresented: Binding(get: { collectionNotice != nil }, set: { if !$0 { collectionNotice = nil } })) {
-            Button("확인", role: .cancel) { collectionNotice = nil }
-        } message: { Text(collectionNotice ?? "") }
         .workbenchAddSheet(gated($workbenchRequest, isActive))
         .routesTrailerSelection($trailerSelection, service: { viewModel.service }, sink: projectSink)
         .trailerEditorCover(item: gated(trailerCoverBinding($trailerSelection, sink: projectSink), isActive)) { selection in
@@ -2478,10 +2474,18 @@ struct FileBrowserView: View {
             CompactInformationRow(title: "미디어", value: item.browserMediaLabel)
             CompactInformationRow(title: "특징", value: item.browserFeatureLabel)
             CompactInformationRow(title: "생성/수정", value: item.browserDateLabel)
-            CompactInformationRow(
-                title: "크기",
-                value: item.browserFormattedSize ?? (item.isDirectory ? "폴더" : "알 수 없음")
-            )
+            if item.isDirectory {
+                FolderInformationRows(
+                    item: item,
+                    service: viewModel.service,
+                    generation: thumbnailReloadVersion
+                )
+            } else {
+                CompactInformationRow(
+                    title: "크기",
+                    value: item.browserFormattedSize ?? "알 수 없음"
+                )
+            }
         }
         .padding(ui(10))
         .background(
@@ -2714,25 +2718,6 @@ struct FileBrowserView: View {
                         presentWorkbenchAdd()
                     }
                     .disabled(selectedItems.isEmpty)
-
-                    selectionActionButton("컬렉션에 추가", systemImage: "photo.stack") {
-                        let videos = selectedItems.filter { !$0.isDirectory && $0.isVideo }
-                        guard !videos.isEmpty else { return }
-                        let service = viewModel.service
-                        collectionNotice = "컬렉션에 \(videos.count)편을 복사하는 중입니다."
-                        endSelection()
-                        Task { @MainActor in
-                            var added = 0
-                            for video in videos {
-                                guard let url = try? await service.download(video) else { continue }
-                                let title = (video.name as NSString).deletingPathExtension
-                                if await MovieCollectionStore.shared.add(from: url, title: title, isImported: true) != nil { added += 1 }
-                            }
-                            collectionNotice = "컬렉션에 \(added)편을 추가했습니다."
-                                + (added < videos.count ? " \(videos.count - added)편은 추가하지 못했습니다." : "")
-                        }
-                    }
-                    .disabled(selectedItems.isEmpty || !selectedItems.allSatisfy { !$0.isDirectory && $0.isVideo })
 
                     selectionActionButton(projectSink == nil ? "바로 영상 제작" : "현재 프로젝트에 추가", systemImage: "film") {
                         guard canBeginUserPresentation else { return }
@@ -3939,6 +3924,75 @@ private struct CompactInformationRow: View {
                 .lineLimit(2)
 
             Spacer(minLength: 0)
+        }
+    }
+}
+
+private struct FolderInformationRows: View {
+    let item: RemoteFileItem
+    let service: any RemoteFileService
+    let generation: Int
+
+    @State private var state: FolderTotalInformationState = .loading
+
+    var body: some View {
+        Group {
+            CompactInformationRow(title: "크기", value: sizeValue)
+            CompactInformationRow(title: "항목", value: countValue)
+        }
+        .task(id: taskID) {
+            state = .loading
+            do {
+                let result = try await FolderTotalInformationScanner.scan(
+                    for: item,
+                    service: service
+                )
+                guard !Task.isCancelled else { return }
+                state = result
+            } catch is CancellationError {
+                // Cancelled when popover dismisses or item changes; do not publish stale results.
+            } catch {
+                guard !Task.isCancelled else { return }
+                state = .unavailable
+            }
+        }
+    }
+
+    private var taskID: String {
+        "\(item.connectionID.uuidString)|\(item.remoteIdentifier ?? "")|\(item.path)|\(generation)"
+    }
+
+    private var sizeValue: String {
+        switch state {
+        case .loading:
+            "계산 중…"
+        case let .counted(_, _, bytes):
+            bytes == 0 ? "0 B" : ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        case let .partial(_, _, bytes, _):
+            bytes > 0
+                ? "\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) 이상 (일부 미확인)"
+                : "알 수 없음 (일부 미확인)"
+        case .unavailable:
+            "알 수 없음"
+        }
+    }
+
+    private var countValue: String {
+        switch state {
+        case .loading:
+            "계산 중…"
+        case let .counted(folders, files, _):
+            "폴더 \(folders)개 · 파일 \(files)개 (하위 폴더 포함)"
+        case let .partial(folders, files, _, isCountComplete):
+            if isCountComplete {
+                "폴더 \(folders)개 · 파일 \(files)개 (하위 폴더 포함)"
+            } else if folders > 0 || files > 0 {
+                "폴더 \(folders)개 이상 · 파일 \(files)개 이상 (일부 미확인)"
+            } else {
+                "확인 불가 (일부 미확인)"
+            }
+        case .unavailable:
+            "확인 불가"
         }
     }
 }

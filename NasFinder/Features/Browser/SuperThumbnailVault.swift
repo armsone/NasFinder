@@ -29,7 +29,16 @@ struct SuperThumbnailVaultStoreResult: Equatable, Sendable {
     )
 }
 
+/// NAS 보관본 삭제의 실제 결과. 삭제를 시작한 뒤 멈췄어도 그때까지 지운 수를 그대로 알린다.
+struct SuperThumbnailVaultRemovalResult: Equatable, Sendable {
+    let removedFileCount: Int
+    /// 안전하게 지울 수 없어 일부러 남긴 폴더 수(WebDAV의 Vault·임대·작업자 폴더).
+    let retainedDirectoryCount: Int
+    let errorDescription: String?
+}
+
 enum SuperThumbnailCooperativeClaim: Sendable {
+    /// 임대를 얻지 못했고 다른 기기와 조율하지 않은 채 진행한다. 소유권을 뜻하지 않는다.
     case uncoordinated
     case acquired(SuperThumbnailCooperativeLease)
     case deferred
@@ -262,7 +271,7 @@ actor SuperThumbnailVault {
               ) else { return }
         directoryEntries[listingKey(workersPath, service: service)] = nil
         guard let workerItem = try? await entries(in: workersPath, service: service)
-            .first(where: { $0.name == workerFilename(workerID) }) else { return }
+            .first(where: { $0.name == workerFilename(workerID) && !$0.isDirectory }) else { return }
         _ = try? await service.delete(
             workerItem,
             recursive: false,
@@ -301,11 +310,16 @@ actor SuperThumbnailVault {
                 ) {
                     return .deferred
                 }
-                _ = try? await service.delete(
-                    existingLease,
-                    recursive: true,
-                    context: RemoteOperationContext()
-                )
+                // 폴더를 지울 수 없으면 MKCOL로 배타적 소유권을 다시 얻을 수 없다. 만료된 임대를 회수했다고 하지 않고 조율 없이 진행한다.
+                guard canSafelyDeleteDirectories(service) else { return .uncoordinated }
+                do {
+                    try await removeOwnedSubdirectory(existingLease, service: service)
+                } catch SuperThumbnailVaultError.unknownContent(_) {
+                    // 앱이 만들지 않은 항목이 있어 지우지 않았다. 이 임대는 영영 풀리지 않으므로 조율 없이 진행한다.
+                    return .uncoordinated
+                } catch {
+                    // 일시적인 실패다. 아래에서 폴더를 새로 만들지 못하면 나중에 다시 시도한다.
+                }
                 directoryEntries[listingKey(vaultPath, service: service)] = nil
                 vaultEntries = try await entries(in: vaultPath, service: service)
                 if vaultEntries.contains(where: { $0.name == filename(for: item) }) {
@@ -340,11 +354,7 @@ actor SuperThumbnailVault {
                     service: service
                 )
             } catch {
-                _ = try? await service.delete(
-                    leaseDirectory,
-                    recursive: true,
-                    context: RemoteOperationContext()
-                )
+                try? await removeOwnedSubdirectory(leaseDirectory, service: service)
                 return .deferred
             }
             return .acquired(
@@ -360,6 +370,7 @@ actor SuperThumbnailVault {
         }
     }
 
+    /// 내 토큰이 확인된 임대만 푼다. WebDAV에서는 임대 파일만 지우고 빈 폴더는 남으므로 다른 기기는 만료 뒤 조율 없이 진행한다.
     func release(
         _ lease: SuperThumbnailCooperativeLease,
         service: any RemoteFileService
@@ -381,11 +392,7 @@ actor SuperThumbnailVault {
                   service: service
               ),
               record.token == lease.token else { return }
-        _ = try? await service.delete(
-            leaseDirectory,
-            recursive: true,
-            context: RemoteOperationContext()
-        )
+        try? await removeOwnedSubdirectory(leaseDirectory, service: service)
         directoryEntries[listingKey(lease.vaultPath, service: service)] = nil
     }
 
@@ -468,42 +475,171 @@ actor SuperThumbnailVault {
         folderListingFetchedAt.removeAll()
     }
 
+    /// 삭제를 시작하기 전의 확인 실패만 던진다(아무것도 지우지 않은 상태). 그 뒤의 실패는 지운 수와 함께 결과로 돌려준다.
     func removeVaults(
         startingAt rootPath: String,
         service: any RemoteFileService
-    ) async throws -> Int {
-        guard service.capabilities.contains(.delete) else { return 0 }
+    ) async throws -> SuperThumbnailVaultRemovalResult {
+        guard service.capabilities.contains(.delete) else {
+            throw RemoteFileOperationError.unsupported(operation: .delete)
+        }
+        defer { directoryEntries.removeAll() }
+        // 먼저 전체를 확인한다. 앱이 만들지 않은 항목이 하나라도 있으면 아무것도 지우지 않고 실패한다.
+        var plans: [SuperThumbnailVaultRemovalPlan] = []
         var pendingDirectories = [rootPath]
-        var removedFiles = 0
         while !pendingDirectories.isEmpty {
             try Task.checkCancellation()
             let directory = pendingDirectories.removeFirst()
             let children = try await service.list(directory: directory)
             for child in children where child.isDirectory {
                 if child.name == Self.directoryName {
-                    let vaultItems = try await service.list(directory: child.path)
-                    for vaultItem in vaultItems where !vaultItem.isDirectory {
-                        _ = try await service.delete(
-                            vaultItem,
-                            recursive: false,
-                            context: RemoteOperationContext()
-                        )
-                        removedFiles += 1
-                    }
-                    _ = try await service.delete(
-                        child,
-                        recursive: true,
-                        context: RemoteOperationContext()
-                    )
+                    plans.append(try await removalPlan(for: child, service: service))
                 } else if RemoteFileVisibilityPolicy.shouldDisplay(filename: child.name) {
                     pendingDirectories.append(child.path)
                 }
             }
         }
-        directoryEntries.removeAll()
-        return removedFiles
+        var removedFiles = 0
+        var retainedDirectories = 0
+        do {
+            for plan in plans {
+                try Task.checkCancellation()
+                for record in plan.records {
+                    _ = try await service.delete(
+                        record,
+                        recursive: false,
+                        context: RemoteOperationContext()
+                    )
+                    removedFiles += 1
+                }
+                for subdirectory in plan.subdirectories {
+                    let removed = try await removeOwnedSubdirectory(subdirectory, service: service)
+                    if !removed { retainedDirectories += 1 }
+                }
+                let vaultRemoved = try await removeEmptyDirectory(plan.vault, service: service)
+                if !vaultRemoved { retainedDirectories += 1 }
+            }
+        } catch {
+            return .init(
+                removedFileCount: removedFiles,
+                retainedDirectoryCount: retainedDirectories,
+                errorDescription: error.localizedDescription
+            )
+        }
+        return .init(
+            removedFileCount: removedFiles,
+            retainedDirectoryCount: retainedDirectories,
+            errorDescription: nil
+        )
     }
 
+    private func removalPlan(
+        for vault: RemoteFileItem,
+        service: any RemoteFileService
+    ) async throws -> SuperThumbnailVaultRemovalPlan {
+        var records: [RemoteFileItem] = []
+        var subdirectories: [RemoteFileItem] = []
+        for entry in try await service.list(directory: vault.path) {
+            if entry.isDirectory {
+                guard Self.isOwnedSubdirectory(entry.name) else {
+                    throw SuperThumbnailVaultError.unknownContent(path: entry.path)
+                }
+                for child in try await service.list(directory: entry.path)
+                where child.isDirectory
+                    || !Self.isOwnedFile(child.name, inSubdirectory: entry.name) {
+                    throw SuperThumbnailVaultError.unknownContent(path: child.path)
+                }
+                subdirectories.append(entry)
+            } else {
+                guard Self.isOwnedRecord(entry.name) else {
+                    throw SuperThumbnailVaultError.unknownContent(path: entry.path)
+                }
+                records.append(entry)
+            }
+        }
+        return SuperThumbnailVaultRemovalPlan(
+            vault: vault,
+            records: records,
+            subdirectories: subdirectories
+        )
+    }
+
+    /// 임대·작업자 폴더에서 앱이 만든 파일만 지우고 비어 있는 폴더를 지운다.
+    /// 다른 항목이 있으면 아무것도 지우지 않는다.
+    /// - Returns: 폴더까지 지웠으면 true, 파일만 지우고 폴더를 남겼으면(WebDAV) false.
+    @discardableResult
+    private func removeOwnedSubdirectory(
+        _ directory: RemoteFileItem,
+        service: any RemoteFileService
+    ) async throws -> Bool {
+        directoryEntries[listingKey(directory.path, service: service)] = nil
+        let children = try await service.list(directory: directory.path)
+        for child in children
+        where child.isDirectory || !Self.isOwnedFile(child.name, inSubdirectory: directory.name) {
+            throw SuperThumbnailVaultError.unknownContent(path: child.path)
+        }
+        for child in children {
+            _ = try await service.delete(
+                child,
+                recursive: false,
+                context: RemoteOperationContext()
+            )
+        }
+        return try await removeEmptyDirectory(directory, service: service)
+    }
+
+    /// WebDAV DELETE는 recursive 값과 상관없이 폴더를 통째로 지운다. 비어 있음을 확인해도 그 사이 들어온 항목까지
+    /// 지워질 수 있으므로 WebDAV에서는 Vault·임대·작업자 폴더에 DELETE를 보내지 않는다.
+    private func canSafelyDeleteDirectories(_ service: any RemoteFileService) -> Bool {
+        service.connection.kind != .webDAV
+    }
+
+    /// - Returns: 폴더를 지웠으면 true, 안전하게 지울 수 없어 남겼으면 false.
+    private func removeEmptyDirectory(
+        _ directory: RemoteFileItem,
+        service: any RemoteFileService
+    ) async throws -> Bool {
+        guard canSafelyDeleteDirectories(service) else {
+            directoryEntries[listingKey(directory.path, service: service)] = nil
+            return false
+        }
+        if let remaining = try await service.list(directory: directory.path).first {
+            throw SuperThumbnailVaultError.unknownContent(path: remaining.path)
+        }
+        _ = try await service.delete(
+            directory,
+            recursive: false,
+            context: RemoteOperationContext()
+        )
+        directoryEntries[listingKey(directory.path, service: service)] = nil
+        return true
+    }
+
+    /// Vault 폴더 바로 아래의 레코드: 썸네일과 빈 폴더 표시.
+    private static func isOwnedRecord(_ name: String) -> Bool {
+        name.range(of: #"^v[0-9]+-.+\.(jpg|empty)$"#, options: .regularExpression) != nil
+            || isOwnedTemporaryFile(name)
+    }
+
+    /// 전송이 끊기면 남을 수 있는 임시 파일. `.nasfinder-`는 SFTP 스테이징, `.backup-`은 Android 교체 백업이다.
+    private static func isOwnedTemporaryFile(_ name: String) -> Bool {
+        name.hasSuffix(".tmp")
+            && [".upload-", ".backup-", ".nasfinder-"].contains { name.hasPrefix($0) }
+    }
+
+    private static func isOwnedSubdirectory(_ name: String) -> Bool {
+        name == workersDirectoryName || name.hasPrefix(".claim-")
+    }
+
+    private static func isOwnedFile(_ name: String, inSubdirectory directoryName: String) -> Bool {
+        if isOwnedTemporaryFile(name) { return true }
+        return directoryName == workersDirectoryName
+            ? name.hasPrefix("worker-") && name.hasSuffix(".json")
+            : name == leaseRecordName
+    }
+
+    /// 정리는 파일과 빈 폴더 삭제만 쓰므로 recursiveDelete가 없는 SMB·FTP도 Vault를 쓸 수 있다.
+    /// WebDAV도 생성·읽기·파일 정리는 지원하며, 폴더 삭제와 만료 임대 회수만 지원하지 않는다.
     private func supportsVault(_ service: any RemoteFileService) -> Bool {
         service.capabilities.contains(.createFolder)
             && service.capabilities.contains(.upload)
@@ -663,7 +799,7 @@ actor SuperThumbnailVault {
         )
         directoryEntries[listingKey(vaultPath, service: service)] = nil
         let currentEntries = try await entries(in: vaultPath, service: service)
-        guard let temporaryItem = currentEntries.first(where: { $0.name == temporaryName }) else {
+        guard let temporaryItem = currentEntries.first(where: { $0.name == temporaryName && !$0.isDirectory }) else {
             throw SuperThumbnailVaultError.uploadVerificationFailed
         }
         if currentEntries.contains(where: { $0.name == finalName }) {
@@ -882,11 +1018,23 @@ private actor SuperThumbnailCooperationSession {
     }
 }
 
+private struct SuperThumbnailVaultRemovalPlan: Sendable {
+    let vault: RemoteFileItem
+    let records: [RemoteFileItem]
+    let subdirectories: [RemoteFileItem]
+}
+
 private enum SuperThumbnailVaultError: LocalizedError {
     case uploadVerificationFailed
+    case unknownContent(path: String)
 
     var errorDescription: String? {
-        "NAS Vault 업로드 결과를 확인하지 못했습니다."
+        switch self {
+        case .uploadVerificationFailed:
+            "NAS Vault 업로드 결과를 확인하지 못했습니다."
+        case .unknownContent(let path):
+            "NasFinder가 만들지 않은 항목이 있어 삭제하지 않았습니다. 해당 항목을 확인해 주세요. (\(path))"
+        }
     }
 }
 

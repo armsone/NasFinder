@@ -149,3 +149,148 @@ struct FolderItemCountLabel: View {
         "\(item.connectionID.uuidString)|\(item.path)|\(generation)"
     }
 }
+
+enum FolderTotalInformationState: Equatable, Sendable {
+    case loading
+    case counted(folders: Int, files: Int, bytes: Int64)
+    case partial(folders: Int, files: Int, bytes: Int64, isCountComplete: Bool)
+    case unavailable
+}
+
+enum FolderTotalInformationScanner {
+    nonisolated static func scan(
+        for root: RemoteFileItem,
+        service: any RemoteFileService
+    ) async throws -> FolderTotalInformationState {
+        guard root.isDirectory else {
+            return .unavailable
+        }
+
+        var totalBytes: Int64 = 0
+        var folderCount = 0
+        var fileCount = 0
+        var hasIncompleteTraversal = false
+        var hasIncompleteSize = false
+
+        var visitedDirectoryPaths = Set<String>()
+        var visitedRemoteIDs = Set<String>()
+        var visitedFileIDs = Set<String>()
+
+        visitedDirectoryPaths.insert(root.path)
+        if let rid = root.remoteIdentifier {
+            visitedRemoteIDs.insert(rid)
+        }
+
+        var stack: [RemoteFileItem] = [root]
+
+        while let current = stack.popLast() {
+            try Task.checkCancellation()
+
+            let children: [RemoteFileItem]
+            do {
+                children = try await service.list(directory: current.path)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if current.id == root.id {
+                    return .unavailable
+                } else {
+                    hasIncompleteTraversal = true
+                    continue
+                }
+            }
+
+            for child in children {
+                try Task.checkCancellation()
+
+                guard RemoteFileVisibilityPolicy.shouldDisplay(filename: child.name) else {
+                    continue
+                }
+                guard child.name != "." && child.name != ".." else {
+                    continue
+                }
+
+                // Exclude self/root
+                if child.path == root.path {
+                    continue
+                }
+                if let rootRID = root.remoteIdentifier,
+                   let childRID = child.remoteIdentifier,
+                   rootRID == childRID {
+                    continue
+                }
+
+                if child.isDirectory {
+                    // Check hierarchical path constraint if not cloud opaque identifier
+                    if root.remoteIdentifier == nil && child.remoteIdentifier == nil {
+                        if !isPathUnderRoot(childPath: child.path, rootPath: root.path) {
+                            continue
+                        }
+                    }
+
+                    if visitedDirectoryPaths.contains(child.path) {
+                        continue
+                    }
+                    if let rid = child.remoteIdentifier, visitedRemoteIDs.contains(rid) {
+                        continue
+                    }
+
+                    visitedDirectoryPaths.insert(child.path)
+                    if let rid = child.remoteIdentifier {
+                        visitedRemoteIDs.insert(rid)
+                    }
+
+                    folderCount += 1
+                    stack.append(child)
+                } else {
+                    let fileKey = child.id
+                    if visitedFileIDs.contains(fileKey) {
+                        continue
+                    }
+                    visitedFileIDs.insert(fileKey)
+
+                    fileCount += 1
+                    if let size = child.size, size >= 0 {
+                        let (newTotal, overflow) = totalBytes.addingReportingOverflow(size)
+                        if overflow {
+                            hasIncompleteSize = true
+                        } else {
+                            totalBytes = newTotal
+                        }
+                    } else {
+                        hasIncompleteSize = true
+                    }
+                }
+            }
+        }
+
+        try Task.checkCancellation()
+
+        if hasIncompleteTraversal || hasIncompleteSize {
+            return .partial(
+                folders: folderCount,
+                files: fileCount,
+                bytes: totalBytes,
+                isCountComplete: !hasIncompleteTraversal
+            )
+        }
+
+        return .counted(folders: folderCount, files: fileCount, bytes: totalBytes)
+    }
+
+    private static func isPathUnderRoot(childPath: String, rootPath: String) -> Bool {
+        if rootPath.isEmpty || rootPath == "/" {
+            return true
+        }
+        let normalizedRoot: String
+        if rootPath.hasSuffix("/") && rootPath.count > 1 {
+            normalizedRoot = String(rootPath.dropLast())
+        } else {
+            normalizedRoot = rootPath
+        }
+        if childPath == normalizedRoot {
+            return false
+        }
+        return childPath.hasPrefix(normalizedRoot + "/")
+    }
+}

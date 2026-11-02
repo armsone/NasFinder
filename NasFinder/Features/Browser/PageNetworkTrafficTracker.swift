@@ -96,6 +96,15 @@ final class TrafficMeasuringRemoteFileService: RemoteFileService, @unchecked Sen
     }
     var supportsRangeStreaming: Bool { base.supportsRangeStreaming }
 
+    /// 외부 플레이어가 직접 읽는 주소를 그대로 전달한다. 앱이 받는 데이터가 아니므로 트래픽에 넣지 않는다.
+    func externalPlaybackTarget(for item: RemoteFileItem) -> RemoteExternalPlaybackTarget {
+        base.externalPlaybackTarget(for: item)
+    }
+
+    func authenticatedOriginalHandoff(for item: RemoteFileItem) async throws -> NASSessionHandoff? {
+        try await base.authenticatedOriginalHandoff(for: item)
+    }
+
     func list(directory path: String?) async throws -> [RemoteFileItem] {
         try await base.list(directory: path)
     }

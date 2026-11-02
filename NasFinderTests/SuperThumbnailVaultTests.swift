@@ -291,7 +291,7 @@ final class SuperThumbnailVaultTests: XCTestCase {
             startingAt: "/media",
             service: service
         )
-        XCTAssertEqual(removed, 1)
+        XCTAssertEqual(removed.removedFileCount, 1)
         let remaining = await storage.vaultFileCount()
         XCTAssertEqual(remaining, 0)
         XCTAssertEqual(localPayload, Data("keep-on-phone".utf8))
@@ -430,7 +430,8 @@ private struct VaultTestService: RemoteFileService, Sendable {
         connection = RemoteConnection(
             id: connectionID,
             name: "Vault Test",
-            kind: .webDAV,
+            // 이 저장소의 삭제는 폴더를 재귀로 지우지 않는다. 임대 회수를 지원하지 않는 WebDAV가 아니라 SMB로 둔다.
+            kind: .smb,
             host: "vault.test",
             username: "tester"
         )

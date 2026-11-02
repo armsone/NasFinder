@@ -188,8 +188,7 @@ enum TrailerPreparedPlan {
         let covered = Set(planned.map(\.sourceID))
         for source in sources where !covered.contains(source.id) {
             if source.isImage {
-                let ratio = source.imageDurationRatio.isFinite && source.imageDurationRatio > 0 ? source.imageDurationRatio : 0.55
-                var scene = VideoTrailerScene(id: 0, start: 0, length: min(30.0, max(1.0 / 30.0, clipLength * ratio)))
+                var scene = VideoTrailerScene(id: 0, start: 0, length: source.weightedImageLength(clipLength: clipLength))
                 scene.sourceID = source.id
                 append(scene)
             } else if source.duration > 0 {
@@ -682,8 +681,15 @@ struct VideoTrailerView: View {
             .background(PorcelainMetrics.paper)
             // Both modes go straight to the editor once the sources are in, before any
             // clip is joined, any photo scene is encoded or anything is exported.
-            .onChange(of: model.isAwaitingSettings) { _, awaiting in
+            .onChange(of: model.isAwaitingSettings) {
+                _, awaiting in
                 if awaiting { openSettings() }
+            }
+            .onChange(of: model.isBusy, initial: true) { _, _ in
+                watchVideoHomeProgress()
+            }
+            .onChange(of: model.error) { _, _ in
+                watchVideoHomeProgress()
             }
             // SwiftUI reports this both when the app's return to the dashboard takes the
             // editor down without either close button and while a full-screen presentation
@@ -827,6 +833,38 @@ struct VideoTrailerView: View {
         }
         // Projects are independent and uncapped, so leaving never replaces another one.
         suspendAndDismiss()
+    }
+
+    private func watchVideoHomeProgress() {
+        let key = "video." + sessionID.uuidString
+        if !model.isBusy && model.error == nil {
+            HomeTaskProgress.shared.remove(key)
+        } else {
+            HomeTaskProgress.shared.watch(
+                id: key,
+                changes: model.objectWillChange.eraseToAnyPublisher(),
+                snapshot: { [weak model] in
+                    guard let model else {
+                        return nil
+                    }
+                    if model.isBusy || model.error != nil {
+                        let detail = model.error ?? model.status
+                        return HomeTaskProgress.Snapshot(
+                            title: "영상 저장·내보내기",
+                            detail: detail,
+                            progress: model.exportProgress,
+                            isPrivate: originTaint
+                        )
+                    }
+                    return nil
+                },
+                open: {
+                    AppShellRouter.shared.resumeDraftRequest = sessionID
+                    AppShellRouter.shared.videoDestination = .drafts
+                    AppShellRouter.shared.request = .video
+                }
+            )
+        }
     }
 
     private func suspendSession() {
@@ -1452,6 +1490,11 @@ private struct VideoTrailerSettings: View {
     @State private var appliedOrder: (choice: TrailerOrderChoice, ids: [Int])?
     /// 스토리보드에서 여러 장면을 고른 상태. 화면에만 있고 저장하지 않는다.
     @State private var selectedSceneIDs: Set<Int> = []
+    /// 클립 탭 툴바가 켠 다중 선택 모드. 격자와 공유한다.
+    @State private var isSelectingScenes = false
+    @State private var timingBaselines: [Int: (start: Double, length: Double)] = [:]
+    @State private var showingSceneMoveSheet = false
+    @State private var sceneMoveTarget = "1"
     /// 미리보기 아래 그립으로 고른 높이. nil이면 본문 높이에 맞춘 기본 높이다.
     @State private var previewHeight: CGFloat?
     @State private var gripStartHeight: CGFloat?
@@ -1985,11 +2028,27 @@ private struct VideoTrailerSettings: View {
 
     private func phoneLayout(size: CGSize) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: ui(12)) {
-                previewAndTabStrip(bodyHeight: size.height)
-                phoneTabContent
+            if activeTab == .clips {
+                // 한 스크롤 면: 미리보기는 위로 밀려 사라지고 설정 묶음은 상단에 고정, 썸네일이 그 밑으로 이어진다.
+                LazyVStack(alignment: .leading, spacing: ui(12), pinnedViews: [.sectionHeaders]) {
+                    previewAndTabStrip(bodyHeight: size.height)
+                    Section {
+                        boardPane
+                    } header: {
+                        clipSettingsGroup
+                            .padding(.vertical, ui(6))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(PorcelainMetrics.paper)
+                    }
+                }
+                .frame(width: size.width, alignment: .leading)
+            } else {
+                VStack(alignment: .leading, spacing: ui(12)) {
+                    previewAndTabStrip(bodyHeight: size.height)
+                    phoneTabContent
+                }
+                .frame(width: size.width, alignment: .leading)
             }
-            .frame(width: size.width, alignment: .leading)
         }
         .scrollBounceBehavior(.basedOnSize, axes: .vertical)
     }
@@ -1998,10 +2057,8 @@ private struct VideoTrailerSettings: View {
     private var phoneTabContent: some View {
         switch activeTab {
         case .clips:
-            VStack(alignment: .leading, spacing: ui(12)) {
-                boardPane
-                inspectorPane
-            }
+            // 클립 탭의 폰 레이아웃은 phoneLayout의 고정 헤더 구조가 직접 그린다.
+            EmptyView()
         case .caption:
             VStack(alignment: .leading, spacing: ui(12)) {
                 captionCardA
@@ -2044,7 +2101,7 @@ private struct VideoTrailerSettings: View {
     private var wideLeftContent: some View {
         switch activeTab {
         case .clips:
-            boardPane
+            clipSettingsGroup
         case .caption:
             captionCardA
         case .music:
@@ -2058,7 +2115,7 @@ private struct VideoTrailerSettings: View {
     private var wideRightContent: some View {
         switch activeTab {
         case .clips:
-            inspectorPane
+            boardPane
         case .caption:
             VStack(alignment: .leading, spacing: ui(12)) {
                 captionCardB
@@ -2352,38 +2409,206 @@ private struct VideoTrailerSettings: View {
                 selectedID: guardedSelection, selectedIDs: $selectedSceneIDs,
                 columnsCount: gridColumnsBinding,
                 scrollable: false,
+                showToolbar: false,
+                multiSelect: $isSelectingScenes,
                 onSelectSceneForDetail: nil,
-                onMoveScenes: { ids, position in
-                    guard var next = scenes else { return }
-                    TrailerSceneEditor.moveScenes(ids: ids, toOneBasedPosition: position, in: &next)
-                    scenes = next
-                },
-                onDuplicateScenes: { ids in
-                    guard var next = scenes else { return }
-                    var nextID = nextSceneID
-                    let added = TrailerSceneEditor.duplicateScenes(ids: ids, in: &next, nextID: &nextID)
-                    scenes = next
-                    nextSceneID = nextID
-                    if let first = added.first { guardedSelection.wrappedValue = first }
-                    selectedSceneIDs = Set(added)
-                },
-                onDeleteScenes: { ids in
-                    chrome.guarded {
-                        guard var next = scenes else { return }
-                        let firstIndex = next.firstIndex { ids.contains($0.id) } ?? 0
-                        TrailerSceneEditor.deleteScenes(ids: ids, in: &next)
-                        scenes = next
-                        let remaining = Set(next.map(\.id))
-                        selectedSceneIDs = selectedSceneIDs.intersection(remaining)
-                        if let current = selectedSceneID, !remaining.contains(current) {
-                            selectedSceneID = next.isEmpty ? nil : next[min(firstIndex, next.count - 1)].id
-                        }
-                    }
-                })
+                onMoveScenes: { ids, position in moveScenes(ids, to: position) },
+                onDuplicateScenes: { ids in duplicateScenes(ids) },
+                onDeleteScenes: { ids in deleteScenes(ids) })
         } else {
             sourceOrderSection
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    private func moveScenes(_ ids: Set<Int>, to position: Int) {
+        guard var next = scenes else { return }
+        TrailerSceneEditor.moveScenes(ids: ids, toOneBasedPosition: position, in: &next)
+        scenes = next
+    }
+
+    private func duplicateScenes(_ ids: Set<Int>) {
+        guard var next = scenes else { return }
+        var nextID = nextSceneID
+        let added = TrailerSceneEditor.duplicateScenes(ids: ids, in: &next, nextID: &nextID)
+        scenes = next
+        nextSceneID = nextID
+        if let first = added.first { guardedSelection.wrappedValue = first }
+        selectedSceneIDs = Set(added)
+    }
+
+    private func deleteScenes(_ ids: Set<Int>) {
+        chrome.guarded {
+            guard var next = scenes else { return }
+            let firstIndex = next.firstIndex { ids.contains($0.id) } ?? 0
+            TrailerSceneEditor.deleteScenes(ids: ids, in: &next)
+            scenes = next
+            let remaining = Set(next.map(\.id))
+            selectedSceneIDs = selectedSceneIDs.intersection(remaining)
+            if let current = selectedSceneID, !remaining.contains(current) {
+                selectedSceneID = next.isEmpty ? nil : next[min(firstIndex, next.count - 1)].id
+            }
+        }
+    }
+
+    /// 선택 중이면 고른 장면들, 아니면 현재 선택 장면 하나.
+    private var effectiveSceneIDs: Set<Int> {
+        if !selectedSceneIDs.isEmpty { return selectedSceneIDs }
+        if let selectedSceneID { return [selectedSceneID] }
+        return []
+    }
+
+    /// 대상 장면이 참조하는 사진 소스들.
+    private var effectivePhotoSources: [VideoTrailerSource] {
+        let ids = effectiveSceneIDs
+        let sourceIDs = Set((scenes ?? []).filter { ids.contains($0.id) }.map(\.sourceID))
+        return sources.filter { $0.isImage && sourceIDs.contains($0.id) }
+    }
+
+    private func toggleImportantPhotos() {
+        let photos = effectivePhotoSources
+        guard !photos.isEmpty else { return }
+        let makeImportant = !photos.allSatisfy(\.isImportant)
+        let ids = effectiveSceneIDs
+        chrome.guarded {
+            guard var nextScenes = scenes else { return }
+            var nextSources = sources
+            let previousTotal = total
+            TrailerSceneEditor.setPhotosImportant(
+                ids: ids, important: makeImportant,
+                scenes: &nextScenes, sources: &nextSources, clipLength: clipLength)
+            // 총길이는 그대로 두고 기존 비례 재분배로 맞춘다.
+            if previousTotal > 0 {
+                TrailerSceneEditor.redistributeManualTotal(scenes: &nextScenes, sources: nextSources, targetTotal: previousTotal)
+            }
+            sources = nextSources
+            scenes = nextScenes
+            total = nextScenes.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+        }
+    }
+
+    private func outlinedAction(_ title: String, tint: Color = PorcelainMetrics.accent,
+                                enabled: Bool = true, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(tint)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(tint, lineWidth: 1))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.4)
+    }
+
+    /// 클립 탭의 압축 설정 묶음: 정보 줄 + 동일 모양 버튼 한 줄 + (단일 선택일 때) 타이밍.
+    @ViewBuilder
+    private var clipSettingsGroup: some View {
+        if let editScenes = scenes {
+            let ids = effectiveSceneIDs
+            let photos = effectivePhotoSources
+            let allImportant = !photos.isEmpty && photos.allSatisfy(\.isImportant)
+            let currentIndex = TrailerSceneEditor.index(of: selectedSceneID, in: editScenes)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 8) {
+                    Menu {
+                        ForEach(2...6, id: \.self) { count in
+                            Button("\(count)개") { gridColumnsBinding.wrappedValue = count }
+                        }
+                    } label: {
+                        Text("한 줄 \(columns)개")
+                            .font(.subheadline.weight(.medium))
+                            .frame(minHeight: 44)
+                    }
+                    Text(isSelectingScenes
+                         ? "\(selectedSceneIDs.count)개 선택"
+                         : "\((currentIndex ?? -1) + 1)/\(editScenes.count)")
+                        .font(.subheadline.weight(.semibold)).monospacedDigit()
+                    Spacer(minLength: 4)
+                    Button {
+                        toggleImportantPhotos()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(interfaceSystemName: allImportant ? "star.fill" : "star", pointSize: 15, tintable: true)
+                            Text("중요")
+                        }
+                        .font(.subheadline.weight(.semibold))
+                        .frame(minHeight: 44)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(allImportant ? Color.yellow : PorcelainMetrics.accent)
+                    .disabled(photos.isEmpty)
+                    .opacity(photos.isEmpty ? 0.4 : 1)
+                    if isSelectingScenes {
+                        Button("전체선택") { selectedSceneIDs = Set(editScenes.map(\.id)) }
+                            .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+                        Button("해제") { selectedSceneIDs.removeAll() }
+                            .font(.subheadline.weight(.medium)).frame(minHeight: 44)
+                    }
+                }
+                HStack(spacing: 8) {
+                    outlinedAction(isSelectingScenes ? "완료" : "선택") {
+                        if isSelectingScenes {
+                            isSelectingScenes = false
+                            selectedSceneIDs = selectedSceneID.map { [$0] } ?? []
+                        } else {
+                            isSelectingScenes = true
+                            if let selectedSceneID { selectedSceneIDs.insert(selectedSceneID) }
+                        }
+                    }
+                    outlinedAction("복사", enabled: !ids.isEmpty) { duplicateScenes(ids) }
+                    outlinedAction("이동", enabled: !ids.isEmpty) {
+                        let first = editScenes.firstIndex { ids.contains($0.id) } ?? 0
+                        sceneMoveTarget = "\(first + 1)"
+                        showingSceneMoveSheet = true
+                    }
+                    outlinedAction("삭제", tint: .red, enabled: !ids.isEmpty) { deleteScenes(ids) }
+                }
+                if !isSelectingScenes {
+                    inspectorPane
+                }
+            }
+            .sheet(isPresented: $showingSceneMoveSheet) {
+                sceneMoveSheet(count: ids.count, total: editScenes.count)
+            }
+        }
+    }
+
+    private func sceneMoveSheet(count: Int, total: Int) -> some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("선택한 \(count)개 장면을 이동할 1기준 위치 번호를 입력하세요.")
+                    .font(.subheadline).foregroundStyle(.secondary)
+                HStack {
+                    Text("목표 위치:").font(.headline)
+                    TextField("1 ~ \(total)", text: $sceneMoveTarget)
+                        .keyboardType(.numberPad)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
+                    Text("번째 (1 ~ \(total))").font(.subheadline).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            .padding(20)
+            .navigationTitle("장면 위치 이동")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("취소") { showingSceneMoveSheet = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("이동") {
+                        if let target = Int(sceneMoveTarget.trimmingCharacters(in: .whitespacesAndNewlines)), target >= 1 {
+                            moveScenes(effectiveSceneIDs, to: target)
+                        }
+                        showingSceneMoveSheet = false
+                    }
+                    .fontWeight(.bold)
+                }
+            }
+        }
+        .presentationDetents([.fraction(0.35), .medium])
     }
 
     @ViewBuilder
@@ -2397,7 +2622,8 @@ private struct VideoTrailerSettings: View {
             scenes: $scenes,
             selectedID: $selectedSceneID,
             aspectRatio: aspectRatio,
-            section: .timing
+            section: .timing,
+            baselines: $timingBaselines
         )
     }
 
@@ -4151,7 +4377,8 @@ final class VideoTrailerModel: ObservableObject {
                     contentTypeIdentifier: "public.jpeg",
                     captureDate: source.captureDate,
                     imageDurationRatio: source.imageDurationRatio,
-                    imageDurationPolicyVersion: source.imageDurationPolicyVersion
+                    imageDurationPolicyVersion: source.imageDurationPolicyVersion,
+                    isImportant: source.isImportant
                 )
                 // Only this one scene sees the still; the source keeps its own entry, so
                 // other ranges of the same video are rendered from the video as before.
@@ -4234,7 +4461,8 @@ final class VideoTrailerModel: ObservableObject {
                             plan: VideoTrailerPlan(analysis: analysis, duration: source.duration),
                             isImage: false, contentTypeIdentifier: source.contentTypeIdentifier,
                             captureDate: source.captureDate, imageDurationRatio: source.imageDurationRatio,
-                            imageDurationPolicyVersion: source.imageDurationPolicyVersion)
+                            imageDurationPolicyVersion: source.imageDurationPolicyVersion,
+                            isImportant: source.isImportant)
                     }
                     highlightAnalyzedIDs.insert(source.id)
                 }
@@ -4918,7 +5146,8 @@ final class VideoTrailerModel: ObservableObject {
                 highlightSource: analysis.highlightSource.rawValue,
                 audioAvailability: analysis.audioAvailability.rawValue,
                 highlightAnalyzed: highlightAnalyzedIDs.contains(source.id),
-                imageDurationPolicyVersion: source.imageDurationPolicyVersion)
+                imageDurationPolicyVersion: source.imageDurationPolicyVersion,
+                isImportant: source.isImportant)
         }
         var musicRow: TrailerProjectRecord.Music?
         var musicFile: URL?
@@ -5006,7 +5235,8 @@ final class VideoTrailerModel: ObservableObject {
                 plan: VideoTrailerPlan(analysis: analysis, duration: row.duration), isImage: row.isImage,
                 contentTypeIdentifier: row.contentTypeIdentifier, captureDate: row.captureDate,
                 imageDurationRatio: row.imageDurationRatio,
-                imageDurationPolicyVersion: row.imageDurationPolicyVersion ?? 1)
+                imageDurationPolicyVersion: row.imageDurationPolicyVersion ?? 1,
+                isImportant: row.isImportant ?? false)
         }
         highlightAnalyzedIDs = Set(record.sources.filter(\.highlightAnalyzed).map(\.id))
         photoDurationsAnalyzed = record.photosAnalyzed

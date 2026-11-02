@@ -21,6 +21,7 @@ struct WebDAVFileService: RemoteFileService, @unchecked Sendable {
     private let credential: RemoteCredential
     private let sessionDelegate: WebDAVSessionDelegate
     private let session: URLSession
+    private let transferConfiguration: URLSessionConfiguration
 
     var capabilities: RemoteFileServiceCapabilities {
         [.createFolder, .rename, .delete, .recursiveDelete, .upload, .replaceFile, .serverSideMove]
@@ -34,6 +35,11 @@ struct WebDAVFileService: RemoteFileService, @unchecked Sendable {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 20
         configuration.timeoutIntervalForResource = 120
+        // 파일 본문 전송 시간은 크기에 비례하므로 전체 시간 상한을 두지 않는다.
+        // 데이터가 멈추면 유휴 시간 제한으로 끝나고, 작업 취소로도 중단된다.
+        let transferConfiguration = URLSessionConfiguration.ephemeral
+        transferConfiguration.timeoutIntervalForRequest = 20
+        self.transferConfiguration = transferConfiguration
         let sessionDelegate = WebDAVSessionDelegate(
             username: connection.username,
             password: credential.password
@@ -65,8 +71,9 @@ struct WebDAVFileService: RemoteFileService, @unchecked Sendable {
             guard let entryURL = URL(string: entry.href, relativeTo: requestedURL)?.absoluteURL else {
                 return nil
             }
-            let decodedPath = entryURL.path.removingPercentEncoding ?? entryURL.path
-            let basePath = requestedURL.path.removingPercentEncoding ?? requestedURL.path
+            // URL.path는 이미 디코딩된 값이다. 다시 풀면 이름에 들어 있는 '%'가 다른 글자로 바뀐다.
+            let decodedPath = entryURL.path
+            let basePath = requestedURL.path
             guard normalized(decodedPath) != normalized(basePath) else { return nil }
             let name = decodedPath.split(separator: "/").last.map(String.init) ?? ""
             guard !name.isEmpty else { return nil }
@@ -91,7 +98,7 @@ struct WebDAVFileService: RemoteFileService, @unchecked Sendable {
         progress: @escaping RemoteDownloadProgressHandler
     ) async throws -> URL {
         let downloader = URLSessionProgressDownloader(
-            configuration: session.configuration,
+            configuration: transferConfiguration,
             authenticationCredential: URLCredential(
                 user: connection.username,
                 password: credential.password,
@@ -141,7 +148,11 @@ struct WebDAVFileService: RemoteFileService, @unchecked Sendable {
         in directoryPath: String,
         context: RemoteOperationContext
     ) async throws -> RemoteFileItem {
-        let destination = appending(name, to: directoryPath)
+        let destination = try RemotePath.appending(
+            name: name,
+            to: directoryPath,
+            within: connection.normalizedRootPath
+        )
         let (_, response) = try await session.data(
             for: authorizedRequest(path: destination, method: "MKCOL")
         )
@@ -162,9 +173,10 @@ struct WebDAVFileService: RemoteFileService, @unchecked Sendable {
         to newName: String,
         context: RemoteOperationContext
     ) async throws -> RemoteFileItem {
-        let destination = appending(
-            newName,
-            to: (item.path as NSString).deletingLastPathComponent
+        let destination = try RemotePath.appending(
+            name: newName,
+            to: (item.path as NSString).deletingLastPathComponent,
+            within: connection.normalizedRootPath
         )
         try await moveRequest(from: item.path, to: destination)
         return RemoteFileItem(
@@ -245,9 +257,20 @@ struct WebDAVFileService: RemoteFileService, @unchecked Sendable {
             // 목록 확인 뒤 다른 곳에서 같은 이름이 생겼다면 이 조건을 지키는 서버는 412로 거절하고 기존 파일을 그대로 둔다(RFC 9110).
             request.setValue("*", forHTTPHeaderField: "If-None-Match")
         }
-        request.httpBody = try Data(contentsOf: localURL, options: .mappedIfSafe)
+        // 서버가 받은 내용을 저장하느라 응답이 늦어도 올린 파일을 실패로 처리하지 않도록 기다리는 시간을 늘린다.
+        request.timeoutInterval = 120
+        // 읽을 수 없는 원본으로 빈 PUT을 보내 대상 파일을 비우지 않도록 전송 전에 한 번 읽어 확인한다.
+        let source = try FileHandle(forReadingFrom: localURL)
+        _ = try source.read(upToCount: 1)
+        try source.close()
         try context.checkCancellation()
-        let (_, response) = try await session.data(for: request)
+        let uploadSession = URLSession(
+            configuration: transferConfiguration,
+            delegate: sessionDelegate,
+            delegateQueue: nil
+        )
+        defer { uploadSession.finishTasksAndInvalidate() }
+        let (_, response) = try await uploadSession.upload(for: request, fromFile: localURL)
         if !replacesExisting, (response as? HTTPURLResponse)?.statusCode == 412 {
             throw RemoteFileOperationError.conflict(sourcePath: localURL.path, destinationPath: destination)
         }
@@ -422,21 +445,28 @@ private final class WebDAVSessionDelegate: NSObject, URLSessionTaskDelegate, @un
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
     ) {
-        switch challenge.protectionSpace.authenticationMethod {
-        case NSURLAuthenticationMethodHTTPBasic,
-             NSURLAuthenticationMethodHTTPDigest,
-             NSURLAuthenticationMethodDefault:
-            completionHandler(
-                .useCredential,
-                URLCredential(
-                    user: username,
-                    password: password,
-                    persistence: .forSession
-                )
+        let (disposition, credential) = HTTPCredentialOrigin.response(
+            to: challenge,
+            originalRequest: task.originalRequest,
+            credential: URLCredential(
+                user: username,
+                password: password,
+                persistence: .forSession
             )
-        default:
-            completionHandler(.performDefaultHandling, nil)
-        }
+        )
+        completionHandler(disposition, credential)
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping @Sendable (URLRequest?) -> Void
+    ) {
+        completionHandler(
+            HTTPCredentialOrigin.redirectedRequest(request, originalRequest: task.originalRequest)
+        )
     }
 }
 

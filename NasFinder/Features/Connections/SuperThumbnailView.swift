@@ -73,6 +73,9 @@ private struct SuperThumbnailHistoryEntry: Codable, Equatable {
 }
 
 struct SuperThumbnailView: View {
+    @Environment(\.shellToolHostID) private var shellToolHostID
+    @Environment(\.shellToolHostPrivate) private var shellToolHostPrivate
+    @Environment(\.shellToolActive) private var shellToolActive
     @Environment(\.scenePhase) private var scenePhase
     @EnvironmentObject private var connectionStore: ConnectionStore
 
@@ -129,14 +132,14 @@ struct SuperThumbnailView: View {
         .toolbar {
             ToolbarItem(placement: .principal) {
                 Group {
-                    Text("Super Thumbnail")
+                    Text("수퍼 썸네일")
                         .uiBarFont(.subheadline, weight: .medium)
                         .foregroundStyle(PorcelainMetrics.secondary)
                 }
                 .uiBarFont()
             }
         }
-        .sheet(isPresented: $isSelectingFolder) {
+        .sheet(isPresented: $isSelectingFolder.shellPresentation(shellToolActive)) {
             SuperThumbnailFolderPickerView(onCancel: { isSelectingFolder = false }) { selected in
                 selection = selected
                 saveSelection(selected)
@@ -147,7 +150,7 @@ struct SuperThumbnailView: View {
             }
             .environmentObject(connectionStore)
         }
-        .fullScreenCover(isPresented: $isShowingProgress) {
+        .fullScreenCover(isPresented: $isShowingProgress.shellPresentation(shellToolActive)) {
             SuperThumbnailProgressView(
                 preheater: preheater,
                 folderTitle: selection?.title ?? "Selected Folder",
@@ -170,7 +173,7 @@ struct SuperThumbnailView: View {
             )
             .interactiveDismissDisabled(preheater.isRunning)
         }
-        .alert("Super Thumbnail을 초기화할까요?", isPresented: $isConfirmingReset) {
+        .alert("Super Thumbnail을 초기화할까요?", isPresented: $isConfirmingReset.shellPresentation(shellToolActive)) {
             Button("초기화", role: .destructive) {
                 Task {
                     await SuperThumbnailCache.shared.reset()
@@ -184,19 +187,19 @@ struct SuperThumbnailView: View {
                     + "누적 네트워크 사용 기록을 초기화합니다. 원본 영상은 삭제하지 않습니다."
             )
         }
-        .alert("Super Thumbnail을 시작할 수 없습니다", isPresented: errorBinding) {
+        .alert("Super Thumbnail을 시작할 수 없습니다", isPresented: errorBinding.shellPresentation(shellToolActive)) {
             Button("확인", role: .cancel) { preparationError = nil }
         } message: {
             Text(preparationError ?? "")
         }
-        .alert("NAS Vault", isPresented: vaultResultBinding) {
+        .alert("NAS Vault", isPresented: vaultResultBinding.shellPresentation(shellToolActive)) {
             Button("확인", role: .cancel) { vaultResultMessage = nil }
         } message: {
             Text(vaultResultMessage ?? "")
         }
         .confirmationDialog(
             "선택한 폴더와 하위 폴더의 NAS 보관본을 삭제할까요?",
-            isPresented: $isConfirmingVaultRemoval,
+            isPresented: $isConfirmingVaultRemoval.shellPresentation(shellToolActive),
             titleVisibility: .visible
         ) {
             Button("NAS 보관본 삭제", role: .destructive) {
@@ -218,8 +221,49 @@ struct SuperThumbnailView: View {
         .task(id: connectionStore.connections.count) {
             await refreshStatistics()
         }
+        .onAppear {
+            HomeTaskProgress.shared.watch(
+                id: "superThumbnail." + shellToolHostID.uuidString,
+                hostID: shellToolHostID,
+                changes: preheater.objectWillChange.eraseToAnyPublisher(),
+                snapshot: { [weak preheater] in
+                    guard let preheater else {
+                        return nil
+                    }
+                    if preheater.isRunning || preheater.failedCount > 0 || preheater.errorMessage != nil {
+                        let detail: String
+                        if let err = preheater.errorMessage {
+                            detail = err
+                        } else if preheater.totalCount > 0 {
+                            detail = "\(preheater.completedCount)/\(preheater.totalCount)"
+                        } else {
+                            detail = preheater.isRunning ? "준비 중" : "대기 중"
+                        }
+                        let progress: Double? = preheater.totalCount > 0 ? (Double(preheater.completedCount) / Double(preheater.totalCount)) : nil
+                        return HomeTaskProgress.Snapshot(
+                            title: "수퍼 썸네일",
+                            detail: detail,
+                            progress: progress,
+                            isPrivate: preheater.homeActivityIsPrivate || shellToolHostPrivate
+                        )
+                    }
+                    return nil
+                },
+                open: {
+                    AppShellRouter.shared.openToolsHost(shellToolHostID, destination: .superThumbnail)
+                }
+            )
+        }
         .onDisappear {
+            if !preheater.isRunning && preheater.failedCount == 0 && preheater.errorMessage == nil {
+                HomeTaskProgress.shared.remove("superThumbnail." + shellToolHostID.uuidString)
+            }
             hiddenStartTapCount = 0
+        }
+        .onChange(of: shellToolActive) { active in
+            if active && (preheater.isRunning || preheater.failedCount > 0) {
+                isShowingProgress = true
+            }
         }
         .onChange(of: hiddenStartGestureAvailable) { _, isAvailable in
             if !isAvailable { hiddenStartTapCount = 0 }
@@ -689,17 +733,32 @@ struct SuperThumbnailView: View {
                     connection: selection.connection,
                     credential: credential
                 )
-                let removed = try await SuperThumbnailVault.shared.removeVaults(
+                let result = try await SuperThumbnailVault.shared.removeVaults(
                     startingAt: selection.path,
                     service: service
                 )
-                vaultResultMessage = removed == 0
-                    ? "삭제할 NAS 보관본이 없습니다."
-                    : "NAS 보관본 \(removed)개를 삭제했습니다. 이 아이폰의 캐시는 유지됩니다."
+                vaultResultMessage = vaultRemovalMessage(result)
             } catch {
                 vaultResultMessage = "NAS 보관본을 삭제하지 못했습니다. \(error.localizedDescription)"
             }
         }
+    }
+
+    private func vaultRemovalMessage(_ result: SuperThumbnailVaultRemovalResult) -> String {
+        let removed = result.removedFileCount
+        let outcome: String
+        if let error = result.errorDescription {
+            outcome = removed == 0
+                ? "NAS 보관본을 삭제하지 못했습니다. \(error)"
+                : "NAS 보관본 \(removed)개를 삭제한 뒤 중단했습니다. 나머지는 남아 있을 수 있습니다. \(error)"
+        } else {
+            outcome = removed == 0
+                ? "삭제할 NAS 보관본이 없습니다."
+                : "NAS 보관본 \(removed)개를 삭제했습니다. 이 아이폰의 캐시는 유지됩니다."
+        }
+        guard result.retainedDirectoryCount > 0 else { return outcome }
+        return outcome
+            + " 이 연결 방식은 폴더를 지우면 안에 새로 들어온 다른 파일까지 함께 지워질 수 있어, NAS 폴더 \(result.retainedDirectoryCount)개는 지우지 않고 남겼습니다."
     }
 
     private func launchProcessing(

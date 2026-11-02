@@ -90,22 +90,29 @@ struct ProviderRemoteNode: Sendable {
 
 protocol ProviderRemoteBackend: Sendable {
     var supportsMutations: Bool { get }
+    /// 기존 문서의 내용을 원본 경로를 비우지 않고 안전하게 바꿀 수 있는지.
+    var supportsContentReplacement: Bool { get }
     func list(directory: String) async throws -> [ProviderRemoteNode]
     func download(path: String, to destinationURL: URL) async throws
     func thumbnail(path: String, size: ProviderThumbnailSize) async throws -> Data?
     func vaultThumbnail(for node: ProviderRemoteNode) async throws -> Data?
     func createFolder(path: String) async throws
+    /// 새 항목을 만든다. 같은 이름이 이미 있으면 덮어쓰지 않고 filenameCollision으로 실패한다.
     func upload(localURL: URL, to path: String) async throws
+    /// 기존 문서의 내용을 바꾼다. supportsContentReplacement가 true인 백엔드만 구현한다.
+    func replaceContents(localURL: URL, at path: String) async throws
     func rename(from sourcePath: String, to destinationPath: String) async throws
     func delete(path: String, isDirectory: Bool) async throws
 }
 
 extension ProviderRemoteBackend {
     var supportsMutations: Bool { false }
+    var supportsContentReplacement: Bool { false }
     func vaultThumbnail(for node: ProviderRemoteNode) async throws -> Data? { nil }
     func thumbnail(path: String, size: ProviderThumbnailSize) async throws -> Data? { nil }
     func createFolder(path: String) async throws { throw NasFinderFileProviderErrors.readOnly }
     func upload(localURL: URL, to path: String) async throws { throw NasFinderFileProviderErrors.readOnly }
+    func replaceContents(localURL: URL, at path: String) async throws { throw NasFinderFileProviderErrors.readOnly }
     func rename(from sourcePath: String, to destinationPath: String) async throws {
         throw NasFinderFileProviderErrors.readOnly
     }
@@ -203,7 +210,7 @@ actor NasFinderFileProviderStorage {
         }) else {
             throw NasFinderFileProviderErrors.noSuchItem
         }
-        return fileProviderItem(node, connection: context.connection)
+        return fileProviderItem(node, context: context)
     }
 
     func snapshot(for containerIdentifier: NSFileProviderItemIdentifier) async throws -> ProviderSnapshot {
@@ -224,7 +231,7 @@ actor NasFinderFileProviderStorage {
         let nodes = try await context.backend.list(directory: remoteDirectory)
         let items = nodes
             .filter { ProviderFileVisibilityPolicy.shouldDisplay(filename: $0.name) }
-            .map { fileProviderItem($0, connection: context.connection) }
+            .map { fileProviderItem($0, context: context) }
             .sorted { $0.filename.localizedStandardCompare($1.filename) == .orderedAscending }
         let snapshot = ProviderSnapshot(items: items, anchor: Self.syncAnchor(for: items))
         remember(snapshot)
@@ -354,6 +361,10 @@ actor NasFinderFileProviderStorage {
               ) else {
             throw NasFinderFileProviderErrors.readOnly
         }
+        // 이름 변경까지 함께 요청된 경우에도 원격을 건드리기 전에 거부해, 절반만 적용되지 않게 한다.
+        if request.changesContents, !context.backend.supportsContentReplacement {
+            throw NasFinderFileProviderErrors.contentReplacementUnsupported
+        }
 
         var destinationPath = sourcePath
         if request.changesFilename || request.changesParent {
@@ -373,9 +384,9 @@ actor NasFinderFileProviderStorage {
             }
         }
         if request.changesContents, let contents {
-            try await context.backend.upload(
+            try await context.backend.replaceContents(
                 localURL: contents,
-                to: destinationPath
+                at: destinationPath
             )
         }
         return try await itemForPath(destinationPath, context: context)
@@ -414,7 +425,7 @@ actor NasFinderFileProviderStorage {
         guard let node = nodes.first(where: { $0.path == path }) else {
             throw NasFinderFileProviderErrors.noSuchItem
         }
-        return fileProviderItem(node, connection: context.connection)
+        return fileProviderItem(node, context: context)
     }
 
     private static func loadConnection(matching rawDomainIdentifier: String) throws -> ProviderConnection {
@@ -463,8 +474,9 @@ actor NasFinderFileProviderStorage {
 
     private func fileProviderItem(
         _ node: ProviderRemoteNode,
-        connection: ProviderConnection
+        context: Context
     ) -> NasFinderFileProviderItem {
+        let connection = context.connection
         let rootPath = connection.normalizedRootPath
         let parentPath = Self.parentPath(of: node.path, rootedAt: rootPath)
         let parentIdentifier: NSFileProviderItemIdentifier
@@ -482,11 +494,14 @@ actor NasFinderFileProviderStorage {
         let type = node.isDirectory
             ? UTType.folder
             : UTType(filenameExtension: (node.name as NSString).pathExtension) ?? .data
-        let capabilities: NSFileProviderItemCapabilities
+        var capabilities: NSFileProviderItemCapabilities
         if connection.kind == .sftp {
             capabilities = node.isDirectory
                 ? [.allowsReading, .allowsAddingSubItems, .allowsContentEnumerating, .allowsRenaming, .allowsReparenting, .allowsDeleting]
-                : [.allowsReading, .allowsWriting, .allowsRenaming, .allowsReparenting, .allowsDeleting]
+                : [.allowsReading, .allowsRenaming, .allowsReparenting, .allowsDeleting]
+            if !node.isDirectory, context.backend.supportsContentReplacement {
+                capabilities.insert(.allowsWriting)
+            }
         } else {
             capabilities = [.allowsReading]
         }
@@ -667,8 +682,21 @@ enum NasFinderFileProviderErrors {
         )
     }
 
+    static var contentReplacementUnsupported: Error {
+        CocoaError(
+            .featureUnsupported,
+            userInfo: [
+                NSLocalizedDescriptionKey: "이 연결에서는 기존 파일의 내용을 안전하게 바꿀 수 없어 저장하지 않았습니다. 원본 파일은 그대로 있습니다. 다른 이름의 새 파일로 저장해 주세요."
+            ]
+        )
+    }
+
     static var noSuchItem: Error {
         NSFileProviderError(.noSuchItem)
+    }
+
+    static var filenameCollision: Error {
+        NSFileProviderError(.filenameCollision)
     }
 
     static var connectionMissing: Error {

@@ -107,6 +107,8 @@ final class PhotoTransferSenderSession: ObservableObject {
     var deletionEligibleSession: Bool { receiptsNegotiated && !tokenExposedToLegacy }
     /// 사용자가 '새로 보내기'를 골랐을 때, 새 transferId로 다시 보낼 원래 선택 위치(원래 순서). nil이면 선택 전체.
     @Published private(set) var newCopyPositions: [Int]?
+    /// 이 계획이 묶인 수신 앱과 다른 앱에 연결해 멈췄을 때 true. 화면이 '새 전송으로 보내기'를 보여 준다.
+    @Published private(set) var receiverMismatchRecoveryAvailable = false
     /// 연결·전송·결과 세션이 바뀔 때마다 늘어난다. 화면은 이 값이 바뀌면 삭제 선택을 비운다(이전에 체크한 항목을 이어받지 않는다).
     @Published private(set) var resultEpoch: UInt64 = 0
     private var plan: PhotoTransferSenderPlan?
@@ -136,6 +138,9 @@ final class PhotoTransferSenderSession: ObservableObject {
             }
         }
     }
+
+    /// 인증된 ready 영수증의 수신 앱이 계획에 묶인 수신 앱과 다르다. 항목 바이트를 보내기 전에 멈춘다.
+    private struct ReceiverBindingMismatch: Error {}
 
     private var connection: NWConnection?
     private var responseBuffer = Data()
@@ -231,6 +236,7 @@ final class PhotoTransferSenderSession: ObservableObject {
         itemOutcomes = []
         receiptsNegotiated = false
         tokenExposedToLegacy = false
+        receiverMismatchRecoveryAvailable = false
         attemptingV4 = false
         handshakeStep = .legacyOK
         handshakeKey = nil
@@ -261,7 +267,8 @@ final class PhotoTransferSenderSession: ObservableObject {
         itemOutcomes = []
         let generation = sessionGeneration
         resultEpoch &+= 1
-        plan = Self.requalifiedForNewConnection(makePlan(for: items, kinds: kinds))
+        let storedPlan = makePlan(for: items, kinds: kinds)
+        plan = Self.requalifiedForNewConnection(storedPlan)
         if let restored = plan { PhotoTransferSenderJournal.shared.update(restored) }
         lastPlanItems = items
         let negotiated = receiptsNegotiated
@@ -319,6 +326,13 @@ final class PhotoTransferSenderSession: ObservableObject {
                 self.sendTask = nil
             } catch is CancellationError {
                 // cancel() 이후 도착한 작업 종료는 상태를 다시 바꾸지 않는다.
+            } catch is ReceiverBindingMismatch {
+                guard self.sessionGeneration == generation else { return }
+                // 다른 수신 앱에 연결됐을 뿐 이 계획의 결과가 바뀐 것이 아니므로 저널의 이전 판정을 되돌린다. 자동으로 새 계획을 만들지 않는다.
+                self.plan = storedPlan
+                PhotoTransferSenderJournal.shared.update(storedPlan)
+                self.fail("처음 보낸 기기와 다른 기기입니다. 같은 기기에서 새 QR 코드로 다시 연결하거나, 이 기기로 받으려면 새 전송으로 보내세요.")
+                self.receiverMismatchRecoveryAvailable = true
             } catch {
                 guard self.sessionGeneration == generation else { return }
                 // 실패해도 지금까지의 항목별 상태는 저널에 남아 다음 시도가 같은 안정 ID로 이어 간다.
@@ -350,6 +364,21 @@ final class PhotoTransferSenderSession: ObservableObject {
         plan = fresh
         lastPlanItems = subset
         newCopyPositions = positions
+        return true
+    }
+
+    /// 사용자가 수신 앱 불일치 화면에서 명시적으로 '새 전송으로 보내기'를 눌렀을 때만 호출한다. 지금 고른 항목 전체를 새 transferId로
+    /// 보내도록 준비하고, 연결은 새 QR로 처음부터 다시 맺는다. 이전 계획은 대체됨으로만 표시하며 검증·삭제 자격을 물려받지 않는다.
+    @discardableResult
+    func startNewTransferForReceiverMismatch(items: [PhotoTransferSendSource]) -> Bool {
+        guard receiverMismatchRecoveryAvailable, !isSending, let old = plan, !items.isEmpty else { return false }
+        let identifiers = items.map { Optional($0.id) }
+        guard PhotoTransferSenderPlan.selectionKey(for: identifiers) == old.selectionKey else { return false }
+        let fresh = PhotoTransferSenderJournal.shared.planForNewTransfer(
+            superseding: old.transferId, identifiers: identifiers, kinds: items.map(\.kind))
+        cancel()
+        plan = fresh
+        lastPlanItems = items
         return true
     }
 
@@ -386,6 +415,7 @@ final class PhotoTransferSenderSession: ObservableObject {
         guard ready.stage == .ready else {
             throw PhotoTransferControlCodec.CodecError.invalidFrame
         }
+        if let known = plan?.receiverId, known != ready.receiverId { throw ReceiverBindingMismatch() }
         try acceptReceiverID(ready.receiverId)
         var frames = [ready]
         while frames.last?.more == true {

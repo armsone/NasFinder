@@ -128,7 +128,7 @@ actor SMBFileService: RemoteFileService {
         context: RemoteOperationContext
     ) async throws -> RemoteFileItem {
         try context.checkCancellation()
-        let destination = appending(name, to: directoryPath)
+        let destination = try validatedDestination(name: name, in: directoryPath)
         let location = try split(destination)
         let client = try await loggedInClient()
         try await client.connectShare(location.share)
@@ -151,9 +151,9 @@ actor SMBFileService: RemoteFileService {
         to newName: String,
         context: RemoteOperationContext
     ) async throws -> RemoteFileItem {
-        let destination = appending(
-            newName,
-            to: (item.path as NSString).deletingLastPathComponent
+        let destination = try validatedDestination(
+            name: newName,
+            in: (item.path as NSString).deletingLastPathComponent
         )
         let source = try split(item.path)
         let target = try split(destination)
@@ -217,7 +217,7 @@ actor SMBFileService: RemoteFileService {
         context: RemoteOperationContext
     ) async throws -> RemoteOperationResult {
         try context.checkCancellation()
-        let requestedName = preferredName ?? localURL.lastPathComponent
+        let requestedName = try rejectingBackslash(preferredName ?? localURL.lastPathComponent)
         // 충돌 정책을 대상 폴더의 현재 목록으로 먼저 적용한다(FTP와 같은 방식).
         let siblings = try await list(directory: directoryPath)
         let decision = try RemotePath.conflictDecision(
@@ -395,9 +395,25 @@ actor SMBFileService: RemoteFileService {
     }
 
     private func normalized(_ path: String) -> String {
-        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed != "/" else { return "/" }
-        return "/" + trimmed.split(separator: "/").joined(separator: "/")
+        // 이름 앞뒤의 공백도 이름의 일부다. 잘라 내면 요청과 다른 이름으로 만들어진다.
+        guard !path.allSatisfy(\.isWhitespace), path != "/" else { return "/" }
+        return "/" + path.split(separator: "/").joined(separator: "/")
+    }
+
+    /// SMB는 `\`도 경로 구분자로 해석하므로 공통 이름 검사에 더해 거부한다.
+    private func rejectingBackslash(_ name: String) throws -> String {
+        guard !name.contains("\\") else {
+            throw RemoteFileOperationError.invalidName(name: name, reason: .containsPathSeparator)
+        }
+        return name
+    }
+
+    private func validatedDestination(name: String, in directoryPath: String) throws -> String {
+        try RemotePath.appending(
+            name: rejectingBackslash(name),
+            to: directoryPath,
+            within: connection.normalizedRootPath
+        )
     }
 
     private func appending(_ name: String, to path: String) -> String {

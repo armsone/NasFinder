@@ -326,9 +326,19 @@ struct PhotoTransferStreamingWireDecoder {
     var pendingFileName: String? { pendingHeader?.name }
     var hasUnconsumedData: Bool { !buffer.isEmpty || pendingHeader != nil }
 
+    /// `.file`로 내보낸 임시 파일은 호출자 소유다. 소비하지 않은 이벤트를 버리는 쪽이 이 함수로 지운다.
+    static func removeFiles(in events: [Event]) {
+        for case .file(_, let url) in events {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
+
     mutating func append(_ data: Data) throws -> [Event] {
         buffer.append(data)
         var events: [Event] = []
+        // 던지면 이번 호출에서 만든 파일은 호출자에게 넘어가지 않으므로 디코더가 지운다.
+        var handedOver = false
+        defer { if !handedOver { Self.removeFiles(in: events) } }
         while true {
             if pendingHeader == nil {
                 guard buffer.count >= 4 else { break }
@@ -396,6 +406,7 @@ struct PhotoTransferStreamingWireDecoder {
             clearPending()
             events.append(.file(header, url))
         }
+        handedOver = true
         return events
     }
 

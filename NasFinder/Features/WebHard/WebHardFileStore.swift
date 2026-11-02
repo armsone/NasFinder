@@ -45,6 +45,9 @@ struct WebHardPreparedUpload: Sendable {
 /// components are validated before URL construction, and existing ancestors
 /// are resolved to prevent a symlink from escaping the root.
 struct WebHardFileStore: Sendable {
+    /// SharedInbox의 manifestFilename·legacyManifestFilename과 같아야 한다(그쪽 상수는 공개되어 있지 않다).
+    private static let reservedRootFilenames: Set<String> = [".nasfinder-manifest.json", "manifest.json"]
+
     let rootURL: URL
 
     init(rootURL: URL? = nil) throws {
@@ -219,6 +222,7 @@ struct WebHardFileStore: Sendable {
         }
         let resolved = url.resolvingSymlinksInPath()
         try validateInsideRoot(resolved)
+        try rejectIfReservedInternalFile(resolved)
         // 존재를 확인한 뒤에 분류한다(방금 들어온 비공개 파일이 분류 전 상태로 읽히지 않도록).
         try rejectIfPrivate(path)
         return resolved
@@ -238,6 +242,29 @@ struct WebHardFileStore: Sendable {
         }
     }
 
+    /// 대소문자·유니코드 정규화를 구분하지 않는 볼륨의 다른 표기, 심볼릭 링크, 하드 링크가 같은 내부 기록에
+    /// 닿지 않도록 이름이 아니라 실제 파일로 비교한다. 대소문자를 구분하는 볼륨의 별개 사용자 파일은 막지 않는다.
+    private func rejectIfReservedInternalFile(_ resolvedURL: URL) throws {
+        let candidate = resolvedURL.standardizedFileURL
+        if candidate.deletingLastPathComponent().path == rootURL.path,
+           Self.reservedRootFilenames.contains(candidate.lastPathComponent) {
+            throw WebHardFileStoreError.invalidPath
+        }
+        guard let identifier = try resolvedURL.resourceValues(
+            forKeys: [.fileResourceIdentifierKey]
+        ).fileResourceIdentifier else { return }
+        for name in Self.reservedRootFilenames {
+            let reservedURL = rootURL.appendingPathComponent(name, isDirectory: false)
+            guard FileManager.default.fileExists(atPath: reservedURL.path),
+                  let reservedIdentifier = try reservedURL.resourceValues(
+                      forKeys: [.fileResourceIdentifierKey]
+                  ).fileResourceIdentifier else { continue }
+            if identifier.isEqual(reservedIdentifier) {
+                throw WebHardFileStoreError.invalidPath
+            }
+        }
+    }
+
     private func rejectHiddenDescendants(of path: String) throws {
         if try SharedInbox.privateScope().hasPrivateDescendant(of: Self.storedPath(of: path)) {
             throw WebHardFileStoreError.containsHiddenItems
@@ -253,6 +280,10 @@ struct WebHardFileStore: Sendable {
         if components.isEmpty {
             guard allowingRoot else { throw WebHardFileStoreError.invalidPath }
             return rootURL
+        }
+        // 예약 이름은 폰하드 루트에서만 내부 기록이다. 하위 폴더의 같은 이름은 사용자 파일이다.
+        if Self.reservedRootFilenames.contains(String(components[0])) {
+            throw WebHardFileStoreError.invalidPath
         }
         let url = components.reduce(rootURL) { partial, component in
             partial.appendingPathComponent(String(component), isDirectory: false)

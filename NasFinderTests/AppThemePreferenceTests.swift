@@ -16,12 +16,11 @@ final class AppThemePreferenceTests: XCTestCase {
         )
     }
 
-    func testThemesCycleInDisplayOrder() {
-        let themes = AppThemePreference.allCases
-        for index in themes.indices.dropLast() {
-            XCTAssertEqual(themes[index].next, themes[index + 1])
+    func testThemesCycleThroughQuickFourAndWrap() {
+        let quick: [AppThemePreference] = [.light, .friday, .jarvis, .ultron]
+        for (index, theme) in quick.enumerated() {
+            XCTAssertEqual(theme.next, quick[(index + 1) % quick.count])
         }
-        XCTAssertEqual(themes.last?.next, themes.first)
     }
 
     func testRemovedThemeTitleFallsBackAndServicePaletteStaysExtensible() {

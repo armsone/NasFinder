@@ -72,10 +72,9 @@ enum AppThemePreference: String, CaseIterable, Identifiable, Sendable {
     }
 
     var next: Self {
-        let themes = Self.allCases
-        guard let currentIndex = themes.firstIndex(of: self) else { return .light }
-        let nextIndex = themes.index(after: currentIndex)
-        return nextIndex == themes.endIndex ? themes[themes.startIndex] : themes[nextIndex]
+        let cycle: [Self] = [.light, .friday, .jarvis, .ultron]
+        guard let currentIndex = cycle.firstIndex(of: self) else { return .light }
+        return cycle[(currentIndex + 1) % cycle.count]
     }
 
     static var current: Self {
@@ -464,22 +463,19 @@ struct ThemedSymbol: View {
         AppThemePreference.light.rawValue
     @AppStorage(InterfaceIconStyle.storageKey) private var iconStyleRawValue = ""
 
-    private var packIcon: ThemeIconID? {
+    /// 앱 소유 캐노니컬 ID 전체(또는 기존 24개 ID)는 InterfaceIcon 렌더러로 그린다.
+    private var usesPack: Bool {
         guard InterfaceIconStyle.resolved(
             iconStyleRawValue,
             theme: AppThemePreference.resolved(selectedThemeRawValue)
-        ) != nil else { return nil }
-        return ThemeIconID(systemName: systemName)
+        ) != nil else { return false }
+        return InterfaceDesignArtwork.canonical(systemName) != nil
+            || ThemeIconID(systemName: InterfaceDesignArtwork.originalSymbol(systemName)) != nil
     }
 
     var body: some View {
-        if let id = packIcon,
-           let style = InterfaceIconStyle.resolved(
-               iconStyleRawValue,
-               theme: AppThemePreference.resolved(selectedThemeRawValue)
-           ) {
-            ThemeIcon(id, style: style, fallbackSystemName: systemName)
-                .frame(width: symbolSize ?? size * 0.62, height: symbolSize ?? size * 0.62)
+        if usesPack {
+            InterfaceIcon(systemName: systemName, size: symbolSize ?? size * 0.62)
                 .frame(width: size, height: size)
                 .overlay(alignment: .bottomTrailing) {
                     if showsStatus {
@@ -621,7 +617,7 @@ struct ByungkiThemeGlyph: View {
         let style = InterfaceIconStyle(rawValue: iconStyleRaw) ?? .simple
         if let canonical, let artwork = InterfaceDesignArtwork.asset(canonical, style: style) {
             Image(uiImage: artwork)
-                .renderingMode(style == .simple ? .template : .original)
+                .renderingMode(InterfaceDesignArtwork.isMonochrome(canonical, style: style) ? .template : .original)
                 .resizable().scaledToFit()
                 .foregroundStyle(theme.isDark ? Color.white : Color.black)
                 .frame(width: size, height: size)
@@ -905,6 +901,7 @@ struct ByungkiThemeControlButton: View {
         }
         .accessibilityLabel(accessibilityLabelText)
         .accessibilityHint("두 번 탭하면 \(nextTheme.title) 테마로 바뀝니다. 길게 누르면 6종 선택 목록이 열립니다.")
+        .accessibilityAction(named: Text("테마 선택")) { showingThemeSheet = true }
     }
 
     /// 버튼에 anchor된 작은 목록. 6종 모두 실제 테마 글리프 + 이름 + 현재 선택 체크를 그린다.

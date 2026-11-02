@@ -4,10 +4,10 @@ import XCTest
 ///
 /// 검증 경계: XCTest는 끌기 도중(hover)의 목록 상태를 읽을 수 없다. 여기서는 제스처가 끝난 뒤의 순서,
 /// 선택 경로 유지, 다시 실행한 뒤의 저장 여부만 확인한다. 끌기 중 실시간 이동은 검증하지 않는다.
-/// 건드리는 것은 고정 메뉴 ID(사진 전송·저장공간·설정)와 기기 로컬 순서 설정뿐이며, 시작 순서로 되돌린다.
+/// 건드리는 것은 고정 메뉴 ID(사진 선별·사진 전송(화면 표시 미디어 전송)·수퍼 썸네일·썸네일 캐시)와 기기 로컬 순서 설정뿐이며, 시작 순서로 되돌린다.
 @MainActor
 final class SidebarReorderUITests: XCTestCase {
-    private let toolIDs = ["사진 전송", "저장공간", "설정"]
+    private let toolIDs = ["사진 선별", "사진 전송", "수퍼 썸네일", "썸네일 캐시"]
 
     override func setUp() {
         continueAfterFailure = false
@@ -39,6 +39,11 @@ final class SidebarReorderUITests: XCTestCase {
         if expand.waitForExistence(timeout: 5) {
             if !restoringCollapse { startedCollapsed = true }
             expand.tap()
+        }
+        // 활성 루트만 펼쳐지므로 도구 루트를 먼저 눌러 행을 보이게 한다.
+        if !app.buttons["sidebar.tools.\(toolIDs[0])"].waitForExistence(timeout: 3) {
+            let toolsRoot = app.buttons["도구"].firstMatch
+            if toolsRoot.waitForExistence(timeout: 10) { toolsRoot.tap() }
         }
         for id in toolIDs {
             XCTAssertTrue(app.buttons["sidebar.tools.\(id)"].waitForExistence(timeout: 15)
@@ -75,16 +80,16 @@ final class SidebarReorderUITests: XCTestCase {
             restoreCollapse(current)
         }
 
-        // 선택 경로: 설정을 고른 뒤 끌기가 선택을 바꾸지 않아야 한다.
-        row(app, "설정").tap()
-        XCTAssertTrue(row(app, "설정").isSelected)
+        // 선택 경로: 썸네일 캐시를 고른 뒤 끌기가 선택을 바꾸지 않아야 한다.
+        row(app, "썸네일 캐시").tap()
+        XCTAssertTrue(row(app, "썸네일 캐시").isSelected)
 
         // 첫 행을 마지막 행 위로 끌어 놓는다.
-        hold(app, drag: initial[0], onto: initial[2])
+        hold(app, drag: initial[0], onto: initial[3])
         let reordered = order(app)
         XCTAssertNotEqual(reordered, initial, "끌어 놓은 뒤 순서가 바뀌어야 합니다")
         XCTAssertEqual(reordered.last, initial[0])
-        XCTAssertTrue(row(app, "설정").isSelected, "순서가 바뀌어도 선택된 경로는 그대로여야 합니다")
+        XCTAssertTrue(row(app, "썸네일 캐시").isSelected, "순서가 바뀌어도 선택된 경로는 그대로여야 합니다")
 
         // 저장: 앱을 종료했다가 다시 실행해도 같은 순서.
         app.terminate()
@@ -95,34 +100,35 @@ final class SidebarReorderUITests: XCTestCase {
         XCTAssertEqual(order(app), initial, "시작 순서로 복원되어야 합니다")
     }
 
-    /// 설정 화면의 세 분류(화면·테마/저장공간·연동/앱 정보)를 차례로 열어 각 분류의 안전한 표시 글자만 확인하고 홈으로 돌아온다.
-    /// iPad 넓은 창에서는 분류 내용이 스크롤 없이 들어가므로 스크롤을 요구하지 않는다. 링크·캐시 정리·파일 접근·아이콘 변경 단추는 누르지 않는다.
-    func testSettingsPanesNavigateAndShowOwnLabelsThenReturnHome() {
+    /// 독립 설정 루트의 여섯 구역을 제한된 스크롤로 훑으며 보이는 순서를 확인하고 홈으로 돌아온다.
+    /// 구역 제목(표시 글자)만 읽고, 캐시 정리·개인정보·테마·아이콘 변경 단추는 누르지 않는다.
+    func testSettingsSectionsAppearInOrderThenReturnHome() {
         let app = launch()
         addTeardownBlock { [self] in restoreCollapse(XCUIApplication()) }
-        row(app, "설정").tap()
+        let settingsRoot = app.buttons["설정"].firstMatch
+        XCTAssertTrue(settingsRoot.waitForExistence(timeout: 10), "설정 루트가 있어야 합니다")
+        settingsRoot.tap()
 
-        let panes = ["화면·테마", "저장공간·연동", "앱 정보"]
-        for pane in panes {
-            XCTAssertTrue(app.buttons[pane].waitForExistence(timeout: 10), "설정 분류가 있어야 합니다: \(pane)")
+        let sections = ["저장공간·캐시", "화면 켜짐", "앱 아이콘", "프라이버시", "화면·테마", "앱 정보·업데이트"]
+        XCTAssertTrue(app.staticTexts[sections[0]].firstMatch.waitForExistence(timeout: 10), "첫 설정 구역이 보여야 합니다: \(sections[0])")
+
+        var seen: [String] = []
+        for _ in 0..<8 {
+            let visible = sections
+                .filter { !seen.contains($0) }
+                .map { ($0, app.staticTexts[$0].firstMatch) }
+                .filter { $0.1.exists && $0.1.isHittable }
+                .sorted { $0.1.frame.minY < $1.1.frame.minY }
+            seen += visible.map(\.0)
+            if seen.count == sections.count { break }
+            app.swipeUp()
         }
+        XCTAssertEqual(seen, sections, "설정 여섯 구역이 정해진 순서로 보여야 합니다")
 
-        app.buttons["화면·테마"].tap()
-        XCTAssertTrue(app.staticTexts["테마"].firstMatch.waitForExistence(timeout: 5), "화면·테마 분류 글자가 보여야 합니다")
-
-        app.buttons["저장공간·연동"].tap()
-        XCTAssertTrue(app.staticTexts["썸네일 저장공간"].waitForExistence(timeout: 5), "저장공간·연동 분류 글자가 보여야 합니다")
-
-        app.buttons["앱 정보"].tap()
-        XCTAssertTrue(app.staticTexts["오픈 소스"].waitForExistence(timeout: 5))
-        let creator = app.staticTexts["만든 사람"]
-        XCTAssertTrue(creator.exists && creator.isHittable, "앱 정보의 마지막 구역이 스크롤 없이 보여야 합니다")
-
-        app.buttons["화면·테마"].tap()
         let home = app.buttons["홈"].firstMatch
         XCTAssertTrue(home.waitForExistence(timeout: 5))
         home.tap()
-        XCTAssertFalse(row(app, "설정").isSelected, "홈으로 돌아와야 합니다")
+        XCTAssertFalse(app.staticTexts[sections[0]].firstMatch.isHittable, "홈으로 돌아와야 합니다")
         restoreCollapse(app)
     }
 }

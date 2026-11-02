@@ -24,7 +24,7 @@ enum ScreenAwakeMode: String, CaseIterable, Identifiable {
         case .always:
             "NasFinder가 화면에 열려 있는 동안 화면을 켜 둡니다."
         case .off:
-            "iPhone의 화면 자동 잠금 설정을 그대로 따릅니다."
+            "기기의 화면 자동 잠금 설정을 그대로 따릅니다."
         }
     }
 }

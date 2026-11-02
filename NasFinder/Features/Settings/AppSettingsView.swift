@@ -27,7 +27,7 @@ struct AppSettingsView: View {
 
     private enum Pane: String, CaseIterable, Identifiable {
         case appearance = "화면·테마"
-        case storage = "저장공간·연동"
+        case storage = "저장공간·캐시"
         case update = "업데이트"
         case info = "앱 정보"
         var id: String { rawValue }
@@ -44,6 +44,10 @@ struct AppSettingsView: View {
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @Environment(\.usesShellSidebar) private var usesShellSidebar
     @State private var selectedPane: Pane = .appearance
+    @State private var cacheSnapshot: DownloadCache.Snapshot?
+    @State private var isConfirmingCacheClear = false
+    @State private var isClearingCache = false
+    @State private var cacheClearError: String?
 
     private var panes: [Pane] {
         #if targetEnvironment(macCatalyst)
@@ -108,64 +112,65 @@ struct AppSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarColorScheme(selectedTheme.isDark ? .dark : .light, for: .navigationBar)
         .tint(palette.accent)
+        .task { cacheSnapshot = await DownloadCache.shared.usageSnapshot() }
+        .confirmationDialog("다운로드 캐시를 비울까요?", isPresented: $isConfirmingCacheClear, titleVisibility: .visible) {
+            Button("다운로드 캐시 비우기", role: .destructive) { clearDownloadCache() }
+            Button("취소", role: .cancel) {}
+        } message: {
+            Text("미리보기와 공유를 위해 내려받은 임시 파일을 비웁니다. 사용 중인 파일과 원격 서버의 원본은 유지합니다.")
+        }
+        .alert("다운로드 캐시를 모두 지우지 못했습니다", isPresented: Binding(
+            get: { cacheClearError != nil },
+            set: { if !$0 { cacheClearError = nil } }
+        )) {
+            Button("확인", role: .cancel) { cacheClearError = nil }
+        } message: {
+            Text(cacheClearError ?? "")
+        }
+    }
+
+    private func clearDownloadCache() {
+        isClearingCache = true
+        Task {
+            let remaining = await DownloadCache.shared.clearUnprotected()
+            cacheSnapshot = remaining
+            if remaining.failedCount > 0 {
+                cacheClearError = "\(remaining.failedCount)개 파일을 지우지 못했습니다. "
+                    + (remaining.firstErrorDescription ?? "잠시 후 다시 시도해 주세요.")
+            } else if !remaining.isUsageKnown {
+                cacheClearError = "캐시 상태를 확인하지 못했습니다. "
+                    + (remaining.firstErrorDescription ?? "잠시 후 다시 시도해 주세요.")
+            }
+            isClearingCache = false
+        }
     }
 
     /// Mac: 왼쪽 앱 사이드바는 그대로 두고 오른쪽 영역 전체 너비를 쓴다. 좁은 폭 중앙 정렬 대신 폭에 따라
     /// 1~3열로 분류를 나눠 같은 설정 섹션을 그대로 보여 준다. 열마다 필요할 때만 세로로 스크롤한다.
     @ViewBuilder
     private func macSettingsColumns(palette: AppThemePalette, width: CGFloat) -> some View {
-        let groups: [[Pane]] = {
-            let available = panes
-            let columns = width >= ui(1500) ? 3 : (width >= ui(900) ? 2 : 1)
-            let layout: [[Pane]]
-            switch columns {
-            case 3: layout = [[.appearance], [.storage, .update], [.info]]
-            case 2: layout = [[.appearance, .update], [.storage, .info]]
-            default: layout = [[.appearance, .storage, .update, .info]]
-            }
-            return layout.map { $0.filter(available.contains) }.filter { !$0.isEmpty }
-        }()
-        HStack(spacing: 0) {
-            ForEach(Array(groups.enumerated()), id: \.offset) { index, group in
-                if index > 0 { Rectangle().fill(palette.border).frame(width: 1) }
-                settingsList(palette: palette, showing: group)
-                    .frame(maxWidth: .infinity)
-            }
-        }
+        settingsList(palette: palette, showing: panes)
+            .frame(maxWidth: .infinity)
     }
 
     private func settingsList(palette: AppThemePalette, showing panes: [Pane]) -> some View {
         List {
-            if panes.contains(.appearance) {
-                themePaletteSection
-                    .listRowBackground(palette.surface)
-                interfaceIconStyleSection
-                    .listRowBackground(palette.surface)
-                screenAwakeSection
-                    .listRowBackground(palette.surface)
-                privacySection
-                    .listRowBackground(palette.surface)
-                AppIconPickerSection(compact: true)
-                    .listRowBackground(palette.surface)
-            }
             if panes.contains(.storage) {
                 storageMaintenanceSection
                     .listRowBackground(palette.surface)
-                filesAppIntegrationSection
+            }
+            if panes.contains(.appearance) {
+                screenAwakeSection
+                    .listRowBackground(palette.surface)
+                AppIconPickerSection(compact: true)
+                    .listRowBackground(palette.surface)
+                privacySection
+                    .listRowBackground(palette.surface)
+                themePaletteSection
                     .listRowBackground(palette.surface)
             }
-            #if targetEnvironment(macCatalyst)
-            if panes.contains(.update) {
-                macUpdateSection
-                    .listRowBackground(palette.surface)
-            }
-            #endif
             if panes.contains(.info) {
                 appInfoSection
-                    .listRowBackground(palette.surface)
-                openSourceSection
-                    .listRowBackground(palette.surface)
-                creatorSection
                     .listRowBackground(palette.surface)
             }
         }
@@ -175,22 +180,22 @@ struct AppSettingsView: View {
     }
 
     #if targetEnvironment(macCatalyst)
-    private var macUpdateSection: some View {
-        Section {
-            Toggle("업데이트 자동 다운로드", isOn: $updateManager.automaticallyDownloadsUpdates)
+    @ViewBuilder
+    private var macUpdateContent: some View {
+        settingsSubheading("Mac 업데이트", systemImage: "arrow.down.circle")
 
-            updateStatusView
+        Toggle("업데이트 자동 다운로드", isOn: $updateManager.automaticallyDownloadsUpdates)
 
-            HStack(spacing: ui(12)) {
-                updatePrimaryButton
-                updateSecondaryButtons
-            }
-        } header: {
-            SettingsSectionHeader(title: "Mac 업데이트", systemImage: "arrow.down.circle")
-        } footer: {
-            Text("Mac용 직접 배포판에서만 사용합니다. 설치는 확인된 DMG를 연 뒤 사용자가 직접 진행합니다.")
-                .font(MacUIScale.sectionNoteFont)
+        updateStatusView
+
+        HStack(spacing: ui(12)) {
+            updatePrimaryButton
+            updateSecondaryButtons
         }
+
+        Text("Mac용 직접 배포판에서만 사용합니다. 설치는 확인된 DMG를 연 뒤 사용자가 직접 진행합니다.")
+            .font(MacUIScale.sectionNoteFont)
+            .foregroundStyle(.secondary)
     }
 
     @ViewBuilder
@@ -307,7 +312,7 @@ struct AppSettingsView: View {
 
             SettingsPanelDescription(screenAwakeController.mode.description)
         } header: {
-            SettingsSectionHeader(title: "화면", systemImage: "sun.max")
+            SettingsSectionHeader(title: "화면 켜짐", systemImage: "sun.max")
         }
     }
 
@@ -334,25 +339,34 @@ struct AppSettingsView: View {
                 "모든 테마는 같은 배치와 글꼴을 쓰고 색만 바뀝니다. 아이콘 스타일과 앱 아이콘은 그대로 유지됩니다."
             )
 
+            interfaceIconStyleContent
+
         } header: {
-            SettingsSectionHeader(title: "테마", systemImage: "paintpalette")
+            SettingsSectionHeader(title: "화면·테마", systemImage: "paintpalette")
         }
     }
 
-    private var interfaceIconStyleSection: some View {
-        let current = InterfaceIconStyle.resolved(iconStyleRawValue, theme: selectedTheme)
-        return Section {
-            // 승인 보드 06: 스타일마다 한 행(선택 표시 · 이름 · 설명 · 샘플 아이콘). 6개 테마 공통.
-            ForEach(InterfaceIconStyle.allCases) { style in
-                interfaceIconStyleRow(style, isSelected: current == style)
-            }
+    /// 설정 묶음 안의 소제목(별도 섹션이 아니라 같은 묶음 안에서 내용을 나눈다).
+    private func settingsSubheading(_ title: String, systemImage: String) -> some View {
+        Label(title, interfaceSystemImage: systemImage)
+            .font(.ui(.footnote).weight(.semibold))
+            .foregroundStyle(PorcelainMetrics.secondary)
+            .accessibilityAddTraits(.isHeader)
+    }
 
-            SettingsPanelDescription(
-                "화면 테마·앱 아이콘과 따로 저장됩니다. 사진·영상·폴더 썸네일은 항상 실제 이미지를 보여 줍니다."
-            )
-        } header: {
-            SettingsSectionHeader(title: "아이콘 스타일", systemImage: "square.grid.2x2")
+    @ViewBuilder
+    private var interfaceIconStyleContent: some View {
+        let current = InterfaceIconStyle.resolved(iconStyleRawValue, theme: selectedTheme)
+        settingsSubheading("아이콘 스타일", systemImage: "square.grid.2x2")
+
+        // 승인 보드 06: 스타일마다 한 행(선택 표시 · 이름 · 설명 · 샘플 아이콘). 6개 테마 공통.
+        ForEach(InterfaceIconStyle.allCases) { style in
+            interfaceIconStyleRow(style, isSelected: current == style)
         }
+
+        SettingsPanelDescription(
+            "화면 테마·앱 아이콘과 따로 저장됩니다. 사진·영상·폴더 썸네일은 항상 실제 이미지를 보여 줍니다."
+        )
     }
 
     private func interfaceIconStyleRow(_ style: InterfaceIconStyle, isSelected: Bool) -> some View {
@@ -480,15 +494,51 @@ struct AppSettingsView: View {
 
     private var storageMaintenanceSection: some View {
         Section {
-            ThumbnailCacheSettingsLink()
-            SuperThumbnailLink()
+            let homeURL = URL(fileURLWithPath: NSHomeDirectory())
+            let values = try? homeURL.resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityForImportantUsageKey])
+            let total = Int64(values?.volumeTotalCapacity ?? 0)
+            let available = values?.volumeAvailableCapacityForImportantUsage ?? 0
+            let formatter: ByteCountFormatter = {
+                let f = ByteCountFormatter()
+                f.countStyle = .file
+                return f
+            }()
+            HStack {
+                Text("기기 전체 공간")
+                Spacer()
+                Text(total > 0 ? formatter.string(fromByteCount: total) : "확인 불가")
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Text("사용 가능 공간")
+                Spacer()
+                Text(available > 0 ? formatter.string(fromByteCount: available) : "확인 불가")
+                    .foregroundStyle(.secondary)
+            }
+            HStack {
+                Text("현재 사용량")
+                Spacer()
+                Text(cacheSnapshot.map { $0.isUsageKnown ? formatter.string(fromByteCount: $0.byteCount) : "확인 불가" } ?? "확인 중")
+                    .foregroundStyle(.secondary)
+            }
+            if let snapshot = cacheSnapshot, snapshot.isUsageKnown, snapshot.retainedCount > 0 {
+                let retained = snapshot.retainedCount
+                SettingsPanelDescription("사용 중인 파일 \(retained)개는 비우지 않고 유지합니다.")
+            }
+            Button("다운로드 캐시 비우기", role: .destructive) {
+                isConfirmingCacheClear = true
+            }
+            .disabled(isClearingCache)
+            SettingsPanelDescription("내려받은 임시 파일은 7일이 지나거나 512MB를 넘으면 오래된 것부터 자동으로 정리됩니다.")
         } header: {
-            SettingsSectionHeader(title: "썸네일 저장공간", systemImage: "nf.thumbnail_storage")
+            SettingsSectionHeader(title: "저장공간·캐시", systemImage: "nf.storage")
         }
     }
 
     private var appInfoSection: some View {
         Section {
+            settingsSubheading("앱 정보", systemImage: "info.circle")
+
             LabeledContent {
                 Text(appVersion)
                     .font(.ui(.body))
@@ -508,8 +558,14 @@ struct AppSettingsView: View {
                     .font(.ui(.body))
                     .foregroundStyle(selectedTheme.palette.text)
             }
+
+            #if targetEnvironment(macCatalyst)
+            macUpdateContent
+            #endif
+            openSourceContent
+            creatorContent
         } header: {
-            SettingsSectionHeader(title: "앱 정보", systemImage: "info.circle")
+            SettingsSectionHeader(title: "앱 정보·업데이트", systemImage: "info.circle")
         }
     }
 
@@ -529,8 +585,10 @@ struct AppSettingsView: View {
         return "-"
     }
 
-    private var openSourceSection: some View {
-        Section {
+    @ViewBuilder
+    private var openSourceContent: some View {
+            settingsSubheading("오픈 소스", systemImage: "chevron.left.forwardslash.chevron.right")
+
             VStack(alignment: .leading, spacing: ui(5)) {
                 Text("VLCKit 4.0.0a23")
                     .font(.ui(.body))
@@ -547,13 +605,12 @@ struct AppSettingsView: View {
                 "VLCKit 소스 코드",
                 destination: URL(string: "https://github.com/videolan/vlckit/tree/4.0.0-a23")!
             )
-        } header: {
-            SettingsSectionHeader(title: "오픈 소스", systemImage: "chevron.left.forwardslash.chevron.right")
-        }
     }
 
-    private var creatorSection: some View {
-        Section {
+    @ViewBuilder
+    private var creatorContent: some View {
+            settingsSubheading("만든 사람", systemImage: "person.crop.circle")
+
             Link(
                 destination: URL(string: "https://github.com/armsone")!
             ) {
@@ -562,9 +619,6 @@ struct AppSettingsView: View {
             .accessibilityLabel("만든 사람 GitHub, armsone")
 
             SettingsPanelDescription("NasFinder를 만든 사람의 GitHub입니다.")
-        } header: {
-            SettingsSectionHeader(title: "만든 사람", systemImage: "person.crop.circle")
-        }
     }
 
 }

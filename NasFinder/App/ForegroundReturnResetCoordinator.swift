@@ -51,8 +51,12 @@ final class ForegroundReturnResetCoordinator: ObservableObject {
             phase: phase
         )
         wasInBackground = transition.wasInBackground
-        if transition.shouldReset && activeMediaViews.isEmpty {
-            resetGeneration &+= 1
+        if transition.shouldReset {
+            PrivacyMode.shared.setActive(false)
+            AppShellRouter.shared.request = .home
+            if activeMediaViews.isEmpty {
+                resetGeneration &+= 1
+            }
         }
     }
 }

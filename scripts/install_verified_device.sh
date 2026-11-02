@@ -25,43 +25,57 @@ project="NasFinder.xcodeproj"
 scheme="NasFinder"
 bundle_identifier="com.armsone.nasfinder"
 
-test_arguments=()
-if [[ "$full_tests" == "1" ]]; then
-    echo "[1/5] Running the complete test suite on device $device_identifier at $verified_sha"
-elif [[ -n "$test_only" ]]; then
-    IFS=',' read -r -a test_selectors <<< "$test_only"
-    for selector in "${test_selectors[@]}"; do
-        [[ -n "$selector" ]] || continue
-        test_arguments+=("-only-testing:$selector")
-    done
-    [[ ${#test_arguments[@]} -gt 0 ]] || {
-        echo "error: TEST_ONLY에 하나 이상의 테스트 선택자를 지정해 주세요." >&2
-        exit 2
-    }
-    echo "[1/5] Running related device tests: $test_only"
-else
-    echo "error: 관련 테스트는 TEST_ONLY=<target/test>로, 전체 테스트는 FULL_TESTS=1로 지정해 주세요." >&2
+skip_tests="${SKIP_TESTS:-0}"
+if [[ "$skip_tests" != "0" && "$skip_tests" != "1" ]]; then
+    echo "error: SKIP_TESTS는 0 또는 1이어야 합니다." >&2
+    exit 2
+fi
+if [[ "$skip_tests" == "1" && ( -n "$test_only" || "$full_tests" == "1" ) ]]; then
+    echo "error: SKIP_TESTS=1은 TEST_ONLY 또는 FULL_TESTS=1과 함께 사용할 수 없습니다." >&2
     exit 2
 fi
 
-test_command=(
-    "$repository_root/scripts/xcodebuild_project.sh" -quiet
-    -project "$project"
-    -scheme "$scheme"
-    -destination "id=$device_identifier"
-    -derivedDataPath "$derived_data-device-tests"
-    -allowProvisioningUpdates
-    test
-)
-if [[ ${#test_arguments[@]} -gt 0 ]]; then
-    test_command+=("${test_arguments[@]}")
-fi
-"${test_command[@]}"
+if [[ "$skip_tests" == "1" ]]; then
+    echo "[1/5] Tests skipped by user (SKIP_TESTS=1)"
+else
+    test_arguments=()
+    if [[ "$full_tests" == "1" ]]; then
+        echo "[1/5] Running the complete test suite on device $device_identifier at $verified_sha"
+    elif [[ -n "$test_only" ]]; then
+        IFS=',' read -r -a test_selectors <<< "$test_only"
+        for selector in "${test_selectors[@]}"; do
+            [[ -n "$selector" ]] || continue
+            test_arguments+=("-only-testing:$selector")
+        done
+        [[ ${#test_arguments[@]} -gt 0 ]] || {
+            echo "error: TEST_ONLY에 하나 이상의 테스트 선택자를 지정해 주세요." >&2
+            exit 2
+        }
+        echo "[1/5] Running related device tests: $test_only"
+    else
+        echo "error: 관련 테스트는 TEST_ONLY=<target/test>로, 전체 테스트는 FULL_TESTS=1로 지정해 주세요." >&2
+        exit 2
+    fi
 
-# Device test products include the full VLCKit framework and can consume
-# several gigabytes. They are no longer needed once the selected tests pass;
-# release them before producing the separately signed install build.
-rm -rf "$derived_data-device-tests"
+    test_command=(
+        "$repository_root/scripts/xcodebuild_project.sh"
+        -project "$project"
+        -scheme "$scheme"
+        -destination "id=$device_identifier"
+        -derivedDataPath "$derived_data-device-tests"
+        -allowProvisioningUpdates
+        test
+    )
+    if [[ ${#test_arguments[@]} -gt 0 ]]; then
+        test_command+=("${test_arguments[@]}")
+    fi
+    "${test_command[@]}"
+
+    # Device test products include the full VLCKit framework and can consume
+    # several gigabytes. They are no longer needed once the selected tests pass;
+    # release them before producing the separately signed install build.
+    rm -rf "$derived_data-device-tests"
+fi
 
 [[ "$(git rev-parse HEAD)" == "$verified_sha" ]] || {
     echo "error: 테스트 중 HEAD가 변경됐습니다." >&2
@@ -73,7 +87,7 @@ cmp -s "$source_state_file" <(git status --porcelain=v1 --untracked-files=all) |
 }
 
 echo "[2/5] Building the signed device app"
-"$repository_root/scripts/xcodebuild_project.sh" -quiet \
+"$repository_root/scripts/xcodebuild_project.sh" \
     -project "$project" \
     -scheme "$scheme" \
     -destination "id=$device_identifier" \

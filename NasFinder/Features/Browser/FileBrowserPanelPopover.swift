@@ -61,6 +61,15 @@ struct FileBrowserPanelPopover<PanelContent: View>: ViewModifier {
                 ) {
                     popoverContent
                 }
+        } else if #available(iOS 18.0, *) {
+            content
+                .popover(
+                    isPresented: $isPresented,
+                    attachmentAnchor: .rect(.bounds),
+                    arrowEdge: nil
+                ) {
+                    popoverContent
+                }
         } else {
             content
                 .popover(

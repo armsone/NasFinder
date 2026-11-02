@@ -6,7 +6,6 @@ import UIKit
 
 enum RemotePreviewInteractionPolicy {
     static let controlsAutoHideDelay: Duration = .milliseconds(2_500)
-    static let photoSlideshowDimmedControlsOpacity = 0.10
 
     static func shouldTogglePlaybackOnSingleTap(controlsAreVisible: Bool) -> Bool {
         controlsAreVisible
@@ -17,8 +16,7 @@ enum RemotePreviewInteractionPolicy {
         isPhoto: Bool,
         isPlaying: Bool
     ) -> Double {
-        if controlsAreVisible { return 1 }
-        return isPhoto && isPlaying ? photoSlideshowDimmedControlsOpacity : 0
+        controlsAreVisible ? 1 : 0
     }
 
     static func controlsAcceptInput(
@@ -26,7 +24,7 @@ enum RemotePreviewInteractionPolicy {
         isPhoto: Bool,
         isPlaying: Bool
     ) -> Bool {
-        controlsAreVisible || (isPhoto && isPlaying)
+        controlsAreVisible
     }
 
     static func slideshowProgress(
@@ -87,6 +85,7 @@ struct RemotePreviewView: View {
     @State private var handedToPlayerChooser = false
     private let accessoryControls: AnyView?
     private let onClose: (() -> Void)?
+    private let onCurrentItemChanged: ((RemoteFileItem) -> Void)?
     private let playbackSuspended: Bool
     /// 바뀔 때마다 지금 위치에서 멈춘다. 다시 재생하지 않는다(영상 편집기의 전체 화면 전환).
     private let pauseRequest: Int
@@ -103,10 +102,12 @@ struct RemotePreviewView: View {
         playbackSuspended: Bool = false,
         initiallyPaused: Bool = false,
         pauseRequest: Int = 0,
-        editorCompact: Bool = false
+        editorCompact: Bool = false,
+        onCurrentItemChanged: ((RemoteFileItem) -> Void)? = nil
     ) {
         self.accessoryControls = accessoryControls
         self.onClose = onClose
+        self.onCurrentItemChanged = onCurrentItemChanged
         self.playbackSuspended = playbackSuspended
         self.pauseRequest = pauseRequest
         self.editorCompact = editorCompact
@@ -223,18 +224,20 @@ struct RemotePreviewView: View {
         }
         .onChange(of: viewModel.image != nil) { _, isLoaded in
             if isLoaded, viewModel.currentItem.isImage, viewModel.isPlaying {
-                dimControlsForSlideshow()
+                revealControls()
             }
         }
         .onChange(of: viewModel.errorMessage) { _, _ in
             handOffUnplayableVideoIfNeeded()
         }
+        .onAppear {
+            onCurrentItemChanged?(viewModel.currentItem)
+        }
         .onChange(of: viewModel.currentItem.id) { _, _ in
             resetVideoTransform()
-            if !viewModel.currentItem.isImage || !viewModel.isPlaying {
-                revealControls()
-            }
+            revealControls()
             updateScreenAwakeActivity()
+            onCurrentItemChanged?(viewModel.currentItem)
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -326,14 +329,16 @@ struct RemotePreviewView: View {
                     image: image,
                     onDismiss: { closePreview() },
                     onNavigate: { offset in
-                        viewModel.navigate(by: offset)
+                        viewModel.navigateImage(by: offset, autoplay: viewModel.isPlaying)
                     },
                     onSingleTap: {
-                        guard viewModel.isPlaying else {
-                            revealControls()
-                            return
+                        revealControls()
+                    },
+                    onDoubleTap: {
+                        guard viewModel.currentItem.isImage else { return }
+                        if viewModel.imageCount > 1 {
+                            viewModel.togglePlayback()
                         }
-                        viewModel.togglePlayback()
                         revealControls()
                     }
                 )
@@ -445,10 +450,11 @@ struct RemotePreviewView: View {
     private var videoPlayerSurface: some View {
         if let compatibilityPlayer = viewModel.compatibilityPlayer {
             CompatibilityVideoPlayerSurface(player: compatibilityPlayer)
+                .aspectRatio(contentMode: viewModel.videoAspect == .fill ? .fill : .fit)
         } else if let player = viewModel.player {
             SharedVideoPlayerSurface(
                 player: player,
-                videoGravity: .resizeAspect
+                videoGravity: viewModel.videoAspect.videoGravity
             )
         }
     }
@@ -666,7 +672,7 @@ struct RemotePreviewView: View {
                 systemImage: "chevron.left",
                 accessibilityLabel: "이전 사진"
             ) {
-                viewModel.navigate(by: -1, autoplay: true)
+                viewModel.navigateImage(by: -1, autoplay: viewModel.isPlaying)
             }
 
             Spacer()
@@ -675,12 +681,14 @@ struct RemotePreviewView: View {
                 systemImage: "chevron.right",
                 accessibilityLabel: "다음 사진"
             ) {
-                viewModel.navigate(by: 1, autoplay: true)
+                viewModel.navigateImage(by: 1, autoplay: viewModel.isPlaying)
             }
         }
         .padding(.horizontal, max(max(safeAreaInsets.leading, safeAreaInsets.trailing), ui(12)) + ui(10))
         .padding(.bottom, max(safeAreaInsets.bottom, ui(8)) + ui(72))
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .opacity(areControlsVisible ? 1 : 0)
+        .allowsHitTesting(areControlsVisible)
         .ignoresSafeArea()
     }
 
@@ -690,14 +698,16 @@ struct RemotePreviewView: View {
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(interfaceSystemName: systemImage, pointSize: ui(19))
-                .font(.system(size: ui(19), weight: .semibold))
+            Image(interfaceSystemName: systemImage, pointSize: ui(20))
+                .font(.system(size: ui(20), weight: .semibold))
                 .foregroundStyle(.white.opacity(0.86))
-                .frame(width: ui(46), height: ui(46))
+                .frame(width: ui(44), height: ui(44))
                 .background(.black.opacity(0.28), in: Circle())
                 .overlay {
                     Circle().stroke(.white.opacity(0.18), lineWidth: 0.75)
                 }
+                .frame(minWidth: ui(48), minHeight: ui(48))
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(accessibilityLabel)
@@ -724,6 +734,10 @@ struct RemotePreviewView: View {
         .accessibilityHidden(true)
     }
 
+    private var isAccessibilityTouchExplorationActive: Bool {
+        UIAccessibility.isVoiceOverRunning || UIAccessibility.isSwitchControlRunning
+    }
+
     /// Music is neither an image nor a video, so its play/pause, close and seek controls
     /// stay pinned: no auto-hide timer is scheduled and a tap on the surface cannot hide
     /// them. Video keeps its auto-hide, except in the trailer editor (`accessoryControls`),
@@ -733,6 +747,10 @@ struct RemotePreviewView: View {
         accessoryControls != nil
             || editorCompact
             || viewModel.errorMessage != nil
+            || viewModel.isLoading
+            || viewModel.isPreparingVideo
+            || !viewModel.isPlaying
+            || isAccessibilityTouchExplorationActive
             || !(viewModel.currentItem.isImage || viewModel.currentItem.isVideo)
     }
 
@@ -806,14 +824,15 @@ struct RemotePreviewView: View {
 
                     VStack(spacing: ui(2)) {
                         Text(viewModel.currentItem.name)
-                            .font(.ui(isCompact ? .subheadline : .body))
+                            .font(.system(size: ui(isCompact ? 14 : 16), weight: .semibold))
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .minimumScaleFactor(0.6)
                             .multilineTextAlignment(.center)
 
-                        if showsPosition, viewModel.itemsCount > 1,
-                           viewModel.currentItem.isImage || viewModel.currentItem.isVideo {
+                        if showsPosition,
+                           ((viewModel.currentItem.isImage && viewModel.imageCount > 1)
+                            || (viewModel.currentItem.isVideo && viewModel.itemsCount > 1)) {
                             positionLabel
                         }
                     }
@@ -929,23 +948,23 @@ struct RemotePreviewView: View {
     }
 
     private var transportControls: some View {
-        HStack(spacing: ui(8)) {
-            if viewModel.itemsCount > 1 {
+        let canNavigate = viewModel.currentItem.isImage
+            ? viewModel.imageCount > 1
+            : viewModel.itemsCount > 1
+
+        return HStack(spacing: ui(8)) {
+            if canNavigate {
                 Button {
-                    viewModel.navigate(by: -1, autoplay: true)
+                    if viewModel.currentItem.isImage {
+                        viewModel.navigateImage(by: -1, autoplay: viewModel.isPlaying)
+                    } else {
+                        viewModel.navigate(by: -1, autoplay: true)
+                    }
                     revealControls()
                 } label: {
                     SharedPlayerCircleLabel(systemImage: "backward.end.fill")
                 }
-                .accessibilityLabel("이전 미디어")
-
-                Button {
-                    viewModel.navigate(by: 1, autoplay: true)
-                    revealControls()
-                } label: {
-                    SharedPlayerCircleLabel(systemImage: "forward.end.fill")
-                }
-                .accessibilityLabel("다음 미디어")
+                .accessibilityLabel(viewModel.currentItem.isImage ? "이전 사진" : "이전 미디어")
             }
 
             Button {
@@ -956,36 +975,74 @@ struct RemotePreviewView: View {
                     systemImage: viewModel.isPlaying ? "pause.fill" : "play.fill"
                 )
             }
+            .disabled(viewModel.currentItem.isImage && viewModel.imageCount <= 1)
             .accessibilityLabel(viewModel.isPlaying ? "일시 정지" : "재생")
+            .keyboardShortcut(.space, modifiers: [])
+
+            if canNavigate {
+                Button {
+                    if viewModel.currentItem.isImage {
+                        viewModel.navigateImage(by: 1, autoplay: viewModel.isPlaying)
+                    } else {
+                        viewModel.navigate(by: 1, autoplay: true)
+                    }
+                    revealControls()
+                } label: {
+                    SharedPlayerCircleLabel(systemImage: "forward.end.fill")
+                }
+                .accessibilityLabel(viewModel.currentItem.isImage ? "다음 사진" : "다음 미디어")
+            }
         }
     }
 
+    @ViewBuilder
     private var playbackStatusControls: some View {
         HStack(spacing: ui(8)) {
-            if viewModel.itemsCount > 1 {
-                positionLabel
+            if viewModel.currentItem.isImage {
+                if viewModel.imageCount > 1 {
+                    positionLabel
+                }
+                photoPlaybackModeControl
+            } else if viewModel.currentItem.isVideo {
+                if viewModel.itemsCount > 1 {
+                    positionLabel
+                }
+                videoRepeatControl
+                videoAspectControl
+            } else if viewModel.currentItem.isPlayerMedia {
+                if viewModel.itemsCount > 1 {
+                    positionLabel
+                }
+                photoPlaybackModeControl
+            } else {
+                if viewModel.itemsCount > 1 {
+                    positionLabel
+                }
             }
-            playbackModeControl
         }
     }
 
     private var positionLabel: some View {
-        Text("\(viewModel.currentIndex + 1) / \(viewModel.itemsCount)")
-            .font(.system(size: ui(10), weight: .semibold, design: .monospaced))
+        let (current, total) = viewModel.currentItem.isImage
+            ? (viewModel.currentImageIndex + 1, viewModel.imageCount)
+            : (viewModel.currentIndex + 1, viewModel.itemsCount)
+
+        return Text("\(current) / \(total)")
+            .font(.system(size: ui(12), weight: .semibold, design: .monospaced))
             .foregroundStyle(.white.opacity(0.9))
             .frame(width: ui(44), height: ui(44))
             .background(Color.black.opacity(0.28), in: Circle())
             .overlay {
                 Circle().stroke(Color.white.opacity(0.18), lineWidth: 1)
             }
-            .accessibilityLabel(
-                "전체 \(viewModel.itemsCount)개 중 \(viewModel.currentIndex + 1)번째"
-            )
+            .frame(minWidth: ui(48), minHeight: ui(48))
+            .contentShape(Rectangle())
+            .accessibilityLabel("전체 \(total)개 중 \(current)번째")
     }
 
-    private var playbackModeControl: some View {
+    private var photoPlaybackModeControl: some View {
         Menu {
-            Section("재생 모드") {
+            Section("사진 반복") {
                 ForEach(PreviewPlaybackMode.allCases) { mode in
                     Button {
                         viewModel.setPlaybackMode(mode)
@@ -1023,8 +1080,47 @@ struct RemotePreviewView: View {
             )
         }
         .accessibilityLabel(
-            "재생 모드: \(viewModel.playbackMode.title), 사진 \(viewModel.photoAdvanceInterval.title)"
+            "사진 반복: \(viewModel.playbackMode.title), 간격 \(viewModel.photoAdvanceInterval.title)"
         )
+    }
+
+    private var videoRepeatControl: some View {
+        Button {
+            viewModel.toggleVideoLoop()
+            revealControls()
+        } label: {
+            SharedPlayerCircleLabel(
+                systemImage: "repeat.1",
+                isActive: viewModel.videoLoopEnabled
+            )
+        }
+        .accessibilityLabel(
+            viewModel.videoLoopEnabled ? "한 항목 반복 켜짐" : "한 항목 반복 꺼짐"
+        )
+    }
+
+    private var videoAspectControl: some View {
+        Menu {
+            ForEach(VideoAspectRatio.allCases) { aspect in
+                Button {
+                    viewModel.setVideoAspect(aspect)
+                    revealControls()
+                } label: {
+                    Label(
+                        aspect.title,
+                        interfaceSystemImage: viewModel.videoAspect == aspect
+                            ? "checkmark"
+                            : aspect.systemImage
+                    )
+                }
+            }
+        } label: {
+            SharedPlayerCircleLabel(
+                systemImage: viewModel.videoAspect.systemImage,
+                isActive: viewModel.videoAspect == .fill
+            )
+        }
+        .accessibilityLabel("화면 비율: \(viewModel.videoAspect.title)")
     }
 
     private func seekHUD(text: String) -> some View {
@@ -1190,7 +1286,9 @@ struct RemotePreviewView: View {
             .onEnded { value in
                 switch value {
                 case .first:
-                    guard abs(videoZoomScale - 1) > 0.01 else { return }
+                    let isZoomed = abs(videoZoomScale - 1) > 0.01
+                    let isPanned = abs(videoZoomOffset.width) > 1.0 || abs(videoZoomOffset.height) > 1.0
+                    guard isZoomed || isPanned else { return }
                     withAnimation(.spring(response: 0.25, dampingFraction: 0.86)) {
                         resetVideoTransform()
                     }
@@ -1229,19 +1327,21 @@ struct RemotePreviewView: View {
     private func revealControls() {
         controlsHideTask?.cancel()
         withAnimation(.easeInOut(duration: 0.2)) { areControlsVisible = true }
-        guard !requiresAlwaysVisibleChrome, viewModel.isPlaying else { return }
+        guard !requiresAlwaysVisibleChrome,
+              viewModel.isPlaying,
+              !viewModel.isLoading,
+              !viewModel.isPreparingVideo,
+              videoDragAxis == nil,
+              !isAccessibilityTouchExplorationActive else { return }
         controlsHideTask = Task { @MainActor in
             try? await Task.sleep(for: RemotePreviewInteractionPolicy.controlsAutoHideDelay)
-            guard !Task.isCancelled, viewModel.isPlaying else { return }
+            guard !Task.isCancelled,
+                  viewModel.isPlaying,
+                  !viewModel.isLoading,
+                  !viewModel.isPreparingVideo,
+                  videoDragAxis == nil,
+                  !self.isAccessibilityTouchExplorationActive else { return }
             withAnimation(.easeInOut(duration: 0.2)) { areControlsVisible = false }
-        }
-    }
-
-    private func dimControlsForSlideshow() {
-        controlsHideTask?.cancel()
-        controlsHideTask = nil
-        withAnimation(.easeInOut(duration: 0.2)) {
-            areControlsVisible = false
         }
     }
 }
@@ -1387,17 +1487,19 @@ private enum PreviewDragAxis {
 }
 
 enum PreviewPlaybackMode: String, CaseIterable, Identifiable {
-    case repeatAll
-    case shuffle
-    case repeatOne
+    case repeatAll = "repeatAll"
+    case shuffle = "shuffle"
+    case repeatOne = "repeatOne"
+    case once = "once"
 
     var id: Self { self }
 
     var title: String {
         switch self {
-        case .repeatAll: "전체 미디어 반복"
+        case .repeatAll: "전체 반복"
         case .shuffle: "임의 재생"
         case .repeatOne: "한 항목 반복"
+        case .once: "한 번 재생"
         }
     }
 
@@ -1406,6 +1508,45 @@ enum PreviewPlaybackMode: String, CaseIterable, Identifiable {
         case .repeatAll: "repeat"
         case .shuffle: "shuffle"
         case .repeatOne: "repeat.1"
+        case .once: "arrow.forward.to.line"
+        }
+    }
+
+    init?(persistedValue: String) {
+        switch persistedValue {
+        case "repeatAll", "ALL_REPEAT": self = .repeatAll
+        case "shuffle", "SHUFFLE": self = .shuffle
+        case "repeatOne", "ONE_REPEAT": self = .repeatOne
+        case "once", "ONCE", "repeatOff", "off": self = .once
+        default: return nil
+        }
+    }
+}
+
+enum VideoAspectRatio: String, CaseIterable, Identifiable {
+    case fit = "fit"
+    case fill = "fill"
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .fit: "화면에 맞추기"
+        case .fill: "화면 채우기"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .fit: "arrow.down.right.and.arrow.up.left"
+        case .fill: "arrow.up.left.and.arrow.down.right"
+        }
+    }
+
+    var videoGravity: AVLayerVideoGravity {
+        switch self {
+        case .fit: .resizeAspect
+        case .fill: .resizeAspectFill
         }
     }
 }
@@ -1440,6 +1581,8 @@ final class RemotePreviewViewModel: ObservableObject {
     @Published private(set) var playbackMode: PreviewPlaybackMode = .repeatAll
     @Published private(set) var photoAdvanceInterval: PhotoAdvanceInterval
     @Published private(set) var photoAdvanceStartedAt: Date?
+    @Published private(set) var videoLoopEnabled: Bool = true
+    @Published private(set) var videoAspect: VideoAspectRatio = .fit
     @Published private(set) var seekHUDText: String?
     @Published var errorMessage: String?
 
@@ -1474,6 +1617,8 @@ final class RemotePreviewViewModel: ObservableObject {
 
     private static let photoAdvanceIntervalDefaultsKey = "previewPhotoAdvanceIntervalSeconds"
     private static let playbackModeDefaultsKey = "previewPlaybackMode"
+    private static let videoLoopDefaultsKey = "previewVideoLoopEnabled"
+    private static let videoAspectDefaultsKey = "previewVideoAspectRatio"
 
     var currentItem: RemoteFileItem { items[currentIndex] }
     var itemsCount: Int { items.count }
@@ -1512,8 +1657,18 @@ final class RemotePreviewViewModel: ObservableObject {
         )
         photoAdvanceInterval = PhotoAdvanceInterval(rawValue: savedInterval) ?? .fiveSeconds
         playbackMode = PreviewPlaybackMode(
-            rawValue: UserDefaults.standard.string(forKey: Self.playbackModeDefaultsKey) ?? ""
+            persistedValue: UserDefaults.standard.string(forKey: Self.playbackModeDefaultsKey) ?? ""
         ) ?? .repeatAll
+        if UserDefaults.standard.object(forKey: Self.videoLoopDefaultsKey) != nil {
+            videoLoopEnabled = UserDefaults.standard.bool(forKey: Self.videoLoopDefaultsKey)
+        } else {
+            videoLoopEnabled = true
+        }
+        let savedAspect = UserDefaults.standard.string(forKey: Self.videoAspectDefaultsKey) ?? ""
+        videoAspect = VideoAspectRatio(rawValue: savedAspect) ?? .fit
+        if items[currentIndex].isImage {
+            isPlaying = false
+        }
     }
 
     func loadCurrentItem(
@@ -1801,6 +1956,32 @@ final class RemotePreviewViewModel: ObservableObject {
         errorMessage = errorMessage ?? "전용 플레이어에서 이 영상을 재생할 수 없습니다."
     }
 
+    var imageIndices: [Int] {
+        items.indices.filter { items[$0].isImage }
+    }
+
+    var imageCount: Int {
+        imageIndices.count
+    }
+
+    var currentImageIndex: Int {
+        imageIndices.firstIndex(of: currentIndex) ?? 0
+    }
+
+    func navigateImage(by offset: Int, autoplay: Bool = false) {
+        let images = imageIndices
+        guard images.count > 1, offset != 0 else { return }
+
+        if autoplay {
+            isPlaying = true
+        }
+
+        let count = images.count
+        let currentPos = images.firstIndex(of: currentIndex) ?? 0
+        let nextPos = (currentPos + offset % count + count) % count
+        move(to: images[nextPos], sequentialAdvance: false)
+    }
+
     func navigate(by offset: Int, autoplay: Bool = false) {
         guard items.count > 1, offset != 0 else { return }
 
@@ -1814,6 +1995,9 @@ final class RemotePreviewViewModel: ObservableObject {
     }
 
     func togglePlayback() {
+        if currentItem.isImage, imageCount <= 1 {
+            return
+        }
         isPlaying.toggle()
 
         if currentItem.isPlayerMedia {
@@ -1858,10 +2042,39 @@ final class RemotePreviewViewModel: ObservableObject {
         }
     }
 
+    func toggleVideoLoop() {
+        setVideoLoop(!videoLoopEnabled)
+    }
+
+    func setVideoLoop(_ enabled: Bool) {
+        videoLoopEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.videoLoopDefaultsKey)
+    }
+
+    func setVideoAspect(_ aspect: VideoAspectRatio) {
+        videoAspect = aspect
+        UserDefaults.standard.set(aspect.rawValue, forKey: Self.videoAspectDefaultsKey)
+    }
+
     func videoDidFinish() {
         guard currentItem.isPlayerMedia else { return }
 
+        if currentItem.isVideo {
+            if videoLoopEnabled {
+                replayCurrentVideo()
+            } else {
+                isPlaying = false
+                player?.pause()
+                compatibilityPlayer?.pause()
+            }
+            return
+        }
+
         switch playbackMode {
+        case .once:
+            isPlaying = false
+            player?.pause()
+            compatibilityPlayer?.pause()
         case .repeatOne:
             replayCurrentVideo()
         case .repeatAll:
@@ -1877,6 +2090,15 @@ final class RemotePreviewViewModel: ObservableObject {
                 replayCurrentVideo()
             }
         }
+    }
+
+    private func randomNextIndex() -> Int? {
+        guard items.count > 1 else { return nil }
+        var candidate = currentIndex
+        while candidate == currentIndex {
+            candidate = Int.random(in: items.indices)
+        }
+        return candidate
     }
 
     func beginVideoScrub() {
@@ -2413,7 +2635,7 @@ final class RemotePreviewViewModel: ObservableObject {
         photoAdvanceTask?.cancel()
         photoAdvanceTask = nil
 
-        guard currentItem.isImage, image != nil, isPlaying else { return }
+        guard currentItem.isImage, image != nil, isPlaying, imageCount > 1 else { return }
         let expectedItemID = currentItem.id
         let interval = photoAdvanceInterval
         photoAdvanceStartedAt = Date()
@@ -2429,31 +2651,33 @@ final class RemotePreviewViewModel: ObservableObject {
     }
 
     private func photoDidFinish() {
+        let images = imageIndices
+        guard images.count > 1,
+              let currentPos = images.firstIndex(of: currentIndex) else { return }
+
         switch playbackMode {
         case .repeatOne:
             schedulePhotoAdvance()
         case .repeatAll:
-            if items.count == 1 {
-                schedulePhotoAdvance()
-            } else {
-                move(to: (currentIndex + 1) % items.count, sequentialAdvance: true)
-            }
+            let nextPos = (currentPos + 1) % images.count
+            move(to: images[nextPos], sequentialAdvance: true)
         case .shuffle:
-            if let randomIndex = randomNextIndex() {
-                move(to: randomIndex, sequentialAdvance: true)
+            let remainingImages = images.filter { $0 != currentIndex }
+            if let randomItemIndex = remainingImages.randomElement() {
+                move(to: randomItemIndex, sequentialAdvance: true)
             } else {
                 schedulePhotoAdvance()
             }
+        case .once:
+            if currentPos + 1 < images.count {
+                move(to: images[currentPos + 1], sequentialAdvance: true)
+            } else {
+                isPlaying = false
+                photoAdvanceTask?.cancel()
+                photoAdvanceTask = nil
+                photoAdvanceStartedAt = nil
+            }
         }
-    }
-
-    private func randomNextIndex() -> Int? {
-        guard items.count > 1 else { return nil }
-        var candidate = currentIndex
-        while candidate == currentIndex {
-            candidate = Int.random(in: items.indices)
-        }
-        return candidate
     }
 
     private func replayCurrentVideo() {

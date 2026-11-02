@@ -5,6 +5,7 @@ import SwiftUI
 /// 원본은 보내는 순간에 항목마다 가져온다. 소스를 바꾸거나 취소해도 포켓의 참조는 그대로다.
 @MainActor
 struct PhotoTransferView: View {
+    @Environment(\.shellToolActive) private var shellToolActive
     private enum PairingRole: String, Identifiable {
         case receiver
         case sender
@@ -81,18 +82,18 @@ struct PhotoTransferView: View {
             // 보내기·받기 화면에서 돌아오면 이번 실행의 임시 파일을 정리한다. 포켓의 참조는 그대로다.
             if role == nil { run.finish() }
         }
-        .alert("새 포켓", isPresented: $isCreatingPocket) {
+        .alert("새 포켓", isPresented: $isCreatingPocket.shellPresentation(shellToolActive)) {
             TextField("포켓 이름", text: $newPocketName)
             Button("취소", role: .cancel) {}
             Button("만들기") { createPocket() }
         }
-        .alert("다시 연결", isPresented: Binding(get: { relinkGuidance != nil }, set: { if !$0 { relinkGuidance = nil } })) {
+        .alert("다시 연결", isPresented: Binding(get: { relinkGuidance != nil }, set: { if !$0 { relinkGuidance = nil } }).shellPresentation(shellToolActive)) {
             if relinkGuidance?.kind == .googlePhoto {
                 Button("Google 포토에서 다시 선택") { relinkGuidance = nil; isGooglePresented = true }
             }
             Button("확인", role: .cancel) { relinkGuidance = nil }
         } message: { Text(relinkGuidance.map(WorkbenchPocketView.guidance(for:)) ?? "") }
-        .alert("미디어 전송 알림", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } })) {
+        .alert("미디어 전송 알림", isPresented: Binding(get: { notice != nil }, set: { if !$0 { notice = nil } }).shellPresentation(shellToolActive)) {
             Button("확인", role: .cancel) { notice = nil }
         } message: { Text(notice ?? "") }
         .onAppear {

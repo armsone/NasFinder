@@ -16,8 +16,11 @@ enum PorcelainMetrics {
     /// 파일 열기와 영상 작업을 나란히 둘 때의 사이 간격.
     static let splitSpacing: CGFloat = 24
     static let rowIconSize: CGFloat = 26
-    /// Mac 셸 사이드바 한 줄 높이(포인터 기준).
-    static let shellSidebarRowHeight: CGFloat = 36
+    /// 셸 사이드바 루트·하위 한 줄 최소 높이(행 사이 간격 2pt → 순서 이동 한 칸 48pt).
+    static let shellSidebarRowHeight: CGFloat = 46
+    /// 셸 사이드바 하위 행의 아이콘 크기와 루트 대비 들여쓰기.
+    static let shellSidebarChildIconSize: CGFloat = 20
+    static let shellSidebarIndent: CGFloat = 24
     /// 홈 파일 열기 2×2 칸의 앞 아이콘. 글 폭을 우선하도록 작게 둔다.
     static let openIconSize: CGFloat = 32
     static let corner: CGFloat = 14
@@ -187,9 +190,16 @@ extension View {
 struct PorcelainBrandText: View {
     private var themeRefresh = ThemeRefresh()
     @ObservedObject private var privacy = PrivacyMode.shared
+    /// true면 좁은 폭에서 축소·말줄임으로 줄어든다(사이드바 머리글용). 기본값은 기존 고정 크기.
+    private let allowsTruncation: Bool
+
+    init(allowsTruncation: Bool = false) {
+        self.allowsTruncation = allowsTruncation
+    }
+
     var body: some View {
         let _ = themeRefresh.theme
-        Group {
+        let brand = Group {
             if privacy.isActive {
                 Text(PrivacyMode.brandName).foregroundColor(PorcelainMetrics.accent)
             } else {
@@ -198,7 +208,13 @@ struct PorcelainBrandText: View {
         }
         .porcelainFont(.brand)
         .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
+        Group {
+            if allowsTruncation {
+                brand.minimumScaleFactor(0.6).truncationMode(.tail)
+            } else {
+                brand.fixedSize(horizontal: true, vertical: false)
+            }
+        }
         .accessibilityLabel(privacy.isActive ? PrivacyMode.brandName : "NasFinder")
     }
 }
@@ -416,6 +432,7 @@ struct PorcelainProminentButtonStyle: ButtonStyle {
 /// 넓은 화면 사이드바의 주요 목적지 한 줄. 선택된 곳은 옅은 강조면으로 표시한다.
 struct PorcelainSidebarItem<Leading: View>: View {
     private var themeRefresh = ThemeRefresh()
+    @Environment(\.shellSidebarChild) private var isChild
     let title: String
     var isSelected = false
     /// false면 접힌 Mac 사이드바처럼 아이콘만 가운데 둔다. 이름은 손쉬운 사용·도움말로 남는다.
@@ -426,8 +443,9 @@ struct PorcelainSidebarItem<Leading: View>: View {
 
     var body: some View {
         let _ = themeRefresh.theme
+        let iconSize = isChild ? PorcelainMetrics.shellSidebarChildIconSize : PorcelainMetrics.rowIconSize
         HStack(spacing: 10) {
-            leading().frame(width: PorcelainMetrics.rowIconSize, height: PorcelainMetrics.rowIconSize)
+            leading().frame(width: iconSize, height: iconSize)
             if showsTitle {
                 Text(title)
                     .porcelainFont(.tile, weight: isSelected ? .semibold : .regular)
@@ -455,9 +473,52 @@ struct PorcelainSidebarItem<Leading: View>: View {
                     }
             }
         }
+        .overlay(alignment: .leading) {
+            // 하위 행의 짧은 가지: 루트 아이콘 중심선(x=23)에서 행 아이콘 시작(x=34)까지 11pt.
+            if isChild && showsTitle {
+                Rectangle()
+                    .fill(PorcelainMetrics.line.opacity(0.35))
+                    .frame(width: 11, height: 1)
+                    .offset(x: -1)
+                    .accessibilityHidden(true)
+            }
+        }
         .contentShape(Rectangle())
         .hoverEffect(.highlight)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+struct ShellSidebarChildKey: EnvironmentKey {
+    static let defaultValue = false
+}
+
+extension EnvironmentValues {
+    /// 셸 사이드바에서 루트 아래 하위 행 안인지. 하위 행은 아이콘 20pt와 가지를 그린다.
+    var shellSidebarChild: Bool {
+        get { self[ShellSidebarChildKey.self] }
+        set { self[ShellSidebarChildKey.self] = newValue }
+    }
+}
+
+/// 루트 행 바로 아래 하위 목록: 24pt 들여쓰고 루트 아이콘 중심(23pt)에 1pt 세로 안내선을 둔다. 빈 공간은 만들지 않는다.
+struct ShellSidebarChildren<Content: View>: View {
+    private var themeRefresh = ThemeRefresh()
+    @ViewBuilder let content: () -> Content
+
+    var body: some View {
+        let _ = themeRefresh.theme
+        VStack(alignment: .leading, spacing: 2) { content() }
+            .environment(\.shellSidebarChild, true)
+            .padding(.leading, PorcelainMetrics.shellSidebarIndent)
+            .background(alignment: .topLeading) {
+                Rectangle()
+                    .fill(PorcelainMetrics.line.opacity(0.35))
+                    .frame(width: 1)
+                    .padding(.leading, 23)
+                    .padding(.bottom, 23)
+                    .accessibilityHidden(true)
+            }
     }
 }
 

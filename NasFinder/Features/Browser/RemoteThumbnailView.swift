@@ -1504,7 +1504,12 @@ actor RemoteThumbnailDiskCache {
                 withIntermediateDirectories: true
             )
             try data.write(to: fileURL(forKey: key), options: .atomic)
+            let storedGeneration = generation
             await FileProviderThumbnailCache.shared.store(data, forKey: key)
+            // 공유 사본을 쓰는 사이에 캐시를 비웠다면 이 사본이 다시 남지 않게 한다.
+            if storedGeneration != generation {
+                await FileProviderThumbnailCache.shared.remove(forKey: key)
+            }
             pruneIfNeeded()
             if notifyObservers {
                 await MainActor.run {
@@ -1542,7 +1547,9 @@ actor RemoteThumbnailDiskCache {
 
     func removeAll() async {
         generation &+= 1
+        // 앱 캐시를 먼저 지운다. 그래야 공유 폴더 동기화가 지운 미리보기를 다시 복사하지 못한다.
         try? fileManager.removeItem(at: directoryURL)
+        await FileProviderThumbnailCache.shared.removeCopiesOfClearedCache()
         await RemoteVideoThumbnailTrafficBudget.shared.reset()
         await RemoteVideoThumbnailTrafficBudget.sftpShared.reset()
         await RemoteThumbnailLoader.clearInMemoryCaches()

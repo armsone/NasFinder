@@ -20,7 +20,7 @@ struct PhotoSelectionView: View {
         let _ = themeRefresh.theme
         ScrollView {
             VStack(alignment: .leading, spacing: ui(16)) {
-                Text("비슷한 사진을 묶고 품질을 비교해 남길 만한 사진을 추천합니다. 원본은 옮기거나 지우지 않습니다.")
+                Text("기기 안에서 비슷한 사진을 묶고 품질을 비교해 남길 사진을 추천합니다. 원본은 옮기거나 지우지 않습니다.")
                     .font(.ui(.subheadline)).foregroundStyle(PorcelainMetrics.secondary)
                 inputSection
                 if !session.items.isEmpty || !session.excludedVideoNames.isEmpty { summarySection }
@@ -86,14 +86,14 @@ struct PhotoSelectionView: View {
     private var inputSection: some View {
         PorcelainGroupCard {
             PhotosPicker(selection: $pickerSelection, matching: .images, photoLibrary: .shared()) {
-                PorcelainRow(title: "사진 보관함에서 고르기", subtitle: "여러 장을 한 번에 고를 수 있습니다", showsChevron: true) {
+                PorcelainRow(title: "사진 보관함에서 고르기", subtitle: "여러 장의 사진을 한 번에 고릅니다.", showsChevron: true) {
                     InterfaceIcon(systemName: "photo.on.rectangle.angled", size: PorcelainMetrics.rowIconSize)
                 }
             }
             .buttonStyle(.plain)
             PorcelainDivider()
             Button { isFileImporterPresented = true } label: {
-                PorcelainRow(title: "파일에서 고르기", subtitle: "기기 파일·iCloud Drive의 이미지", showsChevron: true) {
+                PorcelainRow(title: "파일에서 고르기", subtitle: "기기·클라우드에서 사진을 고릅니다.", showsChevron: true) {
                     InterfaceIcon(systemName: "folder", size: PorcelainMetrics.rowIconSize)
                 }
             }

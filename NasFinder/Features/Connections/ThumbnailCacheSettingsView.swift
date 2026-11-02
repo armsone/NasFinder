@@ -34,7 +34,7 @@ struct ThumbnailCacheSettingsLink: View {
     }
 }
 
-private struct ThumbnailCacheSettingsView: View {
+struct ThumbnailCacheSettingsView: View {
     @State private var statistics = RemoteThumbnailCacheStatistics.empty
     @State private var isConfirmingRemoval = false
 

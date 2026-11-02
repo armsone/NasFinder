@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import Combine
 
 /// 최상위 탐색: 홈 / 작업대 / 파인더 / 영상 / 도구. 아이폰은 아래 막대(감상·영상 만들기·도구 세 탭, 홈은 감상 안 입구,
 /// 작업대는 머리글 단추와 시트), iPad·Mac 넓은 창은 사이드바로 같은 뿌리를 연다. iPad 세로·좁은 창은 아이콘 레일이다.
@@ -7,39 +8,191 @@ import UniformTypeIdentifiers
 /// 파인더가 아이폰 밖의 기본이며, 화면은 한 번 열면 계속 살아 있어 탭을 오가도 파인더의 폴더 위치와 영상 탭의 선택이 그대로 남는다.
 /// 홈은 기존 파인더 개요(즐겨찾기 선반·파일 열기·저장된 연결)를 같은 호스트에서 홈 뿌리로 보여 주고,
 /// 최근 위치·기록은 자동으로 올리지 않는다. 어느 폭에서도 라벨과 목적지는 같다.
+@MainActor
+final class HomeTaskProgress: ObservableObject {
+    static let shared = HomeTaskProgress()
+
+    struct Snapshot: Equatable {
+        let title: String
+        let detail: String
+        let progress: Double?
+        let isPrivate: Bool
+    }
+
+    struct Entry: Identifiable {
+        let id: String
+        let hostID: UUID?
+        let snapshot: Snapshot
+        let open: () -> Void
+    }
+
+    @Published private var entries: [String: Entry] = [:]
+    private var subscriptions: [String: AnyCancellable] = [:]
+
+    public var visibleEntries: [Entry] {
+        entries.values
+            .filter { PrivacyMode.isVisible($0.snapshot.isPrivate) }
+            .sorted { $0.id < $1.id }
+    }
+
+    func hasActivity(_ hostID: UUID) -> Bool {
+        entries.values.contains { $0.hostID == hostID }
+    }
+
+    func watch(
+        id: String,
+        hostID: UUID? = nil,
+        changes: AnyPublisher<Void, Never>,
+        snapshot: @escaping () -> Snapshot?,
+        open: @escaping () -> Void
+    ) {
+        let refresh = { [weak self] in
+            guard let self else {
+                return
+            }
+            if let snap = snapshot() {
+                self.entries[id] = Entry(id: id, hostID: hostID, snapshot: snap, open: open)
+            } else {
+                if self.entries[id] != nil {
+                    self.entries.removeValue(forKey: id)
+                }
+            }
+        }
+
+        subscriptions[id] = changes
+            .receive(on: RunLoop.main)
+            .sink { _ in
+                refresh()
+            }
+
+        refresh()
+    }
+
+    func remove(_ id: String) {
+        subscriptions.removeValue(forKey: id)?.cancel()
+        entries.removeValue(forKey: id)
+    }
+}
+
+struct HomeTaskSection: View {
+    @ObservedObject private var bridge = HomeTaskProgress.shared
+    @ObservedObject private var privacy = PrivacyMode.shared
+
+    var body: some View {
+        let visible = bridge.visibleEntries
+        if !visible.isEmpty {
+            VStack(alignment: .leading, spacing: 8) {
+                PorcelainSectionHeader(title: "진행 중인 작업")
+                PorcelainGroupCard {
+                    ForEach(visible) { entry in
+                        if entry.id != visible.first?.id {
+                            PorcelainDivider()
+                        }
+                        Button {
+                            entry.open()
+                        } label: {
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(entry.snapshot.title)
+                                        .font(.system(size: 15, weight: .semibold))
+                                        .foregroundStyle(PorcelainMetrics.graphite)
+                                    Text(entry.snapshot.detail)
+                                        .font(.system(size: 13))
+                                        .foregroundStyle(PorcelainMetrics.secondary)
+                                    if let progress = entry.snapshot.progress {
+                                        ProgressView(value: max(0.0, min(1.0, progress)))
+                                            .progressViewStyle(.linear)
+                                            .padding(.top, 2)
+                                    }
+                                }
+                                Spacer()
+                                InterfaceIcon(systemName: "chevron.right", size: PorcelainMetrics.rowIconSize)
+                                    .foregroundStyle(PorcelainMetrics.secondary)
+                            }
+                            .padding(14)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct ShellToolActiveKey: EnvironmentKey {
+    static let defaultValue: Bool = true
+}
+
+private struct ShellToolHostIDKey: EnvironmentKey {
+    static let defaultValue: UUID = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+}
+
+private struct ShellToolHostPrivateKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+
+extension EnvironmentValues {
+    var shellToolActive: Bool {
+        get { self[ShellToolActiveKey.self] }
+        set { self[ShellToolActiveKey.self] = newValue }
+    }
+
+    var shellToolHostID: UUID {
+        get { self[ShellToolHostIDKey.self] }
+        set { self[ShellToolHostIDKey.self] = newValue }
+    }
+
+    var shellToolHostPrivate: Bool {
+        get { self[ShellToolHostPrivateKey.self] }
+        set { self[ShellToolHostPrivateKey.self] = newValue }
+    }
+}
+
+extension Binding where Value == Bool {
+    func shellPresentation(_ active: Bool) -> Binding<Bool> {
+        Binding<Bool>(
+            get: { active && wrappedValue },
+            set: { if active { wrappedValue = $0 } }
+        )
+    }
+}
+
 enum AppTab: String, CaseIterable, Identifiable {
     case home = "홈"
     case workbench = "작업대"
     case finder = "파인더"
     case video = "영상"
     case tools = "도구"
+    case settings = "설정"
     var id: String { rawValue }
 
-    /// 아래 막대(좁은 창)에 보이는 탭: 감상 / 영상 만들기 / 도구 세 개.
-    /// 홈은 감상 안의 입구(소스 목록)로 접히고, 작업대는 맨 위 머리글 단추와 기존 시트로 연다.
-    /// 다섯 rawValue와 예전 요청(`.home`·`.workbench`)은 그대로 받는다.
-    static let rootTabs: [AppTab] = [.finder, .video, .tools]
+    /// 아래 막대(좁은 창)에 보이는 탭: 도구 / 파인더 / 홈 / 영상 / 설정 다섯 개.
+    static let rootTabs: [AppTab] = [.tools, .finder, .home, .video, .settings]
 
     /// 화면에 보이는 이름(Jarvis 셸). rawValue는 기존 탭 식별 값이라 바꾸지 않는다.
-    /// 파인더는 '감상', 영상은 '영상 만들기'로 보인다. 아래 막대는 좁아서 영상만 짧게 쓴다.
     var title: String {
         switch self {
-        case .finder: "감상"
-        case .video: "영상 만들기"
-        default: rawValue
+        case .home: "홈"
+        case .workbench: "작업대"
+        case .finder: "파인더"
+        case .video: "만들기"
+        case .tools: "도구"
+        case .settings: "설정"
         }
     }
 
-    var shortTitle: String { self == .video ? "영상" : title }
+    var shortTitle: String { title }
 
     /// 기존 원본 InterfaceIcon 팩의 아이콘 이름. 감상은 연결 목록(connections)·NAS·앱 로고와 겹치지 않게 재생 그림을 쓴다.
     var iconName: String {
         switch self {
         case .home: "house"
         case .workbench: "tray.2"
-        case .finder: "play.circle"
+        case .finder: "folder"
         case .video: "film"
         case .tools: "arrow.up.arrow.down.square"
+        case .settings: "gearshape"
         }
     }
 
@@ -47,19 +200,32 @@ enum AppTab: String, CaseIterable, Identifiable {
 
 /// 넓은 창(Mac·iPad) 사이드바의 도구 하위 목적지. 설정도 도구 묶음 안에 둔다.
 enum ToolsDestination: String, CaseIterable, Identifiable {
-    case transfer = "사진 전송"
+    case hub = "도구 모음"
     case selection = "사진 선별"
+    case transfer = "사진 전송"
+    case superThumbnail = "수퍼 썸네일"
+    case thumbnailCache = "썸네일 캐시"
     case storage = "저장공간"
     case settings = "설정"
+
     var id: String { rawValue }
 
+    static var allCases: [ToolsDestination] {
+        [.selection, .transfer, .superThumbnail, .thumbnailCache]
+    }
+
     /// 화면에 보이는 이름. rawValue는 사이드바 순서 저장 키라 바꾸지 않는다.
-    var title: String { self == .transfer ? "미디어 전송" : rawValue }
+    var title: String {
+        self == .transfer ? "미디어 전송" : rawValue
+    }
 
     var iconName: String {
         switch self {
+        case .hub: "square.grid.2x2"
         case .transfer: "arrow.left.arrow.right"
         case .selection: "nf.photo_selection"
+        case .superThumbnail: "nf.super_thumbnail"
+        case .thumbnailCache: "nf.thumbnail_cache"
         case .storage: "nf.storage"
         case .settings: "gearshape"
         }
@@ -91,30 +257,29 @@ struct HomeLaunchSection: View {
             PorcelainGroupCard {
                 switch kind {
                 case .workbench:
-                    launchRow(title: AppTab.workbench.rawValue, icon: AppTab.workbench.iconName) {
+                    launchRow(title: AppTab.workbench.title, icon: AppTab.workbench.iconName) {
                         router.request = .workbench
                     }
                 case .video:
-                    let ids = sidebarOrder.ordered(.video, current: VideoDestination.allCases.map(\.rawValue))
-                    // 컬렉션은 홈에서 즐겨찾기 바로 아래 입구(HomeCollectionEntry)로 열어 여기서는 뺀다.
-                    // 영상 탭·사이드바의 목적지 목록은 그대로다.
-                    let items = ids.compactMap(VideoDestination.init(rawValue:)).filter { $0 != .collection }
-                    ForEach(Array(items.enumerated()), id: \.element) { index, item in
-                        if index > 0 { PorcelainDivider() }
-                        launchRow(title: item.title, icon: item.iconName) {
-                            router.videoDestination = item
-                            router.request = .video
-                        }
+                    launchRow(title: AppTab.video.title, icon: AppTab.video.iconName) {
+                        router.videoHubResetToken += 1
+                        router.videoDestination = .make
+                        router.request = .video
                     }
                 case .tools:
-                    let ids = sidebarOrder.ordered(.tools, current: ToolsDestination.allCases.map(\.rawValue))
-                    let items = ids.compactMap(ToolsDestination.init(rawValue:))
-                    ForEach(Array(items.enumerated()), id: \.element) { index, item in
-                        if index > 0 { PorcelainDivider() }
-                        launchRow(title: item.title, icon: item.iconName) {
-                            router.toolsDestination = item
-                            router.request = .tools
-                        }
+                    launchRow(title: AppTab.finder.title, icon: AppTab.finder.iconName) {
+                        router.finderRequest = FinderSidebarRequest(command: .home)
+                        router.request = .finder
+                    }
+                    PorcelainDivider()
+                    launchRow(title: AppTab.tools.title, icon: AppTab.tools.iconName) {
+                        router.toolsDestination = .hub
+                        router.toolsPushRequest = nil
+                        router.request = .tools
+                    }
+                    PorcelainDivider()
+                    launchRow(title: AppTab.settings.title, icon: AppTab.settings.iconName) {
+                        router.request = .settings
                     }
                 }
             }
@@ -133,35 +298,9 @@ struct HomeLaunchSection: View {
     }
 }
 
-/// 홈(Mac·iPad·iPhone)의 즐겨찾기 바로 아래에 두는 작은 컬렉션 입구. 영상 탭·사이드바와 같은 라우터 값으로
-/// 컬렉션을 열고, 개수는 지금 모드에서 보이는 컬렉션만 센다.
-struct HomeCollectionEntry: View {
-    @ObservedObject private var router = AppShellRouter.shared
-    @ObservedObject private var collection = MovieCollectionStore.shared
-
-    var body: some View {
-        let title = "\(VideoDestination.collection.title) \(collection.videos.count)편"
-        PorcelainGroupCard {
-            Button {
-                router.videoDestination = .collection
-                router.request = .video
-            } label: {
-                PorcelainInlineAction(title: title) {
-                    InterfaceIcon(systemName: VideoDestination.collection.iconName, size: 24)
-                }
-                .padding(.vertical, 10)
-                .padding(.horizontal, 12)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(title)
-        }
-    }
-}
-
 /// 사이드바의 파인더 행이 파인더에 보내는 요청. 파인더가 자기 상태·확인창·메뉴 동작으로 처리한다.
 enum FinderSidebarCommand: Equatable {
-    case home, rememberedLocation, open(UUID), photos, phoneHard, favorites, googlePhotos, deviceFiles, browser, addConnection
+    case home, rememberedLocation, open(UUID), photos, phoneHard, favorites, googlePhotos, deviceFiles, browser, addConnection, chooseNetwork
     case editConnection(UUID), deleteConnection(UUID)
     case editGooglePhotos, reconnectGooglePhotos, deleteGooglePhotos
 }
@@ -240,7 +379,6 @@ struct ShellWorkbenchToolbarButton: View {
 struct ShellSidebarRow: View {
     let title: String
     let icon: String
-    var tint: Color? = nil
     let isSelected: Bool
     let showsTitle: Bool
     /// 순서를 끌어 바꾸는 행. Button은 Mac Catalyst에서 누름을 먼저 잡아 시스템 끌기가 시작되지 않으므로,
@@ -283,7 +421,7 @@ struct ShellSidebarRow: View {
         PorcelainSidebarItem(title: title, isSelected: isSelected, showsTitle: showsTitle,
                              minHeight: PorcelainMetrics.shellSidebarRowHeight) {
             InterfaceIcon(systemName: icon, size: PorcelainMetrics.rowIconSize)
-                .foregroundStyle(tint ?? PorcelainMetrics.graphite)
+                .foregroundStyle(isSelected ? PorcelainMetrics.accent : PorcelainMetrics.graphite)
         }
         .overlay(alignment: .trailing) {
             if showsTitle, let badge {
@@ -309,7 +447,13 @@ struct AppShellView: View {
     @EnvironmentObject private var browserFavoritesStore: BrowserFavoritesStore
     @EnvironmentObject private var webHardServerController: WebHardServerController
     @State private var selectedRaw = AppShellView.initialTab.rawValue
+    /// 전체 작업대로 들어오기 직전의 대표 뿌리 탭(메모리에만 보관). 작업대 뿌리의 뒤로 가기가 쓴다.
+    @State private var workbenchReturnRaw = AppTab.home.rawValue
+    @State private var shellIcon = AppIconChoice.current(alternateIconName: UIApplication.shared.alternateIconName)
     @AppStorage("appShell.sidebarCollapsed.v1") private var sidebarCollapsed = false
+    /// 사용자가 끌어 정한 사이드바 너비. 0이면 실제 라벨 기준 자동 너비.
+    @AppStorage("appShell.sidebarWidth.v1") private var sidebarUserWidth: Double = 0
+    @State private var sidebarDragStartWidth: CGFloat?
     /// 넓은 창(Mac·iPad 가로) 오른쪽 작업대 패널을 펼쳐 둘지. 이 기기에만 저장한다.
     @AppStorage("appShell.workbenchPanelOpen.v2") private var workbenchPanelOpen = true
     /// 좁은 창(폰·iPad 세로 분할)에서 작업대를 아래에서 올라오는 시트로 연다.
@@ -329,8 +473,9 @@ struct AppShellView: View {
     @State private var homeResetToken = 0
     @State private var logoPressTask: Task<Void, Never>?
     @State private var logoLongPressFired = false
-    /// 도구 탭을 길게 눌러 프라이버시 모드를 바꾼 직후, 손을 뗄 때 일어나는 탭(도구 열기)을 한 번 건너뛴다.
-    @State private var toolsLongPressFired = false
+    /// 설정 탭을 길게 눌러 프라이버시 모드를 바꾼 직후, 손을 뗄 때 일어나는 탭(설정 열기)을 한 번 건너뛴다.
+    @State private var settingsLongPressFired = false
+    @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue = AppThemePreference.light.rawValue
     @ObservedObject private var privacy = PrivacyMode.shared
     @ObservedObject private var router = AppShellRouter.shared
     @ObservedObject private var sidebarOrder = SidebarOrderStore.shared
@@ -346,17 +491,19 @@ struct AppShellView: View {
         GeometryReader { geometry in
             // 창의 실제 폭으로 레이아웃을 정한다(분할 화면·창 크기 조절 포함).
             // iPad는 좁은 분할 창(반 화면 등)에서도 아래 막대 대신 아이콘 레일을 쓴다. 폰 크기 창(1/3·Slide Over)만 아래 막대다.
-            let usesSidebar = geometry.size.width >= PorcelainMetrics.workspaceWidth
-                || (Self.isPadIdiom && geometry.size.width >= Self.padRailMinimumWidth)
+            let usesSidebar = Self.isPadIdiom || isRunningOnMac
             // iPad 세로·좁은 창: 사이드바를 아이콘 레일로 고정하고 작업대는 겹쳐 띄운다(펼친 사이드바가 내용을 누르지 않게).
             let compactRail = Self.usesCompactRail(size: geometry.size)
+                || (isRunningOnMac && geometry.size.width < PorcelainMetrics.workspaceWidth)
             let current = selected
+            VStack(spacing: 0) {
+            globalHeader(showBrand: !usesSidebar)
             Group {
                 if usesSidebar {
                     // Mac·iPad 넓은 창(Jarvis 셸): 왼쪽 소스·이동 사이드바, 가운데 실제 브라우저·플레이어,
                     // 오른쪽 기존 작업대. 가운데가 좁아지면 작업대는 가운데 위에 겹쳐 뜬다.
                     let collapsed = compactRail || sidebarCollapsed
-                    let sidebarWidth = collapsed ? 64 : PorcelainMetrics.sidebarWidth(for: geometry.size.width)
+                    let sidebarWidth = collapsed ? 64 : resolvedSidebarWidth(windowWidth: geometry.size.width)
                     let panelWidth = Self.workbenchPanelWidth(for: geometry.size.width)
                     let docksPanel = !compactRail && geometry.size.width - sidebarWidth - panelWidth >= ui(480)
                     HStack(spacing: 0) {
@@ -370,7 +517,7 @@ struct AppShellView: View {
                                         .transition(.move(edge: .trailing))
                                 }
                             }
-                        if workbenchPanelOpen, docksPanel {
+                        if workbenchPanelOpen, docksPanel, current != .workbench {
                             Rectangle().fill(PorcelainMetrics.line).frame(width: 0.5)
                             workbenchPanel(width: panelWidth)
                                 .transition(.move(edge: .trailing))
@@ -403,6 +550,7 @@ struct AppShellView: View {
                     }
                 }
             }
+            }
             .frame(width: geometry.size.width, height: geometry.size.height)
             .onChange(of: usesSidebar, initial: true) { _, wide in
                 usesWideLayout = wide
@@ -411,7 +559,6 @@ struct AppShellView: View {
             }
         }
         // 모드가 바뀌면 화면 트리를 새로 만든다: 열린 시트·선택·탐색 스택·검색어가 비워져 숨겨진 내용이 남지 않는다.
-        .id(privacy.epoch)
         .background(PorcelainMetrics.paper.ignoresSafeArea())
         .sheet(isPresented: $workbenchSheetPresented) {
             WorkbenchView()
@@ -466,11 +613,51 @@ struct AppShellView: View {
         .onChange(of: router.finderRequest) { _, request in
             if request != nil { router.hostedEditor?.close(); railExpanded = false }
         }
+        .onAppear {
+            #if DEBUG
+            applyCaptureRouteIfRequested()
+            #endif
+        }
     }
 
     /// 파인더 인스턴스는 하나뿐이다(연결 목록·확인창·Google 포토·받은 파일 처리를 한 곳이 맡는다).
     /// 홈도 같은 인스턴스의 기존 개요(즐겨찾기·파일 열기·저장된 연결)를 홈 뿌리 모드로 보여 주므로 같은 처리를 두 번 하지 않는다.
     /// 홈으로 들어오거나 홈을 다시 누르면 그 인스턴스가 입구 화면으로 돌아온다.
+    #if DEBUG
+    private func applyCaptureRouteIfRequested() {
+        let arguments = ProcessInfo.processInfo.arguments
+        guard let flagIndex = arguments.firstIndex(of: "--nf-capture-route"),
+              arguments.indices.contains(flagIndex + 1) else { return }
+        let route = arguments[flagIndex + 1]
+        Task { @MainActor in
+            await Task.yield()
+            switch route {
+            case "root_home.default": select(.home)
+            case "root_finder.default": select(.finder)
+            case "root_create.default": select(.video)
+            case "root_tools.default": select(.tools)
+            case "root_settings.default": select(.settings)
+            case "favorites.list": sendFinder(.favorites)
+            case "inbox.list": sendFinder(.phoneHard)
+            case "local_photo_library.photos": sendFinder(.photos)
+            case "web_browser.default": sendFinder(.browser)
+            case "add_connection.new": sendFinder(.addConnection)
+            case "workbench.default": showWorkbench()
+            case "thumbnail_cache.default": router.openTools(.thumbnailCache)
+            case "super_thumbnail.setup": router.openTools(.superThumbnail)
+            case "photo_transfer.mode_select": router.openTools(.transfer)
+            case "photo_selection.default": router.openTools(.selection)
+            case "create.drafts_inline":
+                router.videoDestination = .drafts
+                router.request = .video
+            default: return
+            }
+            let screen = UIScreen.main
+            print("NF_CAPTURE route=\(route) theme=\(selectedThemeRawValue) icon=\(shellIcon.rawValue) privacy=\(privacy.isActive) scale=\(screen.scale) nativeScale=\(screen.nativeScale) nativeBounds=\(NSCoder.string(for: screen.nativeBounds)) contentSize=\(UIApplication.shared.preferredContentSizeCategory.rawValue) locale=\(Locale.current.identifier)")
+        }
+    }
+    #endif
+
     private func content(current: AppTab) -> some View {
         ZStack {
             ConnectionListView(
@@ -479,10 +666,34 @@ struct AppShellView: View {
                 homeResetToken: homeResetToken,
                 openFinderTab: { selectedRaw = AppTab.finder.rawValue }
             )
+            .id(privacy.epoch)
             .tabLayer(current == .finder || current == .home)
-            if visited.contains(.workbench) { WorkbenchView().tabLayer(current == .workbench) }
-            if visited.contains(.video) { VideoHubView().tabLayer(current == .video) }
-            if visited.contains(.tools) { ToolsView().tabLayer(current == .tools) }
+            if visited.contains(.workbench) {
+                WorkbenchView(rootBack: {
+                    selectedRaw = AppTab(rawValue: workbenchReturnRaw).map { $0 == .workbench ? AppTab.home.rawValue : $0.rawValue } ?? AppTab.home.rawValue
+                })
+                    .id(privacy.epoch)
+                    .environment(\.workbenchTabActive, current == .workbench)
+                    .tabLayer(current == .workbench)
+            }
+            if visited.contains(.video) {
+                VideoHubView()
+                    .id(privacy.epoch)
+                    .tabLayer(current == .video)
+            }
+            if visited.contains(.tools) {
+                ToolsView()
+                    .environment(\.shellToolActive, current == .tools)
+                    .tabLayer(current == .tools)
+            }
+            if visited.contains(.settings) {
+                NavigationStack {
+                    AppSettingsView(connectionCount: connectionStore.connections.count)
+                        .toolbar(.hidden, for: .navigationBar)
+                }
+                .id(privacy.epoch)
+                .tabLayer(current == .settings)
+            }
             // Mac: 영상 편집기는 전체 화면 커버 대신 이 내용 영역 위에 올라와 왼쪽 사이드바가 계속 보인다.
             if let hosted = router.hostedEditor {
                 hosted.view
@@ -495,103 +706,263 @@ struct AppShellView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
+    private func globalHeader(showBrand: Bool) -> some View {
+        HStack(spacing: 12) {
+            if showBrand {
+                HStack(spacing: 8) {
+                    Image(shellIcon.previewAssetName)
+                        .resizable()
+                        .frame(width: 24, height: 24)
+                        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    PorcelainBrandText()
+                }
+            }
+            Spacer()
+            ByungkiThemeControlButton(selectedThemeRawValue: $selectedThemeRawValue)
+            Button {
+                router.request = .workbench
+            } label: {
+                InterfaceIcon(systemName: "tray.2", size: 18)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("작업대")
+        }
+        .padding(.horizontal, 16)
+        .frame(height: 44)
+        .background(PorcelainMetrics.paper.ignoresSafeArea(edges: .top))
+        .onReceive(NotificationCenter.default.publisher(for: AppIconChoice.didChangeNotification)) { _ in
+            shellIcon = AppIconChoice.current(alternateIconName: UIApplication.shared.alternateIconName)
+        }
+    }
+
     // MARK: Mac·iPad 넓은 창: 하나뿐인 사이드바 (고정 홈 + 파인더·영상·도구 작은 제목 + 하위 목적지)
 
     /// `collapsed`: 아이콘만 보이는 레일. `compactRail`: iPad 세로·좁은 창이라 접기 단추가 겹쳐 펼치는 사이드바를 여닫는다.
     private func sidebar(windowWidth: CGFloat, current: AppTab, collapsed: Bool, compactRail: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            // 브랜드와 접기 단추는 맨 위 한 줄에 둔다. 아래 끝으로 밀어 두지 않는다.
-            HStack(spacing: 4) {
-                if !collapsed {
-                    brandLogo
+            // 펼침: 앱 아이콘·브랜드·접기 단추를 맨 위 고정 한 줄에. 접힘: 아이콘 아래에 펼치기 단추.
+            let appIcon = Image(shellIcon.previewAssetName)
+                .resizable()
+                .frame(width: 24, height: 24)
+                .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                .accessibilityHidden(true)
+            let toggleButton = Button { toggleSidebar(compactRail: compactRail) } label: {
+                Image(interfaceSystemName: collapsed ? "arrow.right" : "arrow.left", pointSize: 24, tintable: true)
+                    .foregroundStyle(PorcelainMetrics.secondary)
+                    .frame(width: 48, height: 48)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(collapsed ? "사이드바 펼치기" : "사이드바 접기")
+            .help(collapsed ? "사이드바 펼치기" : "사이드바 접기")
+            if collapsed {
+                VStack(spacing: 2) {
+                    appIcon
+                    toggleButton
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 6)
+            } else {
+                HStack(spacing: 8) {
+                    appIcon
+                        .fixedSize()
+                        .layoutPriority(2)
+                    PorcelainBrandText(allowsTruncation: true)
+                        .layoutPriority(0)
                     Spacer(minLength: 0)
+                    toggleButton
+                        .fixedSize()
+                        .layoutPriority(2)
                 }
-                Button { toggleSidebar(compactRail: compactRail) } label: {
-                    // 접힘 상태와 상관없이 같은 꺾쇠 모양이고 방향만 바뀐다(펼치면 왼쪽, 접으면 오른쪽).
-                    Image(interfaceSystemName: collapsed ? "chevron.right" : "chevron.left", pointSize: 17)
-                        .font(.system(size: 17, weight: .semibold))
-                        .foregroundStyle(PorcelainMetrics.secondary)
-                        .frame(width: 44, height: 44)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .frame(maxWidth: collapsed ? .infinity : nil)
-                .accessibilityLabel(collapsed ? "사이드바 펼치기" : "사이드바 접기")
-                .help(collapsed ? "사이드바 펼치기" : "사이드바 접기")
+                .padding(.leading, 12)
+                .padding(.trailing, 4)
+                .padding(.top, 6)
             }
-            .padding(.leading, collapsed ? 0 : 12)
-            .padding(.trailing, collapsed ? 0 : 4)
-            .padding(.top, 6)
 
-            // 짧은 창에서는 사이드바만 스크롤한다.
+            // 펼친 사이드바는 다섯 루트와 활성 하위 목록을 한 목록으로 이어 스크롤한다. 접힌 레일은 루트 다섯만 보인다.
             ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    // 홈은 묶음 밖에 고정한다: 기능 입구만 있는 뿌리라 파인더 소스 순서와 섞이지 않는다.
-                    ShellSidebarRow(title: AppTab.home.rawValue, icon: AppTab.home.iconName,
-                                    isSelected: current == .home, showsTitle: !collapsed) {
-                        select(.home)
-                    }
-                    .padding(.top, 8)
-                    // 감상: 파인더의 지금 위치(폴더·보기 방식)로 돌아간다. 연결 목록은 아래 소스 묶음에 있다.
-                    ShellSidebarRow(title: AppTab.finder.title, icon: AppTab.finder.iconName,
-                                    isSelected: current == .finder, showsTitle: !collapsed) {
-                        select(.finder)
-                    }
-                    .accessibilityHint("보던 폴더와 보기 방식으로 돌아갑니다.")
-                    // 작업대는 오른쪽 패널로 열고 닫는다. 숫자는 지금 보이는 포켓에 담긴 참조 수다.
-                    ShellSidebarRow(title: AppTab.workbench.rawValue, icon: AppTab.workbench.iconName,
-                                    isSelected: isWorkbenchPanelVisible, showsTitle: !collapsed,
-                                    badge: "\(workbenchEntryCount)") {
-                        railExpanded = false
-                        setWorkbenchPanelVisible(!isWorkbenchPanelVisible)
-                    }
-                    .accessibilityValue(isWorkbenchPanelVisible ? "열림, 담은 항목 \(workbenchEntryCount)개" : "닫힘, 담은 항목 \(workbenchEntryCount)개")
-                    .accessibilityHint("오른쪽 작업대를 열거나 닫습니다.")
-                    sidebarHeading("소스", collapsed: collapsed)
-                    FinderSidebarSection(isActive: current == .finder, showsTitles: !collapsed, send: sendFinder)
-                    sidebarHeading(AppTab.video.title, collapsed: collapsed)
-                    // 묶음 안 순서는 이 기기에만 저장한다. 선택 표시는 목적지 값으로 하므로 순서가 바뀌어도 그대로다.
-                    SidebarReorderGroup(group: .video, currentIDs: VideoDestination.allCases.map(\.rawValue)) { orderedIDs in
-                        ForEach(orderedIDs, id: \.self) { id in
-                            if let item = VideoDestination(rawValue: id) {
-                                ShellSidebarRow(title: item.title, icon: item.iconName,
-                                                isSelected: current == .video && router.videoDestination == item,
-                                                showsTitle: !collapsed, isReorderable: true) {
-                                    router.videoDestination = item
-                                    selectedRaw = AppTab.video.rawValue
-                                }
-                                .sidebarReorderable(group: .video, itemID: id,
-                                                    currentIDs: VideoDestination.allCases.map(\.rawValue),
-                                                    showsGrip: !collapsed)
-                            }
-                        }
-                    }
-                    sidebarHeading("도구", collapsed: collapsed, togglesPrivacy: true)
-                    SidebarReorderGroup(group: .tools, currentIDs: ToolsDestination.allCases.map(\.rawValue)) { orderedIDs in
-                        ForEach(orderedIDs, id: \.self) { id in
-                            if let item = ToolsDestination(rawValue: id) {
-                                ShellSidebarRow(title: item.title, icon: item.iconName,
-                                                isSelected: current == .tools && router.toolsDestination == item,
-                                                showsTitle: !collapsed, isReorderable: true,
-                                                shortcut: item == .settings ? KeyboardShortcut(",", modifiers: .command) : nil) {
-                                    router.toolsDestination = item
-                                    selectedRaw = AppTab.tools.rawValue
-                                }
-                                .sidebarReorderable(group: .tools, itemID: id,
-                                                    currentIDs: ToolsDestination.allCases.map(\.rawValue),
-                                                    showsGrip: !collapsed)
-                            }
-                        }
+            VStack(alignment: .leading, spacing: 2) {
+                // 1. 홈
+                ShellSidebarRow(title: AppTab.home.rawValue, icon: AppTab.home.iconName,
+                                isSelected: current == .home, showsTitle: !collapsed) {
+                    select(.home)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 8)
+
+                // 2. 파인더
+                ShellSidebarRow(title: AppTab.finder.title, icon: AppTab.finder.iconName,
+                                isSelected: current == .finder, showsTitle: !collapsed) {
+                    select(.finder)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityHint("파인더 모음화면을 엽니다.")
+                if current == .finder && !collapsed {
+                    ShellSidebarChildren {
+                        FinderSidebarSection(isActive: true, showsTitles: true, send: sendFinder)
                     }
                 }
-                .padding(.horizontal, 8)
-                .padding(.bottom, 12)
+
+                // 3. 만들기 (비디오/작업대)
+                ShellSidebarRow(title: AppTab.video.title, icon: AppTab.video.iconName,
+                                isSelected: current == .video || current == .workbench, showsTitle: !collapsed) {
+                    select(.video)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                if (current == .video || current == .workbench) && !collapsed {
+                    ShellSidebarChildren {
+                            ShellSidebarRow(title: "미디어 고르기", icon: "photo.on.rectangle.angled",
+                                            isSelected: current == .video && router.videoHubChild == .mediaPicker,
+                                            showsTitle: !collapsed) {
+                                router.openVideoPicker(.trailer)
+                            }
+                            .accessibilityHint("영상 만들기용 미디어 고르기 화면을 엽니다.")
+                            ShellSidebarRow(title: AppTab.workbench.rawValue, icon: AppTab.workbench.iconName,
+                                            isSelected: current == .workbench, showsTitle: !collapsed,
+                                            badge: "\(workbenchEntryCount)") {
+                                select(.workbench)
+                            }
+                            .accessibilityValue(current == .workbench ? "선택됨, 담은 항목 \(workbenchEntryCount)개" : "담은 항목 \(workbenchEntryCount)개")
+                            .accessibilityHint("작업대 화면으로 이동합니다.")
+                            ShellSidebarRow(title: "편집본 전체", icon: "film.stack",
+                                            isSelected: current == .video && router.videoHubChild == .draftManager,
+                                            showsTitle: !collapsed) {
+                                router.openVideoDraftManager()
+                            }
+                            .accessibilityHint("저장된 편집본 전체 목록을 엽니다.")
+                    }
+                }
+
+                // 4. 도구 (.settings, .storage 제외)
+                ShellSidebarRow(title: AppTab.tools.title, icon: AppTab.tools.iconName,
+                                isSelected: current == .tools, showsTitle: !collapsed) {
+                    select(.tools)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                if current == .tools && !collapsed {
+                    ShellSidebarChildren {
+                            SidebarReorderGroup(group: .tools, currentIDs: ToolsDestination.allCases.filter { $0 != .settings && $0 != .storage }.map(\.rawValue)) { orderedIDs in
+                                ForEach(orderedIDs, id: \.self) { id in
+                                    if let item = ToolsDestination(rawValue: id) {
+                                        ShellSidebarRow(title: item.title, icon: item.iconName,
+                                                        isSelected: current == .tools && router.toolsDestination == item,
+                                                        showsTitle: !collapsed, isReorderable: true) {
+                                            router.toolsDestination = item
+                                            selectedRaw = AppTab.tools.rawValue
+                                        }
+                                        .sidebarReorderable(group: .tools, itemID: id,
+                                                            currentIDs: ToolsDestination.allCases.filter { $0 != .settings && $0 != .storage }.map(\.rawValue),
+                                                            showsGrip: !collapsed)
+                                    }
+                                }
+                            }
+                    }
+                }
+
+                // 5. 설정 (자체 루트, PrivacyToolsLongPress 활성화, Cmd+, 단축키)
+                ShellSidebarRow(title: AppTab.settings.title, icon: AppTab.settings.iconName,
+                                isSelected: current == .settings,
+                                showsTitle: !collapsed,
+                                shortcut: KeyboardShortcut(",", modifiers: .command)) {
+                    if settingsLongPressFired {
+                        settingsLongPressFired = false
+                        return
+                    }
+                    select(.settings)
+                }
+                .fixedSize(horizontal: false, vertical: true)
+                .modifier(PrivacyToolsLongPress(enabled: true, fired: $settingsLongPressFired))
+
             }
+            .padding(.horizontal, 8)
+            .padding(.bottom, 12)
+            }
+            .frame(maxHeight: .infinity)
         }
-        .frame(width: collapsed ? 64 : PorcelainMetrics.sidebarWidth(for: windowWidth))
+        .frame(width: collapsed ? 64 : resolvedSidebarWidth(windowWidth: windowWidth))
+        .overlay(alignment: .trailing) {
+            if !collapsed && !compactRail { sidebarResizeHandle(windowWidth: windowWidth) }
+        }
         .frame(maxHeight: .infinity, alignment: .top)
         // 배경만 안전 영역 밖까지 늘리고 버튼은 안전 영역 안에 둔다.
+        .id(privacy.epoch)
         .background(PorcelainMetrics.sidebar.ignoresSafeArea())
+    }
+
+    private func sidebarLimits(windowWidth: CGFloat) -> (min: CGFloat, max: CGFloat) {
+        let contentMin: CGFloat = windowWidth >= 480 ? 240 : 120
+        let upper = max(1, min(windowWidth * 0.5, windowWidth - contentMin))
+        return (min(max(180, sidebarHeaderWidth()), upper), upper)
+    }
+
+    /// 머리글(패딩+로고24+브랜드+접기 단추48)이 잘리지 않는 실측 최소 너비. 글자 크기 설정을 따른다.
+    private func sidebarHeaderWidth() -> CGFloat {
+        let brand = UIFontMetrics(forTextStyle: .title3)
+            .scaledFont(for: PorcelainTypeface.uiFont(size: 22, weight: .bold))
+        let brandName = privacy.isActive ? PrivacyMode.brandName : "NasFinder"
+        let nameWidth = ceil((brandName as NSString).size(withAttributes: [.font: brand]).width)
+        return 12 + 24 + 8 + nameWidth + 8 + 48 + 4
+    }
+
+    /// 현재 루트·하위 라벨과 머리글(로고+브랜드+접기 단추)이 들어가는 최소 너비. 글자 크기 설정을 따른다.
+    private func autoSidebarWidth() -> CGFloat {
+        // 선택 행은 semibold이므로 가장 넓은 폭 기준으로 semibold로 잰다.
+        let tile = UIFontMetrics(forTextStyle: .subheadline)
+            .scaledFont(for: PorcelainTypeface.uiFont(size: 14, weight: .semibold))
+        func textWidth(_ text: String, _ font: UIFont) -> CGFloat {
+            ceil((text as NSString).size(withAttributes: [.font: font]).width)
+        }
+        let defaults = UserDefaults.standard
+        var googleLabels: [String] = []
+        if !defaults.bool(forKey: "googlePhotos.networkHidden.v1") {
+            let custom = (defaults.string(forKey: "googlePhotos.networkName.v1") ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            googleLabels = [custom.isEmpty ? "Google 포토" : custom]
+        }
+        let labels = connectionStore.connections.map { $0.name }
+            + ToolsDestination.allCases.map { $0.title }
+            + ["미디어 고르기", AppTab.workbench.rawValue, "편집본 전체"]
+            + [AppTab.home.rawValue, AppTab.finder.title, AppTab.video.title,
+               AppTab.tools.title, AppTab.settings.title, AppTab.workbench.rawValue]
+            + ["연결 추가·관리", "내 미디어", "폰하드", "즐겨찾기", "기기 파일", "브라우저"]
+            + googleLabels
+        // 패딩 12 + 루트 아이콘 26 + 간격 10 + 들여쓰기 24 + 배지·메뉴 버튼 여유 36
+        let rows = (labels.map { textWidth($0, tile) }.max() ?? 0) + 12 + 26 + 10 + 24 + 36
+        return max(rows, sidebarHeaderWidth())
+    }
+
+    private func resolvedSidebarWidth(windowWidth: CGFloat) -> CGFloat {
+        let limits = sidebarLimits(windowWidth: windowWidth)
+        let wanted = sidebarUserWidth > 0 ? CGFloat(sidebarUserWidth) : autoSidebarWidth() + 8
+        return min(max(wanted, limits.min), limits.max).rounded()
+    }
+
+    private func sidebarResizeHandle(windowWidth: CGFloat) -> some View {
+        let limits = sidebarLimits(windowWidth: windowWidth)
+        func set(_ width: CGFloat) { sidebarUserWidth = Double(min(max(width, limits.min), limits.max).rounded()) }
+        return Color.clear
+            .frame(width: 8)
+            .contentShape(Rectangle())
+            .hoverEffect(.highlight)
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { value in
+                        let start = sidebarDragStartWidth ?? resolvedSidebarWidth(windowWidth: windowWidth)
+                        sidebarDragStartWidth = start
+                        set(start + value.translation.width)
+                    }
+                    .onEnded { _ in sidebarDragStartWidth = nil }
+            )
+            .accessibilityElement()
+            .accessibilityLabel("사이드바 너비")
+            .accessibilityAdjustableAction { direction in
+                let current = resolvedSidebarWidth(windowWidth: windowWidth)
+                switch direction {
+                case .increment: set(current + 16)
+                case .decrement: set(current - 16)
+                @unknown default: break
+                }
+            }
     }
 
     private var isRunningOnMac: Bool {
@@ -662,8 +1033,22 @@ struct AppShellView: View {
     /// 탭 선택. 이미 홈인데 홈을 다시 누르면 홈 뿌리(입구)로 돌아오게 신호만 올린다.
     /// 작업대는 가운데 화면을 바꾸지 않고 오른쪽 패널(넓은 창) 또는 시트(좁은 창)로 연다.
     private func select(_ tab: AppTab) {
-        if tab == .workbench { showWorkbench(); return }
-        if tab == .home, selected == .home { homeResetToken += 1 }
+        if tab == .workbench {
+            showWorkbench()
+            return
+        }
+        if tab == .tools {
+            router.toolsDestination = .hub
+            router.toolsPushRequest = nil
+        }
+        if tab == .finder {
+            sendFinder(.home)
+        } else if tab == .video {
+            router.videoHubResetToken += 1
+            router.videoDestination = .make
+        } else if tab == .home, selected == .home {
+            homeResetToken += 1
+        }
         selectedRaw = tab.rawValue
     }
 
@@ -701,13 +1086,13 @@ struct AppShellView: View {
     }
 
     private func showWorkbench() {
-        if usesWideLayout {
-            setWorkbenchPanelVisible(true)
-        } else {
-            workbenchSheetPresented = true
+        workbenchSheetPresented = false
+        railExpanded = false
+        if selected != .workbench {
+            workbenchReturnRaw = selectedRaw
         }
+        selectedRaw = AppTab.workbench.rawValue
     }
-
     private var isWorkbenchPanelVisible: Bool {
         panelDocks ? workbenchPanelOpen : workbenchOverlayShown
     }
@@ -734,6 +1119,7 @@ struct AppShellView: View {
         // 제목·담은 수·새 포켓·닫기는 WorkbenchView 뿌리의 좁은 한 줄 머리글이 맡는다(시스템 막대는 패널에서 숨김).
         VStack(spacing: 0) {
             WorkbenchView(embeddedClose: { setWorkbenchPanelVisible(false) })
+                .id(privacy.epoch)
                 .environment(\.usesShellSidebar, true)
         }
         .frame(width: width)
@@ -770,15 +1156,15 @@ struct AppShellView: View {
 
     // MARK: 폰: 아래 탭 막대
 
-    /// 좁은 창(아이폰 세로·폰 크기 iPad 창)은 감상·영상 만들기·도구 세 개다. 홈은 감상 안의 입구다.
+    /// 좁은 창(아이폰 세로·폰 크기 iPad 창) 다섯 개 탭 막대.
     private func bottomBar(current: AppTab) -> some View {
         HStack(spacing: 0) {
-            ForEach(AppTab.rootTabs) { tab in
-                // 감상 탭은 홈 입구와 파인더 위치를 함께 맡는다.
-                let isActive = tab == .finder ? (current == .finder || current == .home) : current == tab
+            ForEach(AppTab.rootTabs) {
+ tab in
+                let isActive = current == tab || (tab == .video && current == .workbench)
                 Button {
-                    if tab == .tools, toolsLongPressFired { toolsLongPressFired = false; return }
-                    if tab == .finder { selectWatch() } else { select(tab) }
+                    if tab == .settings, settingsLongPressFired { settingsLongPressFired = false; return }
+                    select(tab)
                 } label: {
                     VStack(spacing: 2) {
                         InterfaceIcon(systemName: tab.iconName, size: 26)
@@ -791,13 +1177,14 @@ struct AppShellView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(tab.title)
                 .accessibilityAddTraits(isActive ? .isSelected : [])
-                .modifier(PrivacyToolsLongPress(enabled: tab == .tools, fired: $toolsLongPressFired))
+                .modifier(PrivacyToolsLongPress(enabled: tab == .settings, fired: $settingsLongPressFired))
             }
         }
         .padding(.horizontal, 8)
         // 홈 인디케이터 영역까지 배경만 채우고 버튼은 안전 영역 위에 있다.
         .background(PorcelainMetrics.sidebar.ignoresSafeArea(.container, edges: .bottom))
-        .overlay(alignment: .top) { PorcelainMetrics.line.frame(height: 0.5) }
+        .overlay(alignment: .top) {
+ PorcelainMetrics.line.frame(height: 0.5) }
     }
 }
 
@@ -856,17 +1243,45 @@ private extension View {
     }
 }
 
+private extension View {
+    /// 도구 호스트는 독립 NavigationStack 뿌리라 자동 뒤로가기가 없다. 도구 목록으로 돌아가는 보이는 뒤로가기를 단다.
+    /// 호스트는 파괴하지 않고 목적지만 `.hub`로 돌리므로 진행 중인 작업과 세션은 그대로 유지된다.
+    /// 더 깊이 push된 화면은 자기 자동 뒤로가기를 쓴다(이 툴바는 뿌리에만 붙는다).
+    func toolsHostBackBar(action: @escaping () -> Void) -> some View {
+        toolbar(.visible, for: .navigationBar)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button(action: action) {
+                        Label("뒤로", systemImage: "chevron.backward")
+                    }
+                    .accessibilityLabel("도구로 돌아가기")
+                }
+            }
+    }
+}
+
 /// 도구: 기기 간 사진 전송과 저장공간. 설정은 레일/아래쪽 목록에서도 연다.
 struct ToolsView: View {
+    @Environment(\.shellToolActive) private var shellToolActive
     @Environment(\.usesShellSidebar) private var usesShellSidebar
     @EnvironmentObject private var connectionStore: ConnectionStore
     @ObservedObject private var router = AppShellRouter.shared
+    @ObservedObject private var privacy = PrivacyMode.shared
+    @ObservedObject private var bridge = HomeTaskProgress.shared
     @State private var snapshot = StorageSnapshot.current()
-    @State private var pushedDestination: ToolsDestination?
     @ObservedObject private var workbench = WorkbenchStore.shared
-    @ObservedObject private var collection = MovieCollectionStore.shared
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue =
         AppThemePreference.light.rawValue
+
+    struct ToolHost: Identifiable {
+        let id: UUID
+        let destination: ToolsDestination
+        let epoch: Int
+        let isPrivate: Bool
+    }
+
+    @State private var hosts: [ToolHost] = []
+    @State private var activeHostID: UUID?
 
     private struct StorageSnapshot {
         let total: Int64
@@ -883,37 +1298,89 @@ struct ToolsView: View {
     private func bytes(_ value: Int64) -> String { ByteCountFormatter.string(fromByteCount: value, countStyle: .file) }
 
     var body: some View {
-        NavigationStack {
-            if usesShellSidebar {
-                // Mac 사이드바가 도구 하위 목적지를 고르므로 여기서는 고른 화면 하나만 보여 준다.
-                // 스택을 목적지별로 새로 만들어, 이전 도구가 올려 둔 화면(받기 QR 등)이 새 목적지를 덮은 채 남아
-                // 도구 행이 눌러도 아무 일도 없는 것처럼 보이는 일이 없게 한다.
-                switch router.toolsDestination {
-                case .transfer: PhotoTransferView()
-                case .selection: PhotoSelectionView()
-                case .storage: storagePage
-                case .settings: AppSettingsView(connectionCount: connectionStore.connections.count)
-                }
-            } else {
-                toolsList
-                    .navigationDestination(item: $pushedDestination) { destination in
-                        switch destination {
-                        case .transfer: PhotoTransferView()
-                        case .selection: PhotoSelectionView()
-                        case .storage: storagePage
-                        case .settings: AppSettingsView(connectionCount: connectionStore.connections.count)
-                        }
+        ZStack {
+            ForEach(hosts.filter { $0.id == activeHostID || $0.destination == .transfer || $0.destination == .superThumbnail }) { host in
+                NavigationStack {
+                    switch host.destination {
+                    case .hub: toolsList.toolbar(.hidden, for: .navigationBar)
+                    case .transfer: PhotoTransferView().toolsHostBackBar { router.toolsDestination = .hub }
+                    case .selection: PhotoSelectionView().toolsHostBackBar { router.toolsDestination = .hub }
+                    case .superThumbnail: SuperThumbnailView().toolsHostBackBar { router.toolsDestination = .hub }
+                    case .thumbnailCache:
+                        ThumbnailCacheSettingsView { _ in }.toolsHostBackBar { router.toolsDestination = .hub }
+                    case .storage: storagePage
+                    case .settings: AppSettingsView(connectionCount: connectionStore.connections.count)
                     }
+                }
+                .environment(\.shellToolHostID, host.id)
+                .environment(\.shellToolHostPrivate, host.isPrivate)
+                .environment(\.shellToolActive, shellToolActive && activeHostID == host.id && PrivacyMode.isVisible(host.isPrivate))
+                .tabLayer(activeHostID == host.id && PrivacyMode.isVisible(host.isPrivate))
             }
         }
-        .id(usesShellSidebar ? router.toolsDestination.rawValue : "list")
+        .onChange(of: router.toolsDestination, initial: true) { _, destination in
+            activate(destination, requestedHostID: router.toolsHostRequest)
+        }
+        .onChange(of: router.toolsHostRequest) { _, requested in
+            if let requested {
+                if let target = hosts.first(where: { $0.id == requested }) {
+                    activate(target.destination, requestedHostID: requested)
+                }
+            }
+        }
         .onChange(of: router.toolsPushRequest) { _, destination in consumePushRequest(destination) }
-        .onAppear { consumePushRequest(router.toolsPushRequest) }
+        .onChange(of: privacy.epoch) { _, _ in
+            hosts = hosts.filter { bridge.hasActivity($0.id) }
+            activeHostID = nil
+            router.toolsHostRequest = nil
+            router.toolsDestination = .hub
+            activate(.hub)
+        }
+        .onAppear {
+            consumePushRequest(router.toolsPushRequest)
+            activate(router.toolsDestination, requestedHostID: router.toolsHostRequest)
+        }
+    }
+
+    private func activate(_ destination: ToolsDestination, requestedHostID: UUID? = nil) {
+        if let requestedHostID {
+            if let existing = hosts.first(where: { $0.id == requestedHostID }) {
+                if PrivacyMode.isVisible(existing.isPrivate) {
+                    activeHostID = existing.id
+                    router.toolsDestination = existing.destination
+                }
+            }
+            return
+        }
+
+        if let currentID = activeHostID, let current = hosts.first(where: { $0.id == currentID }),
+           current.destination == destination, PrivacyMode.isVisible(current.isPrivate) {
+            return
+        }
+
+        if let match = hosts.first(where: { $0.destination == destination && $0.epoch == privacy.epoch && PrivacyMode.isVisible($0.isPrivate) }) {
+            activeHostID = match.id
+            return
+        }
+
+        let newHost = ToolHost(
+            id: UUID(),
+            destination: destination,
+            epoch: privacy.epoch,
+            isPrivate: privacy.isActive
+        )
+        hosts.append(newHost)
+        activeHostID = newHost.id
     }
 
     private func consumePushRequest(_ destination: ToolsDestination?) {
-        guard let destination else { return }
-        if !usesShellSidebar { pushedDestination = destination }
+        guard let destination else {
+            return
+        }
+        let requested = router.toolsHostRequest
+        router.toolsDestination = destination
+        activate(destination, requestedHostID: requested)
+        router.toolsHostRequest = nil
         router.toolsPushRequest = nil
     }
 
@@ -961,13 +1428,6 @@ struct ToolsView: View {
             ) {
                 InterfaceIcon(systemName: "tray.2", size: PorcelainMetrics.rowIconSize)
             }
-            PorcelainDivider()
-            PorcelainRow(
-                title: "컬렉션 \(collection.videos.count)편",
-                subtitle: "앱 안 복사본 \(bytes(collection.videos.reduce(0) { $0 + $1.byteCount }))"
-            ) {
-                InterfaceIcon(systemName: "nf.collection", size: PorcelainMetrics.rowIconSize)
-            }
         }
     }
 
@@ -975,54 +1435,24 @@ struct ToolsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 8) {
-                    PorcelainSectionHeader(title: "미디어")
+                    PorcelainSectionHeader(title: "도구")
                     PorcelainGroupCard {
-                        NavigationLink {
-                            PhotoSelectionView()
-                        } label: {
-                            PorcelainRow(title: "사진 선별",
-                                         subtitle: "비슷한 사진을 묶고 몇 장이 적당한지 추천",
-                                         showsChevron: true) {
-                                InterfaceIcon(systemName: "nf.photo_selection", size: PorcelainMetrics.rowIconSize)
+                        ForEach(Array(ToolsDestination.allCases.enumerated()), id: \.element.id) { index, destination in
+                            if index > 0 {
+                                PorcelainDivider()
                             }
-                        }
-                        .buttonStyle(.plain)
-                        .navigationLinkIndicatorVisibility(.hidden)
-                        PorcelainDivider()
-                        NavigationLink {
-                            PhotoTransferView()
-                        } label: {
-                            PorcelainRow(title: "미디어 전송",
-                                         subtitle: "미디어·Live Photos·Motion Photos 기기 간 전송",
-                                         showsChevron: true) {
-                                InterfaceIcon(systemName: "arrow.left.arrow.right", size: PorcelainMetrics.rowIconSize)
+                            Button {
+                                router.toolsDestination = destination
+                            } label: {
+                                PorcelainRow(
+                                    title: destination.title,
+                                    showsChevron: true
+                                ) {
+                                    InterfaceIcon(systemName: destination.iconName, size: PorcelainMetrics.rowIconSize)
+                                }
                             }
+                            .buttonStyle(.plain)
                         }
-                        .buttonStyle(.plain)
-                        .navigationLinkIndicatorVisibility(.hidden)
-                    }
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    PorcelainSectionHeader(title: "저장공간")
-                    storageCard
-                }
-                VStack(alignment: .leading, spacing: 8) {
-                    PorcelainSectionHeader(title: "앱")
-                    PorcelainGroupCard {
-                        // 설정도 다른 도구 목적지처럼 이 스택으로 push한다(시트로 따로 열지 않는다).
-                        NavigationLink {
-                            AppSettingsView(connectionCount: connectionStore.connections.count)
-                        } label: {
-                            PorcelainRow(title: "설정", showsChevron: true) {
-                                InterfaceIcon(systemName: "gearshape", size: PorcelainMetrics.rowIconSize)
-                            }
-                        }
-                        .buttonStyle(.plain)
-                        .navigationLinkIndicatorVisibility(.hidden)
-                    }
-                    if let versionText = AppVersionDisplayPolicy.text() {
-                        Text(versionText).porcelainFont(.meta).foregroundStyle(PorcelainMetrics.secondary)
-                            .padding(.horizontal, 4)
                     }
                 }
             }
@@ -1033,15 +1463,6 @@ struct ToolsView: View {
         .background(PorcelainMetrics.paper)
         .navigationTitle("도구")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                ByungkiThemeControlButton(selectedThemeRawValue: $selectedThemeRawValue)
-            }
-        }
-        .phoneRootHeader("도구", enabled: usesPhoneRootHeader) {
-            ByungkiThemeControlButton(selectedThemeRawValue: $selectedThemeRawValue, isBadgeStyle: false, isRunningOnMac: false)
-        }
-        .onAppear { snapshot = StorageSnapshot.current() }
     }
 
     private var usesPhoneRootHeader: Bool { PhoneRootHeaderPolicy.isEnabled(usesShellSidebar: usesShellSidebar) }
@@ -1079,14 +1500,9 @@ struct PhoneRootHeader<Trailing: View>: View {
 enum PhoneRootHeaderPolicy {
     /// 사이드바가 없는 폭(아이폰·좁은 iPad 창)에서만 앱 소유 머리글을 쓴다. Mac은 항상 시스템 막대.
     static func isEnabled(usesShellSidebar: Bool) -> Bool {
-        #if targetEnvironment(macCatalyst)
         false
-        #else
-        !usesShellSidebar && !ProcessInfo.processInfo.isiOSAppOnMac
-        #endif
     }
 }
-
 extension View {
     /// 아이폰 폭의 뿌리 화면 머리글을 통일한다: 시스템 막대를 숨기고 왼쪽 제목 + 오른쪽 `[주 행동][테마]` 한 줄.
     /// 하위 화면은 자기 시스템 막대(뒤로)를 그대로 쓰며, 사이드바가 있는 넓은 창과 Mac에서는 아무것도 바꾸지 않는다.
@@ -1118,12 +1534,13 @@ enum SidebarFinderItemID {
     static let googlePhotos = "googlePhotos"
     static let deviceFiles = "deviceFiles"
     static let browser = "browser"
+    static let manageConnections = "manageConnections"
 
-    /// 지금 보이는 항목의 ID를 기본 순서(연결 → 내 사진·영상 → 폰하드 → 즐겨찾기 → Google 포토 → 기기 파일 → Browser)로.
-    /// 즐겨찾기는 나중에 생긴 ID라 저장된 순서가 있으면 꼬리에 붙고(`SidebarOrderPolicy.normalized`) 기존 순서는 바뀌지 않는다.
+    /// 지금 보이는 항목의 ID를 기본 순서(즐겨찾기 → 내 미디어 → 폰하드 → 기기 파일 → 연결 → Google 포토 → 연결 추가·관리 → Browser)로.
+    /// 저장된 순서가 있으면 그대로 두고 새 ID만 꼬리에 붙는다(`SidebarOrderPolicy.normalized`).
     static func current(connectionIDs: [UUID], showsGooglePhotos: Bool) -> [String] {
-        connectionIDs.map(\.uuidString)
-            + [photos, phoneHard, favorites] + (showsGooglePhotos ? [googlePhotos] : []) + [deviceFiles, browser]
+        [favorites, photos, phoneHard, deviceFiles] + connectionIDs.map(\.uuidString)
+            + (showsGooglePhotos ? [googlePhotos] : []) + [manageConnections, browser]
     }
 }
 

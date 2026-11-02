@@ -501,8 +501,14 @@ struct WorkbenchPocketView: View {
 
 // MARK: - 작업대 홈 (포켓 목록)
 
+extension EnvironmentValues {
+    /// 탭에 상주하는 전체 화면 작업대가 지금 활성 탭 층인지. 시트·패널 등 다른 호스트는 기본값(true)을 쓴다.
+    @Entry var workbenchTabActive = true
+}
+
 struct WorkbenchView: View {
     @ObservedObject private var store = WorkbenchStore.shared
+    @ObservedObject private var router = AppShellRouter.shared
     @ObservedObject private var shareIntents = ShareIntentCoordinator.shared
     @State private var path: [UUID] = []
     @State private var isCreating = false
@@ -514,14 +520,19 @@ struct WorkbenchView: View {
     @State private var shareRequest: WorkbenchAddRequest?
     @State private var notice: String?
     @Environment(\.usesShellSidebar) private var usesShellSidebar
+    @Environment(\.workbenchTabActive) private var workbenchTabActive
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue = AppThemePreference.light.rawValue
     private var themeRefresh = ThemeRefresh()
     /// 넓은 창 오른쪽 패널에 넣을 때 셸이 넘기는 닫기 동작. 있으면 뿌리에서 시스템 막대 대신
     /// 좁은 한 줄 머리글(제목·담은 수·새 포켓·닫기)을 쓴다. 전체 화면 작업대는 nil이라 그대로다.
     private let embeddedClose: (() -> Void)?
 
-    init(embeddedClose: (() -> Void)? = nil) {
+    /// 전체 작업대 뿌리에서만 보이는 뒤로 가기. 셸이 들어오기 전 대표 뿌리로 돌려보낸다.
+    private let rootBack: (() -> Void)?
+
+    init(embeddedClose: (() -> Void)? = nil, rootBack: (() -> Void)? = nil) {
         self.embeddedClose = embeddedClose
+        self.rootBack = rootBack
     }
 
     var body: some View {
@@ -546,6 +557,12 @@ struct WorkbenchView: View {
             .navigationTitle("작업대")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                if path.isEmpty, embeddedClose == nil, let rootBack {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button(action: rootBack) { Image(interfaceSystemName: "chevron.left", pointSize: 20, tintable: true) }
+                            .accessibilityLabel("뒤로")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { newName = ""; isCreating = true } label: { InterfaceToolbarIcon(systemName: "plus") }
                         .disabled(store.isReadOnly)
@@ -599,7 +616,37 @@ struct WorkbenchView: View {
         .alert("공유로 받은 항목", isPresented: Binding(get: { shareIntents.notice != nil }, set: { if !$0 { shareIntents.notice = nil } })) {
             Button("확인", role: .cancel) { shareIntents.notice = nil }
         } message: { Text(shareIntents.notice ?? "") }
-        .onAppear { shareIntents.refresh() }
+        .onAppear {
+            shareIntents.refresh()
+            if embeddedClose == nil && router.workbenchCreateRequest {
+                newName = ""
+                isCreating = true
+                router.workbenchCreateRequest = false
+            }
+            consumePocketRequest(router.workbenchPocketRequest)
+        }
+        .onChange(of: router.workbenchCreateRequest) { _, requested in
+            if embeddedClose == nil && requested {
+                newName = ""
+                isCreating = true
+                router.workbenchCreateRequest = false
+            }
+        }
+        .onChange(of: router.workbenchPocketRequest) { _, id in consumePocketRequest(id) }
+        .onChange(of: workbenchTabActive) { _, active in
+            if active { consumePocketRequest(router.workbenchPocketRequest) }
+        }
+    }
+
+    /// 홈 포켓 행이 요청한 포켓을 연다. 지금 모드에서 보이는 포켓일 때만 연다.
+    /// 홈 포켓 버튼은 항상 포켓 요청과 작업대 탭 전환을 함께 보내므로 처리하는 쪽은 전체 화면 호스트뿐이다.
+    /// 오른쪽 패널(embedded)은 처리하지 않고, 탭에 상주하는 전체 화면 호스트는 작업대 탭이 활성일 때만 처리한다.
+    /// 쉘이 `router.request`를 먼저 비우므로 그 값으로 호스트를 가리지 않고, 탭이 활성화될 때 onChange로 다시 시도한다.
+    private func consumePocketRequest(_ id: UUID?) {
+        guard let id else { return }
+        guard embeddedClose == nil, workbenchTabActive else { return }
+        if store.pocket(id) != nil { path = [id] }
+        router.workbenchPocketRequest = nil
     }
 
     /// 오른쪽 패널 뿌리 머리글. 좁은 패널에서 시스템 막대가 제목을 자르고 + 단추를 길게 늘이던 것을 대신한다.

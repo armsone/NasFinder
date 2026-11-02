@@ -26,6 +26,9 @@ final class ConnectionStore: ObservableObject {
     private let preferredConnectionKey = "preferredConnection.v1"
     private let rememberedBrowserLocationKey = "browser.lastLocation.v1"
     private let writableFileProviderMigrationKey = "fileProvider.sftpWritable.v1"
+    private static let unreadableStorageMessage = "저장된 연결 목록을 읽지 못해 변경 사항을 저장하지 않았습니다. 기존 데이터는 그대로 보존했습니다."
+    /// 저장된 값이 있는데 읽지 못했다. 빈 목록을 덮어쓰지 않도록 이번 실행에서 연결 변경을 모두 막는다.
+    private var isStorageUnreadable = false
 
     init(
         defaults: UserDefaults? = UserDefaults(suiteName: "group.com.armsone.nasfinder"),
@@ -55,7 +58,14 @@ final class ConnectionStore: ObservableObject {
         throw NasFinderError.credentialsMissing
     }
 
+    private func requireWritableStorage() throws {
+        guard isStorageUnreadable else { return }
+        lastErrorMessage = Self.unreadableStorageMessage
+        throw NasFinderError.invalidConfiguration(Self.unreadableStorageMessage)
+    }
+
     func add(_ connection: RemoteConnection, password: String) async throws {
+        try requireWritableStorage()
         var connection = connection
         if connection.isPrivate == nil { connection.isPrivate = PrivacyMode.shared.newRecordFlag }
         try credentialStore.save(RemoteCredential(password: password), for: connection.id)
@@ -72,6 +82,7 @@ final class ConnectionStore: ObservableObject {
     }
 
     func add(_ connection: RemoteConnection, oauthCredential: OAuthCredential) async throws {
+        try requireWritableStorage()
         var connection = connection
         if connection.isPrivate == nil { connection.isPrivate = PrivacyMode.shared.newRecordFlag }
         try credentialStore.save(.oauth(oauthCredential), for: connection.id)
@@ -80,6 +91,7 @@ final class ConnectionStore: ObservableObject {
     }
 
     func update(_ connection: RemoteConnection, oauthCredential: OAuthCredential) async throws {
+        try requireWritableStorage()
         guard let index = allConnections.firstIndex(where: { $0.id == connection.id }) else {
             throw NasFinderError.invalidResponse
         }
@@ -124,6 +136,7 @@ final class ConnectionStore: ObservableObject {
 
     /// 명시적인 공개/비공개 지정. 플래그만 바꾸고 id·로그인 정보·Files 위치·순서는 건드리지 않는다.
     func setPrivate(_ id: UUID, _ isPrivate: Bool) {
+        guard (try? requireWritableStorage()) != nil else { return }
         guard let index = allConnections.firstIndex(where: { $0.id == id }) else { return }
         let flag: Bool? = isPrivate ? true : nil
         guard allConnections[index].isPrivate != flag else { return }
@@ -190,6 +203,7 @@ final class ConnectionStore: ObservableObject {
     }
 
     func update(_ connection: RemoteConnection, password: String) async throws {
+        try requireWritableStorage()
         guard let index = allConnections.firstIndex(where: { $0.id == connection.id }) else {
             throw NasFinderError.invalidResponse
         }
@@ -219,6 +233,7 @@ final class ConnectionStore: ObservableObject {
     }
 
     func remove(at offsets: IndexSet) async {
+        guard (try? requireWritableStorage()) != nil else { return }
         // 호출자는 보이는 목록의 인덱스를 준다. 전체 목록의 id로 바꿔 숨겨진 연결을 건드리지 않는다.
         let visible = connections
         let removed = offsets.filter { visible.indices.contains($0) }.map { visible[$0] }
@@ -261,6 +276,7 @@ final class ConnectionStore: ObservableObject {
     }
 
     func move(from offsets: IndexSet, to destination: Int) {
+        guard (try? requireWritableStorage()) != nil else { return }
         // 보이는 목록 기준 인덱스를 전체 목록의 id 위치로 옮긴다. 숨겨진 연결의 상대 순서는 그대로다.
         let visible = connections
         let moving = offsets.filter { visible.indices.contains($0) }.sorted().map { visible[$0] }
@@ -305,7 +321,9 @@ final class ConnectionStore: ObservableObject {
     }
 
     private func refreshFileProviderDomainsForWritableCapabilitiesIfNeeded() async {
-        guard !defaults.bool(forKey: writableFileProviderMigrationKey) else { return }
+        // 읽기 실패로 목록이 비어 있을 때 완료로 기록하면 복구 뒤 갱신이 영영 건너뛰어진다.
+        guard !isStorageUnreadable,
+              !defaults.bool(forKey: writableFileProviderMigrationKey) else { return }
         var failed = false
         for connection in allConnections where connection.isPrivate != true {
             do {
@@ -323,8 +341,10 @@ final class ConnectionStore: ObservableObject {
     }
 
     private func load() {
-        guard let data = defaults.data(forKey: storageKey) else { return }
+        // 키가 없으면 새 설치다. 값이 있는데 Data가 아니거나 해석할 수 없으면 원본을 그대로 두고 쓰기를 막는다.
+        guard let stored = defaults.object(forKey: storageKey) else { return }
         do {
+            guard let data = stored as? Data else { throw CocoaError(.coderReadCorrupt) }
             allConnections = try JSONDecoder().decode([RemoteConnection].self, from: data)
             if let rawPreferredID = defaults.string(forKey: preferredConnectionKey),
                let preferredID = UUID(uuidString: rawPreferredID),
@@ -346,11 +366,16 @@ final class ConnectionStore: ObservableObject {
                 defaults.removeObject(forKey: rememberedBrowserLocationKey)
             }
         } catch {
-            lastErrorMessage = "저장된 연결 목록을 읽지 못했습니다."
+            isStorageUnreadable = true
+            lastErrorMessage = "저장된 연결 목록을 읽지 못했습니다. 기존 데이터는 보존했으며, 읽을 수 있을 때까지 연결을 변경할 수 없습니다."
         }
     }
 
     private func persist() {
+        guard !isStorageUnreadable else {
+            lastErrorMessage = Self.unreadableStorageMessage
+            return
+        }
         do {
             defaults.set(try JSONEncoder().encode(allConnections), forKey: storageKey)
         } catch {

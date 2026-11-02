@@ -110,8 +110,9 @@ struct WorkbenchArtifacts {
 @MainActor
 enum WorkbenchServiceResolver {
     /// 폰하드는 로컬 서비스, 기기 폴더는 기억한 폴더 권한, 나머지는 저장된 연결과 로그인 정보로 서비스를 만든다.
-    static func service(connectionID: UUID, connectionStore: ConnectionStore) -> (any RemoteFileService)? {
-        if connectionID == LocalInboxFileService.connectionID { return LocalInboxFileService() }
+    /// 폰하드 서비스는 실행이 시작할 때 잡은 모드를 그대로 쓴다. 지금 모드로 만들면 프라이버시 모드를 끈 뒤 자기 파일을 못 읽는다.
+    static func service(connectionID: UUID, connectionStore: ConnectionStore, startedInPrivacyMode: Bool) -> (any RemoteFileService)? {
+        if connectionID == LocalInboxFileService.connectionID { return LocalInboxFileService(startedInPrivacyMode: startedInPrivacyMode) }
         if case .granted(let access) = DeviceFolderBookmark.restore(), access.connectionID == connectionID {
             return DeviceFolderFileService(access: access)
         }
@@ -252,6 +253,9 @@ final class WorkbenchRun: ObservableObject {
     private(set) var originPrivate = false
     /// 일반 모드 화면에는 비공개 출처 작업의 파일 이름을 보이지 않는다.
     var masksNames: Bool { originPrivate && !PrivacyMode.currentlyActive }
+    /// 시작하는 순간의 프라이버시 모드. 이 실행의 폰하드 읽기에만 쓰며, 다음 `start`에서 새로 잡는다.
+    /// `originPrivate`와 달리 입력 표시를 더하지 않아, 일반 모드에서 시작한 실행의 비공개 읽기 범위를 넓히지 않는다.
+    private var startedInPrivacyMode = false
     private var jobDirectory: URL
     private var plan: [WorkbenchPlanItem] = []
     private var connectionStore: ConnectionStore?
@@ -287,6 +291,7 @@ final class WorkbenchRun: ObservableObject {
     func start(entries: [WorkbenchEntry], connectionStore: ConnectionStore, inputPrivate: Bool = false) {
         cancel()
         originPrivate = PrivacyMode.capturedOrigin(inputPrivate: inputPrivate || entries.contains(where: \.isEffectivelyPrivate))
+        startedInPrivacyMode = PrivacyMode.currentlyActive
         self.connectionStore = connectionStore
         phase = .planning
         let token = generation
@@ -448,7 +453,7 @@ final class WorkbenchRun: ObservableObject {
                 return [item(.existing(url))]
             }
             guard let connectionStore,
-                  let service = WorkbenchServiceResolver.service(connectionID: connectionID, connectionStore: connectionStore) else {
+                  let service = WorkbenchServiceResolver.service(connectionID: connectionID, connectionStore: connectionStore, startedInPrivacyMode: startedInPrivacyMode) else {
                 throw WorkbenchFailure.relink("이 항목의 연결이 삭제되었거나 로그인 정보가 없습니다. 연결을 다시 추가하거나 로그인한 뒤 시도해 주세요.")
             }
             let root = RemoteFileItem(
@@ -732,7 +737,7 @@ final class WorkbenchRun: ObservableObject {
             return Fetched(url: image, ownsFile: false)
         case .remote(let remote):
             guard let connectionStore,
-                  let service = WorkbenchServiceResolver.service(connectionID: remote.connectionID, connectionStore: connectionStore) else {
+                  let service = WorkbenchServiceResolver.service(connectionID: remote.connectionID, connectionStore: connectionStore, startedInPrivacyMode: startedInPrivacyMode) else {
                 throw WorkbenchFailure.relink("이 항목의 연결이 삭제되었거나 로그인 정보가 없습니다.")
             }
             let report: @MainActor @Sendable (Double) -> Void = { [weak self] value in self?.itemProgress = value }

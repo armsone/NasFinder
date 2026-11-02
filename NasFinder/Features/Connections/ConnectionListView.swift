@@ -188,7 +188,9 @@ struct ConnectionListView: View {
             }
             .navigationDestination(item: $shellDestination) { destination in
                 switch destination {
-                case .photos: porcelainDetailHost { LocalPhotoLibraryView(hidesDuplicateSources: true) }
+                case .photos:
+                    porcelainDetailHost { LocalPhotoLibraryView(hidesDuplicateSources: true) }
+                        .toolbar(.hidden, for: .navigationBar)
                 case .browser: porcelainDetailHost { WebBrowserView() }
                 case .favorites: porcelainDetailHost { FavoriteListView() }
                 }
@@ -250,6 +252,7 @@ struct ConnectionListView: View {
             }
             .navigationDestination(isPresented: $isImportingFromGooglePhotos) {
                 GooglePhotosImportFlowView(inboxStore: inboxStore, forceAuthorization: forceGooglePhotosAuthorization)
+                    .toolbar(.visible, for: .navigationBar)
             }
             .onChange(of: isImportingFromGooglePhotos) { _, presented in
                 if !presented {
@@ -1299,6 +1302,7 @@ private struct PhoneHardEntryLink: View {
                 showingDraftManager = false
                 resumingDraft = entry
             }
+            .toolbar(.visible, for: .navigationBar)
         }
         .onChange(of: showingDraftManager) { _, isShowing in
             if !isShowing, let id = pendingResumeID {
@@ -1349,6 +1353,7 @@ private struct TrailerDraftManagerEntryLink: View {
                 showingDraftManager = false
                 resumingDraft = entry
             }
+            .toolbar(.visible, for: .navigationBar)
         }
         .trailerEditorCover(item: $resumingDraft) { entry in
             VideoTrailerView(items: entry.items, service: entry.service, mode: entry.mode, resuming: entry)
@@ -1426,6 +1431,7 @@ private struct PorcelainDraftCard: View {
     var onRename: () -> Void = {}
     var onDuplicate: () -> Void = {}
     var onSetPrivate: (Bool) -> Void = { _ in }
+    var showsEditingMenu: Bool = true
     @State private var thumbnail: UIImage?
     @ObservedObject private var projects = TrailerProjectStore.shared
     private var themeRefresh = ThemeRefresh()
@@ -1488,6 +1494,7 @@ private struct PorcelainDraftCard: View {
             .accessibilityLabel("\(entry.title), \(videoTrailerTime(entry.totalDuration))")
             .accessibilityHint("이어서 편집합니다.")
 
+            if showsEditingMenu {
             Menu {
                 Button("이어서 편집", interfaceSystemImage: "play.fill", action: onResume)
                 Button("이름 바꾸기", interfaceSystemImage: "pencil", action: onRename)
@@ -1506,6 +1513,7 @@ private struct PorcelainDraftCard: View {
                     .contentShape(Rectangle())
             }
             .accessibilityLabel("\(entry.title) 편집 메뉴")
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
@@ -1572,7 +1580,134 @@ private struct VideoCreateEntryLink: View {
         .accessibilityHint("+ 메뉴에서 기기·파일·폰하드·NAS·Google 포토의 사진과 영상을 골라 영상 편집으로 만듭니다.")
         .navigationDestination(isPresented: $showingLibrary) {
             LocalPhotoLibraryView(initialMode: .trailer)
+                .toolbar(.hidden, for: .navigationBar)
         }
+    }
+}
+
+/// 홈의 작업대 포켓 구역: 실제 포켓 이름·개수를 보이고, 포켓을 누르면 작업대에서 그 포켓을 바로 연다.
+private struct HomePocketsSection: View {
+    @ObservedObject private var router = AppShellRouter.shared
+    @ObservedObject private var workbench = WorkbenchStore.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            PorcelainSectionHeader(title: "작업대")
+            PorcelainGroupCard {
+                Button { router.request = .workbench } label: {
+                    PorcelainRow(title: "작업대 열기", showsChevron: true) {
+                        InterfaceIcon(systemName: "tray.2", size: PorcelainMetrics.rowIconSize)
+                    } trailing: { EmptyView() }
+                }
+                .buttonStyle(.plain)
+                if workbench.pockets.isEmpty {
+                    PorcelainDivider()
+                    Text("아직 만든 포켓이 없습니다.")
+                        .porcelainFont(.body).foregroundStyle(PorcelainMetrics.secondary)
+                        .padding(.vertical, 10).padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                ForEach(workbench.pockets) { pocket in
+                    PorcelainDivider()
+                    Button {
+                        router.workbenchPocketRequest = pocket.id
+                        router.request = .workbench
+                    } label: {
+                        PorcelainRow(title: pocket.name, subtitle: "\(pocket.entries.count)개", showsChevron: true) {
+                            InterfaceIcon(systemName: "tray", size: PorcelainMetrics.rowIconSize)
+                        } trailing: { EmptyView() }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+/// 홈의 이어서 편집 구역: 저장된 실제 편집본을 보이고, 누르면 영상 허브가 그 편집본을 다시 연다.
+private struct HomeContinueEditSection: View {
+    @ObservedObject private var router = AppShellRouter.shared
+    @ObservedObject private var draftStore = TrailerDraftStore.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            PorcelainSectionHeader(title: "이어서 편집")
+            if draftStore.entries.isEmpty {
+                PorcelainGroupCard {
+                    Text("이어서 편집할 영상이 아직 없습니다. 영상 만들기에서 시작해 보세요.")
+                        .porcelainFont(.body).foregroundStyle(PorcelainMetrics.secondary)
+                        .padding(.vertical, 10).padding(.horizontal, 12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            } else {
+                ForEach(Array(draftStore.entries.prefix(3))) { entry in
+                    PorcelainDraftCard(
+                        entry: entry,
+                        onResume: {
+                            router.resumeDraftRequest = entry.id
+                            router.videoDestination = .make
+                            router.request = .video
+                        },
+                        onDelete: {},
+                        showsEditingMenu: false
+                    )
+                }
+                PorcelainGroupCard {
+                    Button {
+                        router.videoHubResetToken += 1
+                        router.videoDestination = .make
+                        router.request = .video
+                    } label: {
+                        PorcelainRow(title: "편집본 전체", subtitle: "이름 변경 · 삭제", showsChevron: true) {
+                            InterfaceIcon(systemName: "film.stack", size: PorcelainMetrics.rowIconSize)
+                        } trailing: { EmptyView() }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+}
+
+/// 홈 맨 아래 바로가기 한 묶음: 파인더·만들기·도구·설정. 사이드바와 같은 라우터 값으로 연다.
+private struct HomeShortcutSection: View {
+    @ObservedObject private var router = AppShellRouter.shared
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            PorcelainSectionHeader(title: "대표 메뉴")
+            PorcelainGroupCard {
+                shortcut(AppTab.finder) {
+                    router.finderRequest = FinderSidebarRequest(command: .home)
+                    router.request = .finder
+                }
+                PorcelainDivider()
+                shortcut(AppTab.video) {
+                    router.videoHubResetToken += 1
+                    router.videoDestination = .make
+                    router.request = .video
+                }
+                PorcelainDivider()
+                shortcut(AppTab.tools) {
+                    router.toolsDestination = .hub
+                    router.toolsPushRequest = nil
+                    router.request = .tools
+                }
+                PorcelainDivider()
+                shortcut(AppTab.settings) { router.request = .settings }
+            }
+        }
+    }
+
+    private func shortcut(_ tab: AppTab, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            PorcelainInlineAction(title: tab.title) { InterfaceIcon(systemName: tab.iconName, size: 24) }
+                .padding(.vertical, 10)
+                .padding(.horizontal, 12)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tab.title)
     }
 }
 
@@ -1581,6 +1716,8 @@ private struct VideoCreateEntryLink: View {
 /// Nothing here is capped or evicted automatically; each entry stays until the user
 /// explicitly resumes and finishes it, or deletes it themselves.
 struct TrailerDraftManagerView: View {
+    /// 영상 만들기 한 페이지 안에 목록만 끼워 넣을 때 true. 바깥 스크롤·제목·전체 크기 빈 화면을 쓰지 않는다.
+    var embedded = false
     let onResume: (TrailerDraftEntry) -> Void
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var draftStore = TrailerDraftStore.shared
@@ -1593,9 +1730,28 @@ struct TrailerDraftManagerView: View {
     /// 6개 테마 공통 승인안 화면.
     private var isPorcelain: Bool { true }
 
-    var body: some View {
+    private var listContent: some View {
         Group {
-            if draftStore.entries.isEmpty, isPorcelain {
+            if embedded {
+                if draftStore.entries.isEmpty {
+                    Text("아직 이어서 편집할 영상이 없습니다.")
+                        .porcelainFont(.body).foregroundStyle(PorcelainMetrics.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                } else {
+                    LazyVStack(spacing: 10) {
+                        ForEach(draftStore.entries) { entry in
+                            PorcelainDraftCard(
+                                entry: entry,
+                                onResume: { onResume(entry) },
+                                onDelete: { confirmingDeleteID = entry.id },
+                                onRename: { renamingID = entry.id; renameText = entry.customTitle ?? "" },
+                                onDuplicate: { Task { await draftStore.duplicate(entry.id) } },
+                                onSetPrivate: { draftStore.setPrivate(entry.id, $0) }
+                            )
+                        }
+                    }
+                }
+            } else if draftStore.entries.isEmpty, isPorcelain {
                 PorcelainStateView(
                     systemImage: "film.stack",
                     title: "편집본이 없습니다",
@@ -1634,9 +1790,19 @@ struct TrailerDraftManagerView: View {
                 .listStyle(.plain)
             }
         }
-        .background(isPorcelain ? PorcelainMetrics.paper : Color.clear)
-        .navigationTitle("편집본")
-        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    var body: some View {
+        Group {
+            if embedded {
+                listContent
+            } else {
+                listContent
+                    .background(isPorcelain ? PorcelainMetrics.paper : Color.clear)
+                    .navigationTitle("편집본")
+                    .navigationBarTitleDisplayMode(.inline)
+            }
+        }
         // Per-entry confirmation only: nothing here ever deletes more than the one
         // entry the user picked, and only that entry's own staged copies/output.
         .alert("이 편집을 지울까요?", isPresented: Binding(
@@ -1648,7 +1814,7 @@ struct TrailerDraftManagerView: View {
             }
             Button("취소", role: .cancel) { confirmingDeleteID = nil }
         } message: {
-            Text("이 편집본의 저장된 사본만 지워집니다. 작업대 포켓·컬렉션 영상·원본 사진·영상은 지워지지 않습니다.")
+            Text("이 편집본의 저장된 사본만 지워집니다. 작업대 포켓·원본 사진·영상은 지워지지 않습니다.")
         }
         .alert("이름 바꾸기", isPresented: Binding(
             get: { renamingID != nil },
@@ -2396,7 +2562,7 @@ extension ConnectionListView {
         // Mac도 iPad와 같은 표준 ToolbarItemGroup을 쓴다. 예전에는 Mac만 고정 폭 HStack 하나를 항목으로 넣었는데,
         // 막대에 호스팅된 그 HStack 안 버튼은 헤더에서 누름이 전달되지 않는다(본문 같은 버튼은 정상). 각 버튼을
         // 막대의 독립 항목으로 두어 시스템이 누름·접근성 동작을 직접 연결하게 한다.
-        if isRunningOnMac || porcelainSidebarActive {
+        if !splitsPhoneHome && (isRunningOnMac || porcelainSidebarActive) {
             if #available(iOS 26.0, *) {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     porcelainTrailingItems
@@ -2418,7 +2584,7 @@ extension ConnectionListView {
 
     /// 폰 홈의 시스템 막대를 숨기고 앱 헤더를 쓰는지. 하위 화면은 자기 막대(뒤로 등)를 그대로 쓴다.
     fileprivate var usesPorcelainPhoneHeader: Bool {
-        !isRunningOnMac && !porcelainSidebarActive
+        false
     }
 
     /// 폰 홈 맨 위 한 줄: 브랜드(Nas 그래파이트 + Finder 강조색)와 추가·설정·테마 버튼.
@@ -2511,7 +2677,10 @@ extension ConnectionListView {
         GeometryReader { geometry in
             let width = geometry.size.width
             Group {
-                if usesShellSidebar {
+                if splitsPhoneHome {
+                    // 폰 분할 홈: 가로/세로 방향 모두 셸과 같은 공유 워크스페이스를 사용한다.
+                    porcelainWorkspace(paneWidth: width)
+                } else if usesShellSidebar {
                     // 셸 사이드바가 목적지를 맡으므로 여기서는 작업 내용만 둔다.
                     porcelainWorkspace(paneWidth: width)
                 } else if width >= PorcelainMetrics.workspaceWidth {
@@ -2529,9 +2698,6 @@ extension ConnectionListView {
                             ScrollView {
                                 VStack(alignment: .leading, spacing: 20) {
                                     porcelainFavorites()
-                                    if !embedsInTrailerPanel {
-                                        HomeCollectionEntry()
-                                    }
                                     porcelainFileOpen
                                 }
                                 .padding(16)
@@ -2550,9 +2716,6 @@ extension ConnectionListView {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 20) {
                                 porcelainFavorites()
-                                if !embedsInTrailerPanel {
-                                    HomeCollectionEntry()
-                                }
                                 porcelainFileOpen
                                 porcelainSavedConnections
                             }
@@ -2571,7 +2734,7 @@ extension ConnectionListView {
             }
         }
         .background(PorcelainMetrics.paper)
-        .toolbar(usesPorcelainPhoneHeader ? .hidden : .automatic, for: .navigationBar)
+        .toolbar(usesPorcelainPhoneHeader || splitsPhoneHome ? .hidden : .automatic, for: .navigationBar)
         // 앱 헤더는 높이를 직접 계산하지 않고 시스템 안전 영역 가장자리 인셋으로 둔다.
         .safeAreaInset(edge: .top, spacing: 0) {
             if usesPorcelainPhoneHeader { porcelainPhoneHeader }
@@ -2685,6 +2848,7 @@ extension ConnectionListView {
         case SidebarFinderItemID.photos:
             NavigationLink {
                 porcelainDetailHost { LocalPhotoLibraryView() }
+                    .toolbar(.hidden, for: .navigationBar)
             } label: {
                 PorcelainSidebarItem(title: "내 미디어") {
                     InterfaceIcon(systemName: "photo.on.rectangle.angled", size: PorcelainMetrics.rowIconSize)
@@ -2720,13 +2884,22 @@ extension ConnectionListView {
             .accessibilityHint(isRunningOnMac
                 ? "허락한 폴더의 파일을 앱 안에서 엽니다."
                 : "파일 앱에서 이 기기 또는 iCloud Drive의 파일을 선택합니다.")
+        case SidebarFinderItemID.manageConnections:
+            Button {
+                isChoosingNetwork = true
+            } label: {
+                PorcelainSidebarItem(title: "연결 추가·관리") {
+                    InterfaceIcon(systemName: "plus", size: PorcelainMetrics.rowIconSize)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint("추가할 NAS 연결 방식을 선택합니다.")
         case SidebarFinderItemID.browser:
             NavigationLink {
                 porcelainDetailHost { WebBrowserView() }
             } label: {
                 PorcelainSidebarItem(title: "브라우저") {
                     InterfaceIcon(systemName: "globe", size: PorcelainMetrics.rowIconSize)
-                        .foregroundStyle(SkyBreezeTheme.browserOrange)
                 }
             }
             .buttonStyle(.plain)
@@ -2757,7 +2930,7 @@ extension ConnectionListView {
             } label: {
                 PorcelainSidebarItem(title: connection.name) {
                     InterfaceIcon(systemName: connection.kind.systemImage, size: PorcelainMetrics.rowIconSize)
-                        .foregroundStyle(connection.kind.dashboardTint)
+                        .foregroundStyle(PorcelainMetrics.graphite)
                 }
             }
             .buttonStyle(.plain)
@@ -2809,50 +2982,17 @@ extension ConnectionListView {
         let contentWidth = paneWidth - PorcelainMetrics.workspaceMargin * 2
         return ScrollView {
             VStack(alignment: .leading, spacing: 20) {
-                if usesShellSidebar && splitsPhoneHome {
-                    // 홈과 파인더 탭이 같은 개요를 쓴다: 즐겨찾기 선반 · 파일 열기 · 저장된 연결. 아무것도 자동으로 열지 않는다.
-                    // 홈(Mac·iPad)은 여기에 영상·도구 구역을 더해 사이드바의 모든 목적지를 세 묶음으로 모아 보여 준다.
-                    let showsLaunchSections = showsHomeRoot
-                    if showsLaunchSections {
-                        // 작업대는 파인더·영상·도구 묶음 밖의 독립 메뉴라 가장 위에 따로 둔다.
-                        HomeLaunchSection(kind: .workbench)
-                        PorcelainSectionHeader(title: "소스")
-                    }
+                if splitsPhoneHome && showsHomeRoot {
                     porcelainFavorites()
-                    if showsLaunchSections && !embedsInTrailerPanel {
-                        HomeCollectionEntry()
-                    }
-                    porcelainFileOpen
-                    porcelainSavedConnections
-                    Text(networkFooterText)
-                        .porcelainFont(.meta)
-                        .foregroundStyle(PorcelainMetrics.secondary)
-                    if showsLaunchSections {
-                        HomeLaunchSection(kind: .video)
-                        HomeLaunchSection(kind: .tools)
-                    }
-                } else if usesShellSidebar {
-                    // 파일 열기 카드는 사이드바 파인더 행과 같은 목적지라 다시 그리지 않는다.
-                    porcelainFavorites()
-                    Text(networkFooterText)
-                        .porcelainFont(.meta)
-                        .foregroundStyle(PorcelainMetrics.secondary)
+                    HomePocketsSection()
+                    HomeContinueEditSection()
+                    HomeTaskSection()
+                    HomeShortcutSection()
                 } else {
-                    if showsHomeRoot && !embedsInTrailerPanel {
-                        HomeLaunchSection(kind: .workbench)
-                    }
-                    porcelainFavorites(showsDivider: true)
-                    if showsHomeRoot && !embedsInTrailerPanel {
-                        HomeCollectionEntry()
-                    }
+                    porcelainFavorites()
                     porcelainFileOpen
                         .frame(maxWidth: contentWidth >= PorcelainMetrics.splitContentWidth ? 640 : .infinity,
                                alignment: .topLeading)
-                    if showsHomeRoot && !embedsInTrailerPanel {
-                        // 아이폰 홈: 아래 막대와 같은 목적지를 홈에서도 바로 열 수 있게 영상·도구 구역을 더한다.
-                        HomeLaunchSection(kind: .video)
-                        HomeLaunchSection(kind: .tools)
-                    }
                 }
             }
             .padding(PorcelainMetrics.workspaceMargin)
@@ -2911,53 +3051,33 @@ extension ConnectionListView {
     /// 파일 열기: 아이콘 왼쪽 + 두 줄 글의 낮은 2×2(NAS·내 사진/영상 / 폰하드·Google 포토),
     /// 그 아래 Browser·네트워크 추가 한 줄 두 칸. 큰 글자에서는 한 열로 쌓는다.
     private var porcelainFileOpen: some View {
-        let stacks = dynamicTypeSize.isAccessibilitySize
-        return VStack(alignment: .leading, spacing: 8) {
-            PorcelainSectionHeader(title: "파일 열기")
-            PorcelainGroupCard {
-                if stacks {
-                    porcelainNASCell
-                    PorcelainDivider()
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
+                PorcelainSectionHeader(title: "내 기기")
+                PorcelainGroupCard {
                     porcelainPhotosCell
                     PorcelainDivider()
                     PhoneHardEntryLink(summary: inboxSummary, porcelain: true, tile: true, beforeOpen: { enterFromHome {} })
-                    if !googlePhotosHidden {
-                        PorcelainDivider()
-                        porcelainGooglePhotosCell
-                    }
-                } else {
-                    porcelainCellPair {
-                        porcelainNASCell
-                    } trailing: {
-                        porcelainPhotosCell
-                    }
-                    Rectangle().fill(PorcelainMetrics.line).frame(height: 0.5)
-                    porcelainCellPair {
-                        PhoneHardEntryLink(summary: inboxSummary, porcelain: true, tile: true, beforeOpen: { enterFromHome {} })
-                    } trailing: {
-                        if !googlePhotosHidden {
-                            porcelainGooglePhotosCell
-                        } else {
-                            Color.clear.accessibilityHidden(true)
-                        }
-                    }
-                }
-            }
-            PorcelainGroupCard {
-                if stacks {
-                    porcelainBrowserAction
                     PorcelainDivider()
                     porcelainDeviceFilesAction
-                    PorcelainDivider()
-                    porcelainAddNetworkAction
-                } else {
-                    porcelainCellPair {
-                        porcelainBrowserAction
-                    } trailing: {
-                        porcelainDeviceFilesAction
+                }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                PorcelainSectionHeader(title: "네트워크")
+                porcelainSavedConnections
+                if !googlePhotosHidden {
+                    PorcelainGroupCard {
+                        porcelainGooglePhotosCell
                     }
-                    Rectangle().fill(PorcelainMetrics.line).frame(height: 0.5)
+                }
+                PorcelainGroupCard {
                     porcelainAddNetworkAction
+                }
+            }
+            VStack(alignment: .leading, spacing: 8) {
+                PorcelainSectionHeader(title: "웹")
+                PorcelainGroupCard {
+                    porcelainBrowserAction
                 }
             }
         }
@@ -3068,9 +3188,9 @@ extension ConnectionListView {
         Button {
             openDeviceFiles()
         } label: {
-            PorcelainInlineAction(title: "기기 파일") {
-                InterfaceIcon(systemName: "internaldrive", size: 24)
-            }
+            PorcelainRow(title: "기기 파일", subtitle: "기기·클라우드의 파일 선택", showsChevron: true) {
+                InterfaceIcon(systemName: "internaldrive", size: PorcelainMetrics.rowIconSize)
+            } trailing: { EmptyView() }
         }
         .buttonStyle(.plain)
         .accessibilityValue(deviceStorageSummary)
@@ -3370,6 +3490,7 @@ extension ConnectionListView {
                 .onChange(of: width, initial: true) { _, newWidth in
                     porcelainSidebarActive = usesShellSidebar || newWidth >= PorcelainMetrics.workspaceWidth
                 }
+                .toolbar(.visible, for: .navigationBar)
             }
         )
     }
@@ -3436,6 +3557,9 @@ extension ConnectionListView {
         case .deviceFiles:
             replaceDetail()
             isBrowsingDeviceFiles = true
+        case .chooseNetwork:
+            replaceDetail()
+            isChoosingNetwork = true
         case .addConnection:
             replaceDetail()
             isAddingConnection = true
@@ -3486,17 +3610,6 @@ struct FinderSidebarSection: View {
     var body: some View {
         let ids = currentIDs
         Group {
-            // 홈은 앱 셸 사이드바 맨 위에 고정되어 있다. 이 행은 파인더 뿌리(연결·소스 목록)로 돌아간다.
-            ShellSidebarRow(title: "연결 목록", icon: "point.3.connected.trianglepath.dotted",
-                            isSelected: isCurrent(.home), showsTitle: showsTitles) {
-                send(.home)
-            }
-            .accessibilityHint("저장된 연결과 파일 열기 소스 목록으로 돌아갑니다.")
-            if store.connections.isEmpty {
-                ShellSidebarRow(title: "네트워크 추가", icon: "externaldrive.badge.plus",
-                                isSelected: false, showsTitle: showsTitles) { send(.addConnection) }
-                    .accessibilityHint("NAS 연결을 추가합니다.")
-            }
             // 홈 아래 항목은 같은 묶음 안에서만 끌어 순서를 바꾼다. 선택 표시는 목적지 값이라 순서와 무관하다.
             SidebarReorderGroup(group: .finder, currentIDs: ids) { orderedIDs in
                 ForEach(orderedIDs, id: \.self) { id in
@@ -3530,8 +3643,12 @@ struct FinderSidebarSection: View {
                 send(.deviceFiles)
             }
             .accessibilityHint("허락한 폴더의 파일을 앱 안에서 엽니다.")
+        case SidebarFinderItemID.manageConnections:
+            ShellSidebarRow(title: "연결 추가·관리", icon: "plus",
+                            isSelected: false, showsTitle: showsTitles, isReorderable: true) { send(.chooseNetwork) }
+                .accessibilityHint("추가할 NAS 연결 방식을 선택합니다.")
         case SidebarFinderItemID.browser:
-            ShellSidebarRow(title: "브라우저", icon: "globe", tint: SkyBreezeTheme.browserOrange,
+            ShellSidebarRow(title: "브라우저", icon: "globe",
                             isSelected: isCurrent(.browser), showsTitle: showsTitles, isReorderable: true) { send(.browser) }
                 .accessibilityHint("브라우저를 엽니다.")
         default:
@@ -3548,7 +3665,7 @@ struct FinderSidebarSection: View {
             PorcelainSidebarItem(title: connection.name, isSelected: isCurrent(.connection(connection.id)),
                                  showsTitle: showsTitles, minHeight: PorcelainMetrics.shellSidebarRowHeight) {
                 InterfaceIcon(systemName: connection.kind.systemImage, size: PorcelainMetrics.rowIconSize)
-                    .foregroundStyle(connection.kind.dashboardTint)
+                    .foregroundStyle(isCurrent(.connection(connection.id)) ? PorcelainMetrics.accent : PorcelainMetrics.graphite)
             }
             .contentShape(Rectangle())
             .onTapGesture { send(.open(connection.id)) }

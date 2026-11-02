@@ -37,7 +37,9 @@ struct SharedVideoPlayerSurface: UIViewRepresentable {
         context: Context
     ) {
         uiView.playerLayer.player = player
-        uiView.playerLayer.videoGravity = videoGravity
+        if uiView.playerLayer.videoGravity != videoGravity {
+            uiView.playerLayer.videoGravity = videoGravity
+        }
     }
 }
 
@@ -246,7 +248,7 @@ struct SharedPlayerCircleLabel: View {
     var isActive = false
 
     var body: some View {
-        InterfaceIcon(systemName: systemImage, size: ui(22))
+        InterfaceIcon(systemName: systemImage, size: ui(20))
             .font(.system(size: ui(16), weight: .bold))
             .foregroundStyle(.white.opacity(0.9))
             .frame(width: ui(44), height: ui(44))
@@ -260,6 +262,8 @@ struct SharedPlayerCircleLabel: View {
                     lineWidth: 1
                 )
             }
+            .frame(minWidth: ui(48), minHeight: ui(48))
+            .contentShape(Rectangle())
     }
 }
 

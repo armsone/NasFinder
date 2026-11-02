@@ -70,6 +70,130 @@ actor DownloadCache {
         return destination
     }
 
+    struct Snapshot: Sendable, Equatable {
+        var fileCount = 0
+        var byteCount: Int64 = 0
+        var retainedCount = 0
+        var retainedByteCount: Int64 = 0
+        /// Number of files whose deletion actually failed (never inferred from unknown state).
+        var failedCount = 0
+        /// False when the root or an entry could not be inspected; counts are then not trustworthy.
+        var isUsageKnown = true
+        var firstErrorDescription: String?
+    }
+
+    private struct Scan {
+        var files: [(url: URL, size: Int64)] = []
+        var firstError: String?
+    }
+
+    /// Direct cache-named regular files in the cache root only. No recursion, no symlinks.
+    /// A missing root is an empty cache; any real IO error makes the usage unknown.
+    func usageSnapshot() -> Snapshot {
+        makeSnapshot(from: scanOwnedFiles(), failedCount: 0, deletionError: nil)
+    }
+
+    /// Removes only unprotected cache-named regular files directly inside the cache root.
+    /// If the root cannot be safely enumerated nothing is deleted. Uninspected files are preserved.
+    /// The returned snapshot describes what remains; actual delete failures are counted with the first error.
+    /// No awaits in the loop, so the protection check and the delete stay serialized on the actor.
+    func clearUnprotected() -> Snapshot {
+        let scan = scanOwnedFiles()
+        // 처음 스캔이 불확실하면 아무것도 지우지 않고 원래 I/O 오류를 그대로 돌려준다.
+        if scan.firstError != nil {
+            return makeSnapshot(from: scan, failedCount: 0, deletionError: nil)
+        }
+        var failedCount = 0
+        var firstDeletionError: String?
+        for entry in scan.files where protectedFilenames[entry.url.lastPathComponent] == nil {
+            do {
+                try fileManager.removeItem(at: entry.url)
+            } catch {
+                failedCount += 1
+                if firstDeletionError == nil { firstDeletionError = error.localizedDescription }
+            }
+        }
+        return makeSnapshot(from: scanOwnedFiles(), failedCount: failedCount, deletionError: firstDeletionError)
+    }
+
+    private func makeSnapshot(from scan: Scan, failedCount: Int, deletionError: String?) -> Snapshot {
+        var snapshot = Snapshot()
+        snapshot.failedCount = failedCount
+        snapshot.isUsageKnown = scan.firstError == nil
+        snapshot.firstErrorDescription = deletionError ?? scan.firstError
+        guard snapshot.isUsageKnown else { return snapshot }
+        for entry in scan.files {
+            snapshot.fileCount += 1
+            snapshot.byteCount += entry.size
+            if protectedFilenames[entry.url.lastPathComponent] != nil {
+                snapshot.retainedCount += 1
+                snapshot.retainedByteCount += entry.size
+            }
+        }
+        return snapshot
+    }
+
+    private func scanOwnedFiles() -> Scan {
+        var scan = Scan()
+        // Only the root itself must be a real directory; system ancestor aliases (/var) are fine.
+        do {
+            let rootValues = try root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard rootValues.isSymbolicLink != true, rootValues.isDirectory == true else {
+                scan.firstError = "캐시 폴더가 올바른 폴더가 아닙니다."
+                return scan
+            }
+        } catch {
+            if !Self.isMissingFile(error) { scan.firstError = error.localizedDescription }
+            return scan
+        }
+
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]
+        let urls: [URL]
+        do {
+            urls = try fileManager.contentsOfDirectory(
+                at: root,
+                includingPropertiesForKeys: Array(keys),
+                options: [.skipsHiddenFiles]
+            )
+        } catch {
+            if !Self.isMissingFile(error) { scan.firstError = error.localizedDescription }
+            return scan
+        }
+        for url in urls where Self.isCacheFilename(url.lastPathComponent) {
+            do {
+                let values = try url.resourceValues(forKeys: keys)
+                guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
+                scan.files.append((url, Int64(values.fileSize ?? 0)))
+            } catch {
+                if Self.isMissingFile(error) { continue }
+                if scan.firstError == nil { scan.firstError = error.localizedDescription }
+            }
+        }
+        return scan
+    }
+
+    private static func isMissingFile(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain {
+            return nsError.code == NSFileNoSuchFileError || nsError.code == NSFileReadNoSuchFileError
+        }
+        return nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(ENOENT)
+    }
+
+    /// Matches destinationURL(for:): lowercase 64-hex SHA256, optionally "." + a single extension.
+    private static func isCacheFilename(_ name: String) -> Bool {
+        let digest = name.prefix(64)
+        guard digest.count == 64,
+              digest.utf8.allSatisfy({ ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x61 && $0 <= 0x66) }) else {
+            return false
+        }
+        let rest = name.dropFirst(64)
+        if rest.isEmpty { return true }
+        guard rest.first == "." else { return false }
+        let ext = rest.dropFirst()
+        return !ext.isEmpty && !ext.contains(".") && !ext.contains("/")
+    }
+
     private func trimCacheIfNeeded(keeping protectedURL: URL) throws {
         let resourceKeys: Set<URLResourceKey> = [
             .isRegularFileKey,

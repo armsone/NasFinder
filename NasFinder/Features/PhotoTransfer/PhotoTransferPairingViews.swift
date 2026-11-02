@@ -24,6 +24,9 @@ enum PhotoTransferDismissalPolicy {
 
 /// 받기 역할 시트: 페어링 QR을 표시하고 발신 기기의 접속을 기다린다.
 struct PhotoTransferReceiverSheet: View {
+    @Environment(\.shellToolHostID) private var shellToolHostID
+    @Environment(\.shellToolHostPrivate) private var shellToolHostPrivate
+    @Environment(\.shellToolActive) private var shellToolActive
     @ObservedObject var session: PhotoTransferReceiverSession
     @Environment(\.dismiss) private var dismiss
     @State private var isDismissConfirmationPresented = false
@@ -48,12 +51,67 @@ struct PhotoTransferReceiverSheet: View {
                 .uiBarFont()
             }
         }
-        .onAppear { session.start() }
-        .onDisappear { session.stop() }
+        .onAppear {
+            session.start()
+            let originPrivate = shellToolHostPrivate || PrivacyMode.currentlyActive
+            HomeTaskProgress.shared.watch(
+                id: "transfer.receiver." + shellToolHostID.uuidString,
+                hostID: shellToolHostID,
+                changes: session.objectWillChange.eraseToAnyPublisher(),
+                snapshot: { [weak session] in
+                    guard let session else {
+                        return nil
+                    }
+                    switch session.phase {
+                    case .starting, .waitingForSender:
+                        return HomeTaskProgress.Snapshot(
+                            title: "사진·영상 받기",
+                            detail: "연결 대기 중",
+                            progress: nil,
+                            isPrivate: originPrivate
+                        )
+                    case .senderConnected:
+                        if !session.transferFinished {
+                            let progress = session.transferProgress
+                            let detail: String
+                            if session.receivedFileCount > 0 {
+                                detail = "받는 중 (\(session.receivedFileCount)개)"
+                            } else {
+                                detail = "받는 중"
+                            }
+                            return HomeTaskProgress.Snapshot(
+                                title: "사진·영상 받기",
+                                detail: detail,
+                                progress: progress,
+                                isPrivate: originPrivate
+                            )
+                        } else {
+                            return nil
+                        }
+                    case .failed(let message):
+                        return HomeTaskProgress.Snapshot(
+                            title: "사진·영상 받기",
+                            detail: message,
+                            progress: nil,
+                            isPrivate: originPrivate
+                        )
+                    case .idle:
+                        return nil
+                    }
+                },
+                open: {
+                    AppShellRouter.shared.openToolsHost(shellToolHostID, destination: .transfer)
+                }
+            )
+        }
+        .onDisappear {
+            HomeTaskProgress.shared.remove("transfer.receiver." + shellToolHostID.uuidString)
+            session.stop()
+        }
         .interactiveDismissDisabled(requiresDismissConfirmation)
         .confirmationDialog(
             "받기를 중단할까요?",
-            isPresented: $isDismissConfirmationPresented,
+            isPresented: $isDismissConfirmationPresented.shellPresentation(shellToolActive),
             titleVisibility: .visible
         ) {
             Button("중단하고 닫기", role: .destructive) { dismiss() }
@@ -237,6 +295,9 @@ enum PhotoTransferDeletionSelectionPolicy {
 /// 보내기 역할 시트: QR을 스캔해 수신 기기와 핸드셰이크한다.
 /// 스캐너를 못 쓰는 환경(iOS on Mac, 카메라 권한 거부)에서는 연결 코드 붙여넣기로 대체한다.
 struct PhotoTransferSenderSheet: View {
+    @Environment(\.shellToolHostID) private var shellToolHostID
+    @Environment(\.shellToolHostPrivate) private var shellToolHostPrivate
+    @Environment(\.shellToolActive) private var shellToolActive
     @ObservedObject var session: PhotoTransferSenderSession
     let sources: [PhotoTransferSendSource]
     @Environment(\.dismiss) private var dismiss
@@ -283,13 +344,55 @@ struct PhotoTransferSenderSheet: View {
                 isDeleteConfirmationPresented = false
             }
         }
+        .onAppear {
+            let originPrivate = shellToolHostPrivate || PrivacyMode.currentlyActive
+            HomeTaskProgress.shared.watch(
+                id: "transfer.sender." + shellToolHostID.uuidString,
+                hostID: shellToolHostID,
+                changes: session.objectWillChange.eraseToAnyPublisher(),
+                snapshot: { [weak session] in
+                    guard let session else {
+                        return nil
+                    }
+                    if case .failed(let message) = session.phase {
+                        return HomeTaskProgress.Snapshot(
+                            title: "사진·영상 보내기",
+                            detail: message,
+                            progress: nil,
+                            isPrivate: originPrivate
+                        )
+                    }
+                    var isConnecting = false
+                    if case .connecting = session.phase { isConnecting = true }
+                    if session.isSending || isConnecting {
+                        let detail: String
+                        if session.totalItemCount > 0 {
+                            detail = "보내는 중 (\(session.sentItemCount)/\(session.totalItemCount))"
+                        } else {
+                            detail = "보내는 중"
+                        }
+                        return HomeTaskProgress.Snapshot(
+                            title: "사진·영상 보내기",
+                            detail: detail,
+                            progress: session.transferProgress,
+                            isPrivate: originPrivate
+                        )
+                    }
+                    return nil
+                },
+                open: {
+                    AppShellRouter.shared.openToolsHost(shellToolHostID, destination: .transfer)
+                }
+            )
+        }
         .onDisappear {
+            HomeTaskProgress.shared.remove("transfer.sender." + shellToolHostID.uuidString)
             session.discardFullyVerifiedPlan()
             session.cancel()
             session.clearNewCopyScope()
         }
         .interactiveDismissDisabled(requiresDismissConfirmation)
-        .alert("선택한 원본을 삭제할까요?", isPresented: $isDeleteConfirmationPresented) {
+        .alert("선택한 원본을 삭제할까요?", isPresented: $isDeleteConfirmationPresented.shellPresentation(shellToolActive)) {
             Button("삭제", role: .destructive) { performDeletion() }
             Button("삭제 안 함", role: .cancel) {}
         } message: {
@@ -297,7 +400,7 @@ struct PhotoTransferSenderSheet: View {
         }
         .confirmationDialog(
             "보내기를 중단할까요?",
-            isPresented: $isDismissConfirmationPresented,
+            isPresented: $isDismissConfirmationPresented.shellPresentation(shellToolActive),
             titleVisibility: .visible
         ) {
             Button("중단하고 닫기", role: .destructive) { dismiss() }
@@ -365,6 +468,19 @@ struct PhotoTransferSenderSheet: View {
                 Text(message)
                     .font(.ui(.subheadline))
                     .multilineTextAlignment(.center)
+                if session.receiverMismatchRecoveryAvailable {
+                    Text("새 전송으로 보내면 지금 고른 \(sendItems.count)개를 처음부터 다시 보냅니다. 이전에 받은 항목이 받는 기기에 중복될 수 있습니다. 누른 뒤 받는 기기에서 새 QR을 만들어 다시 연결하세요. 원본은 그대로입니다.")
+                        .font(.ui(.footnote))
+                        .foregroundStyle(PorcelainMetrics.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("새 전송으로 보내기") {
+                        scanErrorMessage = nil
+                        session.startNewTransferForReceiverMismatch(items: sendItems)
+                    }
+                    .buttonStyle(.bordered)
+                    .font(MacUIScale.isMac ? .ui(.subheadline) : nil)
+                    .accessibilityHint("지금 고른 항목을 새 전송으로 다시 보내도록 준비합니다. 받는 기기에 중복될 수 있습니다.")
+                }
                 Button("다시 스캔") {
                     scanErrorMessage = nil
                     session.cancel()

@@ -93,9 +93,8 @@ enum TrailerSceneEditor {
     /// 새로 들어온 소스의 장면. 사진은 기본 길이, 영상은 공통 장면 길이만큼의 하이라이트.
     static func newScene(for source: VideoTrailerSource, id: Int, clipLength: Double) -> TrailerEditScene? {
         if source.isImage {
-            let ratio = source.imageDurationRatio.isFinite && source.imageDurationRatio > 0 ? source.imageDurationRatio : 0.55
             return TrailerEditScene(id: id, sourceID: source.id, start: 0,
-                length: min(30.0, max(1.0 / 30.0, clipLength * ratio)))
+                length: source.weightedImageLength(clipLength: clipLength))
         }
         guard source.duration > 0 else { return nil }
         let length = VideoTrailerBatchPlan.sceneLength(source, clipLength: clipLength)
@@ -274,7 +273,7 @@ enum TrailerSceneEditor {
             let source = byID[scenes[index].sourceID]
             let bounds = sceneDurationBounds(scene: scenes[index], source: source)
             if let source, source.isImage {
-                let targetLen = clipLength * source.imageDurationRatio
+                let targetLen = source.weightedImageLength(clipLength: clipLength)
                 scenes[index].length = min(bounds.maximum, max(bounds.minimum, targetLen))
             } else if let source, source.duration > 0 {
                 scenes[index].length = min(bounds.maximum, max(bounds.minimum, clipLength))
@@ -294,8 +293,10 @@ enum TrailerSceneEditor {
     ) -> [VideoTrailerSource] {
         let byID = Dictionary(stagedSources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let baselineByID = timingBaseline.map { Dictionary($0.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first }) }
-        return draftSources.compactMap { draftSource in
-            guard var staged = byID[draftSource.id] else { return nil }
+        var result: [VideoTrailerSource] = []
+        for draftSource in draftSources {
+            guard var staged = byID[draftSource.id] else { continue }
+            staged.isImportant = draftSource.isImportant
             if staged.isImage || draftSource.isImage {
                 let shouldPreserveDraft: Bool
                 if let baselineByID {
@@ -313,7 +314,46 @@ enum TrailerSceneEditor {
                     staged.imageDurationPolicyVersion = draftSource.imageDurationPolicyVersion
                 }
             }
-            return staged
+            result.append(staged)
+        }
+        return result
+    }
+
+    /// UI 다음 마일스톤을 위한 최소 데이터 연산:
+    /// 선택된 장면들이 참조하는 사진 소스의 중요도(isImportant)를 일괄 변경하고,
+    /// 해당 사진 장면들의 길이를 weightedImageLength(clipLength:)로 갱신한다.
+    /// 비디오/자막/프레이밍은 그대로 보존된다.
+    static func setPhotosImportant(
+        ids: Set<Int>,
+        important: Bool,
+        scenes: inout [TrailerEditScene],
+        sources: inout [VideoTrailerSource],
+        clipLength: Double
+    ) {
+        guard !ids.isEmpty else { return }
+
+        // ids는 장면 ID다. 장면 ID와 소스 ID가 겹칠 수 있어 소스 ID로는 해석하지 않는다.
+        let targetSourceIDs = Set(scenes.filter { ids.contains($0.id) }.map(\.sourceID))
+
+        var changedPhotoSourceIDs: Set<Int> = []
+        for index in sources.indices {
+            if sources[index].isImage && targetSourceIDs.contains(sources[index].id) {
+                sources[index].isImportant = important
+                changedPhotoSourceIDs.insert(sources[index].id)
+            }
+        }
+
+        guard !changedPhotoSourceIDs.isEmpty else { return }
+
+        let photoSourcesByID = Dictionary(sources.filter { changedPhotoSourceIDs.contains($0.id) }.map { ($0.id, $0) },
+                                          uniquingKeysWith: { first, _ in first })
+
+        for index in scenes.indices {
+            if let photoSource = photoSourcesByID[scenes[index].sourceID] {
+                let bounds = sceneDurationBounds(scene: scenes[index], source: photoSource)
+                let newLength = photoSource.weightedImageLength(clipLength: clipLength)
+                scenes[index].length = min(bounds.maximum, max(bounds.minimum, newLength))
+            }
         }
     }
 }
@@ -347,6 +387,7 @@ extension TrailerSettingsDraft {
             sourceIDs: sources.map(\.id), total: total, clipLength: clipLength, aspect: aspectRatio?.rawValue,
             music: music, scenes: scenes, photoRatios: sources.map(\.imageDurationRatio),
             policyVersions: sources.map(\.imageDurationPolicyVersion),
+            importances: sources.map(\.isImportant),
             batchCaption: batchCaption)
     }
 }
@@ -360,6 +401,7 @@ struct TrailerDraftSignature: Equatable {
     var scenes: [TrailerEditScene]?
     var photoRatios: [Double]
     var policyVersions: [Int] = []
+    var importances: [Bool] = []
     var batchCaption: TrailerCaption? = nil
 }
 
@@ -674,7 +716,17 @@ struct TrailerStoryboardGrid: View {
 
     @State private var showingMoveSheet = false
     @State private var targetPositionString = "1"
-    @State private var isMultiSelectMode = false
+    @State private var localMultiSelectMode = false
+    /// 부모가 툴바를 소유할 때(showToolbar == false) 다중 선택 상태를 공유한다.
+    var externalMultiSelect: Binding<Bool>? = nil
+    var showToolbar: Bool = true
+
+    private var isMultiSelectMode: Bool {
+        get { externalMultiSelect?.wrappedValue ?? localMultiSelectMode }
+        nonmutating set {
+            if let externalMultiSelect { externalMultiSelect.wrappedValue = newValue } else { localMultiSelectMode = newValue }
+        }
+    }
 
     init(
         scenes: [TrailerEditScene],
@@ -683,11 +735,15 @@ struct TrailerStoryboardGrid: View {
         selectedIDs: Binding<Set<Int>>,
         columnsCount: Binding<Int>,
         scrollable: Bool = true,
+        showToolbar: Bool = true,
+        multiSelect: Binding<Bool>? = nil,
         onSelectSceneForDetail: ((Int) -> Void)? = nil,
         onMoveScenes: ((Set<Int>, Int) -> Void)? = nil,
         onDuplicateScenes: ((Set<Int>) -> Void)? = nil,
         onDeleteScenes: ((Set<Int>) -> Void)? = nil
     ) {
+        self.showToolbar = showToolbar
+        self.externalMultiSelect = multiSelect
         self.scenes = scenes
         self.sources = sources
         self._selectedID = selectedID
@@ -733,7 +789,7 @@ struct TrailerStoryboardGrid: View {
     var body: some View {
         let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         VStack(alignment: .leading, spacing: 8) {
-            toolbarSection
+            if showToolbar { toolbarSection }
             if scrollable {
                 ScrollViewReader { proxy in
                     ScrollView(.vertical, showsIndicators: true) {
@@ -828,7 +884,7 @@ struct TrailerStoryboardGrid: View {
                     }
                 } label: {
                     HStack(spacing: 2) {
-                        Image(systemName: "square.grid.2x2")
+                        Image(interfaceSystemName: "square.grid.2x2", pointSize: 14, tintable: true)
                         Text("\(columnsCount)열")
                     }
                     .font(.caption.weight(.medium))
@@ -887,6 +943,17 @@ struct TrailerStoryboardGrid: View {
                     .foregroundStyle(selectedIDs.contains(scene.id) ? PorcelainMetrics.accent : .white)
                     .background(Circle().fill(.black.opacity(0.45)))
                     .padding(6)
+            }
+        }
+        .overlay(alignment: .trailing) {
+            if source.isImage && source.isImportant {
+                Image(interfaceSystemName: "star.fill", pointSize: 12, tintable: true)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.yellow)
+                    .padding(4)
+                    .background(.black.opacity(0.65), in: Circle())
+                    .padding(6)
+                    .accessibilityLabel("중요 사진")
             }
         }
         .overlay(alignment: .bottomLeading) {
@@ -966,6 +1033,130 @@ struct TrailerStoryboardGrid: View {
 
 // MARK: - 선택 클립 인스펙터 (클립 탭 전용)
 
+/// 비디오 시작점과 길이를 한 번에 조절할 수 있는 듀얼 썸 레인지 슬라이더
+private struct VideoRangeSlider: View {
+    @Binding var start: Double
+    @Binding var length: Double
+    let duration: Double
+    var onDragStart: () -> Void = {}
+
+    private let minLength: Double = 0.2
+    private let thumbWidth: CGFloat = 20
+    private let trackHeight: CGFloat = 24
+
+    private var safeDuration: Double {
+        max(duration, minLength)
+    }
+
+    private var end: Double {
+        min(safeDuration, start + length)
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            let totalW = geo.size.width
+            let availW = max(totalW - thumbWidth * 2, 1)
+            let startFrac = safeDuration > 0 ? max(0, min(start / safeDuration, 1)) : 0
+            let endFrac = safeDuration > 0 ? max(startFrac, min(end / safeDuration, 1)) : 1
+
+            let startX = startFrac * availW
+            let endX = thumbWidth + endFrac * availW
+
+            ZStack(alignment: .leading) {
+                // 전체 트랙 (배경)
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .fill(Color.secondary.opacity(0.2))
+                    .frame(height: trackHeight)
+
+                // 선택 영역 (틴트)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.35))
+                    .frame(width: max(endX - startX, thumbWidth), height: trackHeight)
+                    .offset(x: startX)
+
+                // 시작 핸들 (좌측)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.white)
+                    .shadow(color: .black.opacity(0.2), radius: 2, x: 0, y: 1)
+                    .frame(width: thumbWidth, height: trackHeight)
+                    .overlay(
+                        Image(systemName: "chevron.compact.left")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.secondary)
+                    )
+                    .offset(x: startX)
+                    .gesture(
+                        DragGesture()
+                            .onChanged { g in
+                                onDragStart()
+                                let curEnd = min(safeDuration, start + length)
+                                let newX = max(0, min(g.location.x, availW))
+                                let newStart = (newX / availW) * safeDuration
+                                let clampedStart = min(newStart, curEnd - minLength)
+                                start = max(0, clampedStart)
+                                length = max(minLength, curEnd - start)
+                            }
+                    )
+                    .accessibilityLabel("재생 시작 지점")
+                    .accessibilityValue(videoTrailerTime(start))
+                    .accessibilityAdjustableAction { direction in
+                        onDragStart()
+                        let curEnd = min(safeDuration, start + length)
+                        let step = 0.5
+                        switch direction {
+                        case .increment:
+                            start = min(start + step, curEnd - minLength)
+                        case .decrement:
+                            start = max(0, start - step)
+                        @unknown default:
+                            break
+                        }
+                        length = max(minLength, curEnd - start)
+                    }
+
+                // 끝 핸들 (우측)
+                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                    .fill(Color.white)
+                    .shadow(color: .black.opacity(0.2), radius: 2, x: 0, y: 1)
+                    .frame(width: thumbWidth, height: trackHeight)
+                    .overlay(
+                        Image(systemName: "chevron.compact.right")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.secondary)
+                    )
+                    .offset(x: endX - thumbWidth)
+                    .gesture(
+                        DragGesture()
+                            .onChanged { g in
+                                onDragStart()
+                                let newX = max(thumbWidth, min(g.location.x, totalW)) - thumbWidth
+                                let newEnd = (newX / availW) * safeDuration
+                                let clampedEnd = max(start + minLength, min(safeDuration, newEnd))
+                                length = max(minLength, clampedEnd - start)
+                            }
+                    )
+                    .accessibilityLabel("재생 끝 지점")
+                    .accessibilityValue(videoTrailerTime(end))
+                    .accessibilityAdjustableAction { direction in
+                        onDragStart()
+                        let step = 0.5
+                        switch direction {
+                        case .increment:
+                            let targetEnd = min(safeDuration, end + step)
+                            length = max(minLength, targetEnd - start)
+                        case .decrement:
+                            let targetEnd = max(start + minLength, end - step)
+                            length = max(minLength, targetEnd - start)
+                        @unknown default:
+                            break
+                        }
+                    }
+            }
+        }
+        .frame(height: trackHeight)
+    }
+}
+
 /// '클립' 탭에서 선택한 클립 하나의 시작/끝/길이, 소리, 화면 맞춤 조절.
 struct TrailerClipInspectorView: View {
     enum Section {
@@ -980,6 +1171,18 @@ struct TrailerClipInspectorView: View {
     var aspectRatio: OutputAspectRatio? = nil
     var section: Section = .timing
 
+    /// 부모가 넘기면 다중 선택으로 인스펙터가 사라져도 기준값이 유지된다.
+    var externalBaselines: Binding<[Int: TimingBaseline]>? = nil
+    typealias TimingBaseline = (start: Double, length: Double)
+    @State private var localBaselines: [Int: TimingBaseline] = [:]
+
+    private var timingBaselines: [Int: TimingBaseline] {
+        get { externalBaselines?.wrappedValue ?? localBaselines }
+        nonmutating set {
+            if let externalBaselines { externalBaselines.wrappedValue = newValue } else { localBaselines = newValue }
+        }
+    }
+
     private var selectedIndex: Int? { TrailerSceneEditor.index(of: selectedID, in: scenes ?? []) }
 
     init(
@@ -987,13 +1190,15 @@ struct TrailerClipInspectorView: View {
         scenes: Binding<[TrailerEditScene]?>,
         selectedID: Binding<Int?>,
         aspectRatio: OutputAspectRatio? = nil,
-        section: Section = .timing
+        section: Section = .timing,
+        baselines: Binding<[Int: TimingBaseline]>? = nil
     ) {
         self.sources = sources
         self._scenes = scenes
         self._selectedID = selectedID
         self.aspectRatio = aspectRatio
         self.section = section
+        self.externalBaselines = baselines
     }
 
     var body: some View {
@@ -1002,17 +1207,11 @@ struct TrailerClipInspectorView: View {
                let source = sources.first(where: { $0.id == scene.sourceID }) {
                 switch section {
                 case .timing:
-                    // 헤더
+                    // 간결한 헤더 (장면 순서 및 포함/제외 토글)
                     HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(source.name)
-                                .font(.system(size: 15, weight: .semibold))
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Text("장면 \(index + 1) / \(scenes?.count ?? 0) · \(source.isImage ? "사진" : "영상")" + (scene.excluded ? " · 제외됨" : ""))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
+                        Text("장면 \(index + 1) / \(scenes?.count ?? 0) · \(source.isImage ? "사진" : "영상")" + (scene.excluded ? " · 제외됨" : ""))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                         Spacer()
                         Button {
                             set { $0.excluded.toggle() }
@@ -1029,35 +1228,82 @@ struct TrailerClipInspectorView: View {
 
                     // 트리밍 / 길이 조절
                     if source.isImage {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("사진 표시 시간 \(String(format: "%.1f", scene.length))초")
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("표시 시간 \(String(format: "%.1f", scene.length))초")
                                 .font(.subheadline).monospacedDigit()
-                            Slider(value: Binding(get: { scene.length }, set: { val in set { $0.length = val } }),
-                                   in: (1.0 / 30.0)...30)
+
+                            let hasBaseline = timingBaselines[scene.id] != nil
+                            let isChanged = hasBaseline && abs((timingBaselines[scene.id]?.length ?? scene.length) - scene.length) > 0.001
+
+                            HStack(spacing: 8) {
+                                Button {
+                                    if let base = timingBaselines[scene.id] {
+                                        set { $0.length = base.length }
+                                    }
+                                } label: {
+                                    Image(systemName: "arrow.counterclockwise.circle")
+                                        .font(.system(size: 20))
+                                }
+                                .disabled(!isChanged)
+                                .accessibilityLabel("원래 시간으로 재설정")
+
+                                Slider(
+                                    value: Binding(get: { scene.length }, set: { val in set { $0.length = val } }),
+                                    in: (1.0 / 30.0)...30,
+                                    onEditingChanged: { editing in
+                                        if editing {
+                                            captureBaselineIfNeeded(for: scene)
+                                        }
+                                    }
+                                )
                                 .accessibilityLabel("사진 표시 시간")
+                            }
                         }
                     } else {
-                        let duration = max(source.duration, 0.4)
-                        let end = min(duration, scene.start + scene.length)
+                        let duration = (source.duration.isFinite && source.duration > 0) ? source.duration : 0.4
+                        let safeDuration = max(duration, 0.2)
+                        let end = min(safeDuration, scene.start + scene.length)
+
+                        let hasBaseline = timingBaselines[scene.id] != nil
+                        let isChanged: Bool = {
+                            guard let base = timingBaselines[scene.id] else { return false }
+                            return abs(base.start - scene.start) > 0.001 || abs(base.length - scene.length) > 0.001
+                        }()
+
                         VStack(alignment: .leading, spacing: 6) {
-                            Text("시작 \(videoTrailerTime(scene.start)) · 끝 \(videoTrailerTime(end)) · 길이 \(String(format: "%.1f", scene.length))초")
+                            Text("구간 \(videoTrailerTime(scene.start)) ~ \(videoTrailerTime(end)) (\(String(format: "%.1f", scene.length))초) / 전체 \(videoTrailerTime(safeDuration))")
                                 .font(.subheadline).monospacedDigit()
 
-                            Text("시작").font(.caption).foregroundStyle(.secondary)
-                            Slider(value: Binding(get: { min(scene.start, duration - 0.2) }, set: { val in
-                                set {
-                                    let curEnd = min(duration, $0.start + $0.length)
-                                    $0.start = min(val, curEnd - 0.2)
-                                    $0.length = max(0.2, curEnd - $0.start)
+                            HStack(spacing: 8) {
+                                Button {
+                                    if let base = timingBaselines[scene.id] {
+                                        set {
+                                            $0.start = base.start
+                                            $0.length = base.length
+                                        }
+                                    }
+                                } label: {
+                                    Image(systemName: "arrow.counterclockwise.circle")
+                                        .font(.system(size: 20))
                                 }
-                            }), in: 0...(duration - 0.2))
-                            .accessibilityLabel("시작 지점")
+                                .disabled(!isChanged)
+                                .accessibilityLabel("원래 타이밍으로 재설정")
 
-                            Text("끝").font(.caption).foregroundStyle(.secondary)
-                            Slider(value: Binding(get: { end }, set: { val in
-                                set { $0.length = max(0.2, min(duration, val) - $0.start) }
-                            }), in: 0.2...duration)
-                            .accessibilityLabel("끝 지점")
+                                VideoRangeSlider(
+                                    start: Binding(
+                                        get: { scene.start },
+                                        set: { val in set { $0.start = val } }
+                                    ),
+                                    length: Binding(
+                                        get: { scene.length },
+                                        set: { val in set { $0.length = val } }
+                                    ),
+                                    duration: safeDuration,
+                                    onDragStart: {
+                                        captureBaselineIfNeeded(for: scene)
+                                    }
+                                )
+                            }
                         }
                     }
 
@@ -1118,6 +1364,12 @@ struct TrailerClipInspectorView: View {
         .padding(.vertical, 8)
         .background(PorcelainMetrics.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(PorcelainMetrics.line, lineWidth: 0.5))
+    }
+
+    private func captureBaselineIfNeeded(for scene: TrailerEditScene) {
+        if timingBaselines[scene.id] == nil {
+            timingBaselines[scene.id] = (start: scene.start, length: scene.length)
+        }
     }
 
     private func set(_ change: @escaping (inout TrailerEditScene) -> Void) {

@@ -300,6 +300,7 @@ struct MediaFilesSourcePage: View {
     @State private var isLoading = false
     @State private var isChoosingFolder = false
     @State private var message: String?
+    @State private var didReportBookmarkFailure = false
     @State private var loadError: String?
     @State private var loadTask: Task<Void, Never>?
     private let columns = [GridItem(.adaptive(minimum: ui(92), maximum: ui(120)), spacing: ui(8))]
@@ -369,7 +370,10 @@ struct MediaFilesSourcePage: View {
             Button("확인", role: .cancel) { message = nil }
         } message: { Text(message ?? "") }
         .task { restoreBookmark() }
-        .onChange(of: isActive) { _, active in if active, rootURL != nil { reload() } }
+        .onChange(of: isActive) { _, active in
+            guard active else { return }
+            if rootURL != nil { reload() } else { restoreBookmark() }
+        }
         .onChange(of: refreshToken) { _, _ in if rootURL != nil { reload() } }
         .onDisappear { loadTask?.cancel() }
     }
@@ -488,10 +492,14 @@ struct MediaFilesSourcePage: View {
         guard rootURL == nil, let data = UserDefaults.standard.data(forKey: Self.bookmarkKey) else { return }
         var stale = false
         guard let url = try? URL(resolvingBookmarkData: data, options: resolveOptions, relativeTo: nil, bookmarkDataIsStale: &stale) else {
-            UserDefaults.standard.removeObject(forKey: Self.bookmarkKey)
-            message = "저장된 폴더에 더 이상 접근할 수 없습니다. 필요하면 폴더를 다시 열어 주세요."
+            // 일시적인 실패일 수 있고 기기 파일 화면도 같은 북마크를 쓰므로 지우지 않는다. 다른 폴더를 고르면 그때 바뀐다.
+            if !didReportBookmarkFailure {
+                didReportBookmarkFailure = true
+                message = "저장된 폴더를 지금 열 수 없습니다. 이 화면을 다시 열면 다시 시도하며, 폴더 열기로 다른 폴더를 고를 수도 있습니다."
+            }
             return
         }
+        didReportBookmarkFailure = false
         scope.open(url)
         if stale, let fresh = try? url.bookmarkData(options: bookmarkOptions, includingResourceValuesForKeys: nil, relativeTo: nil) {
             UserDefaults.standard.set(fresh, forKey: Self.bookmarkKey)

@@ -6,6 +6,7 @@ struct ZoomableMediaImageView: UIViewRepresentable {
     let onDismiss: () -> Void
     let onNavigate: (Int) -> Void
     let onSingleTap: () -> Void
+    let onDoubleTap: () -> Void
 
     func makeUIView(context: Context) -> ZoomContainerView {
         let view = ZoomContainerView()
@@ -13,7 +14,8 @@ struct ZoomableMediaImageView: UIViewRepresentable {
             image: image,
             onDismiss: onDismiss,
             onNavigate: onNavigate,
-            onSingleTap: onSingleTap
+            onSingleTap: onSingleTap,
+            onDoubleTap: onDoubleTap
         )
         return view
     }
@@ -23,7 +25,8 @@ struct ZoomableMediaImageView: UIViewRepresentable {
             image: image,
             onDismiss: onDismiss,
             onNavigate: onNavigate,
-            onSingleTap: onSingleTap
+            onSingleTap: onSingleTap,
+            onDoubleTap: onDoubleTap
         )
     }
 
@@ -35,6 +38,7 @@ struct ZoomableMediaImageView: UIViewRepresentable {
         private var onDismiss: () -> Void = {}
         private var onNavigate: (Int) -> Void = { _ in }
         private var onSingleTap: () -> Void = {}
+        private var onDoubleTap: () -> Void = {}
 
         private var fittedImageSize = CGSize.zero
         private var lastLayoutSize = CGSize.zero
@@ -56,11 +60,13 @@ struct ZoomableMediaImageView: UIViewRepresentable {
             image: UIImage,
             onDismiss: @escaping () -> Void,
             onNavigate: @escaping (Int) -> Void,
-            onSingleTap: @escaping () -> Void
+            onSingleTap: @escaping () -> Void,
+            onDoubleTap: @escaping () -> Void
         ) {
             self.onDismiss = onDismiss
             self.onNavigate = onNavigate
             self.onSingleTap = onSingleTap
+            self.onDoubleTap = onDoubleTap
 
             guard imageView.image !== image else { return }
             imageView.stopAnimating()
@@ -241,8 +247,17 @@ struct ZoomableMediaImageView: UIViewRepresentable {
         @objc
         private func handleDoubleTap(_ gesture: UITapGestureRecognizer) {
             guard gesture.state == .ended else { return }
-            scrollView.setZoomScale(scrollView.minimumZoomScale, animated: false)
-            updateContentInsets()
+            let zoomDiffers = abs(scrollView.zoomScale - scrollView.minimumZoomScale) > 0.01
+            let fittedOffsetX = -scrollView.contentInset.left
+            let fittedOffsetY = -scrollView.contentInset.top
+            let panDiffers = abs(scrollView.contentOffset.x - fittedOffsetX) > 1.0 || abs(scrollView.contentOffset.y - fittedOffsetY) > 1.0
+            if zoomDiffers || panDiffers {
+                scrollView.zoomScale = scrollView.minimumZoomScale
+                updateContentInsets()
+                scrollView.setContentOffset(CGPoint(x: -scrollView.contentInset.left, y: -scrollView.contentInset.top), animated: false)
+                return
+            }
+            onDoubleTap()
         }
 
         @objc
@@ -267,7 +282,7 @@ struct ZoomableMediaImageView: UIViewRepresentable {
 
                 if translation.y >= 120, verticalDistance > horizontalDistance {
                     onDismiss()
-                } else if horizontalDistance >= 100, horizontalDistance > verticalDistance {
+                } else if horizontalDistance >= 60, horizontalDistance > verticalDistance {
                     onNavigate(translation.x < 0 ? 1 : -1)
                 }
 

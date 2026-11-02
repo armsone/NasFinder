@@ -163,6 +163,7 @@ final class PhotoTransferReceiverSession: ObservableObject {
         receiptSessionKey = nil
         for pending in pendingV4.values { pending.timeoutTask?.cancel() }
         pendingV4.removeAll()
+        removeUnconsumedReceiptFiles()
         v4 = ReceiptTransferState()
         wireDecoder.reset()
         wireDecoder = PhotoTransferStreamingWireDecoder()
@@ -1045,12 +1046,14 @@ extension PhotoTransferReceiverSession {
                 let event = self.v4.pendingEvents.removeFirst()
                 let keepGoing = await self.processReceiptEvent(event, on: connection)
                 if !keepGoing {
-                    self.v4.isPumping = false
+                    if self.sessionGeneration == generation { self.v4.isPumping = false }
                     return
                 }
             }
+            // 끝난 세션의 펌프가 다음 세션의 상태를 건드리지 않는다.
+            guard self.sessionGeneration == generation else { return }
             self.v4.isPumping = false
-            guard self.sessionGeneration == generation, !self.transferFinished else { return }
+            guard !self.transferFinished else { return }
             if connectionEnded {
                 self.finishInterrupted(message: "파일 전송이 완료되기 전에 연결이 끊어졌습니다.")
             } else {
@@ -1067,6 +1070,7 @@ extension PhotoTransferReceiverSession {
                 await abortReceiptStream(reason: "invalid", detail: "begin 프레임이 두 번 도착했습니다.", on: connection)
                 return false
             }
+            let generation = sessionGeneration
             v4.transferId = begin.transferId
             v4.itemCount = begin.itemCount
             await reconcileReceiptJournal()
@@ -1074,9 +1078,17 @@ extension PhotoTransferReceiverSession {
             // ready에는 현재 출력이 검증된 committed만 싣는다. 사라졌거나 바뀌었거나 확인 못 한 항목은 싣지 않고,
             // 발신이 다시 보내도 바이트만 읽고 사본을 다시 만들지 않으며 final에서 사유와 함께 보고한다.
             let committed = await verifiedReceiptItems(forTransfer: begin.transferId, committedOnly: true)
+            // 기다리는 사이 세션이 끝났으면 다음 세션을 실패로 만들어 그 임시 파일까지 지우지 않는다.
+            guard sessionGeneration == generation else { return false }
             currentFileName = nil
             let frames = makeReceiptFrames(stage: .ready, transferId: begin.transferId, status: nil, items: committed)
-            guard !frames.isEmpty, await sendControlFrames(frames, on: connection) else {
+            guard !frames.isEmpty else {
+                finishInterrupted(message: "받은 항목 확인 응답을 보내지 못했습니다.")
+                return false
+            }
+            let sent = await sendControlFrames(frames, on: connection)
+            guard sessionGeneration == generation else { return false }
+            guard sent else {
                 finishInterrupted(message: "받은 항목 확인 응답을 보내지 못했습니다.")
                 return false
             }
@@ -1188,7 +1200,9 @@ extension PhotoTransferReceiverSession {
     }
 
     /// 완성된 항목 하나를 검증·변환·영구 저장하고 저널을 갱신한다. 실패해도 다른 항목과 이미 저장된 자산은 건드리지 않는다.
+    /// stop()이 끼어들어도 이 항목의 저장과 옛 `transferId` 저널 처리는 끝까지 마친다. 결과는 시작 때 잡은 세대가 그대로일 때만 `v4`·UI에 남겨 새 세션에 섞이지 않게 한다.
     private func commitReceiptItem(itemId: String, transferId: String) async {
+        let generation = sessionGeneration
         guard let components = v4.staged.removeValue(forKey: itemId) else { return }
         defer { for component in components { try? FileManager.default.removeItem(at: component.fileURL) } }
         let journal = PhotoTransferReceiptJournal.shared
@@ -1203,12 +1217,18 @@ extension PhotoTransferReceiverSession {
                 // 중복 전달: 바이트는 이미 읽어 해시를 검증했고 재저장하지 않는다(사용자가 지웠거나 바꾼 사본을 다시 만들지 않는다).
                 // 입력 해시가 저널과 달라도 기존 항목은 건드리지 않고 저널의 실제 inputs를 그대로 보고하므로 발신이 불일치를 본다(계약 §2.3).
                 // 현재 출력을 다시 확인해, 사라졌거나 바뀌었거나 확인 못 하면 검증된 committed로 보고하지 않는다.
-                v4.outcomes[itemId] = Self.receiptItem(from: existing, check: await outputVerifier(existing))
+                let check = await outputVerifier(existing)
+                guard sessionGeneration == generation else { return }
+                v4.outcomes[itemId] = Self.receiptItem(from: existing, check: check)
                 return
             case .reserved:
                 await reconcileReceiptJournal()
+                // 끝난 세션은 판정만 저널에 남기고, 새 Photos 저장을 시작하지 않는다.
+                guard sessionGeneration == generation else { return }
                 if let promoted = journal.entry(transferId: transferId, itemId: itemId), promoted.state == .committed {
-                    v4.outcomes[itemId] = Self.receiptItem(from: promoted, check: await outputVerifier(promoted))
+                    let check = await outputVerifier(promoted)
+                    guard sessionGeneration == generation else { return }
+                    v4.outcomes[itemId] = Self.receiptItem(from: promoted, check: check)
                     return
                 }
                 if journal.entry(transferId: transferId, itemId: itemId)?.state == .reserved {
@@ -1266,6 +1286,8 @@ extension PhotoTransferReceiverSession {
                 journaled = false
                 check = .unverifiable
             }
+            // 자산과 저널은 위에서 확정됐다. 끝난 세션의 결과(검증 실패·저널 오류 포함)는 새 세션에 남기지 않는다.
+            guard sessionGeneration == generation else { return }
             if journaled, let entry = journal.entry(transferId: transferId, itemId: itemId) {
                 if check == .verified { v4.freshlyVerified.insert(itemId) }
                 v4.outcomes[itemId] = Self.receiptItem(from: entry, check: check)
@@ -1275,6 +1297,7 @@ extension PhotoTransferReceiverSession {
             }
             if check != .verified { unverifiedSavedCount += 1 }
             let results = await makeReceivedResults(identifiers: identifiers, savedAssets: prepared.assets)
+            guard sessionGeneration == generation else { return }
             v4.savedResults.append(contentsOf: results)
             receivedFileCount = v4.savedResults.count
         } catch {
@@ -1284,12 +1307,15 @@ extension PhotoTransferReceiverSession {
             if journal.entry(transferId: transferId, itemId: itemId)?.state == .reserved {
                 await reconcileReceiptJournal()
                 if let entry = journal.entry(transferId: transferId, itemId: itemId), entry.state == .committed {
-                    v4.outcomes[itemId] = Self.receiptItem(from: entry, check: await outputVerifier(entry))
+                    let check = await outputVerifier(entry)
+                    guard sessionGeneration == generation else { return }
+                    v4.outcomes[itemId] = Self.receiptItem(from: entry, check: check)
                     return
                 }
                 journal.removeReservation(transferId: transferId, itemId: itemId)
             }
             journal.markFailed(transferId: transferId, itemId: itemId, inputs: inputs, reason: reason)
+            guard sessionGeneration == generation else { return }
             v4.outcomes[itemId] = PhotoTransferReceiptItem(itemId: itemId, state: .failed, inputs: inputs, reason: reason)
         }
         currentFileName = nil
@@ -1360,8 +1386,10 @@ extension PhotoTransferReceiverSession {
             journal.markFailed(transferId: transferId, itemId: itemId, inputs: inputs, reason: "invalid")
             for component in components { try? FileManager.default.removeItem(at: component.fileURL) }
         }
-        v4.staged.removeAll()
+        removeUnconsumedReceiptFiles()
+        let generation = sessionGeneration
         let items = await verifiedReceiptItems(forTransfer: transferId)
+        guard sessionGeneration == generation else { return }
         let committedCount = items.filter { $0.state == .committed }.count
         let status: PhotoTransferReceiptFrame.Status = committedCount >= v4.itemCount && committedCount == items.count
             ? .complete : (committedCount > 0 ? .partial : .failed)
@@ -1380,19 +1408,30 @@ extension PhotoTransferReceiverSession {
 
     /// 스트림이 잘못되어 계속할 수 없을 때: 지금까지 저장된 항목을 보존하고 error 영수증을 보낸 뒤 닫는다.
     private func abortReceiptStream(reason: String, detail: String, on connection: NWConnection) async {
-        for components in v4.staged.values { for component in components { try? FileManager.default.removeItem(at: component.fileURL) } }
-        v4.staged.removeAll()
-        v4.pendingEvents.removeAll()
+        let generation = sessionGeneration
+        removeUnconsumedReceiptFiles()
         let transferId = v4.transferId ?? ""
         let items = PhotoTransferReceiptWire.isValidTransferID(transferId) ? await verifiedReceiptItems(forTransfer: transferId) : []
+        // 기다리는 사이 세션이 끝났으면 다음 세션을 실패로 만들어 그 임시 파일까지 지우지 않는다.
+        guard sessionGeneration == generation else { return }
         let committedCount = items.filter { $0.state == .committed }.count
         if PhotoTransferReceiptWire.isValidTransferID(transferId) {
             let frames = makeReceiptFrames(stage: .error, transferId: transferId,
                                            status: committedCount > 0 ? .partial : .failed, items: items)
             if !frames.isEmpty { _ = await sendControlFrames(frames, on: connection) }
         }
+        guard sessionGeneration == generation else { return }
         let kept = committedCount > 0 ? " 이미 저장된 \(committedCount)개는 그대로 유지됩니다." : ""
         finishInterrupted(message: "받은 파일을 처리하지 못했습니다: \(detail).\(kept)")
+    }
+
+    /// 큐에 남은 이벤트와 아직 커밋을 시작하지 않은 구성요소의 임시 파일을 지운다.
+    /// 커밋 중인 항목은 `commitReceiptItem`이 `staged`에서 꺼내 소유하고 끝날 때 지우므로 여기서 닿지 않는다.
+    private func removeUnconsumedReceiptFiles() {
+        PhotoTransferStreamingWireDecoder.removeFiles(in: v4.pendingEvents)
+        v4.pendingEvents.removeAll()
+        for components in v4.staged.values { for component in components { try? FileManager.default.removeItem(at: component.fileURL) } }
+        v4.staged.removeAll()
     }
 
     /// 연결이 끊기거나 스트림이 중단됐을 때. 저장된 자산과 저널은 그대로 두고 실패 화면만 보인다.

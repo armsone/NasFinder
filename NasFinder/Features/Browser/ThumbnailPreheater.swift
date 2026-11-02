@@ -235,6 +235,7 @@ final class ThumbnailPreheater: ObservableObject {
     private var task: Task<Void, Never>?
     /// 작업을 시작하는 순간(첫 await 전) 현재 모드 또는 비공개 입력으로 한 번 고정한다. 이후 모드가 바뀌어도 바뀌지 않는다.
     private var jobPrivate = false
+    var homeActivityIsPrivate: Bool { jobPrivate }
     private var cancelConnectionWork: (@Sendable () async -> Void)?
     private var appIsActive = true
     private var etaEstimator = ThumbnailETAEstimator()

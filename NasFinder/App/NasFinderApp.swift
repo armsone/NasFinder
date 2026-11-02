@@ -75,8 +75,7 @@ struct NasFinderApp: App {
                 .environmentObject(webHardServerController)
                 .tint(SkyBreezeTheme.accent)
                 .preferredColorScheme(selectedTheme.preferredColorScheme)
-                .onChange(of: selectedThemeRawValue, initial: true) { oldRawValue, newRawValue in
-                    synchronizeAppIcon(from: oldRawValue, to: newRawValue)
+                .onChange(of: selectedThemeRawValue, initial: true) { _, newRawValue in
                     MacUIScale.applyNavigationBarTheme(.resolved(newRawValue))
                 }
                 .alert("아이콘을 변경할 수 없습니다", isPresented: themeIconErrorBinding) {
