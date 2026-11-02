@@ -154,6 +154,43 @@ extension TrailerEditScene {
 
 // MARK: - 저장 형식
 
+/// 영상 시작 또는 마지막에 들어가는 타이틀/서브타이틀 카드 설정.
+struct TrailerTitleCard: Codable, Equatable, Sendable {
+    var isEnabled: Bool
+    var title: String
+    var subtitle: String
+    var duration: Double
+    var usesFirstOrLastImage: Bool
+
+    init(
+        isEnabled: Bool = false,
+        title: String = "",
+        subtitle: String = "",
+        duration: Double = 3.0,
+        usesFirstOrLastImage: Bool = true
+    ) {
+        self.isEnabled = isEnabled
+        self.title = title
+        self.subtitle = subtitle
+        self.duration = max(1.0, min(10.0, duration))
+        self.usesFirstOrLastImage = usesFirstOrLastImage
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case isEnabled, title, subtitle, duration, usesFirstOrLastImage
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        isEnabled = try c.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false
+        title = try c.decodeIfPresent(String.self, forKey: .title) ?? ""
+        subtitle = try c.decodeIfPresent(String.self, forKey: .subtitle) ?? ""
+        let d = try c.decodeIfPresent(Double.self, forKey: .duration) ?? 3.0
+        duration = max(1.0, min(10.0, d))
+        usesFirstOrLastImage = try c.decodeIfPresent(Bool.self, forKey: .usesFirstOrLastImage) ?? true
+    }
+}
+
 /// 한 편집 프로젝트가 디스크에 남기는 전부. 미디어 파일은 프로젝트 폴더 안의 상대 경로로만 참조한다.
 struct TrailerProjectRecord: Codable, Sendable {
     struct Source: Codable, Sendable {
@@ -218,6 +255,10 @@ struct TrailerProjectRecord: Codable, Sendable {
     var isPrivate: Bool? = nil
     /// 이 프로젝트에 설정된 일괄 자막 스타일(nil이면 기본값 사용).
     var batchCaption: TrailerCaption? = nil
+    /// 시작 화면 타이틀 카드 (구버전은 nil)
+    var introCard: TrailerTitleCard? = nil
+    /// 마지막 화면 타이틀 카드 (구버전은 nil)
+    var outroCard: TrailerTitleCard? = nil
 }
 
 /// 저장 요청 한 번에 필요한 값. 메인 액터에서 만들고 디스크 작업은 백그라운드에서 한다.

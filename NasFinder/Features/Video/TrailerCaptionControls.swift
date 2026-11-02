@@ -687,6 +687,79 @@ enum TrailerCaptionRenderer {
     }
 }
 
+// MARK: - 시작/마지막 타이틀 카드 렌더러
+
+enum TrailerTitleCardRenderer {
+    /// 타이틀 카드를 한 장의 고해상도 이미지(renderSize)로 렌더링한다.
+    static func renderCardImage(
+        card: TrailerTitleCard,
+        sourceImage: UIImage?,
+        renderSize: CGSize
+    ) -> UIImage? {
+        guard renderSize.width > 0, renderSize.height > 0 else { return nil }
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1.0
+        format.opaque = true
+
+        let renderer = UIGraphicsImageRenderer(size: renderSize, format: format)
+        return renderer.image { context in
+            let rect = CGRect(origin: .zero, size: renderSize)
+
+            if card.usesFirstOrLastImage, let source = sourceImage, source.size.width > 0, source.size.height > 0 {
+                // 사진/스틸 이미지를 캔버스에 aspect-fill로 그린다
+                let imageAspect = source.size.width / source.size.height
+                let renderAspect = renderSize.width / renderSize.height
+                let drawRect: CGRect
+                if imageAspect >= renderAspect {
+                    let w = renderSize.height * imageAspect
+                    drawRect = CGRect(x: (renderSize.width - w) / 2.0, y: 0, width: w, height: renderSize.height)
+                } else {
+                    let h = renderSize.width / imageAspect
+                    drawRect = CGRect(x: 0, y: (renderSize.height - h) / 2.0, width: renderSize.width, height: h)
+                }
+                source.draw(in: drawRect)
+
+                // 텍스트 가독성을 위한 어두운 반투명 딤 오버레이
+                UIColor.black.withAlphaComponent(0.48).setFill()
+                context.fill(rect)
+            } else {
+                // 담백하고 고급스러운 짙은 차콜/블랙 단색 배경
+                UIColor(red: 0.08, green: 0.08, blue: 0.09, alpha: 1.0).setFill()
+                context.fill(rect)
+            }
+
+            // 타이틀과 서브타이틀 렌더링
+            let titleText = card.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            let subtitleText = card.subtitle.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !titleText.isEmpty || !subtitleText.isEmpty else { return }
+
+            let combinedText: String
+            if !titleText.isEmpty && !subtitleText.isEmpty {
+                combinedText = "\(titleText)\n\(subtitleText)"
+            } else {
+                combinedText = titleText.isEmpty ? subtitleText : titleText
+            }
+
+            if let captionImg = TrailerCaptionRenderer.renderImage(
+                text: combinedText,
+                fontName: "pretendard_bold",
+                captionSize: .xlarge,
+                textColorHex: "#FFFFFF",
+                hasShadow: true,
+                shadowColorHex: "#000000",
+                shadowOpacity: 0.75,
+                lineSpacing: 1.25,
+                column: 2,
+                row: 2,
+                renderSize: renderSize
+            ) {
+                captionImg.draw(in: rect)
+            }
+        }
+    }
+}
+
 // MARK: - 인라인 컬러 피커 (SV 그래디언트 88pt + Hue 밴드 48pt 터치)
 
 struct InlineColorPickerView: View {

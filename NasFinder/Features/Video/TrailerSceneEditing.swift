@@ -356,6 +356,105 @@ enum TrailerSceneEditor {
             }
         }
     }
+
+    /// 음악 비트 온셋에 맞춰 사진 장면들의 길이를 미세 조절한다.
+    /// 영상 컷, 시작 위치, 자막, 프레이밍, 순서는 100% 보존된다.
+    @discardableResult
+    static func syncPhotoScenesToBeatOnsets(
+        scenes: inout [TrailerEditScene],
+        sources: [VideoTrailerSource],
+        beatOnsets: [Double],
+        musicDuration: Double,
+        introOffset: Double = 0,
+        repeatMusic: Bool = true,
+        maxBudget: Double? = nil
+    ) -> (adjustedCount: Int, averageShift: Double, unalignedCount: Int) {
+        guard !scenes.isEmpty, !beatOnsets.isEmpty, musicDuration > 0 else {
+            return (0, 0.0, 0)
+        }
+
+        let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var timelineCursor = max(0.0, introOffset)
+        var adjustedCount = 0
+        var unalignedCount = 0
+        var totalShift = 0.0
+
+        for index in scenes.indices {
+            let scene = scenes[index]
+            guard !scene.excluded else { continue }
+            guard let source = byID[scene.sourceID] else { continue }
+
+            if !source.isImage {
+                // 영상 컷/길이는 원본 의도 및 소리 싱크를 위해 100% 보존
+                timelineCursor += max(0.001, scene.length)
+                continue
+            }
+
+            // 사진 장면의 경우: 현재 목표 전환 시점 (타임라인 상에서 사진이 끝나는 시점)
+            let bounds = sceneDurationBounds(scene: scene, source: source)
+            let currentLen = scene.length
+            let targetTransitionTime = timelineCursor + currentLen
+
+            // 타임라인 상의 비트 후보군 생성 (음악 반복 여부 반영)
+            var candidateBeats: [Double] = []
+            if repeatMusic {
+                let currentLoop = Int(max(0.0, targetTransitionTime) / musicDuration)
+                for loop in max(0, currentLoop - 1)...(currentLoop + 2) {
+                    let loopBase = Double(loop) * musicDuration
+                    for b in beatOnsets {
+                        candidateBeats.append(loopBase + b)
+                    }
+                }
+            } else {
+                // single policy: 음악이 한 번만 재생되므로 음악 길이 이내의 비트만 매칭
+                if timelineCursor < musicDuration {
+                    for b in beatOnsets where b >= timelineCursor && b <= musicDuration {
+                        candidateBeats.append(b)
+                    }
+                }
+            }
+
+            // fitMusic의 마지막 예산끝 이후 후보는 적용되지 않도록 제한
+            if let maxBudget {
+                candidateBeats = candidateBeats.filter { $0 <= maxBudget }
+            }
+
+            // 사진이 가질 수 있는 최소/최대 길이 범위 안의 비트들 중 targetTransitionTime과 가장 가까운 비트 탐색
+            let minAllowed = max(bounds.minimum, 0.8)
+            let maxAllowed = min(bounds.maximum, 15.0)
+
+            var bestBeat: Double? = nil
+            var smallestDiff: Double = .greatestFiniteMagnitude
+
+            for beatTime in candidateBeats {
+                let candidateLen = beatTime - timelineCursor
+                guard candidateLen >= minAllowed && candidateLen <= maxAllowed else { continue }
+                let diff = abs(beatTime - targetTransitionTime)
+                if diff < smallestDiff {
+                    smallestDiff = diff
+                    bestBeat = beatTime
+                }
+            }
+
+            // 1.8초 이내의 가장 가까운 비트가 유효하면 사진 길이를 비트 전환 시점에 맞춤
+            if let bestBeat, smallestDiff <= 1.8 {
+                let newLen = bestBeat - timelineCursor
+                let shift = abs(newLen - currentLen)
+                if shift > 0.02 {
+                    scenes[index].length = newLen
+                    adjustedCount += 1
+                    totalShift += shift
+                }
+                timelineCursor += scenes[index].length
+            } else {
+                unalignedCount += 1
+                timelineCursor += currentLen
+            }
+        }
+
+        let avgShift = adjustedCount > 0 ? totalShift / Double(adjustedCount) : 0.0
+        return (adjustedCount, avgShift, unalignedCount)
+    }
 }
 
 extension TrailerSettingsDraft {
@@ -388,7 +487,9 @@ extension TrailerSettingsDraft {
             music: music, scenes: scenes, photoRatios: sources.map(\.imageDurationRatio),
             policyVersions: sources.map(\.imageDurationPolicyVersion),
             importances: sources.map(\.isImportant),
-            batchCaption: batchCaption)
+            batchCaption: batchCaption,
+            introCard: introCard,
+            outroCard: outroCard)
     }
 }
 
@@ -403,6 +504,8 @@ struct TrailerDraftSignature: Equatable {
     var policyVersions: [Int] = []
     var importances: [Bool] = []
     var batchCaption: TrailerCaption? = nil
+    var introCard: TrailerTitleCard = TrailerTitleCard()
+    var outroCard: TrailerTitleCard = TrailerTitleCard()
 }
 
 // MARK: - 되돌리기 / 다시 실행

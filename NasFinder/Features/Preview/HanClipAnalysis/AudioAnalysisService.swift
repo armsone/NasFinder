@@ -293,6 +293,152 @@ enum AudioAnalysisService {
             )
         }
     }
+
+    /// 음악 파일의 PCM 오디오 신호에서 에너지 변화량(Onset)을 감지하여 비트 타임스탬프 후보(초 단위)를 추출한다.
+    /// AVAssetReader 스트리밍을 통해 메모리를 제한(bounded memory)하고 메인 스레드 밖에서 비동기로 수행된다.
+    static func extractBeatOnsets(url: URL, maxDuration: Double = 3600.0) async throws -> [Double] {
+        guard maxDuration.isFinite, maxDuration > 0 else { return [] }
+        let boundedMaxDuration = min(maxDuration, 7200.0)
+        let task = Task.detached(priority: .userInitiated) { () -> [Double] in
+            let asset = AVURLAsset(url: url)
+            let duration = try await asset.load(.duration).seconds
+            guard duration.isFinite, duration > 0.5 else { return [] }
+            let analyzeDuration = min(duration, boundedMaxDuration)
+
+            guard let track = try await asset.loadTracks(withMediaType: .audio).first else {
+                return []
+            }
+
+            let reader = try AVAssetReader(asset: asset)
+            let output = AVAssetReaderTrackOutput(
+                track: track,
+                outputSettings: [
+                    AVFormatIDKey: kAudioFormatLinearPCM,
+                    AVLinearPCMBitDepthKey: 16,
+                    AVLinearPCMIsFloatKey: false,
+                    AVLinearPCMIsBigEndianKey: false,
+                    AVLinearPCMIsNonInterleaved: false
+                ]
+            )
+            output.alwaysCopiesSampleData = false
+            guard reader.canAdd(output) else { return [] }
+            reader.add(output)
+            guard reader.startReading() else { return [] }
+
+            // 40Hz (25ms 간격) 에너지 버킷팅으로 메모리 엄격 제한 (5분 음악 기준 약 12,000개 버킷 = 96KB)
+            let bucketInterval = 0.025
+            let totalBuckets = max(1, Int(analyzeDuration / bucketInterval))
+            var energyTotals = Array(repeating: 0.0, count: totalBuckets)
+            var sampleCounts = Array(repeating: 0, count: totalBuckets)
+
+            while let sample = output.copyNextSampleBuffer() {
+                try Task.checkCancellation()
+                guard let block = CMSampleBufferGetDataBuffer(sample) else { continue }
+                var length = 0
+                var pointer: UnsafeMutablePointer<Int8>?
+                guard CMBlockBufferGetDataPointer(
+                    block,
+                    atOffset: 0,
+                    lengthAtOffsetOut: nil,
+                    totalLengthOut: &length,
+                    dataPointerOut: &pointer
+                ) == kCMBlockBufferNoErr,
+                      let pointer,
+                      length >= MemoryLayout<Int16>.size
+                else { continue }
+
+                let sampleCount = length / MemoryLayout<Int16>.size
+                let values = UnsafeRawPointer(pointer).assumingMemoryBound(to: Int16.self)
+                let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+                let startTime = pts.seconds
+                guard startTime.isFinite, startTime >= 0, startTime < analyzeDuration else { continue }
+
+                let bufDuration = CMSampleBufferGetDuration(sample)
+                let totalDuration = (bufDuration.isValid && bufDuration.seconds.isFinite && bufDuration.seconds > 0)
+                    ? bufDuration.seconds
+                    : (Double(sampleCount) / 44100.0)
+
+                // 버퍼 내 샘플들을 하위 블록으로 나누어 정확한 시간 위치 버킷들에 RMS 에너지 분배
+                let subChunkCount = min(8, max(1, Int((totalDuration / bucketInterval).rounded(.up))))
+                let step = max(1, sampleCount / subChunkCount)
+                var offset = 0
+                while offset < sampleCount {
+                    let chunkEnd = min(sampleCount, offset + step)
+                    let chunkSize = chunkEnd - offset
+                    var sum = 0.0
+                    for i in offset..<chunkEnd {
+                        let v = Double(values[i]) / Double(Int16.max)
+                        sum += v * v
+                    }
+                    let rms = sqrt(sum / Double(max(1, chunkSize)))
+                    let fraction = (Double(offset) + Double(chunkSize) / 2.0) / Double(max(1, sampleCount))
+                    let chunkTime = startTime + fraction * totalDuration
+                    if chunkTime >= 0 && chunkTime < analyzeDuration {
+                        let bucket = min(totalBuckets - 1, max(0, Int(chunkTime / bucketInterval)))
+                        energyTotals[bucket] += rms
+                        sampleCounts[bucket] += 1
+                    }
+                    offset = chunkEnd
+                }
+            }
+
+            if reader.status == .failed || reader.status == .cancelled {
+                return []
+            }
+
+            var energyCurve = Array(repeating: 0.0, count: totalBuckets)
+            for i in 0..<totalBuckets {
+                energyCurve[i] = sampleCounts[i] > 0 ? energyTotals[i] / Double(sampleCounts[i]) : 0
+            }
+
+            let maxEnergy = energyCurve.max() ?? 0
+            guard maxEnergy > 0.005 else {
+                return []
+            }
+
+            // Positive Energy Flux (에너지 온셋)
+            var flux = Array(repeating: 0.0, count: totalBuckets)
+            for i in 1..<totalBuckets {
+                let diff = energyCurve[i] - energyCurve[i - 1]
+                flux[i] = max(0.0, diff)
+            }
+
+            // 로컬 이동 평균 적응형 임계값 계산 (윈도우 ±10 버킷 = ±0.25초)
+            let windowRadius = 10
+            var beats: [Double] = []
+            var lastBeatTime = -1.0
+            let minInterval = 0.22 // 최소 비트 간격 (최대 270 BPM)
+
+            for i in 1..<(totalBuckets - 1) {
+                let currentFlux = flux[i]
+                guard currentFlux > 0.001 else { continue }
+                guard currentFlux >= flux[i - 1], currentFlux >= flux[i + 1] else { continue }
+
+                let wStart = max(0, i - windowRadius)
+                let wEnd = min(totalBuckets - 1, i + windowRadius)
+                var localSum = 0.0
+                for k in wStart...wEnd { localSum += flux[k] }
+                let localAvg = localSum / Double(max(1, wEnd - wStart + 1))
+                let threshold = localAvg * 1.35 + 0.004
+
+                if currentFlux > threshold {
+                    let beatTime = (Double(i) + 0.5) * bucketInterval
+                    if beatTime - lastBeatTime >= minInterval {
+                        beats.append(beatTime)
+                        lastBeatTime = beatTime
+                    }
+                }
+            }
+
+            return beats
+        }
+
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
 }
 
 /// How loud a file's own sound actually is over time, used to decide when background

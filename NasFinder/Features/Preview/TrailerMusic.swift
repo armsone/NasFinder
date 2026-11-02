@@ -56,10 +56,11 @@ struct TrailerMusicSelection: Equatable {
 }
 
 enum TrailerMusicError: LocalizedError {
-    case unreadable, tooShort, tooLong, tooManyRepeats
+    case unreadable, tooShort, tooLong, tooManyRepeats, cardsExceedMusic
 
     var errorDescription: String? {
         switch self {
+        case .cardsExceedMusic: "시작·마지막 화면이 음악보다 길어요. 화면 시간을 줄이거나 음악길이를 늘려 주세요."
         case .unreadable: "이 음악 파일은 이 기기에서 재생할 수 없는 형식입니다. 다른 음악을 골라 주세요."
         case .tooShort: "음악이 1초보다 짧아 쓸 수 없습니다."
         case .tooLong: "1시간보다 긴 음악은 쓸 수 없습니다."
@@ -69,6 +70,7 @@ enum TrailerMusicError: LocalizedError {
 
     var shortTitle: String {
         switch self {
+        case .cardsExceedMusic: "화면이 음악보다 긺"
         case .unreadable: "이 기기에서 쓸 수 없는 형식"
         case .tooShort: "1초보다 짧음"
         case .tooLong: "1시간보다 긺"

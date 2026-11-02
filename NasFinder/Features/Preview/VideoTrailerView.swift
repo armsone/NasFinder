@@ -14,7 +14,7 @@ enum MediaError: LocalizedError {
 }
 
 private enum TrailerError: LocalizedError {
-    case exportUnavailable, exportFailed, noUsableSources, outputMissing, intermediateInvalid
+    case exportUnavailable, exportFailed, noUsableSources, outputMissing, intermediateInvalid, musicTooShortForCards
     var errorDescription: String? {
         switch self {
         case .intermediateInvalid: "만든 중간 영상을 읽지 못했습니다. 다시 시도해 주세요."
@@ -22,6 +22,7 @@ private enum TrailerError: LocalizedError {
         case .exportFailed: "예고편을 만들지 못했습니다. 다시 시도해 주세요."
         case .noUsableSources: "예고편으로 만들 수 있는 사진이나 영상이 없습니다."
         case .outputMissing: "완성한 예고편 파일이 작업 폴더에서 사라졌습니다. 다시 시도해 주세요."
+        case .musicTooShortForCards: "음악 길이가 시작/마지막 화면보다 짧습니다. 화면 시간을 줄이거나 음악을 더 반복해 주세요."
         }
     }
 }
@@ -156,12 +157,15 @@ enum TrailerPreparedPlan {
     /// Empty when the chosen music cannot be matched within the repeat limit.
     static func scenes(mode: VideoTrailerMode, sources: [VideoTrailerSource], total: Double,
                        clipLength: Double, music: TrailerMusicSelection?,
-                       manual: [TrailerEditScene]? = nil) -> [VideoTrailerScene] {
+                       manual: [TrailerEditScene]? = nil,
+                       cardsDuration: Double = 0.0) -> [VideoTrailerScene] {
         let base = base(mode: mode, sources: sources, total: total, clipLength: clipLength, manual: manual)
         guard let music else { return base }
         switch music.policy {
         case .fitMusic:
-            return VideoTrailerBatchPlan.fitted(base, to: music.fittedDuration) ?? []
+            let bodyTarget = music.fittedDuration - cardsDuration
+            guard bodyTarget >= 0.5 else { return [] }
+            return VideoTrailerBatchPlan.fitted(base, to: bodyTarget) ?? []
         case .loopMusic:
             guard music.duration > 0 else { return 0 <= TrailerMusic.maximumRepeats ? base : [] }
             let baseTotal = base.reduce(0) { $0 + $1.length }
@@ -219,6 +223,8 @@ struct TrailerSettingsDraft {
     var showingClipLength = false
     /// 일괄 적용 자막 스타일
     var batchCaption: TrailerCaption? = nil
+    var introCard: TrailerTitleCard = TrailerTitleCard()
+    var outroCard: TrailerTitleCard = TrailerTitleCard()
 }
 
 /// What a suspended editor leaves in `TrailerDraftStore` and takes back when it is
@@ -884,12 +890,16 @@ struct VideoTrailerView: View {
         // output file; a computed zero is shown as zero. Only with no prepared sources
         // does the nominal source sum stand in as an estimate.
         let prepared = currentDraft()
+        let cardsDur = (prepared.introCard.isEnabled ? prepared.introCard.duration : 0.0)
+            + (prepared.outroCard.isEnabled ? prepared.outroCard.duration : 0.0)
         if prepared.sources.isEmpty {
-            entry.totalDuration = model.sources.reduce(0) { $0 + $1.duration }
+            entry.totalDuration = model.sources.reduce(0) { $0 + $1.duration } + cardsDur
         } else {
-            entry.totalDuration = TrailerPreparedPlan.scenes(
+            let sceneDur = TrailerPreparedPlan.scenes(
                 mode: mode, sources: prepared.sources, total: prepared.total,
-                clipLength: prepared.clipLength, music: prepared.music, manual: prepared.scenes).reduce(0) { $0 + $1.length }
+                clipLength: prepared.clipLength, music: prepared.music, manual: prepared.scenes,
+                cardsDuration: cardsDur).reduce(0) { $0 + $1.length }
+            entry.totalDuration = sceneDur > 0 ? sceneDur + cardsDur : 0
         }
         entry.suspendedAt = Date()
         entry.customTitle = projects.records[sessionID]?.customTitle
@@ -1034,7 +1044,8 @@ struct VideoTrailerView: View {
             guard await saveDraftNow() else { return }
             model.start(items: items, service: service, mode: mode, generate: true, sourceOrder: reconciled.map(\.id),
                         total: draft.total, clipLength: draft.clipLength, aspectRatio: draft.aspectRatio, music: draft.music,
-                        manualScenes: draft.scenes, draftSources: reconciled, revision: revision)
+                        manualScenes: draft.scenes, draftSources: reconciled, revision: revision,
+                        introCard: draft.introCard, outroCard: draft.outroCard)
             if dropsSources { history.reset(to: draft) }
         }
     }
@@ -1418,7 +1429,9 @@ private struct TrailerSettingsHost: View {
             scenes: binding.scenes, nextSceneID: binding.nextSceneID, selectedSceneID: selectedSceneID,
             chrome: chrome, captionDraft: captionDraft,
             isOutputCurrent: isOutputCurrent, renderPlan: renderPlan, outputName: outputName,
-            savedFilename: savedFilename
+            savedFilename: savedFilename,
+            introCard: binding.introCard,
+            outroCard: binding.outroCard
         )
         .scrollContentBackground(isPorcelain ? .hidden : .automatic)
         .background(isPorcelain ? PorcelainMetrics.paper : Color.clear)
@@ -1469,6 +1482,8 @@ private struct VideoTrailerSettings: View {
     let renderPlan: [VideoTrailerScene]
     let outputName: String
     let savedFilename: String?
+    @Binding var introCard: TrailerTitleCard
+    @Binding var outroCard: TrailerTitleCard
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue = AppThemePreference.light.rawValue
     @State private var showingMusicPicker = false
@@ -1501,6 +1516,17 @@ private struct VideoTrailerSettings: View {
     /// 전체 화면 들어가기·나오기마다 늘려 재생을 그 자리에서 멈춘다.
     @State private var pauseRequest = 0
 
+    private enum TrailerCardType: String, Identifiable {
+        case intro = "시작 화면"
+        case outro = "마지막 화면"
+        var id: String { rawValue }
+    }
+    @State private var editingCardType: TrailerCardType? = nil
+    @State private var cardOriginalRenderSize: CGSize?
+    @State private var isAnalyzingTempo = false
+    @State private var tempoNotice: String? = nil
+    @State private var tempoTask: Task<Void, Never>? = nil
+
     private enum VideoTrailerTab: String, CaseIterable, Identifiable {
         case clips = "클립"
         case caption = "자막"
@@ -1528,14 +1554,60 @@ private struct VideoTrailerSettings: View {
         TrailerPreparedPlan.base(mode: mode, sources: sources, total: total, clipLength: clipLength, manual: scenes)
     }
     private var baseTotal: Double { baseProposal.reduce(0) { $0 + $1.length } }
+    private var cardsDuration: Double {
+        (introCard.isEnabled ? introCard.duration : 0.0) + (outroCard.isEnabled ? outroCard.duration : 0.0)
+    }
     /// Empty when the chosen music cannot be matched within the repeat limit.
     private var proposal: [VideoTrailerScene] {
-        TrailerPreparedPlan.scenes(mode: mode, sources: sources, total: total, clipLength: clipLength, music: music, manual: scenes)
+        TrailerPreparedPlan.scenes(mode: mode, sources: sources, total: total, clipLength: clipLength, music: music, manual: scenes, cardsDuration: cardsDuration)
     }
     private var musicRepeatCount: Int {
         guard let music, music.duration > 0 else { return 0 }
         return max(1, Int((baseTotal / music.duration - 0.000001).rounded(.up)))
     }
+    private var firstIncludedSource: VideoTrailerSource? {
+        guard let id = proposal.first?.sourceID else { return nil }
+        return sources.first { $0.id == id }
+    }
+    private var lastIncludedSource: VideoTrailerSource? {
+        guard let id = proposal.last?.sourceID else { return nil }
+        return sources.first { $0.id == id }
+    }
+    private var cardSheetRenderSize: CGSize {
+        if let explicit = aspectRatio?.renderSize { return explicit }
+        if let measured = cardOriginalRenderSize { return measured }
+        if let image = firstIncludedSource.flatMap({ sourceImages[$0.id] }),
+           image.size.width > 0, image.size.height > 0 {
+            return OutputAspectRatio.renderSize(for: image.size)
+        }
+        return CGSize(width: 1080, height: 1920)
+    }
+
+    /// Loads the card's background frame and the original canvas size off the main actor,
+    /// even when the first/last scene's source is not selected in the grid.
+    private func loadCardSheetMedia(_ cardType: TrailerCardType) async {
+        let source = cardType == .intro ? firstIncludedSource : lastIncludedSource
+        let scene = cardType == .intro ? proposal.first : proposal.last
+        let included = proposal.compactMap { scene in sources.first { $0.id == scene.sourceID } }
+        if let source, let scene {
+            let time = cardType == .intro
+                ? scene.start
+                : max(scene.start, scene.start + scene.length - 0.5)
+            let image = try? await VideoTrailerModel.extractStillImage(source: source, at: time)
+            if !Task.isCancelled, let image { sourceImages[source.id] = image }
+        }
+        guard aspectRatio == nil, !Task.isCancelled else { return }
+        var size: CGSize?
+        if let video = included.first(where: { !$0.isImage }) {
+            size = (try? await trailerOrientedVideoSize(url: video.url)) ?? nil
+        } else if let image = included.first(where: { $0.isImage }) {
+            size = try? VideoTrailerImageClip.imageSize(at: image.url)
+        }
+        if !Task.isCancelled, let size, size.width > 0, size.height > 0 {
+            cardOriginalRenderSize = OutputAspectRatio.renderSize(for: size)
+        }
+    }
+
     private func sourceFrameReporter(id: Int) -> some View {
         GeometryReader { geometry in
             let frame: CGRect = geometry.frame(in: .named("trailerOrder"))
@@ -1681,7 +1753,12 @@ private struct VideoTrailerSettings: View {
     private var musicHint: String? {
         guard let music else { return nil }
         guard !baseProposal.isEmpty else { return nil }
-        guard !proposal.isEmpty else { return TrailerMusicError.tooManyRepeats.errorDescription }
+        if proposal.isEmpty {
+            if music.policy == .fitMusic && cardsDuration > 0 && music.fittedDuration <= cardsDuration + 0.5 {
+                return "음악 길이가 시작/마지막 화면보다 짧습니다. 화면 시간을 줄이거나 음악을 더 반복해 주세요."
+            }
+            return TrailerMusicError.tooManyRepeats.errorDescription
+        }
         switch music.policy {
         case .fitMusic:
             let repeats = music.fitCount > 1 ? "음악을 \(music.fitCount)번 이어 틀어요 · " : ""
@@ -1695,12 +1772,17 @@ private struct VideoTrailerSettings: View {
                 : "음악은 한 번만 나오고 영상이 끝나면 멈춰요"
         }
     }
-    private var actualTotal: Double { proposal.reduce(0) { $0 + $1.length } }
+    private var actualTotal: Double {
+        proposal.isEmpty ? 0 : proposal.reduce(0) { $0 + $1.length } + cardsDuration
+    }
     private var sceneSummary: String {
-        if mode == .mediaMusic { return "\(proposal.count)장면 · 원본 그대로" }
+        let cardCount = (introCard.isEnabled ? 1 : 0) + (outroCard.isEnabled ? 1 : 0)
+        let totalCount = proposal.count + cardCount
+        let cardSuffix = cardCount > 0 ? " (카드 \(cardCount))" : ""
+        if mode == .mediaMusic { return "\(totalCount)장면 · 원본 그대로\(cardSuffix)" }
         // 직접 편집한 장면은 길이가 저마다 달라 장면 수만 보인다.
-        if photoOnly || scenes != nil { return "\(proposal.count)장면" }
-        return "\(proposal.count)장면 · \(clipLength.formatted(.number.precision(.fractionLength(0...1))))초씩"
+        if photoOnly || scenes != nil { return "\(totalCount)장면\(cardSuffix)" }
+        return "\(totalCount)장면 · \(clipLength.formatted(.number.precision(.fractionLength(0...1))))초씩\(cardSuffix)"
     }
     private var originalSummary: String {
         if mode == .mediaMusic { return "선택한 순서대로 이어 붙여요" }
@@ -1763,11 +1845,44 @@ private struct VideoTrailerSettings: View {
         }
         if let music {
             HStack(spacing: ui(5)) {
-                ForEach(TrailerMusicPolicy.selectable) { policy in
-                    TrailerChoiceButton(title: musicPolicyTitle(policy), selected: music.policy == policy) {
-                        chooseMusicPolicy(policy)
-                    }
+                // 1. 음악길이
+                let isFit = music.policy == .fitMusic
+                let fitTitle = isFit && music.fitCount > 1 ? "음악길이 (\(music.fitCount))" : "음악길이"
+                TrailerChoiceButton(title: fitTitle, selected: isFit) {
+                    chooseMusicPolicy(.fitMusic)
                 }
+
+                // 2. 음악 반복
+                TrailerChoiceButton(title: "음악 반복", selected: music.policy == .loopMusic) {
+                    chooseMusicPolicy(.loopMusic)
+                }
+
+                // 3. 음악한번
+                TrailerChoiceButton(title: "음악한번", selected: music.policy == .single) {
+                    chooseMusicPolicy(.single)
+                }
+
+                // 4. 음악템포
+                Button {
+                    runTempoSyncAction()
+                } label: {
+                    HStack(spacing: ui(3)) {
+                        if isAnalyzingTempo {
+                            ProgressView().scaleEffect(0.7)
+                        } else {
+                            Image(systemName: "metronome")
+                                .font(.system(size: 11))
+                        }
+                        Text("음악템포")
+                    }
+                    .font(.ui(.footnote).weight(.medium))
+                    .frame(maxWidth: .infinity, minHeight: ui(44))
+                    .background(Color(uiColor: .tertiarySystemFill), in: RoundedRectangle(cornerRadius: ui(8)))
+                    .overlay { RoundedRectangle(cornerRadius: ui(8)).stroke(Color.clear, lineWidth: 1) }
+                }
+                .buttonStyle(.plain)
+                .disabled(isAnalyzingTempo)
+                .accessibilityLabel("음악템포에 맞춰 사진 전환")
             }
             autoDuckToggle
             musicLevelSlider
@@ -1779,6 +1894,90 @@ private struct VideoTrailerSettings: View {
             Text("음악을 골라야 영상을 만들 수 있어요").font(.ui(.caption)).foregroundStyle(.secondary)
         }
     }
+    }
+
+    private func runTempoSyncAction() {
+        guard let music else {
+            tempoNotice = "음악을 먼저 골라 주세요."
+            return
+        }
+        guard sources.contains(where: \.isImage) else {
+            tempoNotice = "박자를 맞출 사진 클립이 없습니다. 영상 클립의 시작과 길이는 100% 보존됩니다."
+            return
+        }
+        guard !isAnalyzingTempo else { return }
+        isAnalyzingTempo = true
+
+        let beforeSignature = TrailerDraftSignature(
+            sourceIDs: sources.map(\.id), total: total, clipLength: clipLength, aspect: aspectRatio?.rawValue,
+            music: music, scenes: scenes, photoRatios: sources.map(\.imageDurationRatio),
+            policyVersions: sources.map(\.imageDurationPolicyVersion),
+            importances: sources.map(\.isImportant),
+            batchCaption: captionDraft.caption,
+            introCard: introCard,
+            outroCard: outroCard)
+
+        let musicURL = music.url
+        let musicDuration = music.duration
+        let isRepeat = music.policy == .loopMusic || (music.policy == .fitMusic && music.fitCount > 1)
+        let introOffset = introCard.isEnabled ? introCard.duration : 0.0
+        let fitBudget: Double? = music.policy == .fitMusic ? music.fittedDuration : nil
+
+        tempoTask?.cancel()
+        tempoTask = Task { @MainActor in
+            defer {
+                isAnalyzingTempo = false
+                tempoTask = nil
+            }
+            do {
+                let beats = try await AudioAnalysisService.extractBeatOnsets(url: musicURL, maxDuration: musicDuration)
+                guard !Task.isCancelled else { return }
+
+                let currentSignature = TrailerDraftSignature(
+                    sourceIDs: sources.map(\.id), total: total, clipLength: clipLength, aspect: aspectRatio?.rawValue,
+                    music: self.music, scenes: scenes, photoRatios: sources.map(\.imageDurationRatio),
+                    policyVersions: sources.map(\.imageDurationPolicyVersion),
+                    importances: sources.map(\.isImportant),
+                    batchCaption: captionDraft.caption,
+                    introCard: introCard,
+                    outroCard: outroCard)
+
+                guard beforeSignature == currentSignature else { return }
+
+                guard !beats.isEmpty else {
+                    tempoNotice = "선택한 음악에서 뚜렷한 비트를 찾지 못해 사진 길이를 변경하지 않았습니다."
+                    return
+                }
+
+                var candidateScenes = scenes ?? TrailerPreparedPlan.seedEdits(mode: mode, sources: sources, total: total, clipLength: clipLength)
+                let result = TrailerSceneEditor.syncPhotoScenesToBeatOnsets(
+                    scenes: &candidateScenes,
+                    sources: sources,
+                    beatOnsets: beats,
+                    musicDuration: musicDuration,
+                    introOffset: introOffset,
+                    repeatMusic: isRepeat,
+                    maxBudget: fitBudget
+                )
+
+                if result.adjustedCount > 0 {
+                    if scenes == nil {
+                        nextSceneID = (candidateScenes.map(\.id).max() ?? 0) + 1
+                    }
+                    scenes = candidateScenes
+                    total = candidateScenes.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+                    tempoNotice = "사진 \(result.adjustedCount)개 장면의 길이를 음악 비트에 맞췄습니다. 영상 컷과 순서는 보존됩니다."
+                } else {
+                    if result.unalignedCount > 0 {
+                        tempoNotice = "비트 후보가 없거나 너무 멀어 가까운 전환점을 찾지 못해 기존 길이를 유지했습니다."
+                    } else {
+                        tempoNotice = "모든 사진 장면이 이미 비트 전환 위치에 맞아 길이를 변경하지 않았습니다."
+                    }
+                }
+            } catch {
+                tempoNotice = "음악 비트 분석 중 오류가 발생했습니다: \(error.localizedDescription)"
+            }
+        }
     }
 
     @ViewBuilder
@@ -1914,6 +2113,29 @@ private struct VideoTrailerSettings: View {
             Button("취소", role: .cancel) { }
         } message: {
             Text("이 편집을 위해 받아 둔 사본과 폰하드에 저장하지 않은 완성 영상이 지워집니다. 원본과 폰하드에 저장한 파일은 그대로입니다.")
+        }
+        .sheet(item: $editingCardType) { cardType in
+            NavigationStack {
+                TrailerTitleCardSheet(
+                    card: cardType == .intro ? $introCard : $outroCard,
+                    isIntro: cardType == .intro,
+                    sourceImage: cardType == .intro ? (firstIncludedSource.flatMap { sourceImages[$0.id] }) : (lastIncludedSource.flatMap { sourceImages[$0.id] }),
+                    renderSize: cardSheetRenderSize
+                )
+            }
+            .task(id: cardType) { await loadCardSheetMedia(cardType) }
+        }
+        .alert("음악 박자 맞추기", isPresented: Binding(
+            get: { tempoNotice != nil },
+            set: { if !$0 { tempoNotice = nil } }
+        )) {
+            Button("확인", role: .cancel) { tempoNotice = nil }
+        } message: {
+            Text(tempoNotice ?? "")
+        }
+        .onDisappear {
+            tempoTask?.cancel()
+            tempoTask = nil
         }
         .navigationTitle(settingsTitle)
         .navigationBarTitleDisplayMode(.inline)
@@ -2403,22 +2625,69 @@ private struct VideoTrailerSettings: View {
 
     @ViewBuilder
     private var boardPane: some View {
-        if let editScenes = scenes {
-            TrailerStoryboardGrid(
-                scenes: editScenes, sources: sources,
-                selectedID: guardedSelection, selectedIDs: $selectedSceneIDs,
-                columnsCount: gridColumnsBinding,
-                scrollable: false,
-                showToolbar: false,
-                multiSelect: $isSelectingScenes,
-                onSelectSceneForDetail: nil,
-                onMoveScenes: { ids, position in moveScenes(ids, to: position) },
-                onDuplicateScenes: { ids in duplicateScenes(ids) },
-                onDeleteScenes: { ids in deleteScenes(ids) })
-        } else {
-            sourceOrderSection
-                .frame(maxWidth: .infinity, alignment: .leading)
+        VStack(spacing: 8) {
+            titleCardBar(isIntro: true)
+            if let editScenes = scenes {
+                TrailerStoryboardGrid(
+                    scenes: editScenes, sources: sources,
+                    selectedID: guardedSelection, selectedIDs: $selectedSceneIDs,
+                    columnsCount: gridColumnsBinding,
+                    scrollable: false,
+                    showToolbar: false,
+                    multiSelect: $isSelectingScenes,
+                    onSelectSceneForDetail: nil,
+                    onMoveScenes: { ids, position in moveScenes(ids, to: position) },
+                    onDuplicateScenes: { ids in duplicateScenes(ids) },
+                    onDeleteScenes: { ids in deleteScenes(ids) })
+            } else {
+                sourceOrderSection
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            titleCardBar(isIntro: false)
         }
+    }
+
+    private func titleCardBar(isIntro: Bool) -> some View {
+        let card = isIntro ? introCard : outroCard
+        let titleName = isIntro ? "시작 화면" : "마지막 화면"
+        let isEnabled = card.isEnabled
+        return Button {
+            editingCardType = isIntro ? .intro : .outro
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: isEnabled ? "checkmark.circle.fill" : "plus.circle")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isEnabled ? PorcelainMetrics.accent : .secondary)
+                Text(titleName)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isEnabled ? .primary : .secondary)
+                if isEnabled {
+                    Text("· \(String(format: "%.1f초", card.duration))")
+                        .font(.system(size: 12).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    if !card.title.isEmpty {
+                        Text("“\(card.title)”")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                } else {
+                    Text("(사용 안 함)")
+                        .font(.system(size: 12))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "slider.horizontal.3")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .background(PorcelainMetrics.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(isEnabled ? PorcelainMetrics.accent.opacity(0.6) : PorcelainMetrics.line, lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(isIntro ? "시작 화면 설정" : "마지막 화면 설정")
     }
 
     private func moveScenes(_ ids: Set<Int>, to position: Int) {
@@ -3989,7 +4258,7 @@ final class VideoTrailerModel: ObservableObject {
         }
     }
 
-    nonisolated private static func extractStillImage(
+    nonisolated static func extractStillImage(
         source: VideoTrailerSource,
         at timeSeconds: Double,
         maxPixelSize: CGFloat = 1920
@@ -4491,7 +4760,9 @@ final class VideoTrailerModel: ObservableObject {
                clipLength: Double? = nil, aspectRatio: OutputAspectRatio? = nil,
                music: TrailerMusicSelection? = nil, keepsInputOrder: Bool = false,
                manualScenes: [TrailerEditScene]? = nil, draftSources: [VideoTrailerSource]? = nil,
-               revision: TrailerOutputRevision? = nil) {
+               revision: TrailerOutputRevision? = nil,
+               introCard: TrailerTitleCard? = nil,
+               outroCard: TrailerTitleCard? = nil) {
         guard !isBusy, !items.isEmpty else { return }
         let total = total.map { $0.isFinite ? min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, $0)) : 1 }
         self.mode = mode
@@ -4722,10 +4993,15 @@ final class VideoTrailerModel: ObservableObject {
                     clipLength: clipLength ?? recommendedClipLength, manual: manualScenes)
                 guard !baseSelected.isEmpty else { throw TrailerError.exportFailed }
                 if let music, let musicInput, music.policy == .fitMusic {
-                    // Same ordered scenes, repeated or cut at the end to the music's length
-                    // laid end to end `fitCount` times; the music loop below fills the same.
-                    guard let fitted = VideoTrailerBatchPlan.fitted(baseSelected,
-                        to: musicInput.range.duration.seconds * Double(max(1, music.fitCount))) else {
+                    // 시작/끝 카드가 켜져 있으면 카드 길이를 음악 예산에서 공제
+                    let cardsDuration = (introCard?.isEnabled == true ? introCard!.duration : 0)
+                        + (outroCard?.isEnabled == true ? outroCard!.duration : 0)
+                    let totalMusicDuration = musicInput.range.duration.seconds * Double(max(1, music.fitCount))
+                    guard totalMusicDuration - cardsDuration >= 0.5 else {
+                        throw TrailerMusicError.cardsExceedMusic
+                    }
+                    let bodyTarget = totalMusicDuration - cardsDuration
+                    guard let fitted = VideoTrailerBatchPlan.fitted(baseSelected, to: bodyTarget) else {
                         throw TrailerMusicError.tooManyRepeats
                     }
                     selected = fitted
@@ -4832,6 +5108,108 @@ final class VideoTrailerModel: ObservableObject {
                 }
 
                 guard !intermediateClips.isEmpty else { throw TrailerError.noUsableSources }
+
+                // 카드가 들어가기 전, 실제로 렌더된 본편 장면 (카드 클립은 scenes가 비어 있다)
+                let actualBodyScenes = intermediateClips.flatMap(\.scenes)
+
+                // 시작 화면 타이틀 카드 클립 생성 및 맨 앞 삽입
+                if let intro = introCard, intro.isEnabled, intro.duration > 0 {
+                    let introURL = directory.appendingPathComponent("intro-card-\(UUID().uuidString).mov")
+                    let firstScene = actualBodyScenes.first
+                    let firstSrc = firstScene.flatMap { currentSourceByID[$0.sourceID] }
+                    let firstThumb: UIImage?
+                    if let firstSrc, let firstScene {
+                        let t = firstSrc.isImage ? 0.0 : firstScene.start
+                        firstThumb = try? await Self.extractStillImage(source: firstSrc, at: t, maxPixelSize: 1920)
+                    } else {
+                        firstThumb = nil
+                    }
+                    if let cardImage = TrailerTitleCardRenderer.renderCardImage(card: intro, sourceImage: firstThumb, renderSize: renderSize) {
+                        let tempCardImgURL = directory.appendingPathComponent("intro-img-\(UUID().uuidString).png")
+                        if let pngData = cardImage.pngData() {
+                            try pngData.write(to: tempCardImgURL)
+                            attemptFiles.append(tempCardImgURL)
+                            let introDuration = intro.duration
+                            let introFraming = VideoTrailerImageClip.Framing(fitsFrame: true, offsetX: 0, offsetY: 0)
+                            let renderTask = Task.detached(priority: .userInitiated) {
+                                try Task.checkCancellation()
+                                try VideoTrailerImageClip.render(
+                                    imageURL: tempCardImgURL,
+                                    duration: introDuration,
+                                    renderSize: renderSize,
+                                    outputURL: introURL,
+                                    seed: 1,
+                                    framing: introFraming
+                                )
+                            }
+                            do {
+                                try await withTaskCancellationHandler {
+                                    try await renderTask.value
+                                } onCancel: {
+                                    renderTask.cancel()
+                                }
+                            } catch {
+                                try? FileManager.default.removeItem(at: tempCardImgURL)
+                                try? FileManager.default.removeItem(at: introURL)
+                                throw error
+                            }
+                            try? FileManager.default.removeItem(at: tempCardImgURL)
+                            intermediateClips.insert(TrailerRenderedClip(url: introURL, scenes: [], hasOriginalSound: false), at: 0)
+                            intermediateFiles.append(introURL)
+                            attemptFiles.append(introURL)
+                        }
+                    }
+                }
+
+                // 마지막 화면 타이틀 카드 클립 생성 및 맨 뒤 삽입
+                if let outro = outroCard, outro.isEnabled, outro.duration > 0 {
+                    let outroURL = directory.appendingPathComponent("outro-card-\(UUID().uuidString).mov")
+                    let lastScene = actualBodyScenes.last
+                    let lastSrc = lastScene.flatMap { currentSourceByID[$0.sourceID] }
+                    let lastThumb: UIImage?
+                    if let lastSrc, let lastScene {
+                        let end = lastScene.start + lastScene.length
+                        let t = lastSrc.isImage ? 0.0 : (end > 0.5 ? end - 0.5 : 0.0)
+                        lastThumb = try? await Self.extractStillImage(source: lastSrc, at: t, maxPixelSize: 1920)
+                    } else {
+                        lastThumb = nil
+                    }
+                    if let cardImage = TrailerTitleCardRenderer.renderCardImage(card: outro, sourceImage: lastThumb, renderSize: renderSize) {
+                        let tempCardImgURL = directory.appendingPathComponent("outro-img-\(UUID().uuidString).png")
+                        if let pngData = cardImage.pngData() {
+                            try pngData.write(to: tempCardImgURL)
+                            attemptFiles.append(tempCardImgURL)
+                            let outroDuration = outro.duration
+                            let outroFraming = VideoTrailerImageClip.Framing(fitsFrame: true, offsetX: 0, offsetY: 0)
+                            let renderTask = Task.detached(priority: .userInitiated) {
+                                try Task.checkCancellation()
+                                try VideoTrailerImageClip.render(
+                                    imageURL: tempCardImgURL,
+                                    duration: outroDuration,
+                                    renderSize: renderSize,
+                                    outputURL: outroURL,
+                                    seed: 2,
+                                    framing: outroFraming
+                                )
+                            }
+                            do {
+                                try await withTaskCancellationHandler {
+                                    try await renderTask.value
+                                } onCancel: {
+                                    renderTask.cancel()
+                                }
+                            } catch {
+                                try? FileManager.default.removeItem(at: tempCardImgURL)
+                                try? FileManager.default.removeItem(at: outroURL)
+                                throw error
+                            }
+                            try? FileManager.default.removeItem(at: tempCardImgURL)
+                            intermediateClips.append(TrailerRenderedClip(url: outroURL, scenes: [], hasOriginalSound: false))
+                            intermediateFiles.append(outroURL)
+                            attemptFiles.append(outroURL)
+                        }
+                    }
+                }
 
                 stage = "compose-final"
                 let finalComposition = AVMutableComposition()
@@ -5167,7 +5545,9 @@ final class VideoTrailerModel: ObservableObject {
             outputFile: nil, outputMode: keptOutput == nil ? nil : (outputMode ?? mode) == .mediaMusic ? "mediaMusic" : "trailer",
             showedSettings: showedSettings, linkedCollectionVideoIDs: existing?.linkedCollectionVideoIDs ?? [],
             isPrivate: (isPrivate || existing?.isPrivate == true) ? true : nil,
-            batchCaption: draft.batchCaption)
+            batchCaption: draft.batchCaption,
+            introCard: draft.introCard,
+            outroCard: draft.outroCard)
         return TrailerProjectSnapshot(record: record, stagedFiles: staged, musicFile: musicFile,
                                       outputFile: keptOutput)
     }
@@ -5271,6 +5651,8 @@ final class VideoTrailerModel: ObservableObject {
         draft.nextSceneID = record.nextSceneID
         draft.knownIDs = Set(record.knownSourceIDs).union(sources.map(\.id))
         draft.batchCaption = record.batchCaption
+        draft.introCard = record.introCard ?? TrailerTitleCard()
+        draft.outroCard = record.outroCard ?? TrailerTitleCard()
         return draft
     }
 
@@ -5676,5 +6058,80 @@ private final class TrailerVelocityDurationSlider: UISlider {
         let minimum = thumbRect(forBounds: bounds, trackRect: track, value: minimumValue).midX
         let maximum = thumbRect(forBounds: bounds, trackRect: track, value: maximumValue).midX
         return (min(minimum, maximum), max(1, abs(maximum - minimum)))
+    }
+}
+
+// MARK: - 시작/마지막 타이틀 카드 편집 시트
+
+struct TrailerTitleCardSheet: View {
+    @Binding var card: TrailerTitleCard
+    let isIntro: Bool
+    let sourceImage: UIImage?
+    let renderSize: CGSize
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        Form {
+            Section {
+                Toggle(isIntro ? "시작 화면 사용" : "마지막 화면 사용", isOn: $card.isEnabled)
+            } footer: {
+                Text(isIntro ? "영상 맨 처음에 타이틀 카드를 표시합니다." : "영상 맨 마지막에 마무리 카드를 표시합니다.")
+            }
+
+            if card.isEnabled {
+                Section("문구 입력") {
+                    TextField("제목 (예: 우리들의 제주 여행)", text: $card.title)
+                    TextField("부제목 (예: 2026 가을)", text: $card.subtitle)
+                }
+
+                Section("화면 길이") {
+                    HStack {
+                        Text("표시 시간")
+                        Spacer()
+                        Text(String(format: "%.1f초", card.duration))
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                    Slider(value: $card.duration, in: 1.0...10.0, step: 0.5)
+                        .accessibilityLabel("표시 시간")
+                }
+
+                Section {
+                    Toggle(isIntro ? "첫 번째 사진/영상 배경 사용" : "마지막 사진/영상 배경 사용", isOn: $card.usesFirstOrLastImage)
+                } header: {
+                    Text("배경")
+                } footer: {
+                    Text(card.usesFirstOrLastImage ? "미디어의 첫/마지막 장면을 배경으로 사용하고 가독성을 위해 어둡게 처리합니다." : "담백한 짙은 단색 배경을 사용합니다.")
+                }
+
+                Section("미리보기") {
+                    let previewImg = TrailerTitleCardRenderer.renderCardImage(
+                        card: card,
+                        sourceImage: card.usesFirstOrLastImage ? sourceImage : nil,
+                        renderSize: renderSize
+                    )
+                    if let previewImg {
+                        Image(uiImage: previewImg)
+                            .resizable()
+                            .aspectRatio(renderSize.width / max(1.0, renderSize.height), contentMode: .fit)
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(PorcelainMetrics.line, lineWidth: 0.5))
+                    } else {
+                        Color(uiColor: .secondarySystemFill)
+                            .aspectRatio(renderSize.width / max(1.0, renderSize.height), contentMode: .fit)
+                            .frame(maxWidth: .infinity)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    }
+                }
+            }
+        }
+        .navigationTitle(isIntro ? "시작 화면 설정" : "마지막 화면 설정")
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .cancellationAction) {
+                Button("완료") { dismiss() }
+            }
+        }
     }
 }
