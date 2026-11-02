@@ -722,7 +722,7 @@ enum TrailerTitleCardRenderer {
 
                 // 텍스트 가독성을 위한 어두운 반투명 딤 오버레이
                 UIColor.black.withAlphaComponent(0.48).setFill()
-                context.fill(rect)
+                context.fill(rect, blendMode: .normal)
             } else {
                 // 담백하고 고급스러운 짙은 차콜/블랙 단색 배경
                 UIColor(red: 0.08, green: 0.08, blue: 0.09, alpha: 1.0).setFill()
