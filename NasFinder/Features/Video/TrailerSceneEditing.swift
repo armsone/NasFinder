@@ -671,6 +671,32 @@ final class TrailerCaptionDraft: ObservableObject {
         )
     }
 
+    /// 현재 서체 설정만 담은 견본. 시작/마지막 화면 카드의 실시간 미리보기가 쓴다.
+    var styleSample: TrailerCaption {
+        TrailerCaption(
+            text: "Aa", position: .center, fontDesign: fontDesign, fontSize: fontSize, colorHex: colorHex,
+            hasShadow: hasShadow, column: column, row: row, fontName: fontName, captionSize: captionSize,
+            shadowColorHex: shadowColorHex, shadowOpacity: shadowOpacity, lineSpacing: lineSpacing
+        )
+    }
+
+    /// 글자가 있는 본편 자막에 현재 서체만 입히고 문구·위치는 그대로 둔다.
+    /// 카드는 본편 자막 서체를 따르므로 카드 화면에서 고른 스타일은 이렇게 반영된다.
+    func applyStyleOnly(to scenes: inout [TrailerEditScene]?) {
+        guard scenes != nil else { isDirty = false; return }
+        let sample = styleSample
+        for index in scenes!.indices {
+            guard var c = scenes![index].caption,
+                  !c.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+            c.fontDesign = sample.fontDesign; c.fontSize = sample.fontSize; c.colorHex = sample.colorHex
+            c.hasShadow = sample.hasShadow; c.fontName = sample.fontName; c.captionSize = sample.captionSize
+            c.shadowColorHex = sample.shadowColorHex; c.shadowOpacity = sample.shadowOpacity
+            c.lineSpacing = sample.lineSpacing
+            scenes![index].caption = c
+        }
+        isDirty = false
+    }
+
     /// 불러온 장면에 지금 값을 넣는다.
     func apply(to scenes: inout [TrailerEditScene]?) {
         var batch: TrailerCaption? = nil
@@ -703,6 +729,9 @@ final class TrailerCaptionDraft: ObservableObject {
                 scenes![index].caption = value
             }
             batchCaption = value
+        case .startScreen, .endScreen:
+            // 화면 카드는 편집기가 따로 저장한다. 본편 문구는 건드리지 않는다.
+            break
         }
         isDirty = false
     }
@@ -722,6 +751,7 @@ final class TrailerCaptionDraft: ObservableObject {
 private struct TrailerSceneThumb: View {
     let source: VideoTrailerSource
     let time: Double
+    var maxPixel: CGFloat = 200
     @State private var image: UIImage?
 
     var body: some View {
@@ -734,17 +764,529 @@ private struct TrailerSceneThumb: View {
                 }
             }
             .clipped()
-            .task(id: "\(source.id)-\(Int(time * 2))") {
+            .task(id: "\(source.id)-\(Int(time * 2))-\(Int(maxPixel))") {
                 if source.isImage {
-                    image = await trailerThumbnailImage(at: source.url, maxPixelSize: 200)
+                    image = await trailerThumbnailImage(at: source.url, maxPixelSize: maxPixel)
                 } else {
                     let generator = AVAssetImageGenerator(asset: AVURLAsset(url: source.url))
                     generator.appliesPreferredTrackTransform = true
-                    generator.maximumSize = CGSize(width: 200, height: 200)
+                    generator.maximumSize = CGSize(width: maxPixel, height: maxPixel)
                     if let frame = try? await generator.image(at: CMTime(seconds: time, preferredTimescale: 600)) {
                         image = UIImage(cgImage: frame.image)
                     }
                 }
+            }
+    }
+}
+
+/// 미리보기 플레이어(`RemotePreviewView`)와 타임라인 필름스트립을 잇는 다리. 위치는 플레이어가 쓰고,
+/// 탐색은 플레이어의 기존 seek 경로(재생/일시 정지 상태는 건드리지 않음)를 부른다.
+@MainActor
+final class TrailerTimelineBridge: ObservableObject {
+    @Published var currentSeconds = 0.0
+    @Published var durationSeconds = 0.0
+    @Published var isPlaying = false
+    @Published var hasPlayer = false
+    var seekHandler: ((Double) -> Void)?
+    var playHandler: (() -> Void)?
+    var pauseHandler: (() -> Void)?
+    /// 핸들러를 건 플레이어 세션. 이전 세션의 늦은 정리가 새 세션의 핸들러를 지우지 못하게 한다.
+    var owner: UUID?
+
+    /// 재생 중이면 멈추고, 멈춰 있으면 지금 위치에서 재생한다(타임라인 클릭 재생과 같은 경로).
+    func togglePlayback() {
+        guard hasPlayer else { return }
+        if isPlaying { pauseHandler?() } else { playHandler?() }
+    }
+
+    /// 이미 재생 중이면 아무것도 하지 않는다. 멈춘 영상만 지금 위치에서 재생을 시작한다.
+    func playIfPaused() {
+        guard hasPlayer, !isPlaying else { return }
+        playHandler?()
+    }
+
+    func seek(toSeconds seconds: Double) {
+        guard hasPlayer, durationSeconds > 0 else { return }
+        seekHandler?(min(max(seconds, 0), durationSeconds))
+    }
+
+    func seek(toFraction fraction: Double) {
+        guard hasPlayer, durationSeconds > 0 else { return }
+        seekHandler?(min(max(fraction, 0), 1) * durationSeconds)
+    }
+
+    func detach(ifOwner token: UUID) {
+        guard owner == token else { return }
+        owner = nil
+        seekHandler = nil
+        playHandler = nil
+        pauseHandler = nil
+        hasPlayer = false
+        currentSeconds = 0
+        durationSeconds = 0
+        isPlaying = false
+    }
+}
+
+struct TrailerTimelineSegment: Identifiable, Equatable {
+    enum Kind { case intro, clip, outro }
+    let id: String
+    let kind: Kind
+    /// 편집 장면 id. 자동 구성이나 시작/마지막 화면은 nil.
+    let sceneID: Int?
+    let sourceID: Int?
+    let start: Double
+    let length: Double
+}
+
+/// 미리보기 패널 안의 연속 필름스트립. 구간 폭은 길이에 비례하고, 켜진 시작/마지막 화면도 포함한다.
+/// 완성 영상이 있으면 플레이헤드가 재생 위치를 따라가며 가로로 끌거나 눌러 탐색하고, 없으면 선택한 장면에 고정된다.
+struct TrailerTimelineFilmstrip: View {
+    let segments: [TrailerTimelineSegment]
+    let sources: [VideoTrailerSource]
+    let selectedSceneID: Int?
+    @ObservedObject var bridge: TrailerTimelineBridge
+    var onSelectScene: (Int) -> Void
+
+    /// Mac 호버 탐색 상태. 호버를 시작할 때의 위치를 기억해 두었다가 클릭 없이 벗어나면 되돌린다.
+    @State private var hoverOrigin: Double?
+    @State private var hoverCommitted = false
+    @State private var isDragging = false
+    @State private var lastHoverSeek = Date.distantPast
+    @State private var pendingHoverSeek: Task<Void, Never>?
+
+    private var total: Double { max(0.001, segments.reduce(0) { $0 + max(0.05, $1.length) }) }
+    private var clipCount: Int { segments.filter { $0.kind == .clip }.count }
+
+    private func weight(_ segment: TrailerTimelineSegment) -> Double { max(0.05, segment.length) / total }
+
+    private func segmentIndex(atFraction fraction: Double) -> Int? {
+        var acc = 0.0
+        for (i, segment) in segments.enumerated() {
+            acc += weight(segment)
+            if fraction < acc || i == segments.count - 1 { return i }
+        }
+        return nil
+    }
+
+    private var playheadFraction: Double? {
+        if bridge.hasPlayer, bridge.durationSeconds > 0 {
+            return min(max(bridge.currentSeconds / bridge.durationSeconds, 0), 1)
+        }
+        guard let selectedSceneID,
+              let index = segments.firstIndex(where: { $0.sceneID == selectedSceneID }) else { return nil }
+        let before = segments[..<index].reduce(0.0) { $0 + weight($1) }
+        return before + weight(segments[index]) / 2
+    }
+
+    private var currentLabel: String? {
+        guard let fraction = playheadFraction, let index = segmentIndex(atFraction: min(fraction, 0.999999)) else { return nil }
+        switch segments[index].kind {
+        case .intro: return "시작 화면"
+        case .outro: return "마지막 화면"
+        case .clip:
+            let number = segments[...index].filter { $0.kind == .clip }.count
+            return "\(number)/\(clipCount)"
+        }
+    }
+
+    var body: some View {
+        let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            ZStack(alignment: .topLeading) {
+                HStack(spacing: 0) {
+                    ForEach(segments) { segment in
+                        segmentView(segment, source: segment.sourceID.flatMap { byID[$0] })
+                            .frame(width: max(1, width * weight(segment)))
+                    }
+                }
+                .frame(width: width, height: proxy.size.height, alignment: .leading)
+                .clipped()
+                .allowsHitTesting(false)
+
+                if let fraction = playheadFraction {
+                    Rectangle().fill(.white)
+                        .frame(width: 2, height: proxy.size.height)
+                        .shadow(color: .black.opacity(0.7), radius: 1.5)
+                        .offset(x: min(max(fraction * width - 1, 0), width - 2))
+                        .allowsHitTesting(false)
+                }
+                if let label = currentLabel {
+                    Text(label).font(.caption2.weight(.bold)).monospacedDigit()
+                        .foregroundStyle(.white).padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(.black.opacity(0.7), in: Capsule()).padding(4)
+                        .allowsHitTesting(false)
+                }
+            }
+            .frame(width: width, height: proxy.size.height)
+            .contentShape(Rectangle())
+            // SwiftUI의 onContinuousHover/DragGesture는 Catalyst 합성 뷰 위에서 이벤트를 받지 못해,
+            // 실제 UIKit 뷰의 hover/press 인식기로 마우스 이벤트를 직접 받는다.
+            .overlay {
+                TrailerTimelineNativeInput(
+                    onHover: { hoverScrub(fraction: $0) },
+                    onHoverEnd: { endHover() },
+                    onPress: { fraction in
+                        guard bridge.hasPlayer else { return }
+                        isDragging = true
+                        commitHover()
+                        bridge.seek(toFraction: fraction)
+                    },
+                    onDrag: { fraction in
+                        guard bridge.hasPlayer else { return }
+                        bridge.seek(toFraction: fraction)
+                    },
+                    onRelease: { fraction, moved in
+                        defer { isDragging = false }
+                        if bridge.hasPlayer {
+                            commitHover()
+                            bridge.seek(toFraction: fraction)
+                            // 거의 움직이지 않은 클릭이면 눌린 바로 그 위치에서 재생한다. 끌기는 위치만 옮긴다.
+                            if !moved { bridge.playIfPaused() }
+                        } else if let index = segmentIndex(atFraction: fraction), let id = segments[index].sceneID {
+                            onSelectScene(id)
+                        }
+                    }
+                )
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .accessibilityElement()
+        .accessibilityLabel("타임라인")
+        .accessibilityValue(currentLabel ?? "")
+    }
+
+    /// 호버 탐색 확정: 대기 중인 호버 이동을 버리고 되돌리기를 막는다. 클릭과 호버 종료가 겹쳐도 클릭 위치가 남는다.
+    private func commitHover() {
+        pendingHoverSeek?.cancel()
+        pendingHoverSeek = nil
+        hoverCommitted = true
+    }
+
+    /// 멈춘 영상 위에서만 위치를 따라간다(자동 재생 없음). 이동은 약 12Hz로 줄이고 마지막 위치는 뒤따라 보낸다.
+    private func hoverScrub(fraction rawFraction: Double) {
+        guard bridge.hasPlayer, !bridge.isPlaying, !isDragging else { return }
+        if hoverOrigin == nil {
+            hoverOrigin = bridge.currentSeconds
+            hoverCommitted = false
+        }
+        let fraction = min(max(rawFraction, 0), 1)
+        let interval = 0.08
+        let elapsed = Date().timeIntervalSince(lastHoverSeek)
+        pendingHoverSeek?.cancel()
+        if elapsed >= interval {
+            lastHoverSeek = Date()
+            bridge.seek(toFraction: fraction)
+        } else {
+            pendingHoverSeek = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(Int((interval - elapsed) * 1000) + 1))
+                guard !Task.isCancelled, !hoverCommitted, !bridge.isPlaying else { return }
+                lastHoverSeek = Date()
+                bridge.seek(toFraction: fraction)
+            }
+        }
+    }
+
+    private func endHover() {
+        pendingHoverSeek?.cancel()
+        pendingHoverSeek = nil
+        defer { hoverOrigin = nil; hoverCommitted = false }
+        // 클릭·끌기로 확정했거나 재생이 시작됐다면 그 위치를 유지하고, 아니면 호버 전 위치로 돌아간다.
+        guard let origin = hoverOrigin, !hoverCommitted, !isDragging, bridge.hasPlayer, !bridge.isPlaying,
+              bridge.durationSeconds > 0 else { return }
+        bridge.seek(toFraction: origin / bridge.durationSeconds)
+    }
+
+    @ViewBuilder
+    private func segmentView(_ segment: TrailerTimelineSegment, source: VideoTrailerSource?) -> some View {
+        ZStack {
+            switch segment.kind {
+            case .intro, .outro:
+                Color(white: 0.16)
+                Text(segment.kind == .intro ? "시작" : "마지막")
+                    .font(.caption2.weight(.semibold)).foregroundStyle(.white.opacity(0.85))
+                    .lineLimit(1).minimumScaleFactor(0.5).padding(.horizontal, 2)
+            case .clip:
+                if let source {
+                    TrailerSceneThumb(source: source, time: segment.start)
+                } else {
+                    Color(uiColor: .tertiarySystemFill)
+                }
+            }
+        }
+        .clipped()
+        .overlay(alignment: .trailing) { Rectangle().fill(.black.opacity(0.6)).frame(width: 1) }
+    }
+}
+
+/// 필름스트립 위의 실제 UIKit 입력 뷰. hover(마우스 이동)와 눌러서 끌기/클릭을 0...1 비율로 알려 준다.
+struct TrailerTimelineNativeInput: UIViewRepresentable {
+    var onHover: (Double) -> Void
+    var onHoverEnd: () -> Void
+    var onPress: (Double) -> Void
+    var onDrag: (Double) -> Void
+    var onRelease: (Double, Bool) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        view.isMultipleTouchEnabled = false
+        let hover = UIHoverGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.hovered(_:)))
+        let press = UILongPressGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.pressed(_:)))
+        press.minimumPressDuration = 0
+        press.allowableMovement = .greatestFiniteMagnitude
+        press.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue),
+                                   NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        press.delegate = context.coordinator
+        view.addGestureRecognizer(hover)
+        view.addGestureRecognizer(press)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) { context.coordinator.parent = self }
+
+    @MainActor
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: TrailerTimelineNativeInput
+        private var pressStart: CGPoint?
+        private var moved = false
+        init(_ parent: TrailerTimelineNativeInput) { self.parent = parent }
+
+        private func fraction(_ recognizer: UIGestureRecognizer) -> Double {
+            guard let view = recognizer.view, view.bounds.width > 0 else { return 0 }
+            return min(max(Double(recognizer.location(in: view).x / view.bounds.width), 0), 1)
+        }
+
+        func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool { true }
+
+        @objc func hovered(_ recognizer: UIHoverGestureRecognizer) {
+            switch recognizer.state {
+            case .began, .changed: parent.onHover(fraction(recognizer))
+            case .ended, .cancelled, .failed: parent.onHoverEnd()
+            default: break
+            }
+        }
+
+        @objc func pressed(_ recognizer: UILongPressGestureRecognizer) {
+            let point = recognizer.location(in: recognizer.view)
+            switch recognizer.state {
+            case .began:
+                pressStart = point
+                moved = false
+                parent.onPress(fraction(recognizer))
+            case .changed:
+                if let start = pressStart, hypot(point.x - start.x, point.y - start.y) >= 4 { moved = true }
+                parent.onDrag(fraction(recognizer))
+            case .ended:
+                parent.onRelease(fraction(recognizer), moved)
+                pressStart = nil
+            case .cancelled, .failed:
+                parent.onRelease(fraction(recognizer), true)
+                pressStart = nil
+            default: break
+            }
+        }
+    }
+}
+
+/// Mac 편집기 왼쪽 클립 목록의 표시 방식. 선택은 `@AppStorage`로 저장한다.
+enum TrailerClipListMode: String, CaseIterable, Identifiable {
+    case detail, thumbnail, poster
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .detail: "자세히"
+        case .thumbnail: "썸네일"
+        case .poster: "포스터"
+        }
+    }
+    var isGrid: Bool { self != .detail }
+}
+
+/// Mac 편집기 왼쪽의 유일한 클립 브라우저(자세히·썸네일·포스터). 줄을 누르면 편집 대상이 되고,
+/// 자막·구간 편집은 오른쪽 인스펙터 하나가 맡으므로 여기서는 펼치지 않는다.
+/// `markedIDs`가 있으면 다중 선택 중이라 표시된 클립에 체크를 그린다.
+/// 재생 위치나 호버는 이 목록의 선택을 바꾸지 않는다. 선택은 `onSelect`로만 바뀐다.
+/// 모든 모드가 Lazy 컨테이너라 400개 이상도 보이는 줄만 만든다.
+struct TrailerClipListView: View {
+    let scenes: [TrailerEditScene]
+    let sources: [VideoTrailerSource]
+    let selectedID: Int?
+    var mode: TrailerClipListMode = .detail
+    var markedIDs: Set<Int>? = nil
+    let onSelect: (Int) -> Void
+
+    var body: some View {
+        let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        ScrollViewReader { proxy in
+            ScrollView {
+                switch mode {
+                case .detail: detailRows(byID)
+                case .thumbnail: grid(byID, minimum: 84, thumbHeight: 60, pixel: 240, showsName: false)
+                case .poster: grid(byID, minimum: 150, thumbHeight: 190, pixel: 480, showsName: true)
+                }
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+            .onChange(of: selectedID) { _, id in
+                if let id { withAnimation { proxy.scrollTo(id, anchor: mode.isGrid ? .center : .top) } }
+            }
+            .onChange(of: mode) { _, _ in
+                if let selectedID { proxy.scrollTo(selectedID, anchor: .center) }
+            }
+        }
+    }
+
+    private func summary(_ scene: TrailerEditScene, _ source: VideoTrailerSource) -> String {
+        (source.isImage ? "사진" : "영상") + " · " + String(format: "%.1f초", scene.length)
+            + (scene.excluded ? " · 제외됨" : "") + (scene.caption == nil ? "" : " · 자막")
+    }
+
+    private func label(_ index: Int, _ scene: TrailerEditScene, _ source: VideoTrailerSource) -> String {
+        "클립 \(index + 1), \(source.name), \(String(format: "%.1f", scene.length))초" + (scene.excluded ? ", 제외됨" : "")
+    }
+
+    private func markBadge(_ marked: Bool) -> some View {
+        Image(systemName: marked ? "checkmark.circle.fill" : "circle")
+            .foregroundStyle(marked ? PorcelainMetrics.accent : Color.secondary)
+            .background(Circle().fill(Color.white.opacity(0.7)))
+            .accessibilityLabel(marked ? "선택됨" : "선택 안 됨")
+    }
+
+    private func detailRows(_ byID: [Int: VideoTrailerSource]) -> some View {
+        LazyVStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(scenes.enumerated()), id: \.element.id) { index, scene in
+                if let source = byID[scene.sourceID] {
+                    let isSelected = selectedID == scene.id
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button { onSelect(scene.id) } label: {
+                            HStack(spacing: 10) {
+                                if let markedIDs { markBadge(markedIDs.contains(scene.id)) }
+                                TrailerSceneThumb(source: source, time: scene.start)
+                                    .frame(width: 64, height: 44)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                    .opacity(scene.excluded ? 0.35 : 1)
+                                Text("\(index + 1)")
+                                    .font(.system(size: 13, weight: .bold).monospacedDigit())
+                                    .frame(minWidth: 22, alignment: .trailing)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(source.name)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .lineLimit(1).truncationMode(.middle)
+                                    Text(summary(scene, source))
+                                        .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(6)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(label(index, scene, source))
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                    }
+                    .background(isSelected ? PorcelainMetrics.accent.opacity(0.08) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .stroke(isSelected ? PorcelainMetrics.accent : PorcelainMetrics.line, lineWidth: isSelected ? 1.5 : 0.5))
+                    .id(scene.id)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func grid(_ byID: [Int: VideoTrailerSource], minimum: CGFloat, thumbHeight: CGFloat,
+                      pixel: CGFloat, showsName: Bool) -> some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: minimum), spacing: 8, alignment: .top)], spacing: 8) {
+            ForEach(Array(scenes.enumerated()), id: \.element.id) { index, scene in
+                if let source = byID[scene.sourceID] {
+                    let isSelected = selectedID == scene.id
+                    Button { onSelect(scene.id) } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Color.clear
+                                .frame(height: thumbHeight)
+                                .overlay {
+                                    TrailerSceneThumb(source: source, time: scene.start, maxPixel: pixel)
+                                        .opacity(scene.excluded ? 0.35 : 1)
+                                }
+                                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                .overlay(alignment: .topTrailing) {
+                                    if let markedIDs { markBadge(markedIDs.contains(scene.id)).padding(4) }
+                                }
+                                .overlay(alignment: .topLeading) {
+                                    Text("\(index + 1)")
+                                        .font(.system(size: 11, weight: .bold).monospacedDigit())
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 5).padding(.vertical, 1)
+                                        .background(Color.black.opacity(0.6), in: Capsule())
+                                        .padding(4)
+                                }
+                                .overlay(alignment: .bottomTrailing) {
+                                    Text(String(format: "%.1f초", scene.length))
+                                        .font(.system(size: 10).monospacedDigit())
+                                        .foregroundStyle(.white)
+                                        .padding(.horizontal, 4).padding(.vertical, 1)
+                                        .background(Color.black.opacity(0.6), in: Capsule())
+                                        .padding(4)
+                                }
+                            if showsName {
+                                Text(source.name).font(.system(size: 12, weight: .medium))
+                                    .lineLimit(1).truncationMode(.middle)
+                                Text(summary(scene, source)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                        .padding(4)
+                        .background(isSelected ? PorcelainMetrics.accent.opacity(0.08) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(isSelected ? PorcelainMetrics.accent : Color.clear, lineWidth: 1.5))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(label(index, scene, source))
+                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                    .id(scene.id)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+}
+
+/// 좌우 두 칸 사이의 끌 수 있는 구분선. 끌기 시작 때의 비율에서 총 폭 기준으로 계산해 손을 따라 흔들리지 않고,
+/// 더블클릭하면 기본 비율로 돌아간다. 비율 저장은 호출한 쪽의 바인딩이 맡는다.
+struct TrailerSplitHandle: View {
+    @Binding var ratio: Double
+    /// 두 칸이 나누어 쓰는 폭(구분선 폭 제외). 끌어도 변하지 않는 값이어야 한다.
+    let totalWidth: CGFloat
+    let range: ClosedRange<Double>
+    let defaultRatio: Double
+    @State private var startRatio: Double?
+
+    var body: some View {
+        Color.clear
+            .frame(width: 12)
+            .overlay(Capsule().fill(PorcelainMetrics.line).frame(width: 4, height: 40))
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { ratio = min(max(defaultRatio, range.lowerBound), range.upperBound) }
+            .gesture(
+                DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                    .onChanged { value in
+                        guard totalWidth > 0 else { return }
+                        let start = startRatio ?? ratio
+                        if startRatio == nil { startRatio = ratio }
+                        ratio = min(max(start + Double(value.translation.width / totalWidth), range.lowerBound), range.upperBound)
+                    }
+                    .onEnded { _ in startRatio = nil }
+            )
+            .accessibilityElement()
+            .accessibilityLabel("클립 목록과 미리보기 경계")
+            .accessibilityAdjustableAction { direction in
+                let step = 0.05
+                ratio = min(max(ratio + (direction == .increment ? step : -step), range.lowerBound), range.upperBound)
             }
     }
 }
@@ -1868,5 +2410,208 @@ struct TrailerSceneInspector: View {
                 .frame(minHeight: 44)
         }
         .buttonStyle(.bordered)
+    }
+}
+
+// MARK: - 렌더 전 초안 재생
+
+/// 완성 영상이 없을 때 사진·영상·타이틀 카드로 초안을 재생하기 위한 입력.
+struct TrailerDraftPreviewInput {
+    var segments: [TrailerTimelineSegment]
+    var sources: [VideoTrailerSource]
+    var captions: [String: TrailerCaption]
+    var introCard: TrailerTitleCard
+    var outroCard: TrailerTitleCard
+    var introBackground: UIImage?
+    var outroBackground: UIImage?
+    var bodyTypography: TrailerCaption?
+    var selectedSceneID: Int?
+
+    /// 타임라인 필름스트립과 같은 가중치(최소 0.05초)로 센 전체 길이.
+    var totalDuration: Double { segments.reduce(0) { $0 + max(0.05, $1.length) } }
+
+    func location(at seconds: Double) -> (index: Int, offset: Double)? {
+        var acc = 0.0
+        for (index, segment) in segments.enumerated() {
+            let length = max(0.05, segment.length)
+            if seconds < acc + length || index == segments.count - 1 {
+                return (index, min(max(seconds - acc, 0), length))
+            }
+            acc += length
+        }
+        return nil
+    }
+
+    func startSeconds(ofScene id: Int) -> Double? {
+        var acc = 0.0
+        for segment in segments {
+            if segment.sceneID == id { return acc }
+            acc += max(0.05, segment.length)
+        }
+        return nil
+    }
+}
+
+/// 영상 구간을 시계에 맞춰 재생하는 AVPlayer 보조. 시계가 기준이고, 플레이어는 잘라낸 원본 위치로 따라간다.
+@MainActor
+final class TrailerDraftVideoDriver: ObservableObject {
+    let player = AVPlayer()
+    private var segmentID: String?
+
+    init() { player.actionAtItemEnd = .pause }
+
+    func sync(segment: TrailerTimelineSegment?, url: URL?, offset: Double, playing: Bool) {
+        guard let segment, segment.kind == .clip, let url else { stop(); return }
+        let target = max(0, segment.start + offset)
+        if segmentID != segment.id {
+            segmentID = segment.id
+            player.replaceCurrentItem(with: AVPlayerItem(url: url))
+            player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        } else if !playing || abs(player.currentTime().seconds - target) > 0.3 {
+            player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        }
+        if playing { if player.timeControlStatus == .paused { player.play() } } else { player.pause() }
+    }
+
+    func stop() {
+        player.pause()
+        guard segmentID != nil else { return }
+        segmentID = nil
+        player.replaceCurrentItem(with: nil)
+    }
+}
+
+/// 사진·영상·타이틀 카드로 된 초안을 시계로 재생하는 미리보기. 브리지에 같은 재생/탐색 핸들러를 걸어
+/// 항상 보이는 재생 버튼과 타임라인 호버·클릭 탐색이 완성 영상 없이도 동작한다.
+struct TrailerDraftPreviewPlayer: View {
+    let input: TrailerDraftPreviewInput
+    let aspectRatio: OutputAspectRatio?
+    @ObservedObject var bridge: TrailerTimelineBridge
+
+    @State private var photos: [Int: UIImage] = [:]
+    @State private var cardImage: UIImage?
+    @StateObject private var video = TrailerDraftVideoDriver()
+
+    private var currentVideoSource: VideoTrailerSource? {
+        guard let id = currentSegment?.sourceID, currentSegment?.kind == .clip else { return nil }
+        return input.sources.first { $0.id == id && !$0.isImage }
+    }
+
+    private func syncVideo() {
+        video.sync(segment: currentSegment, url: currentVideoSource?.url,
+                   offset: location?.offset ?? 0, playing: bridge.isPlaying)
+    }
+
+    private var location: (index: Int, offset: Double)? { input.location(at: bridge.currentSeconds) }
+    private var currentSegment: TrailerTimelineSegment? { location.map { input.segments[$0.index] } }
+
+    private var renderSize: CGSize {
+        if let aspectRatio { return aspectRatio.renderSize }
+        if let firstID = input.segments.compactMap(\.sourceID).first, let image = photos[firstID] {
+            return OutputAspectRatio.renderSize(for: image.size)
+        }
+        return CGSize(width: 16, height: 9)
+    }
+
+    private var attachKey: String {
+        "\(input.segments.map { "\($0.id):\($0.length)" }.joined(separator: ","))"
+    }
+
+    private var frameKey: String {
+        guard let segment = currentSegment else { return "none" }
+        let card = segment.kind == .intro ? input.introCard : input.outroCard
+        return "\(segment.id)|\(card.title)|\(card.subtitle)|\(card.usesFirstOrLastImage)|\(card.usesBodyTypography)|\(Int(renderSize.width))"
+    }
+
+    var body: some View {
+        Color.black
+            .aspectRatio(renderSize.width / max(1, renderSize.height), contentMode: .fit)
+            .overlay {
+                if let segment = currentSegment {
+                    ZStack {
+                        switch segment.kind {
+                        case .intro, .outro:
+                            if let cardImage {
+                                Image(uiImage: cardImage).resizable().scaledToFit()
+                            }
+                        case .clip:
+                            if currentVideoSource != nil {
+                                SharedVideoPlayerSurface(player: video.player, videoGravity: .resizeAspect)
+                            } else if let id = segment.sourceID, let photo = photos[id] {
+                                Image(uiImage: photo).resizable().scaledToFit()
+                            } else {
+                                Image(systemName: "photo").font(.system(size: 36)).foregroundStyle(.white.opacity(0.6))
+                            }
+                            if let caption = input.captions[segment.id] { CaptionOverlayView(caption: caption) }
+                        }
+                    }
+                }
+            }
+            .task(id: frameKey) { await loadFrame() }
+            .task(id: attachKey) { await runClock() }
+            .onChange(of: bridge.currentSeconds) { _, _ in syncVideo() }
+            .onChange(of: bridge.isPlaying) { _, _ in syncVideo() }
+            .onDisappear { video.stop() }
+            .onChange(of: input.selectedSceneID) { _, id in
+                guard !bridge.isPlaying, let id, let start = input.startSeconds(ofScene: id) else { return }
+                bridge.currentSeconds = start
+            }
+    }
+
+    private func loadFrame() async {
+        guard let segment = currentSegment else { cardImage = nil; return }
+        switch segment.kind {
+        case .intro, .outro:
+            let isIntro = segment.kind == .intro
+            let card = isIntro ? input.introCard : input.outroCard
+            let scale = min(1, 960 / max(renderSize.width, renderSize.height))
+            let size = CGSize(width: renderSize.width * scale, height: renderSize.height * scale)
+            cardImage = TrailerTitleCardRenderer.renderCardImage(
+                card: card,
+                sourceImage: card.usesFirstOrLastImage ? (isIntro ? input.introBackground : input.outroBackground) : nil,
+                renderSize: size,
+                bodyTypography: card.usesBodyTypography ? input.bodyTypography : nil
+            )
+        case .clip:
+            guard let id = segment.sourceID, photos[id] == nil,
+                  let source = input.sources.first(where: { $0.id == id }), source.isImage else { return }
+            if let image = await trailerThumbnailImage(at: source.url, maxPixelSize: 1280), !Task.isCancelled {
+                photos[id] = image
+            }
+        }
+    }
+
+    private func runClock() async {
+        let total = input.totalDuration
+        guard total > 0 else { return }
+        let token = UUID()
+        bridge.owner = token
+        bridge.seekHandler = { [weak bridge] seconds in bridge?.currentSeconds = min(max(seconds, 0), total) }
+        bridge.pauseHandler = { [weak bridge] in bridge?.isPlaying = false }
+        bridge.playHandler = { [weak bridge] in
+            guard let bridge else { return }
+            if bridge.currentSeconds >= total - 0.01 { bridge.currentSeconds = 0 }
+            bridge.isPlaying = true
+        }
+        bridge.durationSeconds = total
+        let start = input.selectedSceneID.flatMap { input.startSeconds(ofScene: $0) } ?? 0
+        bridge.currentSeconds = min(max(start, 0), total)
+        bridge.isPlaying = false
+        bridge.hasPlayer = true
+        var last = Date()
+        while !Task.isCancelled {
+            try? await Task.sleep(for: .milliseconds(33))
+            let now = Date()
+            defer { last = now }
+            guard bridge.isPlaying else { continue }
+            let next = bridge.currentSeconds + now.timeIntervalSince(last)
+            if next >= total {
+                bridge.currentSeconds = total
+                bridge.isPlaying = false
+            } else {
+                bridge.currentSeconds = next
+            }
+        }
+        bridge.detach(ifOwner: token)
     }
 }

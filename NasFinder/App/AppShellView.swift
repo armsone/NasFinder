@@ -475,6 +475,7 @@ struct AppShellView: View {
     @State private var logoLongPressFired = false
     /// 설정 탭을 길게 눌러 프라이버시 모드를 바꾼 직후, 손을 뗄 때 일어나는 탭(설정 열기)을 한 번 건너뛴다.
     @State private var settingsLongPressFired = false
+    @State private var railPopoverTab: AppTab?
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue = AppThemePreference.light.rawValue
     @ObservedObject private var privacy = PrivacyMode.shared
     @ObservedObject private var router = AppShellRouter.shared
@@ -737,6 +738,61 @@ struct AppShellView: View {
 
     // MARK: Mac·iPad 넓은 창: 하나뿐인 사이드바 (고정 홈 + 파인더·영상·도구 작은 제목 + 하위 목적지)
 
+    /// 접힌 레일의 루트 행에 붙는 팝오버 열림 상태. 펼친 사이드바에서는 항상 닫힘.
+    private func railPopoverBinding(_ tab: AppTab, collapsed: Bool) -> Binding<Bool> {
+        Binding(get: { collapsed && railPopoverTab == tab },
+                set: { if !$0 && railPopoverTab == tab { railPopoverTab = nil } })
+    }
+
+    private func railPopoverContent<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) { content() }
+                .padding(8)
+        }
+        .frame(minWidth: 240, idealWidth: 260, maxWidth: 300, maxHeight: 420)
+    }
+
+    @ViewBuilder
+    private func videoSidebarChildren(current: AppTab, showsTitle: Bool) -> some View {
+        ShellSidebarRow(title: "미디어 고르기", icon: "photo.on.rectangle.angled",
+                        isSelected: current == .video && router.videoHubChild == .mediaPicker,
+                        showsTitle: showsTitle) {
+            router.openVideoPicker(.trailer)
+        }
+        .accessibilityHint("영상 만들기용 미디어 고르기 화면을 엽니다.")
+        ShellSidebarRow(title: AppTab.workbench.rawValue, icon: AppTab.workbench.iconName,
+                        isSelected: current == .workbench, showsTitle: showsTitle,
+                        badge: "\(workbenchEntryCount)") {
+            select(.workbench)
+        }
+        .accessibilityValue(current == .workbench ? "선택됨, 담은 항목 \(workbenchEntryCount)개" : "담은 항목 \(workbenchEntryCount)개")
+        .accessibilityHint("작업대 화면으로 이동합니다.")
+        ShellSidebarRow(title: "편집본 전체", icon: "film.stack",
+                        isSelected: current == .video && router.videoHubChild == .draftManager,
+                        showsTitle: showsTitle) {
+            router.openVideoDraftManager()
+        }
+        .accessibilityHint("저장된 편집본 전체 목록을 엽니다.")
+    }
+
+    @ViewBuilder
+    private func toolsSidebarChildren(current: AppTab) -> some View {
+        let ids = ToolsDestination.allCases.filter { $0 != .settings && $0 != .storage }.map(\.rawValue)
+        SidebarReorderGroup(group: .tools, currentIDs: ids) { orderedIDs in
+            ForEach(orderedIDs, id: \.self) { id in
+                if let item = ToolsDestination(rawValue: id) {
+                    ShellSidebarRow(title: item.title, icon: item.iconName,
+                                    isSelected: current == .tools && router.toolsDestination == item,
+                                    showsTitle: true, isReorderable: true) {
+                        router.toolsDestination = item
+                        selectedRaw = AppTab.tools.rawValue
+                    }
+                    .sidebarReorderable(group: .tools, itemID: id, currentIDs: ids, showsGrip: true)
+                }
+            }
+        }
+    }
+
     /// `collapsed`: 아이콘만 보이는 레일. `compactRail`: iPad 세로·좁은 창이라 접기 단추가 겹쳐 펼치는 사이드바를 여닫는다.
     private func sidebar(windowWidth: CGFloat, current: AppTab, collapsed: Bool, compactRail: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -794,9 +850,15 @@ struct AppShellView: View {
                 ShellSidebarRow(title: AppTab.finder.title, icon: AppTab.finder.iconName,
                                 isSelected: current == .finder, showsTitle: !collapsed) {
                     select(.finder)
+                    if collapsed { railPopoverTab = .finder }
                 }
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityHint("파인더 모음화면을 엽니다.")
+                .popover(isPresented: railPopoverBinding(.finder, collapsed: collapsed), arrowEdge: .trailing) {
+                    railPopoverContent {
+                        FinderSidebarSection(isActive: true, showsTitles: true, send: sendFinder)
+                    }
+                }
                 if current == .finder && !collapsed {
                     ShellSidebarChildren {
                         FinderSidebarSection(isActive: true, showsTitles: true, send: sendFinder)
@@ -807,29 +869,15 @@ struct AppShellView: View {
                 ShellSidebarRow(title: AppTab.video.title, icon: AppTab.video.iconName,
                                 isSelected: current == .video || current == .workbench, showsTitle: !collapsed) {
                     select(.video)
+                    if collapsed { railPopoverTab = .video }
                 }
                 .fixedSize(horizontal: false, vertical: true)
+                .popover(isPresented: railPopoverBinding(.video, collapsed: collapsed), arrowEdge: .trailing) {
+                    railPopoverContent { videoSidebarChildren(current: current, showsTitle: true) }
+                }
                 if (current == .video || current == .workbench) && !collapsed {
                     ShellSidebarChildren {
-                            ShellSidebarRow(title: "미디어 고르기", icon: "photo.on.rectangle.angled",
-                                            isSelected: current == .video && router.videoHubChild == .mediaPicker,
-                                            showsTitle: !collapsed) {
-                                router.openVideoPicker(.trailer)
-                            }
-                            .accessibilityHint("영상 만들기용 미디어 고르기 화면을 엽니다.")
-                            ShellSidebarRow(title: AppTab.workbench.rawValue, icon: AppTab.workbench.iconName,
-                                            isSelected: current == .workbench, showsTitle: !collapsed,
-                                            badge: "\(workbenchEntryCount)") {
-                                select(.workbench)
-                            }
-                            .accessibilityValue(current == .workbench ? "선택됨, 담은 항목 \(workbenchEntryCount)개" : "담은 항목 \(workbenchEntryCount)개")
-                            .accessibilityHint("작업대 화면으로 이동합니다.")
-                            ShellSidebarRow(title: "편집본 전체", icon: "film.stack",
-                                            isSelected: current == .video && router.videoHubChild == .draftManager,
-                                            showsTitle: !collapsed) {
-                                router.openVideoDraftManager()
-                            }
-                            .accessibilityHint("저장된 편집본 전체 목록을 엽니다.")
+                        videoSidebarChildren(current: current, showsTitle: true)
                     }
                 }
 
@@ -837,25 +885,15 @@ struct AppShellView: View {
                 ShellSidebarRow(title: AppTab.tools.title, icon: AppTab.tools.iconName,
                                 isSelected: current == .tools, showsTitle: !collapsed) {
                     select(.tools)
+                    if collapsed { railPopoverTab = .tools }
                 }
                 .fixedSize(horizontal: false, vertical: true)
+                .popover(isPresented: railPopoverBinding(.tools, collapsed: collapsed), arrowEdge: .trailing) {
+                    railPopoverContent { toolsSidebarChildren(current: current) }
+                }
                 if current == .tools && !collapsed {
                     ShellSidebarChildren {
-                            SidebarReorderGroup(group: .tools, currentIDs: ToolsDestination.allCases.filter { $0 != .settings && $0 != .storage }.map(\.rawValue)) { orderedIDs in
-                                ForEach(orderedIDs, id: \.self) { id in
-                                    if let item = ToolsDestination(rawValue: id) {
-                                        ShellSidebarRow(title: item.title, icon: item.iconName,
-                                                        isSelected: current == .tools && router.toolsDestination == item,
-                                                        showsTitle: !collapsed, isReorderable: true) {
-                                            router.toolsDestination = item
-                                            selectedRaw = AppTab.tools.rawValue
-                                        }
-                                        .sidebarReorderable(group: .tools, itemID: id,
-                                                            currentIDs: ToolsDestination.allCases.filter { $0 != .settings && $0 != .storage }.map(\.rawValue),
-                                                            showsGrip: !collapsed)
-                                    }
-                                }
-                            }
+                        toolsSidebarChildren(current: current)
                     }
                 }
 

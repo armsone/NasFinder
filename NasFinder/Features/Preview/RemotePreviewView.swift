@@ -92,6 +92,8 @@ struct RemotePreviewView: View {
     /// 영상 편집기 안의 작은 미리보기. 편집기에 이미 있는 닫기·제목은 빼고 재생/일시 정지·위치·
     /// 전체 화면·공유만 실제 영상 칸 안에 둔다. 기본값(false)은 기존 전체 컨트롤이다.
     private let editorCompact: Bool
+    /// 영상 편집기 타임라인이 위치를 읽고 탐색을 요청하는 다리(없으면 기존 동작 그대로).
+    private let timelineBridge: TrailerTimelineBridge?
 
     init(
         item: RemoteFileItem,
@@ -103,6 +105,7 @@ struct RemotePreviewView: View {
         initiallyPaused: Bool = false,
         pauseRequest: Int = 0,
         editorCompact: Bool = false,
+        timelineBridge: TrailerTimelineBridge? = nil,
         onCurrentItemChanged: ((RemoteFileItem) -> Void)? = nil
     ) {
         self.accessoryControls = accessoryControls
@@ -111,6 +114,7 @@ struct RemotePreviewView: View {
         self.playbackSuspended = playbackSuspended
         self.pauseRequest = pauseRequest
         self.editorCompact = editorCompact
+        self.timelineBridge = timelineBridge
         let orderedItems: [RemoteFileItem]
         if item.isImage || item.isVideo {
             let mediaItems = sequentialItems.filter { $0.isImage || $0.isVideo }
@@ -189,6 +193,30 @@ struct RemotePreviewView: View {
             // 영상 편집기 안에서 같은 미리보기가 다시 나타나면 이미 있는 재생기와 위치를 그대로 쓴다.
             if accessoryControls != nil, viewModel.hasVideoPlayer, viewModel.errorMessage == nil { return }
             await viewModel.loadCurrentItem()
+        }
+        .task(id: timelineBridge != nil) {
+            guard let bridge = timelineBridge else { return }
+            let token = UUID()
+            bridge.owner = token
+            bridge.pauseHandler = { [weak viewModel] in
+                if let viewModel, viewModel.isPlaying { viewModel.togglePlayback() }
+            }
+            bridge.seekHandler = { [weak viewModel] seconds in viewModel?.seekVideo(to: seconds) }
+            bridge.playHandler = { [weak viewModel] in
+                if let viewModel, !viewModel.isPlaying { viewModel.togglePlayback() }
+            }
+            while !Task.isCancelled {
+                if let snapshot = viewModel.timelineSnapshot() {
+                    if !bridge.hasPlayer { bridge.hasPlayer = true }
+                    if abs(bridge.currentSeconds - snapshot.current) > 0.01 { bridge.currentSeconds = snapshot.current }
+                    if abs(bridge.durationSeconds - snapshot.duration) > 0.01 { bridge.durationSeconds = snapshot.duration }
+                } else if bridge.hasPlayer {
+                    bridge.hasPlayer = false
+                }
+                if bridge.isPlaying != viewModel.isPlaying { bridge.isPlaying = viewModel.isPlaying }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            bridge.detach(ifOwner: token)
         }
         .onChange(of: pauseRequest) { _, _ in
             resumeAfterSuspension = false
@@ -2152,6 +2180,32 @@ final class RemotePreviewViewModel: ObservableObject {
             try? await Task.sleep(for: .milliseconds(750))
             guard !Task.isCancelled else { return }
             self?.seekHUDText = nil
+        }
+    }
+
+    /// 타임라인용 현재 위치와 전체 길이. 재생기가 아직 없거나 길이를 모르면 nil.
+    func timelineSnapshot() -> (current: Double, duration: Double)? {
+        guard currentItem.isPlayerMedia, let duration = videoDurationSeconds, duration > 0 else { return nil }
+        let current: Double?
+        if let compatibilityPlayer {
+            current = compatibilityPlayer.currentSeconds
+        } else if let player {
+            current = finiteSeconds(player.currentTime())
+        } else {
+            current = nil
+        }
+        guard let current else { return nil }
+        return (min(max(current, 0), duration), duration)
+    }
+
+    /// 재생/일시 정지 상태는 그대로 두고 그 자리로 이동한다.
+    func seekVideo(to seconds: Double) {
+        guard let duration = videoDurationSeconds else { return }
+        let target = min(max(seconds, 0), duration)
+        if let compatibilityPlayer {
+            compatibilityPlayer.seek(to: target)
+        } else if let player {
+            player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         }
     }
 

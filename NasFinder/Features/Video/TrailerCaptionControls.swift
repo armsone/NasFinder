@@ -690,11 +690,20 @@ enum TrailerCaptionRenderer {
 // MARK: - 시작/마지막 타이틀 카드 렌더러
 
 enum TrailerTitleCardRenderer {
+    /// 본편 자막의 서체: 장면 순서상 글자가 있는 첫 자막. 없으면 nil이라 카드는 기존 고정 모양을 쓴다.
+    /// 미리보기와 내보내기가 같은 함수로 고른다.
+    static func bodyTypography(from captions: [TrailerCaption?]) -> TrailerCaption? {
+        captions.lazy.compactMap { $0 }.first {
+            !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+    }
+
     /// 타이틀 카드를 한 장의 고해상도 이미지(renderSize)로 렌더링한다.
     static func renderCardImage(
         card: TrailerTitleCard,
         sourceImage: UIImage?,
-        renderSize: CGSize
+        renderSize: CGSize,
+        bodyTypography: TrailerCaption? = nil
     ) -> UIImage? {
         guard renderSize.width > 0, renderSize.height > 0 else { return nil }
 
@@ -741,15 +750,17 @@ enum TrailerTitleCardRenderer {
                 combinedText = titleText.isEmpty ? subtitleText : titleText
             }
 
+            // 본편 자막 서체를 쓰되 위치는 항상 가운데다.
+            let typography = card.usesBodyTypography ? bodyTypography : nil
             if let captionImg = TrailerCaptionRenderer.renderImage(
                 text: combinedText,
-                fontName: "pretendard_bold",
-                captionSize: .xlarge,
-                textColorHex: "#FFFFFF",
-                hasShadow: true,
-                shadowColorHex: "#000000",
-                shadowOpacity: 0.75,
-                lineSpacing: 1.25,
+                fontName: typography?.fontName ?? "pretendard_bold",
+                captionSize: typography?.captionSize ?? .xlarge,
+                textColorHex: typography?.colorHex ?? "#FFFFFF",
+                hasShadow: typography?.hasShadow ?? true,
+                shadowColorHex: typography?.shadowColorHex ?? "#000000",
+                shadowOpacity: typography?.shadowOpacity ?? 0.75,
+                lineSpacing: typography?.lineSpacing ?? 1.25,
                 column: 2,
                 row: 2,
                 renderSize: renderSize
@@ -895,8 +906,23 @@ enum CaptionApplyScope: String, CaseIterable, Identifiable, Sendable {
     case current = "현재 클립"
     case selected = "선택 클립"
     case all = "전체 영상"
+    case startScreen = "시작 화면"
+    case endScreen = "마지막 화면"
 
     var id: String { rawValue }
+
+    /// 시작/마지막 화면은 본편 장면이 아니라 저장된 타이틀 카드를 고친다.
+    var isScreen: Bool { self == .startScreen || self == .endScreen }
+
+    /// 본편 자막만 다루는 기존 범위(iOS/iPadOS 흐름).
+    static let bodyScopes: [CaptionApplyScope] = [.current, .selected, .all]
+}
+
+/// 자막 탭 클립 선택 목록의 한 줄. 번호는 본편 순서다.
+struct CaptionClipChoice: Identifiable, Equatable {
+    let id: Int
+    let number: Int
+    let title: String
 }
 
 // MARK: - 카드 A: 내용과 위치
@@ -907,14 +933,30 @@ struct TrailerCaptionContentLocationCard: View {
     let selectedIDs: Set<Int>
     @Binding var scope: CaptionApplyScope
     let onApply: () -> Void
+    /// 선택 가능한 범위. 기본은 본편 3가지이고 Mac 통합 자막 탭만 시작/마지막 화면을 더한다.
+    var scopes: [CaptionApplyScope] = CaptionApplyScope.bodyScopes
+    /// 시작/마지막 화면 범위일 때 문구·위치 입력 대신 보여 주는 편집기.
+    var screenEditor: AnyView? = nil
+    /// Mac 통합 자막 탭의 "선택 클립" 전용 번호 체크 목록. nil이면 기존 흐름이다.
+    var clipChoices: [CaptionClipChoice] = []
+    var targetIDs: Binding<Set<Int>>? = nil
+    @State private var isClipListOpen = false
 
     init(
         captionDraft: TrailerCaptionDraft,
         sources: [VideoTrailerSource],
         selectedIDs: Set<Int>,
         scope: Binding<CaptionApplyScope>,
+        scopes: [CaptionApplyScope] = CaptionApplyScope.bodyScopes,
+        screenEditor: AnyView? = nil,
+        clipChoices: [CaptionClipChoice] = [],
+        targetIDs: Binding<Set<Int>>? = nil,
         onApply: @escaping () -> Void
     ) {
+        self.clipChoices = clipChoices
+        self.targetIDs = targetIDs
+        self.scopes = scopes
+        self.screenEditor = screenEditor
         self.captionDraft = captionDraft
         self.sources = sources
         self.selectedIDs = selectedIDs
@@ -933,11 +975,12 @@ struct TrailerCaptionContentLocationCard: View {
                 // 1. 적용 범위 (3등분) + 우측 적용 버튼
                 HStack(spacing: 6) {
                     HStack(spacing: 4) {
-                        ForEach(CaptionApplyScope.allCases) { sc in
+                        ForEach(scopes) { sc in
                             let isSelected = scope == sc
                             Button {
                                 scope = sc
-                                captionDraft.isDirty = true
+                                // 화면 카드로 옮길 때는 본편 초안을 건드리지 않아 돌아오면 그대로다.
+                                if !sc.isScreen { captionDraft.isDirty = true }
                             } label: {
                                 Text(sc.rawValue)
                                     .font(.system(size: 13, weight: isSelected ? .bold : .medium))
@@ -958,7 +1001,10 @@ struct TrailerCaptionContentLocationCard: View {
                         }
                     }
 
-                    let isApplyDisabled = !captionDraft.isDirty && captionDraft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    if !usesClipPicker {
+                    let isApplyDisabled = scope.isScreen
+                        ? !captionDraft.isDirty
+                        : (!captionDraft.isDirty && captionDraft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button {
                         captionDraft.isDirty = true
                         onApply()
@@ -975,8 +1021,12 @@ struct TrailerCaptionContentLocationCard: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(isApplyDisabled)
+                    }
                 }
 
+                if scope.isScreen, let screenEditor {
+                    screenEditor
+                } else {
                 // 2. 전체 폭 텍스트 입력창 (최대 2000자)
                 VStack(alignment: .trailing, spacing: 4) {
                     TextField("자막 문구를 입력하세요 (최대 2000자)", text: Binding(
@@ -998,6 +1048,10 @@ struct TrailerCaptionContentLocationCard: View {
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
+                }
+
+                if usesClipPicker, let targetIDs {
+                    clipPickerSection(targetIDs)
                 }
 
                 // 3. 5x5 위치 격자 (160x160) + 우측 날짜 버튼 (76 + 8 + 76 = 160)
@@ -1034,11 +1088,101 @@ struct TrailerCaptionContentLocationCard: View {
                     }
                 }
                 .frame(minHeight: 160)
+                }
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             .background(PorcelainMetrics.card, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(PorcelainMetrics.line, lineWidth: 0.5))
+        }
+    }
+
+    private var usesClipPicker: Bool {
+        targetIDs != nil && scope == .selected
+    }
+
+    /// 문구·서체를 먼저 만든 뒤 대상 클립을 고르고, 마지막에 명시적으로 적용한다.
+    /// 목록을 만져도 초안 문구와 재생 위치는 바뀌지 않는다.
+    @ViewBuilder
+    private func clipPickerSection(_ ids: Binding<Set<Int>>) -> some View {
+        let count = ids.wrappedValue.intersection(Set(clipChoices.map(\.id))).count
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                isClipListOpen.toggle()
+            } label: {
+                HStack {
+                    Text("클립 선택")
+                        .font(.system(size: 13, weight: .semibold))
+                    Spacer()
+                    Text("\(count)개 선택")
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    Image(systemName: isClipListOpen ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 10)
+                .frame(minHeight: 40)
+                .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(PorcelainMetrics.line, lineWidth: 0.5))
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("클립 선택, \(count)개 선택됨")
+
+            if isClipListOpen {
+                HStack(spacing: 12) {
+                    Button("전체선택") { ids.wrappedValue = Set(clipChoices.map(\.id)) }
+                    Button("해제") { ids.wrappedValue = [] }
+                    Spacer()
+                }
+                .font(.system(size: 12, weight: .medium))
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ForEach(clipChoices) { choice in
+                            let isOn = ids.wrappedValue.contains(choice.id)
+                            Button {
+                                if isOn { ids.wrappedValue.remove(choice.id) } else { ids.wrappedValue.insert(choice.id) }
+                            } label: {
+                                HStack(spacing: 8) {
+                                    Image(systemName: isOn ? "checkmark.square.fill" : "square")
+                                        .foregroundStyle(isOn ? PorcelainMetrics.accent : .secondary)
+                                    Text("\(choice.number)")
+                                        .font(.system(size: 13, weight: .bold).monospacedDigit())
+                                        .frame(minWidth: 24, alignment: .trailing)
+                                    Text(choice.title)
+                                        .font(.system(size: 13))
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                    Spacer()
+                                }
+                                .padding(.vertical, 6)
+                                .padding(.horizontal, 6)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("\(choice.number)번 클립 \(choice.title)")
+                            .accessibilityAddTraits(isOn ? [.isSelected] : [])
+                        }
+                    }
+                }
+                .frame(maxHeight: 220)
+            }
+
+            Button {
+                captionDraft.isDirty = true
+                onApply()
+            } label: {
+                Text("\(count)개 클립에 적용")
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundStyle(count == 0 ? Color.secondary : Color.white)
+                    .frame(maxWidth: .infinity, minHeight: 40)
+                    .background(
+                        count == 0 ? Color(uiColor: .tertiarySystemFill) : PorcelainMetrics.accent,
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(count == 0)
         }
     }
 

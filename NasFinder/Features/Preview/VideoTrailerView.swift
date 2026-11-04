@@ -1151,6 +1151,10 @@ private struct TrailerWorkspacePreview: View {
     var pauseRequest = 0
     /// 영상 장면의 정지 화면 시각. nil이면 분석한 하이라이트 시각.
     var stillTime: Double? = nil
+    /// Mac 타임라인과 연결되는 재생 위치/탐색 다리.
+    var timelineBridge: TrailerTimelineBridge? = nil
+    /// 완성 영상이 없을 때 사진·타이틀 카드 초안을 시계로 재생하는 입력. 영상 장면이 있으면 nil.
+    var draftPreview: TrailerDraftPreviewInput? = nil
 
     @State private var previewImage: UIImage?
     @State private var loadedSourceID: Int?
@@ -1201,10 +1205,13 @@ private struct TrailerWorkspacePreview: View {
                             initiallyPaused: true,
                             pauseRequest: pauseRequest,
                             // 편집기 안에서는 닫기·제목이 이미 위에 있어 작은 컨트롤만, 전체 화면은 전체 컨트롤.
-                            editorCompact: !isFullscreen
+                            editorCompact: !isFullscreen,
+                            timelineBridge: timelineBridge
                         )
                         .id(outputURL)
                     }
+            } else if let draftPreview, let timelineBridge, !isBusy, error == nil {
+                TrailerDraftPreviewPlayer(input: draftPreview, aspectRatio: aspectRatio, bridge: timelineBridge)
             } else if let firstSource {
                 Color.black
                     .aspectRatio(aspectSize.width / aspectSize.height, contentMode: .fit)
@@ -1513,8 +1520,19 @@ private struct VideoTrailerSettings: View {
     /// 미리보기 아래 그립으로 고른 높이. nil이면 본문 높이에 맞춘 기본 높이다.
     @State private var previewHeight: CGFloat?
     @State private var gripStartHeight: CGFloat?
+    /// Mac 편집기 왼쪽 클립 목록이 차지하는 폭 비율. 기본 45/55이고 기기에 저장된다.
+    @AppStorage("trailer.editor.clipListRatio") private var clipListRatio = 0.45
+    @AppStorage("trailer.editor.clipListMode") private var clipListModeRaw = TrailerClipListMode.detail.rawValue
     /// 전체 화면 들어가기·나오기마다 늘려 재생을 그 자리에서 멈춘다.
     @State private var pauseRequest = 0
+    /// 음악·화면 설정을 바꾼 뒤 내보내기 없이 초안을 다시 렌더하는 예약 작업.
+    @State private var livePreviewTask: Task<Void, Never>?
+    /// 지금 결과를 보는 동안 마지막으로 본 재생 위치와 재생 여부. 미리보기를 바꿔 끼운 뒤 되살린다.
+    @State private var playbackMemo: (seconds: Double, playing: Bool)?
+    /// 라이브 초안 렌더가 진행 중이거나 렌더가 바쁜 동안 밀려 있는 상태.
+    @State private var liveRenderPending = false
+    @State private var liveRestoreInFlight = false
+    @State private var liveStartedSignature: LivePreviewSignature?
 
     private enum TrailerCardType: String, Identifiable {
         case intro = "시작 화면"
@@ -1537,6 +1555,20 @@ private struct VideoTrailerSettings: View {
     }
 
     @State private var activeTab: VideoTrailerTab = .clips
+
+    /// 넓은 화면 자막 탭의 하위 이동. 기본은 본편 자막.
+    private enum WideCaptionSection: String, CaseIterable, Identifiable {
+        case start = "시작 화면"
+        case body = "본편 자막"
+        case end = "마지막 화면"
+
+        var id: String { rawValue }
+    }
+
+    @State private var wideCaptionSection: WideCaptionSection = .body
+    /// Mac 자막 탭 "선택 클립" 대상. nil이면 클립 관리 선택(없으면 현재 클립)을 그대로 이어받는다.
+    @State private var captionTargetIDs: Set<Int>? = nil
+    @StateObject private var timelineBridge = TrailerTimelineBridge()
     @State private var columns: Int = 3
     @State private var captionScope: CaptionApplyScope = .all
     @State private var hasInitializedColumns = false
@@ -1625,6 +1657,84 @@ private struct VideoTrailerSettings: View {
         }
     }
 
+    /// 음악·화면 탭에서 고치는 값만 모은 서명. 자막·장면 순서·길이 같은 다른 편집은 다시 렌더하지 않는다.
+    private struct LivePreviewSignature: Equatable {
+        var mode: VideoTrailerMode
+        var music: TrailerMusicSelection?
+        var aspect: OutputAspectRatio?
+        var total: Double
+        var clipLength: Double
+        var sceneLooks: [LiveSceneLook]
+    }
+
+    private struct LiveSceneLook: Equatable {
+        var id: Int
+        var muted: Bool
+        var volume: Double
+        var fitsFrame: Bool
+        var offsetX: Double
+        var offsetY: Double
+    }
+
+    private var livePreviewSignature: LivePreviewSignature {
+        LivePreviewSignature(
+            mode: mode, music: music, aspect: aspectRatio, total: total, clipLength: clipLength,
+            sceneLooks: (scenes ?? []).map {
+                LiveSceneLook(id: $0.id, muted: $0.muted, volume: $0.volume,
+                              fitsFrame: $0.fitsFrame, offsetX: $0.offsetX, offsetY: $0.offsetY)
+            })
+    }
+
+    private var isLiveTab: Bool { activeTab == .music || activeTab == .screen }
+
+    private var canRenderLiveDraft: Bool {
+        !sources.isEmpty && !proposal.isEmpty && !(mode == .mediaMusic && music == nil)
+    }
+
+    /// 설정을 바꾸고 잠시 멈추면 기존 내보내기 경로로 초안을 다시 만든다. 바쁘면 끝난 뒤에 한 번 더.
+    private func scheduleLivePreview() {
+        guard isLiveTab else { return }
+        livePreviewTask?.cancel()
+        livePreviewTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(800))
+            guard !Task.isCancelled else { return }
+            startLivePreviewIfNeeded()
+        }
+    }
+
+    private func startLivePreviewIfNeeded() {
+        guard isLiveTab, canRenderLiveDraft, !isOutputCurrent else { return }
+        guard !captionDraft.isDirty else { return }
+        if isBusy {
+            liveRenderPending = true
+            return
+        }
+        liveRenderPending = true
+        liveStartedSignature = livePreviewSignature
+        regenerate()
+    }
+
+    /// 새 영상이 지금 결과가 되면 보이게 하고, 이전 위치로 이동한 뒤 이전에 재생 중이었을 때만 재생한다.
+    private func finishLivePreviewIfNeeded() {
+        guard liveRenderPending, isOutputCurrent, !isBusy, outputURL != nil else { return }
+        liveRenderPending = false
+        guard isLiveTab else { return }
+        previewingOutput = true
+        let memo = playbackMemo
+        guard !liveRestoreInFlight else { return }
+        liveRestoreInFlight = true
+        Task { @MainActor in
+            defer { liveRestoreInFlight = false }
+            for _ in 0..<80 {
+                if timelineBridge.hasPlayer, timelineBridge.durationSeconds > 0 { break }
+                try? await Task.sleep(for: .milliseconds(100))
+            }
+            guard timelineBridge.hasPlayer, let memo else { return }
+            if memo.seconds > 0.05 { timelineBridge.seek(toSeconds: memo.seconds) }
+            if memo.playing { timelineBridge.playIfPaused() }
+        }
+    }
+
     private var isRequestedExportReady: Bool {
         exportRequested &&
             !isBusy &&
@@ -1649,8 +1759,19 @@ private struct VideoTrailerSettings: View {
         if let text = captionDraft.caption?.text, text.count > 2000 {
             return false
         }
+        if captionScope.isScreen {
+            // 카드 문구·시간·배경은 편집 즉시 저장돼 있다. 적용은 공유 서체만 본편 자막에 맞춘다.
+            captionDraft.applyStyleOnly(to: &scenes)
+            return true
+        }
         var batchCaption: TrailerCaption? = nil
-        captionDraft.apply(to: &scenes, scope: captionScope, selectedIDs: selectedSceneIDs, batchCaption: &batchCaption)
+        #if targetEnvironment(macCatalyst)
+        let targets = captionScope == .selected ? (captionTargetBinding?.wrappedValue ?? effectiveSceneIDs) : selectedSceneIDs
+        if captionScope == .selected && targets.isEmpty { return false }
+        #else
+        let targets = selectedSceneIDs
+        #endif
+        captionDraft.apply(to: &scenes, scope: captionScope, selectedIDs: targets, batchCaption: &batchCaption)
         return true
     }
 
@@ -1695,27 +1816,24 @@ private struct VideoTrailerSettings: View {
                 .buttonStyle(.plain)
                 .disabled(isBusy)
             } else {
-                Button {
-                    if applyPendingCaptionAction() {
-                        chrome.onSaveDraft()
+                // 편집 내용은 자동 저장된다. 저장에 실패했을 때만 오류와 다시 시도를 보여 준다.
+                if chrome.saveFailed {
+                    Button { chrome.onRetrySave() } label: {
+                        footerButtonLabel(title: "저장 실패 · 다시 시도", isProminent: false)
                     }
-                } label: {
-                    let saveDraftTitle: String = chrome.isSavingDraft ? "저장 중…"
-                        : chrome.saveFailed ? "저장 실패"
-                        : (!captionDraft.isDirty && chrome.isDraftSaved) ? "저장됨" : "편집본 저장"
-                    footerButtonLabel(title: saveDraftTitle, isProminent: false)
+                    .buttonStyle(.plain)
                 }
-                .buttonStyle(.plain)
-                .disabled(chrome.isSavingDraft || isBusy)
 
                 Button {
                     if applyPendingCaptionAction() {
+                        // 아직 기다리는 자동 저장을 먼저 비운다.
+                        chrome.onSaveDraft()
                         startingOutputURL = outputURL
                         exportRequested = true
                         regenerate()
                     }
                 } label: {
-                    footerButtonLabel(title: isBusy ? "내보내는 중…" : "저장 후 내보내기", isProminent: true)
+                    footerButtonLabel(title: isBusy ? "내보내는 중…" : "내보내기", isProminent: true)
                 }
                 .buttonStyle(.plain)
                 .disabled(blocked || isBusy)
@@ -2090,6 +2208,30 @@ private struct VideoTrailerSettings: View {
                 exitOutputPreview()
             }
         }
+        .onChange(of: livePreviewSignature) { _ in scheduleLivePreview() }
+        .onChange(of: isBusy) { busy in
+            guard !busy else { return }
+            finishLivePreviewIfNeeded()
+            if liveRenderPending, !isOutputCurrent {
+                // 렌더 중에 설정이 또 바뀐 경우에만 한 번 더 만든다. 같은 설정이면 되풀이하지 않는다.
+                if livePreviewSignature != liveStartedSignature { scheduleLivePreview() } else { liveRenderPending = false }
+            }
+        }
+        .onChange(of: isOutputCurrent) { _ in finishLivePreviewIfNeeded() }
+        .onChange(of: timelineBridge.currentSeconds) { seconds in
+            guard previewingOutput, isOutputCurrent, timelineBridge.hasPlayer else { return }
+            playbackMemo = (seconds, timelineBridge.isPlaying)
+        }
+        .onChange(of: timelineBridge.isPlaying) { playing in
+            guard previewingOutput, isOutputCurrent, timelineBridge.hasPlayer else { return }
+            playbackMemo = (timelineBridge.currentSeconds, playing)
+        }
+        .onChange(of: error != nil) { hasError in
+            if hasError { liveRenderPending = false }
+        }
+        .onChange(of: activeTab) { _ in
+            if !isLiveTab { livePreviewTask?.cancel(); liveRenderPending = false }
+        }
         .background { if isPreviewFullscreen { Color.black.ignoresSafeArea() } }
         // The hidden toolbar no longer owns Escape, so the presenting full-screen cover would
         // take it and dismiss the whole editor. While fullscreen, this responder consumes it.
@@ -2120,7 +2262,8 @@ private struct VideoTrailerSettings: View {
                     card: cardType == .intro ? $introCard : $outroCard,
                     isIntro: cardType == .intro,
                     sourceImage: cardType == .intro ? (firstIncludedSource.flatMap { sourceImages[$0.id] }) : (lastIncludedSource.flatMap { sourceImages[$0.id] }),
-                    renderSize: cardSheetRenderSize
+                    renderSize: cardSheetRenderSize,
+                    bodyTypography: bodyCardTypography
                 )
             }
             .task(id: cardType) { await loadCardSheetMedia(cardType) }
@@ -2196,8 +2339,9 @@ private struct VideoTrailerSettings: View {
         .padding(.vertical, ui(6))
         .background(PorcelainMetrics.paper)
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) { togglePreviewExtreme(current: currentHeight, bounds: bounds) }
         .gesture(
-            DragGesture(minimumDistance: 3)
+            DragGesture(minimumDistance: 3, coordinateSpace: .global)
                 .onChanged { value in
                     let start = gripStartHeight ?? currentHeight
                     if gripStartHeight == nil { gripStartHeight = currentHeight }
@@ -2294,59 +2438,398 @@ private struct VideoTrailerSettings: View {
         }
     }
 
+    /// 넓은 화면: 왼쪽은 미리보기 위에 본편 클립 가로 줄, 오른쪽은 기존 편집 탭 인스펙터.
+    @ViewBuilder
     private func wideLayout(size: CGSize) -> some View {
-        let gap: CGFloat = 12
-        let half = max(0, (size.width - gap) / 2)
-        return HStack(alignment: .top, spacing: gap) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: ui(12)) {
-                    previewAndTabStrip(bodyHeight: size.height)
-                    wideLeftContent
-                }
-                .frame(width: half, alignment: .leading)
-            }
-            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
-            .frame(width: half)
+        #if targetEnvironment(macCatalyst)
+        macSplitLayout(size: size)
+        #else
+        standardWideLayout(size: size)
+        #endif
+    }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: ui(12)) {
-                    wideRightContent
+    #if targetEnvironment(macCatalyst)
+    /// Mac: 왼쪽은 항상 열린 클립 목록(줄을 누르면 그 줄 아래에서 자막·길이/구간을 바로 고친다),
+    /// 오른쪽 위는 미리보기·재생 줄·타임라인, 그 아래는 기존 편집 탭 인스펙터. 둘 사이 경계는 끌어서 조절한다.
+    private func macSplitLayout(size: CGSize) -> some View {
+        let handleWidth: CGFloat = 12
+        let shared = max(1, size.width - handleWidth)
+        let lower = min(0.45, 260 / shared)
+        let upper = max(0.55, 1 - 360 / shared)
+        let ratio = min(max(clipListRatio, lower), upper)
+        let leftWidth: CGFloat = shared * CGFloat(ratio)
+        let rightWidth: CGFloat = shared - leftWidth
+        let maximum = max(48, size.height - 132 - 48 - 36)
+        let minimum = min(72, maximum)
+        let bounds = (minimum: minimum, preferred: min(maximum, max(minimum, rightWidth * 9 / 16 + 1)), maximum: maximum)
+        let height = min(bounds.maximum, max(bounds.minimum, previewHeight ?? bounds.preferred))
+        return HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: ui(8)) {
+                HStack {
+                    Text("클립 \(scenes?.count ?? sources.count)")
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 0)
                 }
-                .frame(width: half, alignment: .leading)
+                if scenes != nil {
+                    Picker("목록 보기", selection: $clipListModeRaw) {
+                        ForEach(TrailerClipListMode.allCases) { Text($0.title).tag($0.rawValue) }
+                    }
+                    .pickerStyle(.segmented).labelsHidden()
+                }
+                if scenes != nil { macClipActions }
+                macClipList
             }
-            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
-            .frame(width: half)
+            .frame(width: leftWidth, height: size.height, alignment: .top)
+
+            TrailerSplitHandle(ratio: $clipListRatio, totalWidth: shared, range: lower...upper, defaultRatio: 0.45)
+                .frame(width: handleWidth, height: size.height)
+
+            VStack(alignment: .leading, spacing: ui(8)) {
+                VStack(spacing: 0) {
+                    previewSection(showsOutput: previewingOutput && isOutputCurrent)
+                        .frame(height: height)
+                        .frame(maxWidth: .infinity)
+                    macTimelineToolbar
+                }
+                .clipShape(RoundedRectangle(cornerRadius: ui(12), style: .continuous))
+                previewGrip(current: height, bounds: bounds, prominent: true)
+                Picker("편집 탭", selection: $activeTab) {
+                    ForEach(VideoTrailerTab.allCases.filter { $0 != .clips }) { tab in
+                        Text(tab == .caption ? "자막·구간" : tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: ui(12)) {
+                        wideInspectorContent
+                    }
+                    .frame(width: rightWidth, alignment: .leading)
+                }
+                .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+            }
+            .frame(width: rightWidth, height: size.height, alignment: .top)
+        }
+        .onAppear { if activeTab == .clips { activeTab = .caption } }
+    }
+
+    @ViewBuilder
+    private var macClipList: some View {
+        if let editScenes = scenes {
+            TrailerClipListView(
+                scenes: editScenes, sources: sources, selectedID: selectedSceneID,
+                mode: clipListMode,
+                markedIDs: isSelectingScenes ? selectedSceneIDs : nil,
+                onSelect: { id in
+                    if isSelectingScenes {
+                        if selectedSceneIDs.contains(id) { selectedSceneIDs.remove(id) } else { selectedSceneIDs.insert(id) }
+                    }
+                    focusClip(id)
+                })
+        } else {
+            ScrollView {
+                sourceOrderSection
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+    }
+
+    private var clipListMode: TrailerClipListMode { TrailerClipListMode(rawValue: clipListModeRaw) ?? .detail }
+
+    /// 왼쪽 목록 위의 클립 관리줄: 선택·전체선택·해제, 복사·이동·삭제, 중요 표시. 오른쪽 인스펙터에는 두지 않는다.
+    @ViewBuilder
+    private var macClipActions: some View {
+        if let editScenes = scenes {
+            let ids = effectiveSceneIDs
+            let photos = effectivePhotoSources
+            let allImportant = !photos.isEmpty && photos.allSatisfy(\.isImportant)
+            let currentIndex = TrailerSceneEditor.index(of: selectedSceneID, in: editScenes)
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(isSelectingScenes
+                         ? "\(selectedSceneIDs.count)개 선택"
+                         : "\((currentIndex ?? -1) + 1)/\(editScenes.count)")
+                        .font(.subheadline.weight(.semibold)).monospacedDigit()
+                    Spacer(minLength: 4)
+                    if isSelectingScenes {
+                        Button("전체선택") { selectedSceneIDs = Set(editScenes.map(\.id)) }
+                            .font(.subheadline.weight(.medium))
+                        Button("해제") { selectedSceneIDs.removeAll() }
+                            .font(.subheadline.weight(.medium))
+                    }
+                    Button {
+                        toggleImportantPhotos()
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(interfaceSystemName: allImportant ? "star.fill" : "star", pointSize: 15, tintable: true)
+                            Text("중요")
+                        }
+                        .font(.subheadline.weight(.semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(allImportant ? Color.yellow : PorcelainMetrics.accent)
+                    .disabled(photos.isEmpty)
+                    .opacity(photos.isEmpty ? 0.4 : 1)
+                }
+                HStack(spacing: 8) {
+                    outlinedAction(isSelectingScenes ? "완료" : "선택") {
+                        if isSelectingScenes {
+                            isSelectingScenes = false
+                            selectedSceneIDs = selectedSceneID.map { [$0] } ?? []
+                        } else {
+                            isSelectingScenes = true
+                            if let selectedSceneID { selectedSceneIDs.insert(selectedSceneID) }
+                        }
+                    }
+                    outlinedAction("복사", enabled: !ids.isEmpty) { duplicateScenes(ids) }
+                    outlinedAction("이동", enabled: !ids.isEmpty) {
+                        let first = editScenes.firstIndex { ids.contains($0.id) } ?? 0
+                        sceneMoveTarget = "\(first + 1)"
+                        showingSceneMoveSheet = true
+                    }
+                    outlinedAction("삭제", tint: .red, enabled: !ids.isEmpty) { deleteScenes(ids) }
+                }
+            }
+            .sheet(isPresented: $showingSceneMoveSheet) {
+                sceneMoveSheet(count: ids.count, total: editScenes.count)
+            }
+        }
+    }
+
+    /// 미리보기 바로 아래의 하나로 합친 타임라인 도구줄: 항상 보이는 재생/일시 정지 하나와 현재 위치/전체 길이, 그 아래 필름스트립.
+    /// 미리보기와 같은 폭·같은 검은 배경이라 한 덩어리로 보이고, 재생 위치는 읽기만 하며 편집 대상(선택 클립)을 바꾸지 않는다.
+    private var macTimelineToolbar: some View {
+        VStack(spacing: ui(4)) {
+            HStack(spacing: 10) {
+                Button { timelineBridge.togglePlayback() } label: {
+                    Image(systemName: timelineBridge.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 32, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(!timelineBridge.hasPlayer)
+                .opacity(timelineBridge.hasPlayer ? 1 : 0.5)
+                .accessibilityLabel(timelineBridge.isPlaying ? "일시 정지" : "재생")
+                Text("\(videoTrailerTime(timelineBridge.currentSeconds)) / \(videoTrailerTime(timelineBridge.durationSeconds))")
+                    .font(.caption.monospacedDigit())
+                Spacer(minLength: 0)
+            }
+            .foregroundStyle(.white)
+            wideTimeline
+                .frame(height: 56)
+        }
+        .padding(.horizontal, ui(6)).padding(.top, ui(2)).padding(.bottom, ui(6))
+        .frame(maxWidth: .infinity)
+        .background(Color.black)
+    }
+
+    /// 클립 줄을 눌렀을 때: 편집 대상을 그 클립으로 바꾸고(적용 안 한 자막이 있으면 먼저 묻는다) 미리보기를 그 클립 시작으로 옮긴다.
+    private func focusClip(_ id: Int) {
+        exitOutputPreview()
+        if id == selectedSceneID {
+            seekPreview(toScene: id)
+            return
+        }
+        chrome.guarded {
+            selectedSceneID = id
+            restoreCaptionDraftFromSelectedScene()
+            seekPreview(toScene: id)
+        }
+    }
+
+    private func seekPreview(toScene id: Int) {
+        let segments = timelineSegments
+        guard let index = segments.firstIndex(where: { $0.sceneID == id }) else { return }
+        let total = max(0.001, segments.reduce(0) { $0 + max(0.05, $1.length) })
+        let before = segments[..<index].reduce(0.0) { $0 + max(0.05, $1.length) }
+        timelineBridge.seek(toFraction: before / total)
+    }
+    #endif
+
+    private func standardWideLayout(size: CGSize) -> some View {
+        let gap: CGFloat = 12
+        let leftWidth = max(0, (size.width - gap) * 0.58)
+        let rightWidth = max(0, size.width - gap - leftWidth)
+        let maximum = max(48, size.height - 132 - 48)
+        let minimum = min(72, maximum)
+        let bounds = (minimum: minimum, preferred: min(maximum, max(minimum, leftWidth * 9 / 16 + 1)), maximum: maximum)
+        let height = min(bounds.maximum, max(bounds.minimum, previewHeight ?? bounds.preferred))
+        return HStack(alignment: .top, spacing: gap) {
+            VStack(alignment: .leading, spacing: ui(8)) {
+                #if targetEnvironment(macCatalyst)
+                VStack(spacing: 0) {
+                    previewSection(showsOutput: previewingOutput && isOutputCurrent)
+                        .frame(height: height)
+                        .frame(maxWidth: .infinity)
+                    wideTimeline
+                        .frame(height: 56)
+                        .padding(.horizontal, ui(6)).padding(.vertical, ui(6))
+                        .background(Color.black)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: ui(12), style: .continuous))
+                previewGrip(current: height, bounds: bounds, prominent: true)
+                #else
+                previewSection(showsOutput: previewingOutput && isOutputCurrent)
+                    .frame(height: height)
+                    .frame(maxWidth: .infinity)
+                previewGrip(current: height, bounds: bounds, prominent: true)
+                wideClipStrip
+                #endif
+                Spacer(minLength: 0)
+            }
+            .frame(width: leftWidth, height: size.height, alignment: .top)
+
+            VStack(alignment: .leading, spacing: ui(8)) {
+                Picker("편집 탭", selection: $activeTab) {
+                    ForEach(VideoTrailerTab.allCases) { tab in
+                        Text(tab.rawValue).tag(tab)
+                    }
+                }
+                .pickerStyle(.segmented)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: ui(12)) {
+                        wideInspectorContent
+                    }
+                    .frame(width: rightWidth, alignment: .leading)
+                }
+                .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+            }
+            .frame(width: rightWidth, height: size.height, alignment: .top)
+        }
+    }
+
+    /// 사진·영상·타이틀 카드로 된 초안의 재생 입력.
+    private var draftPreviewInput: TrailerDraftPreviewInput? {
+        let segments = timelineSegments
+        guard !segments.isEmpty else { return nil }
+        let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var captions: [String: TrailerCaption] = [:]
+        for segment in segments where segment.kind == .clip {
+            guard let id = segment.sourceID, byID[id] != nil else { return nil }
+            let caption: TrailerCaption?
+            if let sceneID = segment.sceneID, let edit = scenes?.first(where: { $0.id == sceneID }) {
+                caption = (captionDraft.sceneID == sceneID) ? captionDraft.caption : edit.caption
+            } else {
+                caption = proposal.first(where: { $0.sourceID == id })?.caption
+            }
+            if let caption, !caption.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                captions[segment.id] = caption
+            }
+        }
+        guard segments.contains(where: { $0.kind == .clip }) else { return nil }
+        func background(_ card: TrailerTitleCard, fallback: VideoTrailerSource?) -> UIImage? {
+            guard card.usesFirstOrLastImage else { return nil }
+            let id = card.backgroundSourceID.flatMap { id in sources.first { $0.id == id && $0.isImage }?.id } ?? fallback?.id
+            return id.flatMap { sourceImages[$0] }
+        }
+        return TrailerDraftPreviewInput(
+            segments: segments, sources: sources, captions: captions,
+            introCard: introCard, outroCard: outroCard,
+            introBackground: background(introCard, fallback: firstIncludedSource),
+            outroBackground: background(outroCard, fallback: lastIncludedSource),
+            bodyTypography: bodyCardTypography,
+            selectedSceneID: selectedSceneID
+        )
+    }
+
+    /// 시작 화면 + 본편 클립 + 마지막 화면을 길이 비례로 잇는 타임라인 구간.
+    private var timelineSegments: [TrailerTimelineSegment] {
+        var result: [TrailerTimelineSegment] = []
+        if introCard.isEnabled, introCard.duration > 0 {
+            result.append(.init(id: "intro", kind: .intro, sceneID: nil, sourceID: nil, start: 0, length: introCard.duration))
+        }
+        let planned = proposal
+        let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        if let editScenes = scenes {
+            // TrailerPreparedPlan.manual과 같은 규칙으로 제외/사라진 장면을 거르고, 길이는 계획 값을 쓴다.
+            let kept = editScenes.filter { edit in
+                guard !edit.excluded, let source = byID[edit.sourceID] else { return false }
+                return source.isImage || source.duration > 0
+            }
+            for (index, edit) in kept.enumerated() {
+                let plannedScene = planned.indices.contains(index) && planned.count == kept.count ? planned[index] : nil
+                result.append(.init(id: "scene-\(edit.id)", kind: .clip, sceneID: edit.id, sourceID: edit.sourceID,
+                                    start: plannedScene?.start ?? edit.start, length: plannedScene?.length ?? edit.length))
+            }
+        } else {
+            for scene in planned {
+                result.append(.init(id: "plan-\(scene.id)", kind: .clip, sceneID: nil, sourceID: scene.sourceID,
+                                    start: scene.start, length: scene.length))
+            }
+        }
+        if outroCard.isEnabled, outroCard.duration > 0 {
+            result.append(.init(id: "outro", kind: .outro, sceneID: nil, sourceID: nil, start: 0, length: outroCard.duration))
+        }
+        return result
+    }
+
+    private var wideTimeline: some View {
+        TrailerTimelineFilmstrip(
+            segments: timelineSegments,
+            sources: sources,
+            selectedSceneID: selectedSceneID,
+            bridge: timelineBridge,
+            onSelectScene: { guardedSelection.wrappedValue = $0 }
+        )
+    }
+
+    /// 본편 클립만 가로로 늘어놓은 줄. 시작/마지막 화면은 자막 탭에서만 다룬다.
+    @ViewBuilder
+    private var wideClipStrip: some View {
+        if let editScenes = scenes {
+            TrailerSceneStrip(scenes: editScenes, sources: sources, selectedID: guardedSelection)
+                .frame(height: 84)
+        } else {
+            ScrollView {
+                sourceOrderSection
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: 132)
         }
     }
 
     @ViewBuilder
-    private var wideLeftContent: some View {
+    private var wideInspectorContent: some View {
         switch activeTab {
         case .clips:
             clipSettingsGroup
+            VStack(alignment: .leading, spacing: ui(8)) {
+                Text("클립 관리")
+                    .font(.subheadline.weight(.semibold))
+                sceneBoardGrid
+            }
         case .caption:
-            captionCardA
-        case .music:
-            musicSection
-        case .screen:
-            screenLeftContent
-        }
-    }
-
-    @ViewBuilder
-    private var wideRightContent: some View {
-        switch activeTab {
-        case .clips:
-            boardPane
-        case .caption:
+            #if targetEnvironment(macCatalyst)
             VStack(alignment: .leading, spacing: ui(12)) {
+                if scenes != nil { inspectorPane }
+                captionCardA
                 captionCardB
                 captionCardC
             }
+            #else
+            VStack(alignment: .leading, spacing: ui(12)) {
+                Picker("자막 구역", selection: $wideCaptionSection) {
+                    ForEach(WideCaptionSection.allCases) { section in
+                        Text(section.rawValue).tag(section)
+                    }
+                }
+                .pickerStyle(.segmented)
+                switch wideCaptionSection {
+                case .start:
+                    wideTitleCardEditor(isIntro: true)
+                case .body:
+                    captionCardA
+                    captionCardB
+                    captionCardC
+                case .end:
+                    wideTitleCardEditor(isIntro: false)
+                }
+            }
+            #endif
         case .music:
-            musicRightContent
+            musicTabContent
         case .screen:
-            screenRightContent
+            screenTabContent
         }
     }
 
@@ -2356,10 +2839,41 @@ private struct VideoTrailerSettings: View {
             sources: sources,
             selectedIDs: selectedSceneIDs,
             scope: $captionScope,
+            scopes: captionScopes,
+            screenEditor: captionScreenEditor,
+            clipChoices: captionClipChoices,
+            targetIDs: captionTargetBinding,
             onApply: {
                 _ = applyPendingCaptionAction()
             }
         )
+    }
+
+    /// Mac 통합 자막 탭은 시작/마지막 화면을 범위로 더한다. 다른 플랫폼은 기존 3가지다.
+    private var captionScopes: [CaptionApplyScope] {
+        #if targetEnvironment(macCatalyst)
+        return CaptionApplyScope.allCases
+        #else
+        return CaptionApplyScope.bodyScopes
+        #endif
+    }
+
+    private var captionClipChoices: [CaptionClipChoice] {
+        // 대상 클립은 왼쪽 목록의 선택을 쓴다. 자막 탭에 두 번째 클립 목록을 두지 않는다.
+        return []
+    }
+
+    private var captionTargetBinding: Binding<Set<Int>>? {
+        return nil
+    }
+
+    private var captionScreenEditor: AnyView? {
+        #if targetEnvironment(macCatalyst)
+        guard captionScope.isScreen else { return nil }
+        return AnyView(wideTitleCardEditor(isIntro: captionScope == .startScreen))
+        #else
+        return nil
+        #endif
     }
 
     private var captionCardB: some View {
@@ -2565,6 +3079,12 @@ private struct VideoTrailerSettings: View {
         return (minimum, min(maximum, max(minimum, preferred)), maximum)
     }
 
+    /// 손잡이 더블클릭: 최대 ↔ 최소를 번갈아 전환한다(드래그 범위 안).
+    private func togglePreviewExtreme(current: CGFloat, bounds: (minimum: CGFloat, preferred: CGFloat, maximum: CGFloat)) {
+        let atMaximum = current >= bounds.maximum - 0.5
+        previewHeight = atMaximum ? bounds.minimum : bounds.maximum
+    }
+
     private func resizablePreview(bodyHeight: CGFloat) -> some View {
         let bounds = previewBounds(bodyHeight: bodyHeight)
         let height = min(bounds.maximum, max(bounds.minimum, previewHeight ?? bounds.preferred))
@@ -2577,14 +3097,34 @@ private struct VideoTrailerSettings: View {
     }
 
     /// 미리보기 아래 얇은 손잡이 하나. 글자·눈금·되돌리기 없이 끌어서만 높이를 바꾼다.
-    private func previewGrip(current: CGFloat, bounds: (minimum: CGFloat, preferred: CGFloat, maximum: CGFloat)) -> some View {
-        Capsule()
-            .fill(PorcelainMetrics.line)
-            .frame(width: 36, height: 4)
-            .frame(maxWidth: .infinity, minHeight: 20)
-            .contentShape(Rectangle())
+    /// `prominent`(넓은 편집 화면)는 위아래 화살표와 안내 문구로 손잡이를 눈에 띄게 한다.
+    private func previewGrip(current: CGFloat, bounds: (minimum: CGFloat, preferred: CGFloat, maximum: CGFloat),
+                             prominent: Bool = false) -> some View {
+        Group {
+            if prominent {
+                HStack(spacing: 8) {
+                    Capsule().fill(PorcelainMetrics.accent.opacity(0.6)).frame(width: 40, height: 5)
+                    Image(systemName: "arrow.up.and.down")
+                        .font(.system(size: 11, weight: .bold))
+                    Text("끌어서 미리보기 크기 조절")
+                        .font(.caption.weight(.medium))
+                    Capsule().fill(PorcelainMetrics.accent.opacity(0.6)).frame(width: 40, height: 5)
+                }
+                .foregroundStyle(PorcelainMetrics.accent)
+                .frame(maxWidth: .infinity, minHeight: 28)
+                .background(PorcelainMetrics.card, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(PorcelainMetrics.accent.opacity(0.4), lineWidth: 0.5))
+            } else {
+                Capsule()
+                    .fill(PorcelainMetrics.line)
+                    .frame(width: 36, height: 4)
+                    .frame(maxWidth: .infinity, minHeight: 20)
+            }
+        }
+        .contentShape(Rectangle())
+            .onTapGesture(count: 2) { togglePreviewExtreme(current: current, bounds: bounds) }
             .gesture(
-                DragGesture(minimumDistance: 2)
+                DragGesture(minimumDistance: 2, coordinateSpace: .global)
                     .onChanged { value in
                         let start = gripStartHeight ?? current
                         if gripStartHeight == nil { gripStartHeight = current }
@@ -2627,24 +3167,182 @@ private struct VideoTrailerSettings: View {
     private var boardPane: some View {
         VStack(spacing: 8) {
             titleCardBar(isIntro: true)
-            if let editScenes = scenes {
-                TrailerStoryboardGrid(
-                    scenes: editScenes, sources: sources,
-                    selectedID: guardedSelection, selectedIDs: $selectedSceneIDs,
-                    columnsCount: gridColumnsBinding,
-                    scrollable: false,
-                    showToolbar: false,
-                    multiSelect: $isSelectingScenes,
-                    onSelectSceneForDetail: nil,
-                    onMoveScenes: { ids, position in moveScenes(ids, to: position) },
-                    onDuplicateScenes: { ids in duplicateScenes(ids) },
-                    onDeleteScenes: { ids in deleteScenes(ids) })
-            } else {
-                sourceOrderSection
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            sceneBoardGrid
             titleCardBar(isIntro: false)
         }
+    }
+
+    /// 시작/마지막 화면 카드를 뺀 장면 보드. 폰 보드와 와이드 "클립 관리"가 함께 쓴다.
+    @ViewBuilder
+    private var sceneBoardGrid: some View {
+        if let editScenes = scenes {
+            TrailerStoryboardGrid(
+                scenes: editScenes, sources: sources,
+                selectedID: guardedSelection, selectedIDs: $selectedSceneIDs,
+                columnsCount: gridColumnsBinding,
+                scrollable: false,
+                showToolbar: false,
+                multiSelect: $isSelectingScenes,
+                onSelectSceneForDetail: nil,
+                onMoveScenes: { ids, position in moveScenes(ids, to: position) },
+                onDuplicateScenes: { ids in duplicateScenes(ids) },
+                onDeleteScenes: { ids in deleteScenes(ids) })
+        } else {
+            sourceOrderSection
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    /// 와이드 편집기 시작/마지막 화면: 설정 시트 없이 사용 여부·문구, 2/3/5초 단축과 정밀 조절,
+    /// 단색 또는 프로젝트 사진 배경을 그 자리에서 고른다. 문구는 본편 자막 서체로 미리보기와 내보내기에 똑같이 그려진다.
+    @ViewBuilder
+    private func wideTitleCardEditor(isIntro: Bool) -> some View {
+        let card = isIntro ? introCard : outroCard
+        let binding = Binding<TrailerTitleCard>(
+            get: { isIntro ? introCard : outroCard },
+            set: { edited in
+                // 여기서 고친 카드는 본편 자막 서체를 쓴다. 손대지 않은 카드는 기존 모양 그대로다.
+                var next = edited
+                next.usesBodyTypography = true
+                if isIntro { introCard = next } else { outroCard = next }
+            }
+        )
+        let name = isIntro ? "시작 화면" : "마지막 화면"
+        let photos = sources.filter(\.isImage)
+        let chosenPhoto = card.backgroundSourceID.flatMap { id in photos.first { $0.id == id } }
+        let frameSource = isIntro ? firstIncludedSource : lastIncludedSource
+        let background: UIImage? = card.usesFirstOrLastImage
+            ? (chosenPhoto.flatMap { sourceImages[$0.id] } ?? frameSource.flatMap { sourceImages[$0.id] })
+            : nil
+        VStack(alignment: .leading, spacing: ui(10)) {
+            Toggle("\(name) 사용", isOn: binding.isEnabled)
+                .font(.subheadline.weight(.semibold))
+            if card.isEnabled {
+                TextField("제목 (예: 우리들의 제주 여행)", text: binding.title)
+                    .textFieldStyle(.roundedBorder)
+                TextField("부제목 (예: 2026 가을)", text: binding.subtitle)
+                    .textFieldStyle(.roundedBorder)
+
+                HStack {
+                    Text("표시 시간").font(.footnote.weight(.semibold))
+                    Spacer()
+                    Text(String(format: "%.1f초", card.duration))
+                        .font(.footnote.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                HStack(spacing: 6) {
+                    ForEach([2.0, 3.0, 5.0], id: \.self) { seconds in
+                        let isCurrent = abs(card.duration - seconds) < 0.05
+                        Button {
+                            var next = binding.wrappedValue
+                            next.duration = seconds
+                            binding.wrappedValue = next
+                        } label: {
+                            Text("\(Int(seconds))초")
+                                .font(.footnote.weight(.semibold))
+                                .frame(maxWidth: .infinity, minHeight: 28)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(isCurrent ? PorcelainMetrics.accent : .secondary)
+                        .accessibilityAddTraits(isCurrent ? .isSelected : [])
+                    }
+                }
+                Slider(value: binding.duration, in: 1.0...10.0, step: 0.5)
+                    .accessibilityLabel("\(name) 표시 시간 정밀 조절")
+
+                Picker("배경", selection: Binding<Bool>(
+                    get: { binding.wrappedValue.usesFirstOrLastImage },
+                    set: { usesPhoto in
+                        var next = binding.wrappedValue
+                        next.usesFirstOrLastImage = usesPhoto
+                        if !usesPhoto { next.backgroundSourceID = nil }
+                        binding.wrappedValue = next
+                    }
+                )) {
+                    Text("단색").tag(false)
+                    Text("사진").tag(true)
+                }
+                .pickerStyle(.segmented)
+
+                if card.usesFirstOrLastImage {
+                    if photos.isEmpty {
+                        Text("프로젝트에 사진이 없어 \(isIntro ? "첫" : "마지막") 장면을 배경으로 씁니다.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text(chosenPhoto == nil
+                             ? "사진을 고르지 않으면 \(isIntro ? "첫" : "마지막") 장면을 배경으로 씁니다."
+                             : "선택한 사진을 어둡게 깔고 문구를 올립니다.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(photos) { photo in
+                                    let isChosen = chosenPhoto?.id == photo.id
+                                    Button {
+                                        var next = binding.wrappedValue
+                                        next.usesFirstOrLastImage = true
+                                        next.backgroundSourceID = isChosen ? nil : photo.id
+                                        binding.wrappedValue = next
+                                    } label: {
+                                        TrailerCardPhotoThumbnail(source: photo)
+                                            .frame(width: 56, height: 56)
+                                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                                    .stroke(isChosen ? PorcelainMetrics.accent : PorcelainMetrics.line, lineWidth: isChosen ? 2 : 0.5)
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("\(photo.name) 배경 사진")
+                                    .accessibilityAddTraits(isChosen ? .isSelected : [])
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if let preview = TrailerTitleCardRenderer.renderCardImage(
+                    card: card,
+                    sourceImage: background,
+                    renderSize: cardSheetRenderSize,
+                    bodyTypography: livePreviewTypography
+                ) {
+                    Image(uiImage: preview)
+                        .resizable()
+                        .aspectRatio(cardSheetRenderSize.width / max(1.0, cardSheetRenderSize.height), contentMode: .fit)
+                        .frame(maxWidth: .infinity, maxHeight: 180)
+                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(PorcelainMetrics.line, lineWidth: 0.5))
+                        .accessibilityLabel("\(name) 미리보기")
+                }
+            }
+        }
+        .task(id: "\(isIntro)-\(card.usesFirstOrLastImage)-\(card.backgroundSourceID ?? -1)") {
+            await loadWideCardBackground(isIntro: isIntro)
+        }
+    }
+
+    /// 본편 자막의 서체(미리보기와 내보내기가 같은 규칙으로 고른다).
+    private var bodyCardTypography: TrailerCaption? {
+        TrailerTitleCardRenderer.bodyTypography(from: proposal.map(\.caption))
+    }
+
+    /// 미리보기 서체. Mac 통합 자막 탭에서 스타일을 고치는 중이면 아직 적용 전인 초안 서체를 바로 보여 준다.
+    private var livePreviewTypography: TrailerCaption? {
+        #if targetEnvironment(macCatalyst)
+        if captionScope.isScreen && captionDraft.isDirty { return captionDraft.styleSample }
+        #endif
+        return bodyCardTypography
+    }
+
+    /// 고른 프로젝트 사진과 첫/마지막 장면 프레임을 미리 읽어 둔다. 사진을 읽지 못하면 장면 프레임이 대신 쓰인다.
+    private func loadWideCardBackground(isIntro: Bool) async {
+        await loadCardSheetMedia(isIntro ? .intro : .outro)
+        let card = isIntro ? introCard : outroCard
+        guard card.usesFirstOrLastImage, let id = card.backgroundSourceID,
+              let photo = sources.first(where: { $0.id == id && $0.isImage }),
+              sourceImages[photo.id] == nil else { return }
+        let image = try? await VideoTrailerModel.extractStillImage(source: photo, at: 0)
+        if !Task.isCancelled, let image { sourceImages[photo.id] = image }
     }
 
     private func titleCardBar(isIntro: Bool) -> some View {
@@ -2960,8 +3658,16 @@ private struct VideoTrailerSettings: View {
             previewCaption: still.map { $0.caption } ?? context.caption,
             outputName: outputName,
             pauseRequest: pauseRequest,
-            stillTime: still?.time
+            stillTime: still?.time,
+            timelineBridge: timelineBridge,
+            draftPreview: showsOutput && isOutputCurrent ? nil : draftPreviewInput
         )
+        #if !targetEnvironment(macCatalyst)
+        .overlay(alignment: .topLeading) {
+            TrailerPreviewPlayPauseButton(bridge: timelineBridge)
+                .padding(8)
+        }
+        #endif
     }
 
     /// 플레이어 안의 전체 화면 버튼. 저장은 아래 고정 줄의 주 행동 하나뿐이다.
@@ -5111,6 +5817,7 @@ final class VideoTrailerModel: ObservableObject {
 
                 // 카드가 들어가기 전, 실제로 렌더된 본편 장면 (카드 클립은 scenes가 비어 있다)
                 let actualBodyScenes = intermediateClips.flatMap(\.scenes)
+                let cardTypography = TrailerTitleCardRenderer.bodyTypography(from: selected.map(\.caption))
 
                 // 시작 화면 타이틀 카드 클립 생성 및 맨 앞 삽입
                 if let intro = introCard, intro.isEnabled, intro.duration > 0 {
@@ -5124,7 +5831,14 @@ final class VideoTrailerModel: ObservableObject {
                     } else {
                         firstThumb = nil
                     }
-                    if let cardImage = TrailerTitleCardRenderer.renderCardImage(card: intro, sourceImage: firstThumb, renderSize: renderSize) {
+                    // 고른 프로젝트 사진이 있으면 그 사진을, 없거나 읽지 못하면 기존 첫/마지막 장면을 배경으로 쓴다.
+                    var introBackground = firstThumb
+                    if intro.usesFirstOrLastImage, let photoID = intro.backgroundSourceID,
+                       let photo = currentSourceByID[photoID], photo.isImage,
+                       let photoImage = try? await Self.extractStillImage(source: photo, at: 0, maxPixelSize: 1920) {
+                        introBackground = photoImage
+                    }
+                    if let cardImage = TrailerTitleCardRenderer.renderCardImage(card: intro, sourceImage: introBackground, renderSize: renderSize, bodyTypography: cardTypography) {
                         let tempCardImgURL = directory.appendingPathComponent("intro-img-\(UUID().uuidString).png")
                         if let pngData = cardImage.pngData() {
                             try pngData.write(to: tempCardImgURL)
@@ -5174,7 +5888,14 @@ final class VideoTrailerModel: ObservableObject {
                     } else {
                         lastThumb = nil
                     }
-                    if let cardImage = TrailerTitleCardRenderer.renderCardImage(card: outro, sourceImage: lastThumb, renderSize: renderSize) {
+                    // 고른 프로젝트 사진이 있으면 그 사진을, 없거나 읽지 못하면 기존 첫/마지막 장면을 배경으로 쓴다.
+                    var outroBackground = lastThumb
+                    if outro.usesFirstOrLastImage, let photoID = outro.backgroundSourceID,
+                       let photo = currentSourceByID[photoID], photo.isImage,
+                       let photoImage = try? await Self.extractStillImage(source: photo, at: 0, maxPixelSize: 1920) {
+                        outroBackground = photoImage
+                    }
+                    if let cardImage = TrailerTitleCardRenderer.renderCardImage(card: outro, sourceImage: outroBackground, renderSize: renderSize, bodyTypography: cardTypography) {
                         let tempCardImgURL = directory.appendingPathComponent("outro-img-\(UUID().uuidString).png")
                         if let pngData = cardImage.pngData() {
                             try pngData.write(to: tempCardImgURL)
@@ -6061,6 +6782,26 @@ private final class TrailerVelocityDurationSlider: UISlider {
     }
 }
 
+/// 와이드 시작/마지막 화면의 배경 사진 후보 썸네일. 작은 크기로만 읽어 온다.
+private struct TrailerCardPhotoThumbnail: View {
+    let source: VideoTrailerSource
+    @State private var image: UIImage?
+
+    var body: some View {
+        ZStack {
+            Color(uiColor: .secondarySystemFill)
+            if let image {
+                Image(uiImage: image).resizable().scaledToFill()
+            }
+        }
+        .clipped()
+        .task(id: source.id) {
+            let loaded = try? await VideoTrailerModel.extractStillImage(source: source, at: 0, maxPixelSize: 160)
+            if !Task.isCancelled { image = loaded }
+        }
+    }
+}
+
 // MARK: - 시작/마지막 타이틀 카드 편집 시트
 
 struct TrailerTitleCardSheet: View {
@@ -6068,6 +6809,7 @@ struct TrailerTitleCardSheet: View {
     let isIntro: Bool
     let sourceImage: UIImage?
     let renderSize: CGSize
+    var bodyTypography: TrailerCaption? = nil
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -6108,7 +6850,8 @@ struct TrailerTitleCardSheet: View {
                     let previewImg = TrailerTitleCardRenderer.renderCardImage(
                         card: card,
                         sourceImage: card.usesFirstOrLastImage ? sourceImage : nil,
-                        renderSize: renderSize
+                        renderSize: renderSize,
+                        bodyTypography: bodyTypography
                     )
                     if let previewImg {
                         Image(uiImage: previewImg)
@@ -6133,5 +6876,20 @@ struct TrailerTitleCardSheet: View {
                 Button("완료") { dismiss() }
             }
         }
+    }
+}
+
+
+/// 편집기 미리보기 위에 항상 보이는 재생/일시 정지 버튼. 타임라인 클릭과 같은 브리지로 지금 위치에서 재생한다.
+struct TrailerPreviewPlayPauseButton: View {
+    @ObservedObject var bridge: TrailerTimelineBridge
+
+    var body: some View {
+        Button { bridge.togglePlayback() } label: {
+            SharedPlayerCircleLabel(systemImage: bridge.isPlaying ? "pause.fill" : "play.fill")
+        }
+        .disabled(!bridge.hasPlayer)
+        .opacity(bridge.hasPlayer ? 1 : 0.5)
+        .accessibilityLabel(bridge.isPlaying ? "일시 정지" : "재생")
     }
 }

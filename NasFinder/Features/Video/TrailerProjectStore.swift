@@ -161,23 +161,32 @@ struct TrailerTitleCard: Codable, Equatable, Sendable {
     var subtitle: String
     var duration: Double
     var usesFirstOrLastImage: Bool
+    /// 배경으로 고른 프로젝트 사진의 소스 id(프로젝트에 저장되는 안정된 id). nil이면 기존처럼
+    /// `usesFirstOrLastImage`일 때 첫/마지막 장면, 아니면 단색이다. 사진이 사라졌거나 사진이 아니면 같은 기존 규칙으로 돌아간다.
+    var backgroundSourceID: Int?
+    /// true면 문구를 본편 자막 서체로 그린다. 이전 프로젝트와 폰 시트는 false라 기존 모양을 유지한다.
+    var usesBodyTypography: Bool
 
     init(
         isEnabled: Bool = false,
         title: String = "",
         subtitle: String = "",
         duration: Double = 3.0,
-        usesFirstOrLastImage: Bool = true
+        usesFirstOrLastImage: Bool = true,
+        backgroundSourceID: Int? = nil,
+        usesBodyTypography: Bool = false
     ) {
         self.isEnabled = isEnabled
         self.title = title
         self.subtitle = subtitle
         self.duration = max(1.0, min(10.0, duration))
         self.usesFirstOrLastImage = usesFirstOrLastImage
+        self.backgroundSourceID = backgroundSourceID
+        self.usesBodyTypography = usesBodyTypography
     }
 
     enum CodingKeys: String, CodingKey {
-        case isEnabled, title, subtitle, duration, usesFirstOrLastImage
+        case isEnabled, title, subtitle, duration, usesFirstOrLastImage, backgroundSourceID, usesBodyTypography
     }
 
     init(from decoder: Decoder) throws {
@@ -188,6 +197,8 @@ struct TrailerTitleCard: Codable, Equatable, Sendable {
         let d = try c.decodeIfPresent(Double.self, forKey: .duration) ?? 3.0
         duration = max(1.0, min(10.0, d))
         usesFirstOrLastImage = try c.decodeIfPresent(Bool.self, forKey: .usesFirstOrLastImage) ?? true
+        backgroundSourceID = try c.decodeIfPresent(Int.self, forKey: .backgroundSourceID)
+        usesBodyTypography = try c.decodeIfPresent(Bool.self, forKey: .usesBodyTypography) ?? false
     }
 }
 
