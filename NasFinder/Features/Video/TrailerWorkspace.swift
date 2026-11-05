@@ -89,9 +89,19 @@ private struct TrailerEditorCoverModifier<Item: Identifiable, Editor: View>: Vie
                 let router = AppShellRouter.shared
                 if newID != nil, let item {
                     let binding = $item
-                    let close = { binding.wrappedValue = nil }
+                    let hostedID = String(describing: item.id)
+                    // 아래 레이어가 비활성이면 .onChange가 늦게 돌아 오버레이가 남을 수 있어, 닫을 때 바로 치운다.
+                    // 이미 다른 편집기로 바뀐 낡은 close는 새 편집기를 건드리지 않는다.
+                    let close = {
+                        guard router.hostedEditor?.id == hostedID else { return }
+                        if let current = binding.wrappedValue, String(describing: current.id) == hostedID {
+                            binding.wrappedValue = nil
+                        }
+                        router.hostedEditor = nil
+                        onDismiss?()
+                    }
                     router.hostedEditor = HostedTrailerEditor(
-                        id: String(describing: item.id),
+                        id: hostedID,
                         view: AnyView(editor(item)
                             .environment(\.embedsEditorInShell, true)
                             .environment(\.trailerEditorClose, TrailerEditorCloseAction(run: close))),

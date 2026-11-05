@@ -101,6 +101,20 @@ struct SharedVideoProgressBar: View {
                 .accessibilityValue(
                     "\(formattedTime(currentSeconds)) / \(formattedTime(durationSeconds))"
                 )
+                .accessibilityAdjustableAction { direction in
+                    guard durationSeconds > 0 else { return }
+                    switch direction {
+                    case .increment: seek(to: currentSeconds + 5)
+                    case .decrement: seek(to: currentSeconds - 5)
+                    @unknown default: break
+                    }
+                }
+                .accessibilityAction(named: "5초 앞으로") {
+                    if durationSeconds > 0 { seek(to: currentSeconds + 5) }
+                }
+                .accessibilityAction(named: "5초 뒤로") {
+                    if durationSeconds > 0 { seek(to: currentSeconds - 5) }
+                }
             }
             .frame(minWidth: ui(compact ? 36 : 60))
 

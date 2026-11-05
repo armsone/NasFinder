@@ -284,6 +284,50 @@ enum TrailerMusicDucking {
     }
 }
 
+/// The music's placement and volume on the output timeline, shared by the export and the
+/// editor's draft preview so what is heard before rendering is what gets rendered.
+enum TrailerMusicMix {
+    /// Lays the music end to end from 0 until `total` (once only under `.single`).
+    /// Returns the end of what was inserted and how many pieces it took.
+    static func insertPieces(into musicTrack: AVMutableCompositionTrack, source: AVAssetTrack, range: CMTimeRange,
+                             total: CMTime, policy: TrailerMusicPolicy) throws -> (end: CMTime, pieces: Int) {
+        var cursor = CMTime.zero
+        var pieces = 0
+        let playsOnce = policy == .single
+        while CMTimeCompare(cursor, total) < 0, !(playsOnce && pieces == 1) {
+            pieces += 1
+            guard pieces <= TrailerMusic.maximumRepeats else { throw TrailerMusicError.tooManyRepeats }
+            let piece = CMTimeMinimum(range.duration, CMTimeSubtract(total, cursor))
+            try musicTrack.insertTimeRange(CMTimeRange(start: range.start, duration: piece), of: source, at: cursor)
+            cursor = CMTimeAdd(cursor, piece)
+        }
+        return (cursor, pieces)
+    }
+
+    /// Ducking ramps and level for the one music track covering `0...musicEnd`.
+    static func audioMix(for musicTrack: AVMutableCompositionTrack, selection: TrailerMusicSelection?,
+                         originalSound: [TrailerMusicDucking.Clip], musicEnd: Double) -> (mix: AVMutableAudioMix, ramps: Int) {
+        let parameters = AVMutableAudioMixInputParameters(track: musicTrack)
+        let level = Float(min(1, max(0, selection?.level ?? 1)))
+        let ramps = TrailerMusicDucking.ramps(clips: originalSound, total: musicEnd, enabled: selection?.autoDuck ?? true)
+        for ramp in ramps {
+            let rampStart = CMTime(seconds: ramp.start, preferredTimescale: 600)
+            let rampEnd = CMTime(seconds: ramp.end, preferredTimescale: 600)
+            guard CMTimeCompare(rampStart, rampEnd) < 0 else { continue }
+            parameters.setVolumeRamp(fromStartVolume: ramp.from * level, toEndVolume: ramp.to * level,
+                                     timeRange: CMTimeRange(start: rampStart, end: rampEnd))
+        }
+        if selection?.autoDuck == false {
+            parameters.setVolume(TrailerMusicDucking.loudVolume * level, at: .zero)
+        } else if ramps.isEmpty, level != 1 {
+            parameters.setVolume(level, at: .zero)
+        }
+        let mix = AVMutableAudioMix()
+        mix.inputParameters = [parameters]
+        return (mix, ramps.count)
+    }
+}
+
 /// Plays at most one audition track at a time, strictly for previewing a candidate
 /// music file before it is chosen; it never touches the trailer export's own audio.
 @MainActor

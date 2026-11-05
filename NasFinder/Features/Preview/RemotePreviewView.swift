@@ -389,10 +389,14 @@ struct RemotePreviewView: View {
                         .offset(videoZoomOffset)
                         .offset(y: videoVerticalOffset)
                         .opacity(videoDismissOpacity)
-                        .contentShape(Rectangle())
-                        .simultaneousGesture(videoDragGesture(in: geometry.size))
-                        .simultaneousGesture(videoMagnificationGesture(in: geometry.size))
-                        .simultaneousGesture(videoTapGesture)
+                        .overlay {
+                            RemoteVideoTapSurface(
+                                onSingleTap: handleVideoSingleTap,
+                                onDoubleTap: handleVideoDoubleTap
+                            )
+                                .simultaneousGesture(videoDragGesture(in: geometry.size))
+                                .simultaneousGesture(videoMagnificationGesture(in: geometry.size))
+                        }
                         .accessibilityLabel("공용 동영상 플레이어")
                         .accessibilityHint(
                             "컨트롤이 숨겨졌을 때 한 번 탭하면 컨트롤을 표시하고, 표시된 상태에서는 재생하거나 일시 정지합니다. 두 번 탭하면 화면 크기를 초기화합니다."
@@ -960,18 +964,20 @@ struct RemotePreviewView: View {
 
     @ViewBuilder
     private func videoProgressBar(compact: Bool) -> some View {
-        if let compatibilityPlayer = viewModel.compatibilityPlayer {
+        if !viewModel.isPreparingVideo, let compatibilityPlayer = viewModel.compatibilityPlayer {
             CompatibilityVideoProgressBar(
                 player: compatibilityPlayer,
                 sourceLabel: viewModel.videoPlaybackSource?.title,
                 compact: compact
             )
-        } else if let player = viewModel.player {
+            .id(ObjectIdentifier(compatibilityPlayer))
+        } else if !viewModel.isPreparingVideo, let player = viewModel.player {
             SharedVideoProgressBar(
                 player: player,
                 sourceLabel: viewModel.videoPlaybackSource?.title,
                 compact: compact
             )
+            .id(ObjectIdentifier(player))
         }
     }
 
@@ -1308,28 +1314,23 @@ struct RemotePreviewView: View {
             }
     }
 
-    private var videoTapGesture: some Gesture {
-        TapGesture(count: 2)
-            .exclusively(before: TapGesture(count: 1))
-            .onEnded { value in
-                switch value {
-                case .first:
-                    let isZoomed = abs(videoZoomScale - 1) > 0.01
-                    let isPanned = abs(videoZoomOffset.width) > 1.0 || abs(videoZoomOffset.height) > 1.0
-                    guard isZoomed || isPanned else { return }
-                    withAnimation(.spring(response: 0.25, dampingFraction: 0.86)) {
-                        resetVideoTransform()
-                    }
-                    revealControls()
-                case .second:
-                    if RemotePreviewInteractionPolicy.shouldTogglePlaybackOnSingleTap(
-                        controlsAreVisible: areControlsVisible
-                    ) {
-                        viewModel.togglePlayback()
-                    }
-                    revealControls()
-                }
-            }
+    private func handleVideoSingleTap() {
+        if RemotePreviewInteractionPolicy.shouldTogglePlaybackOnSingleTap(
+            controlsAreVisible: areControlsVisible
+        ) {
+            viewModel.togglePlayback()
+        }
+        revealControls()
+    }
+
+    private func handleVideoDoubleTap() {
+        let isZoomed = abs(videoZoomScale - 1) > 0.01
+        let isPanned = abs(videoZoomOffset.width) > 1.0 || abs(videoZoomOffset.height) > 1.0
+        guard isZoomed || isPanned else { return }
+        withAnimation(.spring(response: 0.25, dampingFraction: 0.86)) {
+            resetVideoTransform()
+        }
+        revealControls()
     }
 
     private func clampedVideoOffset(_ offset: CGSize, in size: CGSize) -> CGSize {
@@ -1371,6 +1372,47 @@ struct RemotePreviewView: View {
                   !self.isAccessibilityTouchExplorationActive else { return }
             withAnimation(.easeInOut(duration: 0.2)) { areControlsVisible = false }
         }
+    }
+}
+
+private struct RemoteVideoTapSurface: UIViewRepresentable {
+    let onSingleTap: () -> Void
+    let onDoubleTap: () -> Void
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        let doubleTap = UITapGestureRecognizer(
+            target: context.coordinator, action: #selector(Coordinator.doubleTap)
+        )
+        doubleTap.numberOfTapsRequired = 2
+        doubleTap.cancelsTouchesInView = false
+        let singleTap = UITapGestureRecognizer(
+            target: context.coordinator, action: #selector(Coordinator.singleTap)
+        )
+        singleTap.cancelsTouchesInView = false
+        singleTap.require(toFail: doubleTap)
+        view.addGestureRecognizer(singleTap)
+        view.addGestureRecognizer(doubleTap)
+        return view
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(surface: self)
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.surface = self
+    }
+
+    final class Coordinator: NSObject {
+        var surface: RemoteVideoTapSurface
+
+        init(surface: RemoteVideoTapSurface) {
+            self.surface = surface
+        }
+
+        @objc func singleTap() { surface.onSingleTap() }
+        @objc func doubleTap() { surface.onDoubleTap() }
     }
 }
 

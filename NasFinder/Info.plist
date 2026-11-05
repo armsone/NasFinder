@@ -120,7 +120,7 @@
 	<key>NasFinderGooglePhotosClientID</key>
 	<string>54458207874-u67ssi4fl73tkakqlmh61tt94hhm6esh.apps.googleusercontent.com</string>
 	<key>NasFinderKeychainAccessGroup</key>
-	<string>$(AppIdentifierPrefix)com.armsone.nasfinder.shared</string>
+	<string>$(DEVELOPMENT_TEAM).com.armsone.nasfinder.shared</string>
 	<key>UIAppFonts</key>
 	<array>
 		<string>Pretendard-Regular.otf</string>

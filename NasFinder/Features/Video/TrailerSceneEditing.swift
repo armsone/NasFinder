@@ -837,6 +837,18 @@ struct TrailerTimelineSegment: Identifiable, Equatable {
     let sourceID: Int?
     let start: Double
     let length: Double
+    /// 이 장면의 원본 소리를 넣지 않는다(내보내기와 같은 규칙으로 음악 자동 조절에서 빠진다).
+    var muted = false
+    /// 이 장면의 화면 구성. 내보내기와 같이 계획 장면 값(음악 맞춤 반복 포함)을 따른다.
+    var fitsFrame = false
+    var offsetX = 0.0
+    var offsetY = 0.0
+
+    /// 사진 내보내기와 같은 규칙: 직접 정한 구성이 있을 때만 고정 구성, 없으면 자동 효과(nil).
+    var framing: VideoTrailerImageClip.Framing? {
+        (fitsFrame || offsetX != 0 || offsetY != 0)
+            ? .init(fitsFrame: fitsFrame, offsetX: offsetX, offsetY: offsetY) : nil
+    }
 }
 
 /// 미리보기 패널 안의 연속 필름스트립. 구간 폭은 길이에 비례하고, 켜진 시작/마지막 화면도 포함한다.
@@ -1117,25 +1129,37 @@ struct TrailerClipListView: View {
     let selectedID: Int?
     var mode: TrailerClipListMode = .detail
     var markedIDs: Set<Int>? = nil
+    var columnCount: Int? = nil
     let onSelect: (Int) -> Void
+    /// false면 자체 세로 스크롤 없이 지연 내용만 그려, 바깥 ScrollView(폰 단일 스크롤) 안에 놓인다.
+    var scrolls: Bool = true
+
+    @ViewBuilder
+    private func content(_ byID: [Int: VideoTrailerSource]) -> some View {
+        switch mode {
+        case .detail: detailRows(byID)
+        case .thumbnail: grid(byID, minimum: 84, thumbHeight: 60, pixel: 240, showsName: false)
+        case .poster: grid(byID, minimum: 150, thumbHeight: 190, pixel: 480, showsName: true)
+        }
+    }
 
     var body: some View {
         let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        ScrollViewReader { proxy in
-            ScrollView {
-                switch mode {
-                case .detail: detailRows(byID)
-                case .thumbnail: grid(byID, minimum: 84, thumbHeight: 60, pixel: 240, showsName: false)
-                case .poster: grid(byID, minimum: 150, thumbHeight: 190, pixel: 480, showsName: true)
+        if scrolls {
+            ScrollViewReader { proxy in
+                ScrollView {
+                    content(byID)
+                }
+                .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+                .onChange(of: selectedID) { _, id in
+                    if let id { withAnimation { proxy.scrollTo(id, anchor: mode.isGrid ? .center : .top) } }
+                }
+                .onChange(of: mode) { _, _ in
+                    if let selectedID { proxy.scrollTo(selectedID, anchor: .center) }
                 }
             }
-            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
-            .onChange(of: selectedID) { _, id in
-                if let id { withAnimation { proxy.scrollTo(id, anchor: mode.isGrid ? .center : .top) } }
-            }
-            .onChange(of: mode) { _, _ in
-                if let selectedID { proxy.scrollTo(selectedID, anchor: .center) }
-            }
+        } else {
+            content(byID)
         }
     }
 
@@ -1200,7 +1224,10 @@ struct TrailerClipListView: View {
 
     private func grid(_ byID: [Int: VideoTrailerSource], minimum: CGFloat, thumbHeight: CGFloat,
                       pixel: CGFloat, showsName: Bool) -> some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: minimum), spacing: 8, alignment: .top)], spacing: 8) {
+        let gridColumns: [GridItem] = columnCount.map {
+            Array(repeating: GridItem(.flexible(), spacing: 8, alignment: .top), count: min(6, max(2, $0)))
+        } ?? [GridItem(.adaptive(minimum: minimum), spacing: 8, alignment: .top)]
+        return LazyVGrid(columns: gridColumns, spacing: 8) {
             ForEach(Array(scenes.enumerated()), id: \.element.id) { index, scene in
                 if let source = byID[scene.sourceID] {
                     let isSelected = selectedID == scene.id
@@ -1283,10 +1310,43 @@ struct TrailerSplitHandle: View {
                     .onEnded { _ in startRatio = nil }
             )
             .accessibilityElement()
-            .accessibilityLabel("클립 목록과 미리보기 경계")
+            .accessibilityLabel("왼쪽 창과 오른쪽 창 경계")
             .accessibilityAdjustableAction { direction in
                 let step = 0.05
                 ratio = min(max(ratio + (direction == .increment ? step : -step), range.lowerBound), range.upperBound)
+            }
+    }
+}
+
+/// 위아래 두 칸 사이의 경계. 끌면 위 칸의 비율이 바뀌고, 두 번 누르면 기본 비율로 돌아간다.
+struct TrailerVerticalSplitHandle: View {
+    @Binding var ratio: Double
+    /// 두 칸이 나누어 쓰는 높이(구분선 높이 제외). 끌어도 변하지 않는 값이어야 한다.
+    let totalHeight: CGFloat
+    let range: ClosedRange<Double>
+    let defaultRatio: Double
+    @State private var startRatio: Double?
+
+    var body: some View {
+        Color.clear
+            .frame(height: 12)
+            .overlay(Capsule().fill(PorcelainMetrics.line).frame(width: 40, height: 4))
+            .contentShape(Rectangle())
+            .onTapGesture(count: 2) { ratio = min(max(defaultRatio, range.lowerBound), range.upperBound) }
+            .gesture(
+                DragGesture(minimumDistance: 2, coordinateSpace: .global)
+                    .onChanged { value in
+                        guard totalHeight > 0 else { return }
+                        let start = startRatio ?? ratio
+                        if startRatio == nil { startRatio = ratio }
+                        ratio = min(max(start + Double(value.translation.height / totalHeight), range.lowerBound), range.upperBound)
+                    }
+                    .onEnded { _ in startRatio = nil }
+            )
+            .accessibilityElement()
+            .accessibilityLabel("클립과 설정 경계")
+            .accessibilityAdjustableAction { direction in
+                ratio = min(max(ratio + (direction == .increment ? 0.05 : -0.05), range.lowerBound), range.upperBound)
             }
     }
 }
@@ -2426,6 +2486,15 @@ struct TrailerDraftPreviewInput {
     var outroBackground: UIImage?
     var bodyTypography: TrailerCaption?
     var selectedSceneID: Int?
+    /// 배경음악. nil이면 음악 없이 재생한다.
+    var music: TrailerMusicSelection?
+
+    /// 음악 배치·음량이 달라질 때만 바뀌는 키. 시계 재생은 이 키와 무관하다.
+    var musicKey: String {
+        guard let music else { return "none" }
+        let layout = segments.map { "\($0.id):\($0.length):\($0.start):\($0.muted)" }.joined(separator: ",")
+        return "\(music.recordID)|\(music.url.path)|\(music.policy.rawValue)|\(music.fitCount)|\(music.autoDuck)|\(music.level)|\(layout)"
+    }
 
     /// 타임라인 필름스트립과 같은 가중치(최소 0.05초)로 센 전체 길이.
     var totalDuration: Double { segments.reduce(0) { $0 + max(0.05, $1.length) } }
@@ -2460,23 +2529,183 @@ final class TrailerDraftVideoDriver: ObservableObject {
 
     init() { player.actionAtItemEnd = .pause }
 
-    func sync(segment: TrailerTimelineSegment?, url: URL?, offset: Double, playing: Bool) {
+    /// 영상 구간의 화면 구성(채우기/맞추기/위치)과 미리보기 화면 크기.
+    struct Layout: Equatable {
+        var fitsFrame: Bool
+        var offsetX: Double
+        var offsetY: Double
+        var renderSize: CGSize
+    }
+
+    private var layoutKey: Layout?
+    private var layoutTask: Task<Void, Never>?
+
+    func sync(segment: TrailerTimelineSegment?, url: URL?, offset: Double, playing: Bool, layout: Layout) {
         guard let segment, segment.kind == .clip, let url else { stop(); return }
         let target = max(0, segment.start + offset)
         if segmentID != segment.id {
             segmentID = segment.id
+            layoutKey = nil
+            layoutTask?.cancel()
             player.replaceCurrentItem(with: AVPlayerItem(url: url))
             player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         } else if !playing || abs(player.currentTime().seconds - target) > 0.3 {
             player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         }
+        applyLayout(layout)
         if playing { if player.timeControlStatus == .paused { player.play() } } else { player.pause() }
+    }
+
+    /// 내보내기와 같은 `aspectFit/aspectFillTransform`을 항목의 비디오 합성에 걸어 일시정지·재생 모두에 반영한다.
+    /// 항목과 재생 위치는 바꾸지 않는다.
+    private func applyLayout(_ layout: Layout) {
+        guard layout != layoutKey, let item = player.currentItem else { return }
+        layoutKey = layout
+        layoutTask?.cancel()
+        layoutTask = Task { [weak self, weak item] in
+            guard let item else { return }
+            let asset = item.asset
+            guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+                  let natural = try? await track.load(.naturalSize),
+                  let transform = try? await track.load(.preferredTransform),
+                  let duration = try? await asset.load(.duration),
+                  natural.width > 0, natural.height > 0, !Task.isCancelled else { return }
+            let scale = min(1, 960 / max(layout.renderSize.width, layout.renderSize.height))
+            let size = CGSize(width: max(4, (layout.renderSize.width * scale).rounded()),
+                              height: max(4, (layout.renderSize.height * scale).rounded()))
+            let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
+            layer.setTransform(layout.fitsFrame
+                ? TrailerOutputRenderer.aspectFitTransform(naturalSize: natural, preferredTransform: transform, renderSize: size)
+                : TrailerOutputRenderer.aspectFillTransform(naturalSize: natural, preferredTransform: transform, renderSize: size,
+                                                            offsetX: layout.offsetX, offsetY: layout.offsetY), at: .zero)
+            let instruction = AVMutableVideoCompositionInstruction()
+            instruction.timeRange = CMTimeRange(start: .zero, duration: duration)
+            instruction.layerInstructions = [layer]
+            instruction.backgroundColor = UIColor.black.cgColor
+            let composition = AVMutableVideoComposition()
+            composition.renderSize = size
+            composition.frameDuration = CMTime(value: 1, timescale: 30)
+            composition.instructions = [instruction]
+            guard let self, !Task.isCancelled, self.player.currentItem === item else { return }
+            item.videoComposition = composition
+            // 일시정지 중에도 보이는 프레임을 새 구성으로 다시 그린다(같은 위치).
+            if self.player.rate == 0 {
+                self.player.seek(to: self.player.currentTime(), toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: { _ in })
+            }
+        }
     }
 
     func stop() {
         player.pause()
         guard segmentID != nil else { return }
         segmentID = nil
+        layoutKey = nil
+        layoutTask?.cancel()
+        player.replaceCurrentItem(with: nil)
+    }
+}
+
+/// 초안 배경음악 재생. 내보내기와 같은 `TrailerMusicMix`로 음악을 깔고 자동 조절을 계산한 합성 항목을
+/// 만들어 두고, 미리보기 시계(재생 위치·재생 여부)를 그대로 따라간다.
+@MainActor
+final class TrailerDraftMusicDriver: ObservableObject {
+    let player = AVPlayer()
+    @Published private(set) var failure: String?
+    private var ready = false
+    private var duration = 0.0
+    private var envelopes: [Int: AudioActivityEnvelope] = [:]
+    private var measured: Set<Int> = []
+
+    init() { player.actionAtItemEnd = .pause }
+
+    /// 입력이 바뀔 때마다 호출한다(`.task(id:)`가 이전 호출을 취소한다).
+    func prepare(_ input: TrailerDraftPreviewInput) async {
+        ready = false
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        failure = nil
+        guard let music = input.music else { return }
+        // 음량 슬라이더를 끄는 동안 매번 다시 만들지 않도록 잠깐 모은다.
+        try? await Task.sleep(for: .milliseconds(150))
+        guard !Task.isCancelled else { return }
+        do {
+            let asset = AVURLAsset(url: music.url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+            guard let track = try await asset.loadTracks(withMediaType: .audio).first,
+                  try await track.load(.isDecodable) else { throw TrailerMusicError.unreadable }
+            let range = try await track.load(.timeRange)
+            try TrailerMusic.validate(duration: range.duration.seconds)
+
+            // 소리가 나는 영상 장면의 세기를 한 번만 잰다. 못 잰 영상은 내보내기처럼 계속 들리는 것으로 본다.
+            let videoIDs = Set(input.segments.compactMap { $0.kind == .clip && !$0.muted ? $0.sourceID : nil })
+            for source in input.sources where !source.isImage && videoIDs.contains(source.id) && !measured.contains(source.id) {
+                envelopes[source.id] = try? await AudioAnalysisService.activityEnvelope(url: source.url)
+                try Task.checkCancellation()
+                measured.insert(source.id)
+            }
+
+            var originalSound: [TrailerMusicDucking.Clip] = []
+            var outputStart = 0.0
+            let byID = Dictionary(input.sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            for segment in input.segments {
+                if segment.kind == .clip, !segment.muted, let id = segment.sourceID, let source = byID[id], !source.isImage {
+                    originalSound.append(.init(outputStart: outputStart, sourceStart: segment.start,
+                                               length: segment.length, envelope: envelopes[id]))
+                }
+                outputStart += segment.length
+            }
+
+            let composition = AVMutableComposition()
+            guard outputStart > 0,
+                  let musicTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+            else { throw TrailerMusicError.unreadable }
+            let placed = try TrailerMusicMix.insertPieces(
+                into: musicTrack, source: track, range: range,
+                total: CMTime(seconds: outputStart, preferredTimescale: 600), policy: music.policy)
+            let built = TrailerMusicMix.audioMix(for: musicTrack, selection: music, originalSound: originalSound,
+                                                 musicEnd: placed.end.seconds)
+            try Task.checkCancellation()
+            let item = AVPlayerItem(asset: composition)
+            item.audioMix = built.mix
+            // 자산은 트랙이 약하게만 참조하므로 항목이 살아 있는 동안 함께 들고 있는다.
+            heldAsset = asset
+            duration = placed.end.seconds
+            player.replaceCurrentItem(with: item)
+            ready = true
+        } catch is CancellationError {
+            return
+        } catch let error as TrailerMusicError {
+            failure = error.errorDescription
+        } catch {
+            failure = TrailerMusicError.unreadable.errorDescription
+        }
+    }
+
+    private var heldAsset: AVURLAsset?
+
+    func sync(seconds: Double, playing: Bool) {
+        guard ready else { return }
+        // 음악이 먼저 끝났거나(음악 한 번) 영상이 끝에 닿으면 소리를 멈춘다.
+        guard seconds < duration - 0.02 else { player.pause(); return }
+        let drift = abs(player.currentTime().seconds - seconds)
+        if playing {
+            if player.timeControlStatus == .paused || drift > 0.3 {
+                player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+            if player.timeControlStatus == .paused {
+                SharedMediaAudioSession.activatePlayback()
+                player.play()
+            }
+        } else {
+            player.pause()
+            if drift > 0.05 {
+                player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            }
+        }
+    }
+
+    func stop() {
+        player.pause()
+        ready = false
         player.replaceCurrentItem(with: nil)
     }
 }
@@ -2490,7 +2719,9 @@ struct TrailerDraftPreviewPlayer: View {
 
     @State private var photos: [Int: UIImage] = [:]
     @State private var cardImage: UIImage?
+    @State private var originalVideoSize: (url: URL, size: CGSize)?
     @StateObject private var video = TrailerDraftVideoDriver()
+    @StateObject private var music = TrailerDraftMusicDriver()
 
     private var currentVideoSource: VideoTrailerSource? {
         guard let id = currentSegment?.sourceID, currentSegment?.kind == .clip else { return nil }
@@ -2498,19 +2729,55 @@ struct TrailerDraftPreviewPlayer: View {
     }
 
     private func syncVideo() {
-        video.sync(segment: currentSegment, url: currentVideoSource?.url,
-                   offset: location?.offset ?? 0, playing: bridge.isPlaying)
+        let segment = currentSegment
+        video.sync(segment: segment, url: currentVideoSource?.url,
+                   offset: location?.offset ?? 0, playing: bridge.isPlaying,
+                   layout: .init(fitsFrame: segment?.fitsFrame ?? false, offsetX: segment?.offsetX ?? 0,
+                                 offsetY: segment?.offsetY ?? 0, renderSize: renderSize))
+    }
+
+    /// 사진 한 장면을 내보내기와 같은 카메라 계획으로 그린다. 직접 정한 구성이 없으면 자동 확대 효과의 해당 시점.
+    @ViewBuilder
+    private func photoView(_ photo: UIImage, segment: TrailerTimelineSegment) -> some View {
+        GeometryReader { proxy in
+            let length = max(0.05, segment.length)
+            let plan = VideoTrailerImageClip.fallbackCameraMotionPlan(
+                imageSize: photo.size, duration: length, renderSize: renderSize,
+                sourceIdentity: input.sources.first { $0.id == segment.sourceID }?.name,
+                framing: segment.framing)
+            let sample = plan.sample(at: (location?.offset ?? 0) / length, in: proxy.size)
+            ZStack(alignment: .topLeading) {
+                Image(uiImage: photo).resizable()
+                    .frame(width: sample.drawSize.width, height: sample.drawSize.height)
+                    .offset(x: sample.drawOrigin.x, y: sample.drawOrigin.y)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            .clipped()
+        }
+    }
+
+    private var videoLayoutKey: String {
+        guard let segment = currentSegment else { return "none" }
+        return "\(segment.id)|\(segment.fitsFrame)|\(segment.offsetX)|\(segment.offsetY)|\(Int(renderSize.width))x\(Int(renderSize.height))"
     }
 
     private var location: (index: Int, offset: Double)? { input.location(at: bridge.currentSeconds) }
     private var currentSegment: TrailerTimelineSegment? { location.map { input.segments[$0.index] } }
 
+    private var originalVideoURL: URL? {
+        input.sources.first { !$0.isImage }?.url
+    }
+
     private var renderSize: CGSize {
         if let aspectRatio { return aspectRatio.renderSize }
-        if let firstID = input.segments.compactMap(\.sourceID).first, let image = photos[firstID] {
+        if let originalVideoURL {
+            if let originalVideoSize, originalVideoSize.url == originalVideoURL {
+                return OutputAspectRatio.renderSize(for: originalVideoSize.size)
+            }
+        } else if let firstID = input.segments.compactMap(\.sourceID).first, let image = photos[firstID] {
             return OutputAspectRatio.renderSize(for: image.size)
         }
-        return CGSize(width: 16, height: 9)
+        return OutputAspectRatio.landscape16x9.renderSize
     }
 
     private var attachKey: String {
@@ -2538,7 +2805,7 @@ struct TrailerDraftPreviewPlayer: View {
                             if currentVideoSource != nil {
                                 SharedVideoPlayerSurface(player: video.player, videoGravity: .resizeAspect)
                             } else if let id = segment.sourceID, let photo = photos[id] {
-                                Image(uiImage: photo).resizable().scaledToFit()
+                                photoView(photo, segment: segment)
                             } else {
                                 Image(systemName: "photo").font(.system(size: 36)).foregroundStyle(.white.opacity(0.6))
                             }
@@ -2547,11 +2814,31 @@ struct TrailerDraftPreviewPlayer: View {
                     }
                 }
             }
+            .task(id: originalVideoURL) {
+                guard let url = originalVideoURL,
+                      let size = try? await trailerOrientedVideoSize(url: url),
+                      size.width > 0, size.height > 0, !Task.isCancelled else { return }
+                originalVideoSize = (url, size)
+            }
             .task(id: frameKey) { await loadFrame() }
             .task(id: attachKey) { await runClock() }
-            .onChange(of: bridge.currentSeconds) { _, _ in syncVideo() }
-            .onChange(of: bridge.isPlaying) { _, _ in syncVideo() }
-            .onDisappear { video.stop() }
+            .task(id: input.musicKey) {
+                await music.prepare(input)
+                // 준비가 끝난 시점의 재생 위치로 바로 이어 붙는다(재생 중에 음악을 바꾼 경우).
+                music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying)
+            }
+            .onChange(of: bridge.currentSeconds) { _, _ in syncVideo(); music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying) }
+            .onChange(of: videoLayoutKey) { _, _ in syncVideo() }
+            .onChange(of: bridge.isPlaying) { _, _ in syncVideo(); music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying) }
+            .overlay(alignment: .bottom) {
+                if let failure = music.failure {
+                    Text("배경음악을 미리 들을 수 없어요 · \(failure)")
+                        .font(.caption).foregroundStyle(.white)
+                        .padding(6).background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 6))
+                        .padding(8)
+                }
+            }
+            .onDisappear { video.stop(); music.stop() }
             .onChange(of: input.selectedSceneID) { _, id in
                 guard !bridge.isPlaying, let id, let start = input.startSeconds(ofScene: id) else { return }
                 bridge.currentSeconds = start
@@ -2598,6 +2885,9 @@ struct TrailerDraftPreviewPlayer: View {
         bridge.currentSeconds = min(max(start, 0), total)
         bridge.isPlaying = false
         bridge.hasPlayer = true
+        // The selected clip can already be at this time. In that case no change
+        // handler runs, so attach its video before waiting for playback.
+        syncVideo()
         var last = Date()
         while !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(33))

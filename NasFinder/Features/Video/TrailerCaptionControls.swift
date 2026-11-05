@@ -972,55 +972,52 @@ struct TrailerCaptionContentLocationCard: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 10) {
-                // 1. 적용 범위 (3등분) + 우측 적용 버튼
-                HStack(spacing: 6) {
-                    HStack(spacing: 4) {
-                        ForEach(scopes) { sc in
-                            let isSelected = scope == sc
-                            Button {
-                                scope = sc
-                                // 화면 카드로 옮길 때는 본편 초안을 건드리지 않아 돌아오면 그대로다.
-                                if !sc.isScreen { captionDraft.isDirty = true }
-                            } label: {
-                                Text(sc.rawValue)
-                                    .font(.system(size: 13, weight: isSelected ? .bold : .medium))
-                                    .foregroundStyle(isSelected ? PorcelainMetrics.accent : .primary)
-                                    .frame(maxWidth: .infinity, minHeight: 40)
-                                    .background(
-                                        isSelected ? PorcelainMetrics.accent.opacity(0.12) : Color.clear,
-                                        in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                    )
-                                    .overlay(
-                                        RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                            .stroke(isSelected ? PorcelainMetrics.accent : PorcelainMetrics.line, lineWidth: 1)
-                                    )
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("적용 범위: \(sc.rawValue)")
-                            .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+                // 좁은 화면에서는 적용 범위 버튼이 다음 줄로 이어진다.
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 90), spacing: 4)], spacing: 4) {
+                    ForEach(scopes) { sc in
+                        let isSelected = scope == sc
+                        Button {
+                            scope = sc
+                            // 화면 카드로 옮길 때는 본편 초안을 건드리지 않아 돌아오면 그대로다.
+                            if !sc.isScreen { captionDraft.isDirty = true }
+                        } label: {
+                            Text(sc.rawValue)
+                                .font(.system(size: 13, weight: isSelected ? .bold : .medium))
+                                .foregroundStyle(isSelected ? PorcelainMetrics.accent : .primary)
+                                .frame(maxWidth: .infinity, minHeight: 40)
+                                .background(
+                                    isSelected ? PorcelainMetrics.accent.opacity(0.12) : Color.clear,
+                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                )
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                        .stroke(isSelected ? PorcelainMetrics.accent : PorcelainMetrics.line, lineWidth: 1)
+                                )
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("적용 범위: \(sc.rawValue)")
+                        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
                     }
 
                     if !usesClipPicker {
-                    let isApplyDisabled = scope.isScreen
-                        ? !captionDraft.isDirty
-                        : (!captionDraft.isDirty && captionDraft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    Button {
-                        captionDraft.isDirty = true
-                        onApply()
-                    } label: {
-                        Text("적용")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundStyle(isApplyDisabled ? .secondary : (captionDraft.isDirty ? .white : PorcelainMetrics.accent))
-                            .padding(.horizontal, 12)
-                            .frame(minHeight: 40)
-                            .background(
-                                isApplyDisabled ? Color(uiColor: .tertiarySystemFill) : (captionDraft.isDirty ? PorcelainMetrics.accent : PorcelainMetrics.accent.opacity(0.15)),
-                                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                            )
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(isApplyDisabled)
+                        let isApplyDisabled = scope.isScreen
+                            ? !captionDraft.isDirty
+                            : (!captionDraft.isDirty && captionDraft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        Button {
+                            captionDraft.isDirty = true
+                            onApply()
+                        } label: {
+                            Text("적용")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(isApplyDisabled ? .secondary : (captionDraft.isDirty ? .white : PorcelainMetrics.accent))
+                                .frame(maxWidth: .infinity, minHeight: 40)
+                                .background(
+                                    isApplyDisabled ? Color(uiColor: .tertiarySystemFill) : (captionDraft.isDirty ? PorcelainMetrics.accent : PorcelainMetrics.accent.opacity(0.15)),
+                                    in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(isApplyDisabled)
                     }
                 }
 

@@ -21,7 +21,7 @@
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NasFinderKeychainAccessGroup</key>
-	<string>$(AppIdentifierPrefix)com.armsone.nasfinder.shared</string>
+	<string>$(DEVELOPMENT_TEAM).com.armsone.nasfinder.shared</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

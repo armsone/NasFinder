@@ -100,8 +100,12 @@ final class TrailerDraftStore: ObservableObject {
         if record.outputFile != nil {
             entry.totalDuration = 0
         } else {
-            entry.totalDuration = record.scenes.map { $0.filter { !$0.excluded }.reduce(0) { $0 + $1.length } }
+            // 라이브 `suspendSession`과 같게, 켜진 인트로/아웃트로 카드 길이를 더한다(기준이 양수일 때만).
+            let base = record.scenes.map { $0.filter { !$0.excluded }.reduce(0) { $0 + $1.length } }
                 ?? record.sources.reduce(0) { $0 + $1.duration }
+            let intro = record.introCard.flatMap { $0.isEnabled ? $0.duration : nil } ?? 0
+            let outro = record.outroCard.flatMap { $0.isEnabled ? $0.duration : nil } ?? 0
+            entry.totalDuration = base > 0 ? base + intro + outro : base
         }
         entry.suspendedAt = record.updatedAt
         entry.customTitle = record.customTitle
