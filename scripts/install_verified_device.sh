@@ -43,6 +43,14 @@ if [[ "$device_identifier" == "mac" ]]; then
     mac_derived_data="${NASFINDER_MAC_DERIVED_DATA:-$repository_root/.build/verified-mac}"
     mac_target="/Applications/NasFinder.app"
     mac_app="$mac_derived_data/Build/Products/Debug-maccatalyst/NasFinder.app"
+    mac_prebuilt_app="${NASFINDER_MAC_PREBUILT_APP:-}"
+    if [[ -n "$mac_prebuilt_app" ]]; then
+        if [[ "$mac_prebuilt_app" != /* || "$mac_prebuilt_app" != *.app || ! -d "$mac_prebuilt_app" ]]; then
+            echo "error: NASFINDER_MAC_PREBUILT_APP은 존재하는 .app 디렉터리의 절대 경로여야 합니다: $mac_prebuilt_app" >&2
+            exit 2
+        fi
+        mac_app="$mac_prebuilt_app"
+    fi
     mac_work=""
     trap 'rm -f "$source_state_file"; if [[ -n "$mac_work" && "$mac_work" == /* && -d "$mac_work" ]]; then rm -rf "$mac_work"; fi' EXIT
 
@@ -95,13 +103,17 @@ if [[ "$device_identifier" == "mac" ]]; then
         mac_verified_build="$build"
     }
 
-    echo "[1/5] Tests skipped by user (SKIP_TESTS=1); building the Mac Catalyst app"
-    "$repository_root/scripts/xcodebuild_project.sh" \
-        -project "$project" \
-        -scheme "$scheme" \
-        -destination "platform=macOS,variant=Mac Catalyst,arch=arm64" \
-        -derivedDataPath "$mac_derived_data" \
-        build
+    if [[ -n "$mac_prebuilt_app" ]]; then
+        echo "[1/5] Tests skipped by user (SKIP_TESTS=1); using prebuilt app $mac_app (build skipped)"
+    else
+        echo "[1/5] Tests skipped by user (SKIP_TESTS=1); building the Mac Catalyst app"
+        "$repository_root/scripts/xcodebuild_project.sh" \
+            -project "$project" \
+            -scheme "$scheme" \
+            -destination "platform=macOS,variant=Mac Catalyst,arch=arm64" \
+            -derivedDataPath "$mac_derived_data" \
+            build
+    fi
 
     echo "[2/5] Verifying the built app before touching the installed one"
     mac_source_guard "빌드 후"

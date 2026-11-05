@@ -22,12 +22,16 @@ final class ShareIntentAndSidebarTests: XCTestCase {
                      SidebarFinderItemID.photos, SidebarFinderItemID.googlePhotos, SidebarFinderItemID.deviceFiles]
         let merged = SidebarOrderPolicy.normalized(stored: saved, current: withFavorites)
         XCTAssertEqual(Array(merged.prefix(saved.count)), saved, "기존 사용자 순서는 그대로여야 합니다.")
-        XCTAssertEqual(merged.last, SidebarFinderItemID.favorites, "새 행은 꼬리에 붙습니다.")
+        let missing = withFavorites.filter { !saved.contains($0) }
+        XCTAssertTrue(missing.contains(SidebarFinderItemID.favorites))
+        XCTAssertEqual(Array(merged.dropFirst(saved.count)), missing, "저장되지 않은 현재 행은 현재 순서대로 꼬리에 붙습니다.")
         XCTAssertEqual(Set(merged), Set(withFavorites))
-        // 저장된 순서가 없으면 기본 위치(폰하드 다음)에 있다.
+        // 저장된 순서가 없으면 즐겨찾기가 기본 맨 앞에 있다.
         let defaults = SidebarFinderItemID.current(connectionIDs: [], showsGooglePhotos: false)
-        let phoneHard = defaults.firstIndex(of: SidebarFinderItemID.phoneHard)!
-        XCTAssertEqual(defaults[phoneHard + 1], SidebarFinderItemID.favorites)
+        XCTAssertEqual(defaults.first, SidebarFinderItemID.favorites)
+        XCTAssertTrue(defaults.contains(SidebarFinderItemID.photos))
+        XCTAssertTrue(defaults.contains(SidebarFinderItemID.deviceFiles))
+        XCTAssertTrue(defaults.contains(SidebarFinderItemID.phoneHard))
     }
 
     func testVideoMaterialsLabelChangesOnlyTheDisplayNotTheStoredIdentifier() {
