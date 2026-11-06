@@ -222,12 +222,17 @@ final class WorkbenchStore: ObservableObject {
     }
 
     /// 포켓에서 참조만 뺀다. 인덱스 기록에 성공한 경우에만 화면에도 반영한다.
+    /// 포켓 공개 범위와 현재 모드에서 보이는 항목만 뺀다. 숨겨진 항목이나 비공개 항목은 caller가 stale id를 넘겨도 보존한다.
     @discardableResult
     func removeEntries(_ ids: Set<UUID>, from pocketID: UUID) -> Result<Void, WorkbenchStoreError> {
-        guard let index = document.pockets.firstIndex(where: { $0.id == pocketID }) else { return .failure(.missingPocket) }
+        guard let index = document.pockets.firstIndex(where: { $0.id == pocketID }),
+              PrivacyMode.currentlyActive || document.pockets[index].isPrivate != true else { return .failure(.missingPocket) }
         var candidate = document
-        candidate.pockets[index].entries.removeAll { ids.contains($0.id) }
+        candidate.pockets[index].entries.removeAll { entry in
+            entry.isVisibleNow && ids.contains(entry.id)
+        }
         if let failure = commit(candidate) { return .failure(failure) }
+        epochs[pocketID, default: 0] += 1
         return .success(())
     }
 

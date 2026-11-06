@@ -1797,8 +1797,7 @@ private struct VideoTrailerSettings: View {
             return false
         }
         if captionScope.isScreen {
-            // 카드 문구·시간·배경은 편집 즉시 저장돼 있다. 적용은 공유 서체만 본편 자막에 맞춘다.
-            captionDraft.applyStyleOnly(to: &scenes)
+            // 카드 문구·시간·배경 및 독립 스타일은 편집 즉시 저장된다. 본편 자막 스타일을 건드리지 않는다.
             return true
         }
         var batchCaption: TrailerCaption? = nil
@@ -3056,12 +3055,18 @@ private struct VideoTrailerSettings: View {
         return AnyView(wideTitleCardEditor(isIntro: captionScope == .startScreen))
     }
 
+    @ViewBuilder
     private var captionCardB: some View {
-        TrailerCaptionStyleFontCard(captionDraft: captionDraft)
+        if !captionScope.isScreen {
+            TrailerCaptionStyleFontCard(captionDraft: captionDraft)
+        }
     }
 
+    @ViewBuilder
     private var captionCardC: some View {
-        TrailerCaptionDetailedAdjustmentCard(captionDraft: captionDraft)
+        if !captionScope.isScreen {
+            TrailerCaptionDetailedAdjustmentCard(captionDraft: captionDraft)
+        }
     }
 
     private var musicTabContent: some View {
@@ -3421,6 +3426,8 @@ private struct VideoTrailerSettings: View {
                     .textFieldStyle(.roundedBorder)
                 TextField("부제목 (예: 2026 가을)", text: binding.subtitle)
                     .textFieldStyle(.roundedBorder)
+
+                TrailerTitleCardStyleControls(card: binding, bodyTypography: livePreviewTypography)
 
                 HStack {
                     Text("표시 시간").font(.footnote.weight(.semibold))

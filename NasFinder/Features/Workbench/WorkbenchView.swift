@@ -169,6 +169,7 @@ struct WorkbenchEntryRow: View {
     var relink: (() -> Void)? = nil
     /// 포켓이 공개일 때만 항목 자신의 공개 범위를 바꿀 수 있다.
     var setPrivate: ((Bool) -> Void)? = nil
+    var isBusy: Bool = false
 
     private var detail: String {
         var parts = [entry.sourceLabel, entry.mediaKind.title]
@@ -209,6 +210,14 @@ struct WorkbenchEntryRow: View {
                 }
             }
             Spacer(minLength: 0)
+            Button("빼기", action: remove)
+                .font(.ui(.caption).weight(.medium))
+                .foregroundStyle(PorcelainMetrics.danger)
+                .buttonStyle(.plain)
+                .padding(.horizontal, ui(6))
+                .padding(.vertical, ui(4))
+                .disabled(isBusy)
+                .accessibilityLabel("\(entry.name) 포켓에서 빼기")
             Menu {
                 if entry.relinkReason != nil, let relink { Button("다시 연결 방법", action: relink) }
                 if let setPrivate {
@@ -222,6 +231,7 @@ struct WorkbenchEntryRow: View {
             } label: {
                 Image(interfaceSystemName: "ellipsis.circle").frame(width: ui(44), height: ui(44))
             }
+            .disabled(isBusy)
             .accessibilityLabel("\(entry.name) 메뉴")
         }
         .accessibilityElement(children: .contain)
@@ -256,6 +266,10 @@ struct WorkbenchPocketView: View {
     @State private var isRenaming = false
     @State private var renameText = ""
     @State private var isClearConfirmationPresented = false
+    @State private var isDeleteSelectedConfirmationPresented = false
+    @State private var capturedRemovalIDs: Set<UUID> = []
+    @State private var capturedRemovalCount = 0
+    @State private var capturedRemovalPocketName = ""
     @State private var isDeleteConfirmationPresented = false
     @State private var isPublicConfirmationPresented = false
     @State private var relinkGuidance: WorkbenchEntry?
@@ -310,11 +324,17 @@ struct WorkbenchPocketView: View {
             Button("취소", role: .cancel) {}
             Button("바꾸기") { rename() }
         }
-        .confirmationDialog("이 포켓의 항목을 모두 뺄까요?", isPresented: $isClearConfirmationPresented, titleVisibility: .visible) {
-            Button("모두 비우기", role: .destructive) { clear() }
-            Button("취소", role: .cancel) {}
+        .confirmationDialog("이 포켓의 항목을 모두 비울까요?", isPresented: $isClearConfirmationPresented, titleVisibility: .visible) {
+            Button("포켓 비우기", role: .destructive) { confirmBatchRemoval() }
+            Button("취소", role: .cancel) { capturedRemovalIDs = [] }
         } message: {
-            Text("포켓에서 참조 \(pocket?.entries.count ?? 0)개만 지웁니다. 사진·영상 원본과 앱에 있던 기존 복사본은 지워지지 않습니다.")
+            Text("'\(capturedRemovalPocketName)' 포켓에서 참조 \(capturedRemovalCount)개만 지웁니다. 사진·영상 원본과 앱에 있던 기존 복사본은 지워지지 않습니다.")
+        }
+        .confirmationDialog("선택한 재료를 삭제할까요?", isPresented: $isDeleteSelectedConfirmationPresented, titleVisibility: .visible) {
+            Button("선택한 재료 삭제", role: .destructive) { confirmBatchRemoval() }
+            Button("취소", role: .cancel) { capturedRemovalIDs = [] }
+        } message: {
+            Text("'\(capturedRemovalPocketName)' 포켓에서 선택한 참조 \(capturedRemovalCount)개만 지웁니다. 사진·영상 원본과 기존 복사본은 지워지지 않습니다.")
         }
         .confirmationDialog("이 포켓을 공개로 바꿀까요?", isPresented: $isPublicConfirmationPresented, titleVisibility: .visible) {
             Button("공개로 전환") { setPrivate(false) }
@@ -358,7 +378,8 @@ struct WorkbenchPocketView: View {
                         WorkbenchEntryRow(
                             entry: entry, isSelected: selected.contains(entry.id), toggle: { toggle(entry.id) },
                             remove: { remove(entry) }, relink: { relinkGuidance = entry },
-                            setPrivate: pocket.isPrivate == true ? nil : { flag in setEntryPrivate(entry, flag) })
+                            setPrivate: pocket.isPrivate == true ? nil : { flag in setEntryPrivate(entry, flag) },
+                            isBusy: run.isBusy)
                             .listRowBackground(PorcelainMetrics.card)
                     }
                     .onMove { source, destination in
@@ -412,14 +433,35 @@ struct WorkbenchPocketView: View {
                 Button(selected.count == pocket.entries.count ? "선택 해제" : "전체 선택", interfaceSystemImage: "checkmark.circle") {
                     selected = selected.count == pocket.entries.count ? [] : Set(pocket.entries.map(\.id))
                 }
+                .disabled(run.isBusy)
+                if !selected.isEmpty {
+                    let visibleSelected = pocket.entries.filter { $0.isVisibleNow && selected.contains($0.id) }
+                    Button("선택한 재료 삭제 (\(visibleSelected.count)개)", interfaceSystemImage: "trash", role: .destructive) {
+                        guard !run.isBusy else { return }
+                        capturedRemovalIDs = Set(visibleSelected.map(\.id))
+                        capturedRemovalCount = visibleSelected.count
+                        capturedRemovalPocketName = pocket.name
+                        isDeleteSelectedConfirmationPresented = true
+                    }
+                    .disabled(run.isBusy || visibleSelected.isEmpty)
+                }
                 Button("뮤직비디오로 제작", interfaceSystemImage: "music.note") { startProduction(pocket, mode: .mediaMusic) }
                     .disabled(run.isBusy)
-                Button("모두 비우기", interfaceSystemImage: "xmark.bin", role: .destructive) { isClearConfirmationPresented = true }
+                Button("포켓 비우기", interfaceSystemImage: "xmark.bin", role: .destructive) {
+                    guard !run.isBusy else { return }
+                    let visibleEntries = pocket.entries.filter(\.isVisibleNow)
+                    capturedRemovalIDs = Set(visibleEntries.map(\.id))
+                    capturedRemovalCount = visibleEntries.count
+                    capturedRemovalPocketName = pocket.name
+                    isClearConfirmationPresented = true
+                }
+                .disabled(run.isBusy)
             }
             Button("포켓 삭제", interfaceSystemImage: "trash", role: .destructive) { isDeleteConfirmationPresented = true }
         } label: {
             InterfaceToolbarIcon(systemName: "ellipsis.circle")
         }
+        .disabled(run.isBusy)
         .accessibilityLabel("포켓 메뉴")
     }
 
@@ -430,9 +472,24 @@ struct WorkbenchPocketView: View {
     }
 
     private func remove(_ entry: WorkbenchEntry) {
+        guard !run.isBusy else { return }
         switch store.removeEntries([entry.id], from: pocketID) {
         case .success: selected.remove(entry.id)
         case .failure(let error): notice = error.localizedDescription
+        }
+    }
+
+    private func confirmBatchRemoval() {
+        guard !run.isBusy else { return }
+        let currentVisibleIDs = Set((pocket?.entries ?? []).filter(\.isVisibleNow).map(\.id))
+        let toRemove = capturedRemovalIDs.intersection(currentVisibleIDs)
+        capturedRemovalIDs = []
+        guard !toRemove.isEmpty else { return }
+        switch store.removeEntries(toRemove, from: pocketID) {
+        case .success:
+            selected.subtract(toRemove)
+        case .failure(let error):
+            notice = error.localizedDescription
         }
     }
 

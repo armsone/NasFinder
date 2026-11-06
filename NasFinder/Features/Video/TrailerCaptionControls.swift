@@ -698,6 +698,46 @@ enum TrailerTitleCardRenderer {
         }
     }
 
+    /// 제목 기본 스타일: 1행 2열(상단 중앙), xlarge
+    static func defaultTitleStyle(usesBodyTypography: Bool = false, bodyTypography: TrailerCaption? = nil) -> TrailerCaption {
+        let typo = usesBodyTypography ? bodyTypography : nil
+        return TrailerCaption(
+            text: "",
+            position: .center,
+            fontDesign: typo?.fontDesign ?? .standard,
+            fontSize: typo?.fontSize ?? 28.0,
+            colorHex: typo?.colorHex ?? "#FFFFFF",
+            hasShadow: typo?.hasShadow ?? true,
+            column: 2,
+            row: 1,
+            fontName: typo?.fontName ?? "pretendard_bold",
+            captionSize: typo?.captionSize ?? .xlarge,
+            shadowColorHex: typo?.shadowColorHex ?? "#000000",
+            shadowOpacity: typo?.shadowOpacity ?? 0.75,
+            lineSpacing: typo?.lineSpacing ?? 1.25
+        )
+    }
+
+    /// 부제목 기본 스타일: 3행 2열(하단 중앙), large
+    static func defaultSubtitleStyle(usesBodyTypography: Bool = false, bodyTypography: TrailerCaption? = nil) -> TrailerCaption {
+        let typo = usesBodyTypography ? bodyTypography : nil
+        return TrailerCaption(
+            text: "",
+            position: .center,
+            fontDesign: typo?.fontDesign ?? .standard,
+            fontSize: typo?.fontSize ?? 22.0,
+            colorHex: typo?.colorHex ?? "#FFFFFF",
+            hasShadow: typo?.hasShadow ?? true,
+            column: 2,
+            row: 3,
+            fontName: typo?.fontName ?? "pretendard_bold",
+            captionSize: typo?.captionSize ?? .large,
+            shadowColorHex: typo?.shadowColorHex ?? "#000000",
+            shadowOpacity: typo?.shadowOpacity ?? 0.75,
+            lineSpacing: typo?.lineSpacing ?? 1.25
+        )
+    }
+
     /// 타이틀 카드를 한 장의 고해상도 이미지(renderSize)로 렌더링한다.
     static func renderCardImage(
         card: TrailerTitleCard,
@@ -743,30 +783,377 @@ enum TrailerTitleCardRenderer {
             let subtitleText = card.subtitle.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !titleText.isEmpty || !subtitleText.isEmpty else { return }
 
-            let combinedText: String
-            if !titleText.isEmpty && !subtitleText.isEmpty {
-                combinedText = "\(titleText)\n\(subtitleText)"
+            let hasExplicitStyle = card.titleStyle != nil || card.subtitleStyle != nil
+            if hasExplicitStyle {
+                let effectiveTitleStyle = card.titleStyle ?? defaultTitleStyle(usesBodyTypography: card.usesBodyTypography, bodyTypography: bodyTypography)
+                let effectiveSubtitleStyle = card.subtitleStyle ?? defaultSubtitleStyle(usesBodyTypography: card.usesBodyTypography, bodyTypography: bodyTypography)
+
+                if !titleText.isEmpty {
+                    let clampedShadowOpacity = min(1.0, max(0.0, effectiveTitleStyle.shadowOpacity.isFinite ? effectiveTitleStyle.shadowOpacity : 0.75))
+                    let clampedLineSpacing = min(2.0, max(0.5, effectiveTitleStyle.lineSpacing.isFinite ? effectiveTitleStyle.lineSpacing : 1.25))
+                    let col = min(4, max(0, effectiveTitleStyle.column))
+                    let r = min(4, max(0, effectiveTitleStyle.row))
+                    if let titleImg = TrailerCaptionRenderer.renderImage(
+                        text: titleText,
+                        fontName: effectiveTitleStyle.fontName,
+                        captionSize: effectiveTitleStyle.captionSize,
+                        textColorHex: effectiveTitleStyle.colorHex,
+                        hasShadow: effectiveTitleStyle.hasShadow,
+                        shadowColorHex: effectiveTitleStyle.shadowColorHex,
+                        shadowOpacity: clampedShadowOpacity,
+                        lineSpacing: clampedLineSpacing,
+                        column: col,
+                        row: r,
+                        renderSize: renderSize
+                    ) {
+                        titleImg.draw(in: rect)
+                    }
+                }
+
+                if !subtitleText.isEmpty {
+                    let clampedShadowOpacity = min(1.0, max(0.0, effectiveSubtitleStyle.shadowOpacity.isFinite ? effectiveSubtitleStyle.shadowOpacity : 0.75))
+                    let clampedLineSpacing = min(2.0, max(0.5, effectiveSubtitleStyle.lineSpacing.isFinite ? effectiveSubtitleStyle.lineSpacing : 1.25))
+                    let col = min(4, max(0, effectiveSubtitleStyle.column))
+                    let r = min(4, max(0, effectiveSubtitleStyle.row))
+                    if let subtitleImg = TrailerCaptionRenderer.renderImage(
+                        text: subtitleText,
+                        fontName: effectiveSubtitleStyle.fontName,
+                        captionSize: effectiveSubtitleStyle.captionSize,
+                        textColorHex: effectiveSubtitleStyle.colorHex,
+                        hasShadow: effectiveSubtitleStyle.hasShadow,
+                        shadowColorHex: effectiveSubtitleStyle.shadowColorHex,
+                        shadowOpacity: clampedShadowOpacity,
+                        lineSpacing: clampedLineSpacing,
+                        column: col,
+                        row: r,
+                        renderSize: renderSize
+                    ) {
+                        subtitleImg.draw(in: rect)
+                    }
+                }
             } else {
-                combinedText = titleText.isEmpty ? subtitleText : titleText
+                // 기존 결합 텍스트 단일 렌더 경로 (본편 자막 서체 상속 포함)
+                let combinedText: String
+                if !titleText.isEmpty && !subtitleText.isEmpty {
+                    combinedText = "\(titleText)\n\(subtitleText)"
+                } else {
+                    combinedText = titleText.isEmpty ? subtitleText : titleText
+                }
+
+                // 본편 자막 서체를 쓰되 위치는 항상 가운데다.
+                let typography = card.usesBodyTypography ? bodyTypography : nil
+                if let captionImg = TrailerCaptionRenderer.renderImage(
+                    text: combinedText,
+                    fontName: typography?.fontName ?? "pretendard_bold",
+                    captionSize: typography?.captionSize ?? .xlarge,
+                    textColorHex: typography?.colorHex ?? "#FFFFFF",
+                    hasShadow: typography?.hasShadow ?? true,
+                    shadowColorHex: typography?.shadowColorHex ?? "#000000",
+                    shadowOpacity: typography?.shadowOpacity ?? 0.75,
+                    lineSpacing: typography?.lineSpacing ?? 1.25,
+                    column: 2,
+                    row: 2,
+                    renderSize: renderSize
+                ) {
+                    captionImg.draw(in: rect)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - 시작/마지막 타이틀 카드 독립 스타일 컨트롤
+
+enum TitleCardStyleTarget: String, CaseIterable, Identifiable {
+    case title = "제목 스타일"
+    case subtitle = "부제목 스타일"
+    var id: String { rawValue }
+}
+
+struct TrailerTitleCardStyleControls: View {
+    @Binding var card: TrailerTitleCard
+    let bodyTypography: TrailerCaption?
+
+    @State private var selectedTarget: TitleCardStyleTarget = .title
+    @State private var hexDraft: String = ""
+    @State private var importedFonts: [CaptionFontItem] = []
+
+    private var availableFonts: [CaptionFontItem] {
+        TrailerCaptionFontStore.bundledFonts + importedFonts
+    }
+
+    private var isSelectedStyleNil: Bool {
+        switch selectedTarget {
+        case .title:
+            return card.titleStyle == nil
+        case .subtitle:
+            return card.subtitleStyle == nil
+        }
+    }
+
+    private func ensureMaterialized() {
+        if card.titleStyle == nil && card.subtitleStyle == nil {
+            card.titleStyle = TrailerTitleCardRenderer.defaultTitleStyle(usesBodyTypography: card.usesBodyTypography, bodyTypography: bodyTypography)
+            card.subtitleStyle = TrailerTitleCardRenderer.defaultSubtitleStyle(usesBodyTypography: card.usesBodyTypography, bodyTypography: bodyTypography)
+        } else if card.titleStyle == nil {
+            card.titleStyle = TrailerTitleCardRenderer.defaultTitleStyle(usesBodyTypography: card.usesBodyTypography, bodyTypography: bodyTypography)
+        } else if card.subtitleStyle == nil {
+            card.subtitleStyle = TrailerTitleCardRenderer.defaultSubtitleStyle(usesBodyTypography: card.usesBodyTypography, bodyTypography: bodyTypography)
+        }
+    }
+
+    private var currentStyle: TrailerCaption {
+        switch selectedTarget {
+        case .title:
+            return card.titleStyle ?? TrailerTitleCardRenderer.defaultTitleStyle(usesBodyTypography: card.usesBodyTypography, bodyTypography: bodyTypography)
+        case .subtitle:
+            return card.subtitleStyle ?? TrailerTitleCardRenderer.defaultSubtitleStyle(usesBodyTypography: card.usesBodyTypography, bodyTypography: bodyTypography)
+        }
+    }
+
+    private func updateCurrentStyle(_ mutate: (inout TrailerCaption) -> Void) {
+        ensureMaterialized()
+        var style = currentStyle
+        mutate(&style)
+        style.text = "" // authoritative text is always card.title/subtitle
+        switch selectedTarget {
+        case .title:
+            card.titleStyle = style
+        case .subtitle:
+            card.subtitleStyle = style
+        }
+    }
+
+    private func resetHexDraft() {
+        let hex = currentStyle.colorHex
+        hexDraft = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+    }
+
+    private func applyHexDraft() {
+        var clean = hexDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if clean.hasPrefix("#") {
+            clean = String(clean.dropFirst())
+        }
+        clean = clean.trimmingCharacters(in: CharacterSet.alphanumerics.inverted)
+        if clean.count == 6 && clean.allSatisfy({ $0.isHexDigit }) {
+            let newHex = "#\(clean.uppercased())"
+            updateCurrentStyle {
+                $0.colorHex = newHex
+                $0.shadowColorHex = CaptionColorUtil.calculateRGBInverse(hex: newHex)
+            }
+            hexDraft = clean.uppercased()
+        } else {
+            resetHexDraft()
+        }
+    }
+
+    private func resetSelectedStyle() {
+        switch selectedTarget {
+        case .title:
+            card.titleStyle = nil
+        case .subtitle:
+            card.subtitleStyle = nil
+        }
+        resetHexDraft()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // Target selector & Reset button
+            HStack {
+                Picker("스타일 대상", selection: $selectedTarget) {
+                    ForEach(TitleCardStyleTarget.allCases) { target in
+                        Text(target.rawValue).tag(target)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                Button("스타일 초기화") {
+                    resetSelectedStyle()
+                }
+                .font(.footnote.weight(.medium))
+                .buttonStyle(.borderless)
+                .foregroundStyle(isSelectedStyleNil ? .secondary : PorcelainMetrics.accent)
+                .disabled(isSelectedStyleNil)
             }
 
-            // 본편 자막 서체를 쓰되 위치는 항상 가운데다.
-            let typography = card.usesBodyTypography ? bodyTypography : nil
-            if let captionImg = TrailerCaptionRenderer.renderImage(
-                text: combinedText,
-                fontName: typography?.fontName ?? "pretendard_bold",
-                captionSize: typography?.captionSize ?? .xlarge,
-                textColorHex: typography?.colorHex ?? "#FFFFFF",
-                hasShadow: typography?.hasShadow ?? true,
-                shadowColorHex: typography?.shadowColorHex ?? "#000000",
-                shadowOpacity: typography?.shadowOpacity ?? 0.75,
-                lineSpacing: typography?.lineSpacing ?? 1.25,
-                column: 2,
-                row: 2,
-                renderSize: renderSize
-            ) {
-                captionImg.draw(in: rect)
+            // 1. 크기 (CaptionSize 4종: 작게, 기본, 크게, 더크게)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(selectedTarget.rawValue) 크기")
+                    .font(.footnote.weight(.semibold))
+                HStack(spacing: 6) {
+                    ForEach(CaptionSize.allCases) { sizeOption in
+                        let isSelected = currentStyle.captionSize == sizeOption
+                        Button {
+                            updateCurrentStyle { $0.captionSize = sizeOption }
+                        } label: {
+                            Text(sizeOption.rawValue)
+                                .font(.footnote.weight(isSelected ? .bold : .medium))
+                                .frame(maxWidth: .infinity, minHeight: 28)
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(isSelected ? PorcelainMetrics.accent : .secondary)
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                    }
+                }
             }
+
+            // 2. 5x5 위치 격자
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(selectedTarget.rawValue) 위치")
+                    .font(.footnote.weight(.semibold))
+                HStack {
+                    VStack(spacing: 3) {
+                        ForEach(0..<5, id: \.self) { r in
+                            HStack(spacing: 3) {
+                                ForEach(0..<5, id: \.self) { c in
+                                    let isSelected = currentStyle.column == c && currentStyle.row == r
+                                    Button {
+                                        updateCurrentStyle {
+                                            $0.column = c
+                                            $0.row = r
+                                        }
+                                    } label: {
+                                        ZStack {
+                                            RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                                .fill(isSelected ? PorcelainMetrics.accent : Color(uiColor: .tertiarySystemFill))
+                                            if isSelected {
+                                                Text("T")
+                                                    .font(.system(size: 11, weight: .black))
+                                                    .foregroundStyle(.white)
+                                            } else {
+                                                Circle()
+                                                    .fill(Color.secondary.opacity(0.4))
+                                                    .frame(width: 3, height: 3)
+                                            }
+                                        }
+                                        .frame(width: 24, height: 24)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .accessibilityLabel("\(selectedTarget.rawValue) 위치 \(r)행 \(c)열")
+                                    .accessibilityAddTraits(isSelected ? .isSelected : [])
+                                }
+                            }
+                        }
+                    }
+                    .padding(4)
+                    .background(Color(uiColor: .secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    Spacer()
+                }
+            }
+
+            // 3. 글꼴 선택
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(selectedTarget.rawValue) 글꼴")
+                    .font(.footnote.weight(.semibold))
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(availableFonts) { fontItem in
+                            let isSelected = currentStyle.fontName == fontItem.id
+                            Button {
+                                updateCurrentStyle { $0.fontName = fontItem.id }
+                            } label: {
+                                Text(fontItem.displayName)
+                                    .font(Font(TrailerCaptionFontStore.uiFont(fontName: fontItem.id, size: 12)))
+                                    .padding(.horizontal, 8)
+                                    .frame(height: 28)
+                                    .background(
+                                        isSelected ? PorcelainMetrics.accent.opacity(0.15) : Color(uiColor: .secondarySystemBackground),
+                                        in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                            .stroke(isSelected ? PorcelainMetrics.accent : PorcelainMetrics.line, lineWidth: isSelected ? 1.5 : 0.5)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityAddTraits(isSelected ? .isSelected : [])
+                        }
+                    }
+                }
+            }
+
+            // 4. 글자 색상 (6개 프리셋 + custom hex)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("\(selectedTarget.rawValue) 글자 색상")
+                    .font(.footnote.weight(.semibold))
+                HStack(spacing: 8) {
+                    ForEach(CaptionColorUtil.textQuickSwatches, id: \.self) { hex in
+                        let isSelected = currentStyle.colorHex.uppercased() == hex.uppercased()
+                        Button {
+                            updateCurrentStyle {
+                                $0.colorHex = hex
+                                $0.shadowColorHex = CaptionColorUtil.calculateRGBInverse(hex: hex)
+                            }
+                        } label: {
+                            Circle()
+                                .fill(CaptionColorUtil.color(fromHex: hex))
+                                .frame(width: 24, height: 24)
+                                .overlay(
+                                    Circle()
+                                        .stroke(isSelected ? PorcelainMetrics.accent : Color.gray.opacity(0.4), lineWidth: isSelected ? 2.5 : 1)
+                                )
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(isSelected ? .isSelected : [])
+                    }
+                    Spacer()
+                    HStack(spacing: 2) {
+                        Text("#").font(.caption.monospaced()).foregroundStyle(.secondary)
+                        TextField("HEX", text: $hexDraft)
+                            .font(.caption.monospaced())
+                            .frame(width: 58)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit {
+                                applyHexDraft()
+                            }
+                        Button("적용") {
+                            applyHexDraft()
+                        }
+                        .font(.caption2.weight(.medium))
+                        .buttonStyle(.borderless)
+                        .foregroundStyle(PorcelainMetrics.accent)
+                    }
+                }
+            }
+
+            // 5. 그림자 토글 및 불투명도 조절
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Toggle("그림자", isOn: Binding(
+                        get: { currentStyle.hasShadow },
+                        set: { val in updateCurrentStyle { $0.hasShadow = val } }
+                    ))
+                    .labelsHidden()
+                    .controlSize(.small)
+                    Text("그림자").font(.footnote.weight(.semibold))
+                    Spacer()
+                    if currentStyle.hasShadow {
+                        Text("\(Int((currentStyle.shadowOpacity * 100).rounded()))%")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                if currentStyle.hasShadow {
+                    Slider(value: Binding(
+                        get: { currentStyle.shadowOpacity },
+                        set: { val in updateCurrentStyle { $0.shadowOpacity = val } }
+                    ), in: 0...1)
+                    .accessibilityLabel("\(selectedTarget.rawValue) 그림자 불투명도")
+                }
+            }
+        }
+        .padding(10)
+        .background(Color(uiColor: .secondarySystemBackground).opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .onAppear {
+            importedFonts = TrailerCaptionFontStore.shared.listImportedFonts()
+            resetHexDraft()
+        }
+        .onChange(of: selectedTarget) { _, _ in
+            resetHexDraft()
+        }
+        .onChange(of: currentStyle.colorHex) { _, _ in
+            resetHexDraft()
         }
     }
 }

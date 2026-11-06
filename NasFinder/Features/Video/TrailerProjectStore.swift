@@ -166,6 +166,9 @@ struct TrailerTitleCard: Codable, Equatable, Sendable {
     var backgroundSourceID: Int?
     /// true면 문구를 본편 자막 서체로 그린다. 이전 프로젝트와 폰 시트는 false라 기존 모양을 유지한다.
     var usesBodyTypography: Bool
+    /// 제목/부제목 개별 스타일. 둘 다 nil이면 기존의 본편 자막 서체 또는 기본 서체 경로로 중앙 결합 렌더링된다.
+    var titleStyle: TrailerCaption?
+    var subtitleStyle: TrailerCaption?
 
     init(
         isEnabled: Bool = false,
@@ -174,7 +177,9 @@ struct TrailerTitleCard: Codable, Equatable, Sendable {
         duration: Double = 3.0,
         usesFirstOrLastImage: Bool = true,
         backgroundSourceID: Int? = nil,
-        usesBodyTypography: Bool = false
+        usesBodyTypography: Bool = false,
+        titleStyle: TrailerCaption? = nil,
+        subtitleStyle: TrailerCaption? = nil
     ) {
         self.isEnabled = isEnabled
         self.title = title
@@ -183,10 +188,13 @@ struct TrailerTitleCard: Codable, Equatable, Sendable {
         self.usesFirstOrLastImage = usesFirstOrLastImage
         self.backgroundSourceID = backgroundSourceID
         self.usesBodyTypography = usesBodyTypography
+        self.titleStyle = titleStyle
+        self.subtitleStyle = subtitleStyle
     }
 
     enum CodingKeys: String, CodingKey {
         case isEnabled, title, subtitle, duration, usesFirstOrLastImage, backgroundSourceID, usesBodyTypography
+        case titleStyle, subtitleStyle
     }
 
     init(from decoder: Decoder) throws {
@@ -199,6 +207,8 @@ struct TrailerTitleCard: Codable, Equatable, Sendable {
         usesFirstOrLastImage = try c.decodeIfPresent(Bool.self, forKey: .usesFirstOrLastImage) ?? true
         backgroundSourceID = try c.decodeIfPresent(Int.self, forKey: .backgroundSourceID)
         usesBodyTypography = try c.decodeIfPresent(Bool.self, forKey: .usesBodyTypography) ?? false
+        titleStyle = try c.decodeIfPresent(TrailerCaption.self, forKey: .titleStyle)
+        subtitleStyle = try c.decodeIfPresent(TrailerCaption.self, forKey: .subtitleStyle)
     }
 }
 

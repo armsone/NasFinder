@@ -1512,6 +1512,52 @@ capabilities:
       android: {status: source_implemented_runtime_partial, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/SceneCaptionSection.kt"], tests: [], evidence: ["2.37.6 Fold6 palette auto-inverse, manual override and save/reopen observed; 2.37.7 final 6 swatches and portrait placement awaiting capture"]}
     dependencies: [editing.storyboard_grid_and_captions, editing.simple_two_area_flow_and_draft_save]
     parity_row_ids: [editor_20261101.preview_tabs.layout, editor_20261101.phone_scroll.behavior, editor_20261101.tablet_columns.layout, editor_20261101.caption_palettes.layout, editor_20261101.auto_shadow.behavior, editor_20261101.caption_persistence.behavior, editor_20261101.draft_export.behavior, editor_20261101.caption_output.behavior]
+  - id: video.title_card_independent_style
+    purpose: "시작/마지막 화면의 제목과 부제목 서체·크기·위치(5x5)·글자색·그림자를 독립적으로 설정하고 이전 프로젝트와 역호환성을 보존한다."
+    entry_points: ["와이드/폰 편집기 시작/마지막 화면 편집 영역"]
+    preconditions: ["시작 또는 마지막 타이틀 카드가 활성화됨"]
+    inputs: ["제목|부제목 선택기", "자막 크기 4종(작게/기본/크게/더크게)", "5x5 위치 격자", "글꼴 선택", "글자색 6종 프리셋 및 커스텀 HEX", "그림자 토글 및 불투명도", "선택 스타일 초기화"]
+    normal_result: "제목과 부제목이 각각의 크기·위치·글꼴·색상·그림자 스타일로 렌더링되며, 미리보기와 실제 내보내기 결과가 일치한다. 스타일 미설정 카드는 기존 본편 자막 서체 상속 결합 렌더 경로를 유지한다."
+    states: [disabled, editing, styled, preview, rendering]
+    algorithms_and_thresholds: ["기본 스타일: 제목 row 1 col 2 xlarge, 부제목 row 3 col 2 large", "스타일 미지정 카드는 기존 combined-text 렌더 유지", "화면 범위 자막 편집 시 본편 자막 스타일 불변", "그림자 불투명도 0.0..1.0, 줄간격 0.5..2.0 clamp"]
+    data_contracts: ["TrailerTitleCard optional titleStyle/subtitleStyle", "문구는 항상 card.title/subtitle이 authoritative하며 스타일 내 text는 빈 문자열로 보존", "이전 프로젝트 디코딩 시 nil 역호환"]
+    producer_consumer_routes: ["editor controls -> TrailerTitleCard.titleStyle/subtitleStyle -> TrailerTitleCardRenderer.renderCardImage -> preview image / composition export"]
+    persistence_relaunch: "저장 및 재실행 후에도 제목과 부제목의 독립 스타일이 보존되며, 텍스트 전용 변경은 스타일을 임의 생성하지 않는다."
+    permissions_privacy_security: ["로컬 렌더링 처리, 외부 전송 및 개인정보 노출 없음"]
+    background_lifecycle: "백그라운드 복귀 및 화면 크기 전환 시 설정된 독립 스타일 유지"
+    gestures_accessibility: ["대상 선택기, 위치 5x5 그리드, 크기/글꼴/색상/그림자 제어 및 스타일 초기화에 접근성 레이블 제공"]
+    supported_devices_layouts: ["Apple iPhone/iPad/Mac Catalyst", "Android phone/foldable/tablet"]
+    visual_reference: "Android 2.39.69 user-approved title/subtitle style controls"
+    platform_adaptations: {ios: ["SwiftUI TrailerTitleCardStyleControls 및 TrailerTitleCardRenderer"], android: ["Compose TitleCardInlineEditor in AdaptiveEditorWorkspace.kt"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: implemented_source_only, source_refs: ["NasFinder/Features/Video/TrailerProjectStore.swift", "NasFinder/Features/Video/TrailerCaptionControls.swift", "NasFinder/Features/Preview/VideoTrailerView.swift"], tests: [], evidence: ["Apple implementation source complete; runtime and visual parity unverified"]}
+      android: {status: runtime_verified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/TrailerTitleCard.kt", "app/src/main/java/com/armsone/nasfinder/ui/AdaptiveEditorWorkspace.kt", "app/src/main/java/com/armsone/nasfinder/ui/TrailerExporter.kt"], tests: [], evidence: ["Android 2.39.69 user accepted and tested on TriFold"]}
+    dependencies: [editing.storyboard_grid_and_captions]
+    parity_row_ids: []
+  - id: workbench.pocket_contents_removal
+    purpose: "작업대 포켓 자체와 원본 파일은 그대로 유지하면서 행별 빼기와 선택한 재료 삭제 및 포켓 비우기로 참조 내용만 안전하게 삭제한다."
+    entry_points: ["작업대 포켓 상세 행", "포켓 메뉴 > 선택한 재료 삭제", "포켓 메뉴 > 포켓 비우기"]
+    preconditions: ["작업대 포켓 안에 참조 항목이 존재함"]
+    inputs: ["행별 빼기 버튼", "선택한 재료 삭제 메뉴 선택", "포켓 비우기 메뉴 선택", "확인 팝업 승인/취소"]
+    normal_result: "포켓 자체와 원본 파일은 유지되고 선택되거나 비워진 참조 항목만 포켓에서 제거된다. 작업 진행(busy) 중에는 삭제가 차단된다."
+    states: [idle, selected, confirming, removing, completed, busy_blocked, error]
+    algorithms_and_thresholds: ["확인 시점 현재 보이는 ID 목록 스냅샷 캡처", "실행 시점 현재 여전히 보이는 ID와 교차 검증(intersection) 후 삭제", "비공개/숨김 항목 및 타 포켓 항목 보호", "원자적 문서 커밋 및 롤백"]
+    data_contracts: ["WorkbenchStore.removeEntries(ids, from: pocketID) 사용", "원격/로컬 원본 파일 및 권한 변경 없음"]
+    producer_consumer_routes: ["WorkbenchEntryRow / moreMenu -> confirmation dialog snapshot -> WorkbenchStore.removeEntries -> document atomic commit -> selection update"]
+    persistence_relaunch: "참조 삭제 후 저장된 작업대 문서는 재실행 시에도 삭제 상태가 유지되며 원본 미디어는 보존된다."
+    permissions_privacy_security: ["원본 미디어 파일은 절대 삭제되지 않으며 앱 내부의 작업대 참조만 제거", "프라이버시 모드 숨김 항목 보호"]
+    background_lifecycle: "작업 중(isBusy)에는 화면의 참조 삭제를 차단한다. 백그라운드 실행 전체에 대한 별도 검증은 하지 않았다."
+    gestures_accessibility: ["명시적 빼기 버튼, 포켓 메뉴 항목, 확인 팝업에 명확한 접근성 안내 제공"]
+    supported_devices_layouts: ["Apple iPhone/iPad/Mac Catalyst", "Android phone/foldable/tablet"]
+    visual_reference: "Android 2.39.69 pocket content removal"
+    platform_adaptations: {ios: ["SwiftUI WorkbenchView confirmationDialog 및 WorkbenchStore.removeEntries"], android: ["Compose WorkbenchScreen in MaterialBasketScreen.kt"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: implemented_source_only, source_refs: ["NasFinder/Features/Workbench/WorkbenchView.swift", "NasFinder/Features/Workbench/WorkbenchStore.swift"], tests: [], evidence: ["Apple implementation source complete; runtime unverified"]}
+      android: {status: runtime_verified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/MaterialBasketScreen.kt", "app/src/main/java/com/armsone/nasfinder/ui/DurableMaterialStore.kt", "app/src/main/java/com/armsone/nasfinder/ui/NasFinderViewModel.kt"], tests: [], evidence: ["Android 2.39.69 user accepted and tested on TriFold"]}
+    dependencies: [workbench.pockets]
+    parity_row_ids: []
 known_unknowns:
   - id: UNKNOWN-RUNTIME-NAS-MATRIX
     description: "No live Synology/SFTP/SMB/WebDAV/FTP/cloud endpoint matrix was exercised; firmware-specific authentication, thumbnails, mutations and cancellation remain runtime-unverified."
