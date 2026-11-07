@@ -1678,9 +1678,27 @@ private struct VideoTrailerSettings: View {
         case outro = "마지막 화면"
         var id: String { rawValue }
     }
+    private struct TrailerCustomCardBackground: Equatable {
+        let sourceID: Int
+        let timestamp: Double?
+        let image: UIImage
+
+        func matches(sourceID: Int?, timestamp: Double?) -> Bool {
+            guard self.sourceID == sourceID else { return false }
+            if let ts = self.timestamp, let cardTs = timestamp {
+                return abs(ts - cardTs) < 0.01
+            }
+            return self.timestamp == nil && timestamp == nil
+        }
+
+        func matches(card: TrailerTitleCard) -> Bool {
+            guard card.usesFirstOrLastImage, let bgID = card.backgroundSourceID else { return false }
+            return matches(sourceID: bgID, timestamp: card.backgroundTimestamp)
+        }
+    }
     @State private var cardOriginalRenderSize: CGSize?
-    @State private var introCustomBackground: UIImage? = nil
-    @State private var outroCustomBackground: UIImage? = nil
+    @State private var introCustomBackground: TrailerCustomCardBackground? = nil
+    @State private var outroCustomBackground: TrailerCustomCardBackground? = nil
     @AppStorage("trailer.editor.backgroundViewMode") private var backgroundViewModeRaw = "thumbnail"
     @State private var rankedBackgroundCandidates: [TrailerBackgroundCandidate] = []
     @State private var isRankingBackgrounds = false
@@ -3065,13 +3083,18 @@ private struct VideoTrailerSettings: View {
         guard segments.contains(where: { $0.kind == .clip }) else { return nil }
         func background(_ card: TrailerTitleCard, isIntro: Bool, fallback: VideoTrailerSource?) -> UIImage? {
             guard card.usesFirstOrLastImage else { return nil }
-            let selectedThumb: UIImage? = card.backgroundSourceID.flatMap { id in
-                guard byID[id] != nil else { return nil }
+            if let id = card.backgroundSourceID, let src = byID[id] {
                 let custom = isIntro ? introCustomBackground : outroCustomBackground
-                return custom ?? sourceImages[id]
+                if let custom, custom.matches(card: card) {
+                    return custom.image
+                }
+                if card.backgroundTimestamp == nil, src.isImage {
+                    return sourceImages[id]
+                }
+                return nil
             }
             let fallbackThumb = (fallback?.id).flatMap { sourceImages[$0] }
-            return selectedThumb ?? fallbackThumb
+            return fallbackThumb
         }
         return TrailerDraftPreviewInput(
             projectID: chrome.projectID,
@@ -3664,17 +3687,28 @@ private struct VideoTrailerSettings: View {
                 // 여기서 고친 카드는 본편 자막 서체를 쓴다. 손대지 않은 카드는 기존 모양 그대로다.
                 var next = edited
                 next.usesBodyTypography = true
-                if isIntro { introCard = next } else { outroCard = next }
+                if isIntro {
+                    if introCustomBackground?.matches(card: next) == false {
+                        introCustomBackground = nil
+                    }
+                    introCard = next
+                } else {
+                    if outroCustomBackground?.matches(card: next) == false {
+                        outroCustomBackground = nil
+                    }
+                    outroCard = next
+                }
             }
         )
         let name = isIntro ? "시작 화면" : "마지막 화면"
         let candidates: [TrailerBackgroundCandidate] = !rankedBackgroundCandidates.isEmpty
             ? rankedBackgroundCandidates
             : (isRankingBackgrounds ? [] : initialBackgroundCandidates.prefix(1).map { $0 })
-        let chosenCandidateImage = isIntro ? introCustomBackground : outroCustomBackground
+        let customBg = isIntro ? introCustomBackground : outroCustomBackground
+        let chosenCandidateImage = (customBg?.matches(card: card) == true) ? customBg?.image : nil
         let frameSource = isIntro ? firstIncludedSource : lastIncludedSource
         let background: UIImage? = card.usesFirstOrLastImage
-            ? (chosenCandidateImage ?? frameSource.flatMap { sourceImages[$0.id] })
+            ? (chosenCandidateImage ?? (card.backgroundSourceID == nil ? frameSource.flatMap { sourceImages[$0.id] } : nil))
             : nil
         VStack(alignment: .leading, spacing: ui(10)) {
             Toggle("\(name) 사용", isOn: Binding(
@@ -3813,7 +3847,11 @@ private struct VideoTrailerSettings: View {
                         }
                         .pickerStyle(.segmented)
                         .labelsHidden()
+                        #if targetEnvironment(macCatalyst)
+                        .frame(width: max(ui(148), 148))
+                        #else
                         .frame(width: ui(128))
+                        #endif
                     }
 
                     if isRankingBackgrounds && candidates.isEmpty {
@@ -3909,6 +3947,8 @@ private struct VideoTrailerSettings: View {
                                             .lineLimit(1)
                                             .truncationMode(.middle)
                                     }
+                                    .frame(maxWidth: .infinity)
+                                    .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
                                 .accessibilityLabel(
@@ -3919,6 +3959,7 @@ private struct VideoTrailerSettings: View {
                                 .accessibilityAddTraits(isChosen ? .isSelected : [])
                             }
                         }
+                        .id(backgroundViewModeRaw)
                     }
                 }
             }
@@ -3950,11 +3991,20 @@ private struct VideoTrailerSettings: View {
             if isIntro { introCustomBackground = nil } else { outroCustomBackground = nil }
             return
         }
-        let ts = card.backgroundTimestamp ?? 0.0
-        let clampedTime = max(0.0, src.duration > 0 ? min(ts, src.duration - 0.05) : 0.0)
+        let ts = card.backgroundTimestamp
+        let time = ts ?? 0.0
+        let clampedTime = max(0.0, src.duration > 0 ? min(time, src.duration - 0.05) : 0.0)
         let image = try? await VideoTrailerModel.extractStillImage(source: src, at: src.isImage ? 0 : clampedTime, maxPixelSize: 1920)
         if !Task.isCancelled {
-            if isIntro { introCustomBackground = image } else { outroCustomBackground = image }
+            let currentCard = isIntro ? introCard : outroCard
+            guard currentCard.usesFirstOrLastImage, currentCard.backgroundSourceID == id,
+                  isSameTimestamp(currentCard.backgroundTimestamp, ts) else { return }
+            if let image {
+                let custom = TrailerCustomCardBackground(sourceID: id, timestamp: ts, image: image)
+                if isIntro { introCustomBackground = custom } else { outroCustomBackground = custom }
+            } else {
+                if isIntro { introCustomBackground = nil } else { outroCustomBackground = nil }
+            }
         }
     }
 
@@ -7436,13 +7486,20 @@ private struct TrailerCardPhotoThumbnail: View {
     @State private var image: UIImage?
 
     var body: some View {
-        ZStack {
-            Color(uiColor: .secondarySystemFill)
-            if let image {
-                Image(uiImage: image).resizable().scaledToFill()
+        Color(uiColor: .secondarySystemFill)
+            .overlay {
+                GeometryReader { geometry in
+                    if let image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: geometry.size.width, height: geometry.size.height)
+                            .clipped()
+                            .allowsHitTesting(false)
+                    }
+                }
             }
-        }
-        .clipped()
+            .clipped()
         .task(id: "\(source.id)@\(timestamp ?? 0)@\(maxPixelSize)") {
             if source.isImage {
                 let loaded = await trailerThumbnailImage(at: source.url, maxPixelSize: maxPixelSize)

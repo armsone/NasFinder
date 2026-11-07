@@ -3345,7 +3345,8 @@ struct TrailerDraftPreviewPlayer: View {
         let bodyJSON = Self.encodeCaption(input.bodyTypography)
         let bg = backgroundKey(isIntro: isIntro, card: card)
         let projStr = input.projectID?.uuidString ?? "default"
-        let raw = "card:v1:\(projStr)|\(isIntro)|\(bg)|\(cardJSON)|\(bodyJSON)|\(Int(renderSize.width))x\(Int(renderSize.height))"
+        // v2: invalidates stale card cache from pre-guard background renders
+        let raw = "card:v2:\(projStr)|\(isIntro)|\(bg)|\(cardJSON)|\(bodyJSON)|\(Int(renderSize.width))x\(Int(renderSize.height))"
         return TrailerDraftPreviewCache.sha256(raw)
     }
 
