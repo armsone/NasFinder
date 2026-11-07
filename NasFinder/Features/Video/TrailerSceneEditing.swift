@@ -2525,6 +2525,87 @@ struct TrailerDraftPreviewInput {
     }
 }
 
+/// 미리보기 자산(사진 썸네일, 타이틀 카드, 비디오 컴포지션, 메타데이터)을 프로젝트 단위로 유지하는 바운디드 캐시.
+/// 인라인과 전체화면 전환, 그리고 탐색 중에 미리보기가 재생성되어도 준비 상태를 유지한다.
+@MainActor
+final class TrailerDraftPreviewCache {
+    static let shared = TrailerDraftPreviewCache()
+
+    private let photoCache = NSCache<NSString, UIImage>()
+    private let cardCache = NSCache<NSString, UIImage>()
+    private var videoCompositions: [String: AVVideoComposition] = [:]
+    private var videoCompositionKeys: [String] = []
+    private var videoSizes: [String: CGSize] = [:]
+    private var videoSizeKeys: [String] = []
+    private var preparedSignatures: [String] = []
+
+    init() {
+        photoCache.countLimit = 64
+        cardCache.countLimit = 16
+    }
+
+    func photo(for sourceID: Int, url: URL) -> UIImage? {
+        photoCache.object(forKey: "\(sourceID)|\(url.absoluteString)" as NSString)
+    }
+
+    func setPhoto(_ image: UIImage, for sourceID: Int, url: URL) {
+        photoCache.setObject(image, forKey: "\(sourceID)|\(url.absoluteString)" as NSString)
+    }
+
+    func card(for key: String) -> UIImage? {
+        cardCache.object(forKey: key as NSString)
+    }
+
+    func setCard(_ image: UIImage, for key: String) {
+        cardCache.setObject(image, forKey: key as NSString)
+    }
+
+    func videoSize(for url: URL) -> CGSize? {
+        videoSizes[url.absoluteString]
+    }
+
+    func setVideoSize(_ size: CGSize, for url: URL) {
+        let key = url.absoluteString
+        if videoSizes[key] == nil {
+            videoSizeKeys.append(key)
+            if videoSizeKeys.count > 64 {
+                let old = videoSizeKeys.removeFirst()
+                videoSizes.removeValue(forKey: old)
+            }
+        }
+        videoSizes[key] = size
+    }
+
+    func videoComposition(for key: String) -> AVVideoComposition? {
+        videoCompositions[key]
+    }
+
+    func setVideoComposition(_ composition: AVVideoComposition, for key: String) {
+        if videoCompositions[key] == nil {
+            videoCompositionKeys.append(key)
+            if videoCompositionKeys.count > 64 {
+                let old = videoCompositionKeys.removeFirst()
+                videoCompositions.removeValue(forKey: old)
+            }
+        }
+        videoCompositions[key] = composition
+    }
+
+    func isPrepared(signature: String) -> Bool {
+        preparedSignatures.contains(signature)
+    }
+
+    func markPrepared(signature: String) {
+        if let idx = preparedSignatures.firstIndex(of: signature) {
+            preparedSignatures.remove(at: idx)
+        }
+        preparedSignatures.append(signature)
+        if preparedSignatures.count > 32 {
+            preparedSignatures.removeFirst()
+        }
+    }
+}
+
 /// 영상 구간을 시계에 맞춰 재생하는 AVPlayer 보조. 시계가 기준이고, 플레이어는 잘라낸 원본 위치로 따라간다.
 @MainActor
 final class TrailerDraftVideoDriver: ObservableObject {
@@ -2614,6 +2695,43 @@ final class TrailerDraftVideoDriver: ObservableObject {
         var renderSize: CGSize
     }
 
+    static func compositionKey(url: URL, layout: Layout) -> String {
+        "\(url.absoluteString)|\(layout.fitsFrame)|\(layout.offsetX)|\(layout.offsetY)|\(Int(layout.renderSize.width))x\(Int(layout.renderSize.height))"
+    }
+
+    @discardableResult
+    static func prepareComposition(url: URL, layout: Layout) async -> AVVideoComposition? {
+        let key = compositionKey(url: url, layout: layout)
+        if let existing = TrailerDraftPreviewCache.shared.videoComposition(for: key) {
+            return existing
+        }
+        let asset = AVURLAsset(url: url)
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let natural = try? await track.load(.naturalSize),
+              let transform = try? await track.load(.preferredTransform),
+              let duration = try? await asset.load(.duration),
+              natural.width > 0, natural.height > 0, !Task.isCancelled else { return nil }
+        let scale = min(1, 960 / max(layout.renderSize.width, layout.renderSize.height))
+        let size = CGSize(width: max(4, (layout.renderSize.width * scale).rounded()),
+                          height: max(4, (layout.renderSize.height * scale).rounded()))
+        let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: track)
+        layer.setTransform(layout.fitsFrame
+            ? TrailerOutputRenderer.aspectFitTransform(naturalSize: natural, preferredTransform: transform, renderSize: size)
+            : TrailerOutputRenderer.aspectFillTransform(naturalSize: natural, preferredTransform: transform, renderSize: size,
+                                                        offsetX: layout.offsetX, offsetY: layout.offsetY), at: .zero)
+        let instruction = AVMutableVideoCompositionInstruction()
+        instruction.timeRange = CMTimeRange(start: .zero, duration: duration)
+        instruction.layerInstructions = [layer]
+        instruction.backgroundColor = UIColor.black.cgColor
+        let composition = AVMutableVideoComposition()
+        composition.renderSize = size
+        composition.frameDuration = CMTime(value: 1, timescale: 30)
+        composition.instructions = [instruction]
+        guard !Task.isCancelled else { return nil }
+        TrailerDraftPreviewCache.shared.setVideoComposition(composition, for: key)
+        return composition
+    }
+
     private var layoutKey: Layout?
     private var layoutTask: Task<Void, Never>?
 
@@ -2636,7 +2754,7 @@ final class TrailerDraftVideoDriver: ObservableObject {
             player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
             scheduleReadinessEvaluation(expectedItem: player.currentItem, generation: itemGeneration)
         }
-        applyLayout(layout)
+        applyLayout(layout, for: url)
         if playing {
             if player.timeControlStatus == .paused { player.play() }
         } else {
@@ -2647,9 +2765,17 @@ final class TrailerDraftVideoDriver: ObservableObject {
 
     /// 내보내기와 같은 `aspectFit/aspectFillTransform`을 항목의 비디오 합성에 걸어 일시정지·재생 모두에 반영한다.
     /// 항목과 재생 위치는 바꾸지 않는다.
-    private func applyLayout(_ layout: Layout) {
+    private func applyLayout(_ layout: Layout, for url: URL? = nil) {
         guard layout != layoutKey, let item = player.currentItem else { return }
         layoutKey = layout
+        if let url, let cached = TrailerDraftPreviewCache.shared.videoComposition(for: Self.compositionKey(url: url, layout: layout)) {
+            item.videoComposition = cached
+            isPreparingLayout = false
+            if player.rate == 0 {
+                player.seek(to: player.currentTime(), toleranceBefore: .zero, toleranceAfter: .zero, completionHandler: { _ in })
+            }
+            return
+        }
         layoutTask?.cancel()
         layoutGeneration += 1
         let generation = layoutGeneration
@@ -2683,6 +2809,9 @@ final class TrailerDraftVideoDriver: ObservableObject {
             composition.renderSize = size
             composition.frameDuration = CMTime(value: 1, timescale: 30)
             composition.instructions = [instruction]
+            if let url {
+                TrailerDraftPreviewCache.shared.setVideoComposition(composition, for: Self.compositionKey(url: url, layout: layout))
+            }
             guard let self, !Task.isCancelled, self.layoutGeneration == generation, self.player.currentItem === item else { return }
             item.videoComposition = composition
             // 일시정지 중에도 보이는 프레임을 새 구성으로 다시 그린다(같은 위치).
@@ -2718,72 +2847,101 @@ final class TrailerDraftMusicDriver: ObservableObject {
     private var duration = 0.0
     private var envelopes: [Int: AudioActivityEnvelope] = [:]
     private var measured: Set<Int> = []
+    private var currentMusicKey: String?
+    private var prepareTask: Task<Void, Never>?
+    private var prepareGeneration = 0
+    private var heldAsset: AVURLAsset?
 
     init() { player.actionAtItemEnd = .pause }
 
     /// 입력이 바뀔 때마다 호출한다(`.task(id:)`가 이전 호출을 취소한다).
     func prepare(_ input: TrailerDraftPreviewInput) async {
+        guard let music = input.music else {
+            stop()
+            return
+        }
+        let key = input.musicKey
+        if currentMusicKey == key && ready && player.currentItem != nil {
+            return
+        }
+        if let existing = prepareTask, currentMusicKey == key {
+            await existing.value
+            return
+        }
+
+        prepareTask?.cancel()
+        currentMusicKey = key
         ready = false
         player.pause()
         player.replaceCurrentItem(with: nil)
         failure = nil
-        guard let music = input.music else { return }
-        // 음량 슬라이더를 끄는 동안 매번 다시 만들지 않도록 잠깐 모은다.
-        try? await Task.sleep(for: .milliseconds(150))
-        guard !Task.isCancelled else { return }
-        do {
-            let asset = AVURLAsset(url: music.url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
-            guard let track = try await asset.loadTracks(withMediaType: .audio).first,
-                  try await track.load(.isDecodable) else { throw TrailerMusicError.unreadable }
-            let range = try await track.load(.timeRange)
-            try TrailerMusic.validate(duration: range.duration.seconds)
 
-            // 소리가 나는 영상 장면의 세기를 한 번만 잰다. 못 잰 영상은 내보내기처럼 계속 들리는 것으로 본다.
-            let videoIDs = Set(input.segments.compactMap { $0.kind == .clip && !$0.muted ? $0.sourceID : nil })
-            for source in input.sources where !source.isImage && videoIDs.contains(source.id) && !measured.contains(source.id) {
-                envelopes[source.id] = try? await AudioAnalysisService.activityEnvelope(url: source.url)
-                try Task.checkCancellation()
-                measured.insert(source.id)
-            }
+        let task = Task { [weak self] in
+            // 음량 슬라이더를 끄는 동안 매번 다시 만들지 않도록 잠깐 모은다.
+            try? await Task.sleep(for: .milliseconds(150))
+            guard !Task.isCancelled else { return }
+            do {
+                let asset = AVURLAsset(url: music.url, options: [AVURLAssetPreferPreciseDurationAndTimingKey: true])
+                guard let track = try await asset.loadTracks(withMediaType: .audio).first,
+                      try await track.load(.isDecodable) else { throw TrailerMusicError.unreadable }
+                let range = try await track.load(.timeRange)
+                try TrailerMusic.validate(duration: range.duration.seconds)
 
-            var originalSound: [TrailerMusicDucking.Clip] = []
-            var outputStart = 0.0
-            let byID = Dictionary(input.sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-            for segment in input.segments {
-                if segment.kind == .clip, !segment.muted, let id = segment.sourceID, let source = byID[id], !source.isImage {
-                    originalSound.append(.init(outputStart: outputStart, sourceStart: segment.start,
-                                               length: segment.length, envelope: envelopes[id]))
+                // 소리가 나는 영상 장면의 세기를 한 번만 잰다. 못 잰 영상은 내보내기처럼 계속 들리는 것으로 본다.
+                let videoIDs = Set(input.segments.compactMap { $0.kind == .clip && !$0.muted ? $0.sourceID : nil })
+                guard let self else { return }
+                for source in input.sources where !source.isImage && videoIDs.contains(source.id) && !self.measured.contains(source.id) {
+                    self.envelopes[source.id] = try? await AudioAnalysisService.activityEnvelope(url: source.url)
+                    try Task.checkCancellation()
+                    self.measured.insert(source.id)
                 }
-                outputStart += segment.length
-            }
 
-            let composition = AVMutableComposition()
-            guard outputStart > 0,
-                  let musicTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-            else { throw TrailerMusicError.unreadable }
-            let placed = try TrailerMusicMix.insertPieces(
-                into: musicTrack, source: track, range: range,
-                total: CMTime(seconds: outputStart, preferredTimescale: 600), policy: music.policy)
-            let built = TrailerMusicMix.audioMix(for: musicTrack, selection: music, originalSound: originalSound,
-                                                 musicEnd: placed.end.seconds)
-            try Task.checkCancellation()
-            let item = AVPlayerItem(asset: composition)
-            item.audioMix = built.mix
-            // 자산은 트랙이 약하게만 참조하므로 항목이 살아 있는 동안 함께 들고 있는다.
-            heldAsset = asset
-            duration = placed.end.seconds
-            player.replaceCurrentItem(with: item)
-            ready = true
-        } catch is CancellationError {
-            return
-        } catch let error as TrailerMusicError {
-            failure = error.errorDescription
-        } catch {
-            failure = TrailerMusicError.unreadable.errorDescription
+                var originalSound: [TrailerMusicDucking.Clip] = []
+                var outputStart = 0.0
+                let byID = Dictionary(input.sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                for segment in input.segments {
+                    if segment.kind == .clip, !segment.muted, let id = segment.sourceID, let source = byID[id], !source.isImage {
+                        originalSound.append(.init(outputStart: outputStart, sourceStart: segment.start,
+                                                   length: segment.length, envelope: self.envelopes[id]))
+                    }
+                    outputStart += segment.length
+                }
+
+                let composition = AVMutableComposition()
+                guard outputStart > 0,
+                      let musicTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+                else { throw TrailerMusicError.unreadable }
+                let placed = try TrailerMusicMix.insertPieces(
+                    into: musicTrack, source: track, range: range,
+                    total: CMTime(seconds: outputStart, preferredTimescale: 600), policy: music.policy)
+                let built = TrailerMusicMix.audioMix(for: musicTrack, selection: music, originalSound: originalSound,
+                                                     musicEnd: placed.end.seconds)
+                try Task.checkCancellation()
+                let item = AVPlayerItem(asset: composition)
+                item.audioMix = built.mix
+                guard !Task.isCancelled, self.currentMusicKey == key else { return }
+                self.heldAsset = asset
+                self.duration = placed.end.seconds
+                self.player.replaceCurrentItem(with: item)
+                self.ready = true
+            } catch is CancellationError {
+                return
+            } catch let error as TrailerMusicError {
+                guard let self, !Task.isCancelled, self.currentMusicKey == key else { return }
+                self.failure = error.errorDescription
+            } catch {
+                guard let self, !Task.isCancelled, self.currentMusicKey == key else { return }
+                self.failure = TrailerMusicError.unreadable.errorDescription
+            }
+        }
+        prepareGeneration += 1
+        let generation = prepareGeneration
+        prepareTask = task
+        await task.value
+        if prepareGeneration == generation {
+            prepareTask = nil
         }
     }
-
-    private var heldAsset: AVURLAsset?
 
     func sync(seconds: Double, playing: Bool) {
         guard ready else { return }
@@ -2807,6 +2965,9 @@ final class TrailerDraftMusicDriver: ObservableObject {
     }
 
     func stop() {
+        prepareTask?.cancel()
+        prepareTask = nil
+        currentMusicKey = nil
         player.pause()
         ready = false
         player.replaceCurrentItem(with: nil)
@@ -2820,19 +2981,24 @@ struct TrailerDraftPreviewPlayer: View {
     let aspectRatio: OutputAspectRatio?
     @ObservedObject var bridge: TrailerTimelineBridge
 
-    @State private var photos: [Int: UIImage] = [:]
+    @State private var currentPhoto: (sourceID: Int, image: UIImage)?
+    @State private var photoCacheRevision = 0
     @State private var cardImage: UIImage?
     @State private var originalVideoSize: (url: URL, size: CGSize)?
     @StateObject private var video = TrailerDraftVideoDriver()
     @StateObject private var music = TrailerDraftMusicDriver()
-    @State private var preparationOps: Set<String> = []
+    @State private var isPreparingProject = false
+    @State private var preparationProgress: Double?
+    @State private var preparationGeneration = 0
+    @State private var activePreparationSignature: String?
+    @State private var failedAssetCount = 0
 #if targetEnvironment(macCatalyst)
     @State private var draftVolumeHUD: Float?
     @State private var draftVolumeDismissTask: Task<Void, Never>?
 #endif
 
     private var isPreparingPreview: Bool {
-        !preparationOps.isEmpty || video.isPreparingLayout || video.isBuffering
+        isPreparingProject && (preparationProgress != nil)
     }
 
     private var currentVideoSource: VideoTrailerSource? {
@@ -2889,7 +3055,11 @@ struct TrailerDraftPreviewPlayer: View {
             if let originalVideoSize, originalVideoSize.url == originalVideoURL {
                 return OutputAspectRatio.renderSize(for: originalVideoSize.size)
             }
-        } else if let firstID = input.segments.compactMap(\.sourceID).first, let image = photos[firstID] {
+            if let cachedSize = TrailerDraftPreviewCache.shared.videoSize(for: originalVideoURL) {
+                return OutputAspectRatio.renderSize(for: cachedSize)
+            }
+        } else if let firstID = input.segments.compactMap(\.sourceID).first,
+                  let image = (currentPhoto?.sourceID == firstID ? currentPhoto?.image : nil) ?? (input.sources.first(where: { $0.id == firstID })?.url).flatMap({ TrailerDraftPreviewCache.shared.photo(for: firstID, url: $0) }) {
             return OutputAspectRatio.renderSize(for: image.size)
         }
         return OutputAspectRatio.landscape16x9.renderSize
@@ -2901,8 +3071,63 @@ struct TrailerDraftPreviewPlayer: View {
 
     private var frameKey: String {
         guard let segment = currentSegment else { return "none" }
-        let card = segment.kind == .intro ? input.introCard : input.outroCard
-        return "\(segment.id)|\(card.title)|\(card.subtitle)|\(card.usesFirstOrLastImage)|\(card.usesBodyTypography)|\(Int(renderSize.width))"
+        switch segment.kind {
+        case .intro:
+            return "intro|\(segment.id)|\(cardKey(isIntro: true, card: input.introCard, renderSize: renderSize))"
+        case .outro:
+            return "outro|\(segment.id)|\(cardKey(isIntro: false, card: input.outroCard, renderSize: renderSize))"
+        case .clip:
+            return "clip|\(segment.id)|\(segment.sourceID ?? -1)|\(segment.start)|\(segment.length)"
+        }
+    }
+
+    private static func encodeCard(_ card: TrailerTitleCard) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        if let data = try? encoder.encode(card), let str = String(data: data, encoding: .utf8) {
+            return str
+        }
+        return "\(card.isEnabled)|\(card.title)|\(card.subtitle)|\(card.duration)|\(card.usesFirstOrLastImage)|\(card.backgroundSourceID ?? -1)|\(card.usesBodyTypography)"
+    }
+
+    private static func encodeCaption(_ caption: TrailerCaption?) -> String {
+        guard let caption else { return "none" }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        if let data = try? encoder.encode(caption), let str = String(data: data, encoding: .utf8) {
+            return str
+        }
+        return "\(caption.text)|\(caption.position.rawValue)|\(caption.fontDesign.rawValue)|\(caption.fontSize)|\(caption.colorHex)"
+    }
+
+    private var projectSourcesKey: String {
+        input.sources.map { "\($0.id):\($0.url.absoluteString)" }.joined(separator: ";")
+    }
+
+    private func backgroundKey(isIntro: Bool, card: TrailerTitleCard) -> String {
+        if let bgID = card.backgroundSourceID {
+            let urlStr = input.sources.first(where: { $0.id == bgID })?.url.absoluteString ?? ""
+            return "bgID:\(bgID):\(urlStr)"
+        } else if card.usesFirstOrLastImage {
+            if isIntro {
+                let firstClipSourceID = input.segments.first(where: { $0.kind == .clip })?.sourceID ?? input.sources.first?.id
+                let urlStr = input.sources.first(where: { $0.id == firstClipSourceID })?.url.absoluteString ?? ""
+                return "introFirst:\(firstClipSourceID ?? -1):\(urlStr)"
+            } else {
+                let lastClipSourceID = input.segments.last(where: { $0.kind == .clip })?.sourceID ?? input.sources.last?.id
+                let urlStr = input.sources.first(where: { $0.id == lastClipSourceID })?.url.absoluteString ?? ""
+                return "outroLast:\(lastClipSourceID ?? -1):\(urlStr)"
+            }
+        } else {
+            return "solidColor"
+        }
+    }
+
+    private func cardKey(isIntro: Bool, card: TrailerTitleCard, renderSize: CGSize) -> String {
+        let cardJSON = Self.encodeCard(card)
+        let bodyJSON = Self.encodeCaption(input.bodyTypography)
+        let bg = backgroundKey(isIntro: isIntro, card: card)
+        return "\(projectSourcesKey)|\(isIntro)|\(bg)|\(cardJSON)|\(bodyJSON)|\(Int(renderSize.width))x\(Int(renderSize.height))"
     }
 
     var body: some View {
@@ -2913,8 +3138,11 @@ struct TrailerDraftPreviewPlayer: View {
                     ZStack {
                         switch segment.kind {
                         case .intro, .outro:
-                            if let cardImage {
-                                Image(uiImage: cardImage).resizable().scaledToFit()
+                            let isIntro = segment.kind == .intro
+                            let card = isIntro ? input.introCard : input.outroCard
+                            let key = cardKey(isIntro: isIntro, card: card, renderSize: renderSize)
+                            if let cardImg = cardImage ?? TrailerDraftPreviewCache.shared.card(for: key) {
+                                Image(uiImage: cardImg).resizable().scaledToFit()
                             }
                         case .clip:
                             if currentVideoSource != nil {
@@ -2929,7 +3157,8 @@ struct TrailerDraftPreviewPlayer: View {
 #else
                                 SharedVideoPlayerSurface(player: video.player, videoGravity: .resizeAspect)
 #endif
-                            } else if let id = segment.sourceID, let photo = photos[id] {
+                            } else if let id = segment.sourceID,
+                                      let photo = (currentPhoto?.sourceID == id ? currentPhoto?.image : nil) ?? (input.sources.first(where: { $0.id == id })?.url).flatMap({ TrailerDraftPreviewCache.shared.photo(for: id, url: $0) }) {
                                 photoView(photo, segment: segment)
                             } else {
                                 Image(systemName: "photo").font(.system(size: 36)).foregroundStyle(.white.opacity(0.6))
@@ -2943,26 +3172,25 @@ struct TrailerDraftPreviewPlayer: View {
             .onTapGesture {
                 bridge.togglePlayback()
             }
+            .task(id: projectPreparationKey) {
+                await performProjectPreparation(signature: projectPreparationKey)
+            }
             .task(id: originalVideoURL) {
                 guard let url = originalVideoURL else { return }
-                let opKey = "videoMeta:\(url.absoluteString)"
-                preparationOps.insert(opKey)
-                defer { preparationOps.remove(opKey) }
+                if let cached = TrailerDraftPreviewCache.shared.videoSize(for: url) {
+                    originalVideoSize = (url, cached)
+                    return
+                }
                 guard let size = try? await trailerOrientedVideoSize(url: url),
                       size.width > 0, size.height > 0, !Task.isCancelled else { return }
+                TrailerDraftPreviewCache.shared.setVideoSize(size, for: url)
                 originalVideoSize = (url, size)
             }
             .task(id: frameKey) {
-                let opKey = "frame:\(frameKey)"
-                preparationOps.insert(opKey)
-                defer { preparationOps.remove(opKey) }
                 await loadFrame()
             }
             .task(id: attachKey) { await runClock() }
             .task(id: input.musicKey) {
-                let opKey = "music:\(input.musicKey)"
-                preparationOps.insert(opKey)
-                defer { preparationOps.remove(opKey) }
                 await music.prepare(input)
                 // 준비가 끝난 시점의 재생 위치로 바로 이어 붙는다(재생 중에 음악을 바꾼 경우).
                 music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying)
@@ -2980,12 +3208,12 @@ struct TrailerDraftPreviewPlayer: View {
                         .transition(.scale.combined(with: .opacity))
                 }
 #endif
-                if isPreparingPreview {
+                if isPreparingPreview, let progress = preparationProgress {
                     VStack(spacing: 8) {
                         Text("미리보기 준비 중…")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundStyle(.white)
-                        ProgressView()
+                        ProgressView(value: progress, total: 1.0)
                             .progressViewStyle(.linear)
                             .tint(.white)
                             .frame(width: 140)
@@ -3011,25 +3239,241 @@ struct TrailerDraftPreviewPlayer: View {
             }
     }
 
-    private func loadFrame() async {
-        guard let segment = currentSegment else { cardImage = nil; return }
-        switch segment.kind {
-        case .intro, .outro:
-            let isIntro = segment.kind == .intro
-            let card = isIntro ? input.introCard : input.outroCard
+    private var projectPreparationKey: String {
+        let segKey = input.segments.map { "\($0.id):\($0.sourceID ?? -1):\($0.start):\($0.length):\($0.fitsFrame):\($0.offsetX):\($0.offsetY)" }.joined(separator: ";")
+        let introKey = cardKey(isIntro: true, card: input.introCard, renderSize: renderSize)
+        let outroKey = cardKey(isIntro: false, card: input.outroCard, renderSize: renderSize)
+        return "\(segKey)|\(projectSourcesKey)|\(input.musicKey)|\(introKey)|\(outroKey)|\(Int(renderSize.width))x\(Int(renderSize.height))"
+    }
+
+    private func performProjectPreparation(signature: String) async {
+        guard !TrailerDraftPreviewCache.shared.isPrepared(signature: signature) else {
+            isPreparingProject = false
+            preparationProgress = nil
+            return
+        }
+
+        preparationGeneration += 1
+        let generation = preparationGeneration
+        activePreparationSignature = signature
+
+        defer {
+            if preparationGeneration == generation {
+                isPreparingProject = false
+                preparationProgress = nil
+                activePreparationSignature = nil
+            }
+        }
+
+        var totalSteps = 0
+        let refVideoURL = originalVideoURL
+        if let refVideoURL, TrailerDraftPreviewCache.shared.videoSize(for: refVideoURL) == nil {
+            totalSteps += 1
+        }
+        if input.music != nil {
+            totalSteps += 1
+        }
+        let introNeeded = input.segments.contains { $0.kind == .intro }
+        let introKey = cardKey(isIntro: true, card: input.introCard, renderSize: renderSize)
+        if introNeeded, TrailerDraftPreviewCache.shared.card(for: introKey) == nil {
+            totalSteps += 1
+        }
+        let outroNeeded = input.segments.contains { $0.kind == .outro }
+        let outroKey = cardKey(isIntro: false, card: input.outroCard, renderSize: renderSize)
+        if outroNeeded, TrailerDraftPreviewCache.shared.card(for: outroKey) == nil {
+            totalSteps += 1
+        }
+
+        let photoSegments = input.segments.filter { $0.kind == .clip }
+        let byID = Dictionary(input.sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var pendingPhotos: [(Int, URL)] = []
+        for seg in photoSegments {
+            if let id = seg.sourceID, let src = byID[id], src.isImage {
+                if TrailerDraftPreviewCache.shared.photo(for: src.id, url: src.url) == nil,
+                   !pendingPhotos.contains(where: { $0.0 == src.id }) {
+                    pendingPhotos.append((src.id, src.url))
+                }
+            }
+        }
+        totalSteps += pendingPhotos.count
+
+        var pendingVideoLayouts: [(URL, TrailerDraftVideoDriver.Layout)] = []
+        for seg in photoSegments {
+            if let id = seg.sourceID, let src = byID[id], !src.isImage {
+                let layout = TrailerDraftVideoDriver.Layout(fitsFrame: seg.fitsFrame, offsetX: seg.offsetX, offsetY: seg.offsetY, renderSize: renderSize)
+                let key = TrailerDraftVideoDriver.compositionKey(url: src.url, layout: layout)
+                if TrailerDraftPreviewCache.shared.videoComposition(for: key) == nil,
+                   !pendingVideoLayouts.contains(where: { $0.0 == src.url && $0.1 == layout }) {
+                    pendingVideoLayouts.append((src.url, layout))
+                }
+            }
+        }
+        totalSteps += pendingVideoLayouts.count
+
+        if totalSteps == 0 {
+            TrailerDraftPreviewCache.shared.markPrepared(signature: signature)
+            isPreparingProject = false
+            preparationProgress = nil
+            return
+        }
+
+        isPreparingProject = true
+        preparationProgress = 0.0
+        var completed = 0
+        var failedAssets = 0
+
+        func stepDone() {
+            completed += 1
+            if preparationGeneration == generation && activePreparationSignature == signature {
+                preparationProgress = min(1.0, Double(completed) / Double(max(1, totalSteps)))
+            }
+        }
+
+        if let refVideoURL, TrailerDraftPreviewCache.shared.videoSize(for: refVideoURL) == nil {
+            if let size = try? await trailerOrientedVideoSize(url: refVideoURL), size.width > 0, size.height > 0 {
+                TrailerDraftPreviewCache.shared.setVideoSize(size, for: refVideoURL)
+                if preparationGeneration == generation && activePreparationSignature == signature {
+                    originalVideoSize = (refVideoURL, size)
+                }
+            } else {
+                failedAssets += 1
+            }
+            guard !Task.isCancelled, preparationGeneration == generation, activePreparationSignature == signature, projectPreparationKey == signature else { return }
+            stepDone()
+        }
+
+        if introNeeded, TrailerDraftPreviewCache.shared.card(for: introKey) == nil {
             let scale = min(1, 960 / max(renderSize.width, renderSize.height))
             let size = CGSize(width: renderSize.width * scale, height: renderSize.height * scale)
-            cardImage = TrailerTitleCardRenderer.renderCardImage(
-                card: card,
-                sourceImage: card.usesFirstOrLastImage ? (isIntro ? input.introBackground : input.outroBackground) : nil,
+            if let img = TrailerTitleCardRenderer.renderCardImage(
+                card: input.introCard,
+                sourceImage: input.introCard.usesFirstOrLastImage ? input.introBackground : nil,
                 renderSize: size,
-                bodyTypography: card.usesBodyTypography ? input.bodyTypography : nil
-            )
+                bodyTypography: input.introCard.usesBodyTypography ? input.bodyTypography : nil
+            ) {
+                TrailerDraftPreviewCache.shared.setCard(img, for: introKey)
+                if preparationGeneration == generation && activePreparationSignature == signature && currentSegment?.kind == .intro {
+                    cardImage = img
+                }
+            } else {
+                failedAssets += 1
+            }
+            guard !Task.isCancelled, preparationGeneration == generation, activePreparationSignature == signature, projectPreparationKey == signature else { return }
+            stepDone()
+        }
+
+        if outroNeeded, TrailerDraftPreviewCache.shared.card(for: outroKey) == nil {
+            let scale = min(1, 960 / max(renderSize.width, renderSize.height))
+            let size = CGSize(width: renderSize.width * scale, height: renderSize.height * scale)
+            if let img = TrailerTitleCardRenderer.renderCardImage(
+                card: input.outroCard,
+                sourceImage: input.outroCard.usesFirstOrLastImage ? input.outroBackground : nil,
+                renderSize: size,
+                bodyTypography: input.outroCard.usesBodyTypography ? input.bodyTypography : nil
+            ) {
+                TrailerDraftPreviewCache.shared.setCard(img, for: outroKey)
+                if preparationGeneration == generation && activePreparationSignature == signature && currentSegment?.kind == .outro {
+                    cardImage = img
+                }
+            } else {
+                failedAssets += 1
+            }
+            guard !Task.isCancelled, preparationGeneration == generation, activePreparationSignature == signature, projectPreparationKey == signature else { return }
+            stepDone()
+        }
+
+        for (sourceID, url) in pendingPhotos {
+            if let img = await trailerThumbnailImage(at: url, maxPixelSize: 1280) {
+                TrailerDraftPreviewCache.shared.setPhoto(img, for: sourceID, url: url)
+                if preparationGeneration == generation && activePreparationSignature == signature {
+                    photoCacheRevision += 1
+                    if currentSegment?.sourceID == sourceID {
+                        currentPhoto = (sourceID, img)
+                    }
+                }
+            } else {
+                failedAssets += 1
+            }
+            guard !Task.isCancelled, preparationGeneration == generation, activePreparationSignature == signature, projectPreparationKey == signature else { return }
+            stepDone()
+        }
+
+        for (url, layout) in pendingVideoLayouts {
+            let comp = await TrailerDraftVideoDriver.prepareComposition(url: url, layout: layout)
+            if comp == nil {
+                failedAssets += 1
+            }
+            guard !Task.isCancelled, preparationGeneration == generation, activePreparationSignature == signature, projectPreparationKey == signature else { return }
+            stepDone()
+        }
+
+        if input.music != nil {
+            await music.prepare(input)
+            if preparationGeneration == generation && activePreparationSignature == signature {
+                music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying)
+#if targetEnvironment(macCatalyst)
+                music.player.volume = bridge.masterVolume
+#endif
+            }
+            if music.failure != nil {
+                failedAssets += 1
+            }
+            guard !Task.isCancelled, preparationGeneration == generation, activePreparationSignature == signature, projectPreparationKey == signature else { return }
+            stepDone()
+        }
+
+        guard !Task.isCancelled, preparationGeneration == generation, activePreparationSignature == signature, projectPreparationKey == signature else { return }
+        if failedAssets == 0 {
+            TrailerDraftPreviewCache.shared.markPrepared(signature: signature)
+        }
+        failedAssetCount = failedAssets
+        isPreparingProject = false
+        preparationProgress = nil
+    }
+
+    private func loadFrame() async {
+        guard let segment = currentSegment else {
+            cardImage = nil
+            currentPhoto = nil
+            return
+        }
+        switch segment.kind {
+        case .intro, .outro:
+            currentPhoto = nil
+            let isIntro = segment.kind == .intro
+            let card = isIntro ? input.introCard : input.outroCard
+            let key = cardKey(isIntro: isIntro, card: card, renderSize: renderSize)
+            if let cached = TrailerDraftPreviewCache.shared.card(for: key) {
+                cardImage = cached
+            } else {
+                let scale = min(1, 960 / max(renderSize.width, renderSize.height))
+                let size = CGSize(width: renderSize.width * scale, height: renderSize.height * scale)
+                let rendered = TrailerTitleCardRenderer.renderCardImage(
+                    card: card,
+                    sourceImage: card.usesFirstOrLastImage ? (isIntro ? input.introBackground : input.outroBackground) : nil,
+                    renderSize: size,
+                    bodyTypography: card.usesBodyTypography ? input.bodyTypography : nil
+                )
+                if let rendered {
+                    TrailerDraftPreviewCache.shared.setCard(rendered, for: key)
+                }
+                cardImage = rendered
+            }
         case .clip:
-            guard let id = segment.sourceID, photos[id] == nil,
-                  let source = input.sources.first(where: { $0.id == id }), source.isImage else { return }
-            if let image = await trailerThumbnailImage(at: source.url, maxPixelSize: 1280), !Task.isCancelled {
-                photos[id] = image
+            cardImage = nil
+            guard let id = segment.sourceID,
+                  let source = input.sources.first(where: { $0.id == id }), source.isImage else {
+                currentPhoto = nil
+                return
+            }
+            if currentPhoto?.sourceID == id { return }
+            if let cached = TrailerDraftPreviewCache.shared.photo(for: id, url: source.url) {
+                currentPhoto = (id, cached)
+            } else if let image = await trailerThumbnailImage(at: source.url, maxPixelSize: 1280), !Task.isCancelled {
+                TrailerDraftPreviewCache.shared.setPhoto(image, for: id, url: source.url)
+                if !Task.isCancelled, currentSegment?.sourceID == id {
+                    currentPhoto = (id, image)
+                }
             }
         }
     }

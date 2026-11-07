@@ -46,4 +46,4 @@ if ! /usr/bin/lockf -s -t 0 -k "$xcodebuild_lock" true; then
 fi
 
 exec /usr/bin/lockf -t 900 -k "$xcodebuild_lock" \
-    xcodebuild "${package_arguments[@]}" "$@"
+    xcodebuild -jobs 2 "${package_arguments[@]}" "$@"

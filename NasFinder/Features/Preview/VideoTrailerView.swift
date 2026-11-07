@@ -2556,8 +2556,19 @@ private struct VideoTrailerSettings: View {
         let wide = size.width >= 640
 
         if isPreviewFullscreen {
-            previewSection(showsOutput: previewingOutput && isOutputCurrent)
-                .frame(width: size.width, height: size.height)
+            VStack(spacing: 0) {
+                previewSection(showsOutput: previewingOutput && isOutputCurrent)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if (!previewingOutput || !isOutputCurrent) && !timelineSegments.isEmpty {
+                    #if targetEnvironment(macCatalyst)
+                    macTimelineToolbar(timelineHeight: 56)
+                    #else
+                    compactTimeline(sizeRatio: 1.0)
+                    #endif
+                }
+            }
+            .frame(width: size.width, height: size.height)
+            .background(Color.black.ignoresSafeArea())
         } else if wide {
             wideLayout(size: inner)
                 .padding(pad)
