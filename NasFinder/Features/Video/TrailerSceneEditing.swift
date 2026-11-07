@@ -2546,7 +2546,7 @@ final class TrailerDraftPreviewCache {
 
     private nonisolated static let cacheSchemaVersion = "v1"
     private nonisolated static let maxDiskCacheBytes: Int64 = 120 * 1024 * 1024
-    private nonisolated static let maxDiskFileCount = 400
+    private nonisolated static let maxDiskFileCount = 4096
     private nonisolated static let stateLock = NSLock()
     nonisolated(unsafe) private static var lastPruneTime: TimeInterval = 0
     nonisolated(unsafe) private static var attributeMemo: [String: (size: Int64, mtime: Int64, at: TimeInterval)] = [:]

@@ -20,7 +20,11 @@ short_sha="$(git rev-parse --short=12 HEAD)"
 source_state_file="$(mktemp)"
 trap 'rm -f "$source_state_file"' EXIT
 git status --porcelain=v1 --untracked-files=all > "$source_state_file"
-derived_data="/tmp/NasFinder-verified-$short_sha"
+derived_data="${NASFINDER_VERIFIED_DERIVED_DATA:-/tmp/NasFinder-verified-$short_sha}"
+if [[ "$derived_data" != /* || "$derived_data" == "/" || "$derived_data" == "/tmp" ]]; then
+    echo "error: NASFINDER_VERIFIED_DERIVED_DATA는 루트가 아닌 절대 경로여야 합니다: $derived_data" >&2
+    exit 2
+fi
 project="NasFinder.xcodeproj"
 scheme="NasFinder"
 bundle_identifier="com.armsone.nasfinder"
