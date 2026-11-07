@@ -1578,7 +1578,7 @@ capabilities:
     platform_adaptations: {ios: ["SwiftUI/AVPlayer, Mac 키보드·포인터"], android: ["Compose/ExoPlayer, Android 뒤로"]}
     intentional_differences: ["Mac 편집 인라인은 타임라인 재생 버튼 하나만 표시하며 전체화면은 화면 내 버튼 하나를 표시한다. iPhone과 Android는 터치 조작에 맞춘 명시적 화면 내 버튼을 유지한다."]
     implementations:
-      ios: {status: implemented_source_only, source_refs: ["NasFinder/Features/Preview/VideoTrailerView.swift", "NasFinder/Features/Video/TrailerSceneEditing.swift"], tests: ["8 existing iPhone device tests passed"], evidence: ["Mac inline/fullscreen single play button, first tap pause, 3s output continuity, scroll volume runtime passed; .sync/evidence/preview-2.39.71/mac/", "iPhone install passed; relaunch/UI pending device unlock"]}
+      ios: {status: runtime_verified, source_refs: ["NasFinder/Features/Preview/VideoTrailerView.swift", "NasFinder/Features/Video/TrailerSceneEditing.swift", "NasFinder/Features/Preview/RemotePreviewView.swift", "NasFinder/Features/Preview/SharedFullscreenMediaPlayer.swift"], tests: ["8 existing iPhone device tests passed"], evidence: ["Mac inline/fullscreen single play button, first tap pause, 3s output continuity, scroll volume runtime passed; .sync/evidence/preview-2.39.71/mac/", "iPhone first tap paused and held, fullscreen one play control, down-swipe returned same editor at 0:03; .sync/evidence/preview-2.39.71/iphone/; iPad runtime not exercised"]}
       android: {status: runtime_verified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/AdaptiveEditorWorkspace.kt"], tests: ["22 existing scoped tests passed"], evidence: ["2.39.71 Fold6 actual tap/fullscreen/dismiss/continuity runtime; TriFold/Fold6/SM-T500 install hash matched; Android commit a4e002f9aa34dea742177a82117915a46df04ac1"]}
     dependencies: ["기존 편집 타임라인 재생기"]
     parity_row_ids: ["editor_preview.fullscreen.entry", "editor_preview.transport.tap_pause", "editor_preview.transport.explicit_control", "editor_preview.fullscreen.dismiss", "editor_preview.transport.continuity"]
@@ -1603,7 +1603,7 @@ capabilities:
     platform_adaptations: {ios: ["SwiftUI ProgressView"], android: ["Compose LinearProgressIndicator"]}
     intentional_differences: []
     implementations:
-      ios: {status: implemented_source_only, tests: [], evidence: []}
+      ios: {status: implemented_source_only, tests: ["existing loading/error/teardown device tests passed"], evidence: ["Mac actual preparing label and progress element observed then absent; iPhone actual indicator too brief to capture, visual verification remains open"]}
       android: {status: runtime_verified, tests: [], evidence: ["2.39.71 Fold6 actual preparing bar visible then settled; .parity/evidence/preview-2.39.71/android/"]}
     dependencies: ["기존 미리보기 비동기 작업"]
     parity_row_ids: ["editor_preview.preparation.feedback"]

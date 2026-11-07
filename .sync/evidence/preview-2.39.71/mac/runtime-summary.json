@@ -15,7 +15,7 @@
   },
   "preparation": "actual AX preparing label and progress element observed on reopen, absent after ready; screenshot not captured",
   "reuse": "fullscreen screenshots preceded the final two Mac-only scroll sign corrections; unchanged controls runtime evidence reused",
-  "ios": "8 existing device tests and data-preserving install passed; final relaunch/UI pending device unlock",
+  "ios": "8 existing device tests and data-preserving install passed; normal relaunch, first tap pause, fullscreen controls and down-swipe continuity observed on iPhone",
   "notClaimed": [
     "full product pixel parity",
     "iPad runtime",

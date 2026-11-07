@@ -1,0 +1,16 @@
+{
+  "version": "2.39.71",
+  "build": "202611070910",
+  "install": "data-preserving; main app and four extensions match version/build; normal relaunch observed after device unlock",
+  "tests": "8 existing device unit tests passed; existing UI capture runner used with no new tests/source changes",
+  "media": "one synthetic test pattern, imported twice during normal import recovery; no existing user edits opened",
+  "inline": "first video tap paused at 0:03 / 0:04 and held after additional wait",
+  "fullscreen": "one explicit play control; first media tap paused and held; downward swipe returned same editor at 0:03 / 0:04",
+  "preparation": "implemented and existing state tests passed; actual iPhone indicator was too brief to capture, remains visually unverified",
+  "distribution": "Release archive upload VALID, Public Beta assigned, ko/en-US notes saved, autoNotify enabled, external beta review pending",
+  "cleanup": "separate private release receipt records own fixture cleanup; no user data in these images",
+  "limits": [
+    "iPad runtime not exercised",
+    "full cross-platform pixel parity not claimed"
+  ]
+}
