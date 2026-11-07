@@ -788,47 +788,109 @@ enum TrailerTitleCardRenderer {
                 let effectiveTitleStyle = card.titleStyle ?? defaultTitleStyle(usesBodyTypography: card.usesBodyTypography, bodyTypography: bodyTypography)
                 let effectiveSubtitleStyle = card.subtitleStyle ?? defaultSubtitleStyle(usesBodyTypography: card.usesBodyTypography, bodyTypography: bodyTypography)
 
-                if !titleText.isEmpty {
-                    let clampedShadowOpacity = min(1.0, max(0.0, effectiveTitleStyle.shadowOpacity.isFinite ? effectiveTitleStyle.shadowOpacity : 0.75))
-                    let clampedLineSpacing = min(2.0, max(0.5, effectiveTitleStyle.lineSpacing.isFinite ? effectiveTitleStyle.lineSpacing : 1.25))
-                    let col = min(4, max(0, effectiveTitleStyle.column))
-                    let r = min(4, max(0, effectiveTitleStyle.row))
-                    if let titleImg = TrailerCaptionRenderer.renderImage(
-                        text: titleText,
-                        fontName: effectiveTitleStyle.fontName,
-                        captionSize: effectiveTitleStyle.captionSize,
-                        textColorHex: effectiveTitleStyle.colorHex,
-                        hasShadow: effectiveTitleStyle.hasShadow,
-                        shadowColorHex: effectiveTitleStyle.shadowColorHex,
-                        shadowOpacity: clampedShadowOpacity,
-                        lineSpacing: clampedLineSpacing,
-                        column: col,
-                        row: r,
-                        renderSize: renderSize
-                    ) {
-                        titleImg.draw(in: rect)
-                    }
-                }
+                let titleCol = min(4, max(0, effectiveTitleStyle.column))
+                let titleRow = min(4, max(0, effectiveTitleStyle.row))
+                let subCol = min(4, max(0, effectiveSubtitleStyle.column))
+                let subRow = min(4, max(0, effectiveSubtitleStyle.row))
 
-                if !subtitleText.isEmpty {
-                    let clampedShadowOpacity = min(1.0, max(0.0, effectiveSubtitleStyle.shadowOpacity.isFinite ? effectiveSubtitleStyle.shadowOpacity : 0.75))
-                    let clampedLineSpacing = min(2.0, max(0.5, effectiveSubtitleStyle.lineSpacing.isFinite ? effectiveSubtitleStyle.lineSpacing : 1.25))
-                    let col = min(4, max(0, effectiveSubtitleStyle.column))
-                    let r = min(4, max(0, effectiveSubtitleStyle.row))
-                    if let subtitleImg = TrailerCaptionRenderer.renderImage(
-                        text: subtitleText,
-                        fontName: effectiveSubtitleStyle.fontName,
-                        captionSize: effectiveSubtitleStyle.captionSize,
-                        textColorHex: effectiveSubtitleStyle.colorHex,
-                        hasShadow: effectiveSubtitleStyle.hasShadow,
-                        shadowColorHex: effectiveSubtitleStyle.shadowColorHex,
-                        shadowOpacity: clampedShadowOpacity,
-                        lineSpacing: clampedLineSpacing,
-                        column: col,
-                        row: r,
-                        renderSize: renderSize
-                    ) {
-                        subtitleImg.draw(in: rect)
+                // 제목과 부제목이 모두 있고 같은 행과 열을 가리킬 때: 부제목을 제목 아래로 간격만큼 띄우고 하단 잘림 시 함께 위로 이동
+                if !titleText.isEmpty && !subtitleText.isEmpty && titleCol == subCol && titleRow == subRow {
+                    let safeMargin = TrailerCaptionRenderer.safeMargin
+                    let safeLeft = renderSize.width * safeMargin
+                    let safeTop = renderSize.height * safeMargin
+                    let safeWidth = max(1.0, renderSize.width * (1.0 - 2.0 * safeMargin))
+                    let safeHeight = max(1.0, renderSize.height * (1.0 - 2.0 * safeMargin))
+                    let shortEdge = min(renderSize.width, renderSize.height)
+
+                    let alignment: NSTextAlignment
+                    switch titleCol {
+                    case 0, 1: alignment = .left
+                    case 2: alignment = .center
+                    default: alignment = .right
+                    }
+
+                    let titleMeasure = measureText(text: titleText, style: effectiveTitleStyle, alignment: alignment, safeWidth: safeWidth, safeHeight: safeHeight, shortEdge: shortEdge)
+                    let subMeasure = measureText(text: subtitleText, style: effectiveSubtitleStyle, alignment: alignment, safeWidth: safeWidth, safeHeight: safeHeight, shortEdge: shortEdge)
+
+                    let scaledGap = max(4.0, shortEdge * 0.018)
+                    let initialTitleY = safeTop + CGFloat(titleRow) / 4.0 * max(0.0, safeHeight - titleMeasure.totalHeight)
+                    var titleDrawY = initialTitleY
+                    var subDrawY = titleDrawY + titleMeasure.totalHeight + scaledGap
+
+                    let bottomOverflow = (subDrawY + subMeasure.totalHeight) - (safeTop + safeHeight)
+                    if bottomOverflow > 0 {
+                        titleDrawY = max(safeTop, titleDrawY - bottomOverflow)
+                        subDrawY = titleDrawY + titleMeasure.totalHeight + scaledGap
+                    }
+
+                    let titleBlockWidth = min(safeWidth, titleMeasure.measuredSize.width)
+                    let titleFree = safeWidth - titleBlockWidth
+                    let titleLeft: CGFloat
+                    switch alignment {
+                    case .center: titleLeft = titleFree / 2.0
+                    case .right: titleLeft = titleFree
+                    default: titleLeft = 0.0
+                    }
+                    let titleDx = CGFloat(titleCol) / 4.0 * titleFree - titleLeft
+                    let titleDrawX = safeLeft + titleDx
+
+                    let subBlockWidth = min(safeWidth, subMeasure.measuredSize.width)
+                    let subFree = safeWidth - subBlockWidth
+                    let subLeft: CGFloat
+                    switch alignment {
+                    case .center: subLeft = subFree / 2.0
+                    case .right: subLeft = subFree
+                    default: subLeft = 0.0
+                    }
+                    let subDx = CGFloat(subCol) / 4.0 * subFree - subLeft
+                    let subDrawX = safeLeft + subDx
+
+                    let cg = context.cgContext
+                    drawMeasuredText(titleMeasure, style: effectiveTitleStyle, in: cg, drawX: titleDrawX, drawY: titleDrawY, safeWidth: safeWidth)
+                    drawMeasuredText(subMeasure, style: effectiveSubtitleStyle, in: cg, drawX: subDrawX, drawY: subDrawY, safeWidth: safeWidth)
+                } else {
+                    if !titleText.isEmpty {
+                        let clampedShadowOpacity = min(1.0, max(0.0, effectiveTitleStyle.shadowOpacity.isFinite ? effectiveTitleStyle.shadowOpacity : 0.75))
+                        let clampedLineSpacing = min(2.0, max(0.5, effectiveTitleStyle.lineSpacing.isFinite ? effectiveTitleStyle.lineSpacing : 1.25))
+                        let col = titleCol
+                        let r = titleRow
+                        if let titleImg = TrailerCaptionRenderer.renderImage(
+                            text: titleText,
+                            fontName: effectiveTitleStyle.fontName,
+                            captionSize: effectiveTitleStyle.captionSize,
+                            textColorHex: effectiveTitleStyle.colorHex,
+                            hasShadow: effectiveTitleStyle.hasShadow,
+                            shadowColorHex: effectiveTitleStyle.shadowColorHex,
+                            shadowOpacity: clampedShadowOpacity,
+                            lineSpacing: clampedLineSpacing,
+                            column: col,
+                            row: r,
+                            renderSize: renderSize
+                        ) {
+                            titleImg.draw(in: rect)
+                        }
+                    }
+
+                    if !subtitleText.isEmpty {
+                        let clampedShadowOpacity = min(1.0, max(0.0, effectiveSubtitleStyle.shadowOpacity.isFinite ? effectiveSubtitleStyle.shadowOpacity : 0.75))
+                        let clampedLineSpacing = min(2.0, max(0.5, effectiveSubtitleStyle.lineSpacing.isFinite ? effectiveSubtitleStyle.lineSpacing : 1.25))
+                        let col = subCol
+                        let r = subRow
+                        if let subtitleImg = TrailerCaptionRenderer.renderImage(
+                            text: subtitleText,
+                            fontName: effectiveSubtitleStyle.fontName,
+                            captionSize: effectiveSubtitleStyle.captionSize,
+                            textColorHex: effectiveSubtitleStyle.colorHex,
+                            hasShadow: effectiveSubtitleStyle.hasShadow,
+                            shadowColorHex: effectiveSubtitleStyle.shadowColorHex,
+                            shadowOpacity: clampedShadowOpacity,
+                            lineSpacing: clampedLineSpacing,
+                            column: col,
+                            row: r,
+                            renderSize: renderSize
+                        ) {
+                            subtitleImg.draw(in: rect)
+                        }
                     }
                 }
             } else {
@@ -859,6 +921,103 @@ enum TrailerTitleCardRenderer {
                 }
             }
         }
+    }
+
+    struct TextMeasurement {
+        var text: String
+        var font: UIFont
+        var attributes: [NSAttributedString.Key: Any]
+        var measuredSize: CGSize
+        var firstLineInset: CGFloat
+        var shadowPad: CGFloat
+        var textSize: CGFloat
+        var totalHeight: CGFloat { measuredSize.height + firstLineInset + shadowPad }
+    }
+
+    private static func measureText(
+        text: String,
+        style: TrailerCaption,
+        alignment: NSTextAlignment,
+        safeWidth: CGFloat,
+        safeHeight: CGFloat,
+        shortEdge: CGFloat
+    ) -> TextMeasurement {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        var textSize = shortEdge * CGFloat(style.captionSize.shortEdgeFraction)
+        let minTextSize = max(6.0, shortEdge * 0.012)
+        let lineSpacing = min(2.0, max(0.5, style.lineSpacing.isFinite ? style.lineSpacing : 1.25))
+        let narrowFactor = lineSpacing < 1.0 ? max(0.5, lineSpacing) : 1.0
+
+        var layoutFont: UIFont = .systemFont(ofSize: textSize, weight: .bold)
+        var attributes: [NSAttributedString.Key: Any] = [:]
+        var measuredSize: CGSize = .zero
+        var shadowPad: CGFloat = 0
+        var firstLineInset: CGFloat = 0
+
+        while true {
+            layoutFont = TrailerCaptionFontStore.uiFont(fontName: style.fontName, size: textSize)
+            let paragraph = NSMutableParagraphStyle()
+            paragraph.alignment = alignment
+            paragraph.lineBreakMode = .byWordWrapping
+            let spacingBonus = max(0, (lineSpacing - 1.0) * Double(textSize) * 0.4)
+            paragraph.lineSpacing = CGFloat(spacingBonus)
+            if narrowFactor < 1.0 { paragraph.lineHeightMultiple = CGFloat(narrowFactor) }
+            firstLineInset = narrowFactor < 1.0 ? ceil(layoutFont.lineHeight * CGFloat(1.0 - narrowFactor)) : 0
+
+            let textColor = UIColor(CaptionColorUtil.color(fromHex: style.colorHex))
+            attributes = [
+                .font: layoutFont,
+                .foregroundColor: textColor,
+                .paragraphStyle: paragraph
+            ]
+
+            shadowPad = style.hasShadow ? textSize * 0.12 : 0
+            let bounding = (trimmed as NSString).boundingRect(
+                with: CGSize(width: safeWidth, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading],
+                attributes: attributes,
+                context: nil
+            )
+            measuredSize = CGSize(width: min(safeWidth, ceil(bounding.width)), height: ceil(bounding.height))
+
+            if measuredSize.height + firstLineInset + shadowPad <= safeHeight || textSize <= minTextSize {
+                break
+            }
+            textSize = max(minTextSize, textSize * 0.88)
+        }
+
+        return TextMeasurement(
+            text: trimmed,
+            font: layoutFont,
+            attributes: attributes,
+            measuredSize: measuredSize,
+            firstLineInset: firstLineInset,
+            shadowPad: shadowPad,
+            textSize: textSize
+        )
+    }
+
+    private static func drawMeasuredText(
+        _ m: TextMeasurement,
+        style: TrailerCaption,
+        in cg: CGContext,
+        drawX: CGFloat,
+        drawY: CGFloat,
+        safeWidth: CGFloat
+    ) {
+        cg.saveGState()
+        if style.hasShadow {
+            let opacity = min(1.0, max(0.0, style.shadowOpacity.isFinite ? style.shadowOpacity : 0.75))
+            let sColor = UIColor(CaptionColorUtil.color(fromHex: style.shadowColorHex)).withAlphaComponent(CGFloat(opacity))
+            let blur = m.textSize * 0.08
+            let offset = CGSize(width: m.textSize * 0.035, height: m.textSize * 0.04)
+            cg.setShadow(offset: offset, blur: blur, color: sColor.cgColor)
+        }
+        (m.text as NSString).draw(
+            in: CGRect(x: drawX, y: drawY + m.firstLineInset, width: safeWidth, height: m.measuredSize.height),
+            withAttributes: m.attributes
+        )
+        cg.restoreGState()
     }
 }
 

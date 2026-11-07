@@ -164,6 +164,8 @@ struct TrailerTitleCard: Codable, Equatable, Sendable {
     /// 배경으로 고른 프로젝트 사진의 소스 id(프로젝트에 저장되는 안정된 id). nil이면 기존처럼
     /// `usesFirstOrLastImage`일 때 첫/마지막 장면, 아니면 단색이다. 사진이 사라졌거나 사진이 아니면 같은 기존 규칙으로 돌아간다.
     var backgroundSourceID: Int?
+    /// 배경으로 고른 프로젝트 사진 또는 비디오 스틸의 타임스탬프(초). 비디오 스틸일 때 사용되며 nil이면 사진 소스이거나 기본 위치.
+    var backgroundTimestamp: Double?
     /// true면 문구를 본편 자막 서체로 그린다. 이전 프로젝트와 폰 시트는 false라 기존 모양을 유지한다.
     var usesBodyTypography: Bool
     /// 제목/부제목 개별 스타일. 둘 다 nil이면 기존의 본편 자막 서체 또는 기본 서체 경로로 중앙 결합 렌더링된다.
@@ -177,6 +179,7 @@ struct TrailerTitleCard: Codable, Equatable, Sendable {
         duration: Double = 3.0,
         usesFirstOrLastImage: Bool = true,
         backgroundSourceID: Int? = nil,
+        backgroundTimestamp: Double? = nil,
         usesBodyTypography: Bool = false,
         titleStyle: TrailerCaption? = nil,
         subtitleStyle: TrailerCaption? = nil
@@ -187,13 +190,14 @@ struct TrailerTitleCard: Codable, Equatable, Sendable {
         self.duration = max(1.0, min(10.0, duration))
         self.usesFirstOrLastImage = usesFirstOrLastImage
         self.backgroundSourceID = backgroundSourceID
+        self.backgroundTimestamp = backgroundTimestamp
         self.usesBodyTypography = usesBodyTypography
         self.titleStyle = titleStyle
         self.subtitleStyle = subtitleStyle
     }
 
     enum CodingKeys: String, CodingKey {
-        case isEnabled, title, subtitle, duration, usesFirstOrLastImage, backgroundSourceID, usesBodyTypography
+        case isEnabled, title, subtitle, duration, usesFirstOrLastImage, backgroundSourceID, backgroundTimestamp, usesBodyTypography
         case titleStyle, subtitleStyle
     }
 
@@ -206,6 +210,7 @@ struct TrailerTitleCard: Codable, Equatable, Sendable {
         duration = max(1.0, min(10.0, d))
         usesFirstOrLastImage = try c.decodeIfPresent(Bool.self, forKey: .usesFirstOrLastImage) ?? true
         backgroundSourceID = try c.decodeIfPresent(Int.self, forKey: .backgroundSourceID)
+        backgroundTimestamp = try c.decodeIfPresent(Double.self, forKey: .backgroundTimestamp)
         usesBodyTypography = try c.decodeIfPresent(Bool.self, forKey: .usesBodyTypography) ?? false
         titleStyle = try c.decodeIfPresent(TrailerCaption.self, forKey: .titleStyle)
         subtitleStyle = try c.decodeIfPresent(TrailerCaption.self, forKey: .subtitleStyle)

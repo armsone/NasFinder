@@ -3290,7 +3290,8 @@ struct TrailerDraftPreviewPlayer: View {
         if let data = try? encoder.encode(card), let str = String(data: data, encoding: .utf8) {
             return str
         }
-        return "\(card.isEnabled)|\(card.title)|\(card.subtitle)|\(card.duration)|\(card.usesFirstOrLastImage)|\(card.backgroundSourceID ?? -1)|\(card.usesBodyTypography)"
+        let tsStr = card.backgroundTimestamp.map { String(format: "%.3f", $0) } ?? "none"
+        return "\(card.isEnabled)|\(card.title)|\(card.subtitle)|\(card.duration)|\(card.usesFirstOrLastImage)|\(card.backgroundSourceID ?? -1)|\(tsStr)|\(card.usesBodyTypography)"
     }
 
     private static func encodeCaption(_ caption: TrailerCaption?) -> String {
@@ -3312,11 +3313,12 @@ struct TrailerDraftPreviewPlayer: View {
 
     private func backgroundKey(isIntro: Bool, card: TrailerTitleCard) -> String {
         if let bgID = card.backgroundSourceID {
+            let tsStr = card.backgroundTimestamp.map { String(format: "%.3f", $0) } ?? "nil"
             if let src = input.sources.first(where: { $0.id == bgID }) {
                 let attrs = TrailerDraftPreviewCache.sourceFileAttributes(for: src.url)
-                return "bgID:\(bgID):\(src.name):\(src.url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)"
+                return "bgID:\(bgID):ts:\(tsStr):\(src.name):\(src.url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)"
             }
-            return "bgID:\(bgID):none"
+            return "bgID:\(bgID):ts:\(tsStr):none"
         } else if card.usesFirstOrLastImage {
             if isIntro {
                 let firstClipSourceID = input.segments.first(where: { $0.kind == .clip })?.sourceID ?? input.sources.first?.id
@@ -3556,9 +3558,17 @@ struct TrailerDraftPreviewPlayer: View {
         if introNeeded, TrailerDraftPreviewCache.shared.card(for: introKey) == nil {
             let scale = min(1, 960 / max(renderSize.width, renderSize.height))
             let size = CGSize(width: renderSize.width * scale, height: renderSize.height * scale)
+            var bgImage = input.introCard.usesFirstOrLastImage ? input.introBackground : nil
+            if bgImage == nil && input.introCard.usesFirstOrLastImage,
+               let bgID = input.introCard.backgroundSourceID,
+               let src = input.sources.first(where: { $0.id == bgID }) {
+                let ts = input.introCard.backgroundTimestamp ?? 0.0
+                let clamped = max(0.0, src.duration > 0 ? min(ts, src.duration - 0.05) : 0.0)
+                bgImage = try? await VideoTrailerModel.extractStillImage(source: src, at: src.isImage ? 0.0 : clamped, maxPixelSize: 1280)
+            }
             if let img = TrailerTitleCardRenderer.renderCardImage(
                 card: input.introCard,
-                sourceImage: input.introCard.usesFirstOrLastImage ? input.introBackground : nil,
+                sourceImage: bgImage,
                 renderSize: size,
                 bodyTypography: input.introCard.usesBodyTypography ? input.bodyTypography : nil
             ) {
@@ -3576,9 +3586,17 @@ struct TrailerDraftPreviewPlayer: View {
         if outroNeeded, TrailerDraftPreviewCache.shared.card(for: outroKey) == nil {
             let scale = min(1, 960 / max(renderSize.width, renderSize.height))
             let size = CGSize(width: renderSize.width * scale, height: renderSize.height * scale)
+            var bgImage = input.outroCard.usesFirstOrLastImage ? input.outroBackground : nil
+            if bgImage == nil && input.outroCard.usesFirstOrLastImage,
+               let bgID = input.outroCard.backgroundSourceID,
+               let src = input.sources.first(where: { $0.id == bgID }) {
+                let ts = input.outroCard.backgroundTimestamp ?? 0.0
+                let clamped = max(0.0, src.duration > 0 ? min(ts, src.duration - 0.05) : 0.0)
+                bgImage = try? await VideoTrailerModel.extractStillImage(source: src, at: src.isImage ? 0.0 : clamped, maxPixelSize: 1280)
+            }
             if let img = TrailerTitleCardRenderer.renderCardImage(
                 card: input.outroCard,
-                sourceImage: input.outroCard.usesFirstOrLastImage ? input.outroBackground : nil,
+                sourceImage: bgImage,
                 renderSize: size,
                 bodyTypography: input.outroCard.usesBodyTypography ? input.bodyTypography : nil
             ) {
@@ -3658,9 +3676,17 @@ struct TrailerDraftPreviewPlayer: View {
             } else {
                 let scale = min(1, 960 / max(renderSize.width, renderSize.height))
                 let size = CGSize(width: renderSize.width * scale, height: renderSize.height * scale)
+                var bgImage = card.usesFirstOrLastImage ? (isIntro ? input.introBackground : input.outroBackground) : nil
+                if bgImage == nil && card.usesFirstOrLastImage,
+                   let bgID = card.backgroundSourceID,
+                   let src = input.sources.first(where: { $0.id == bgID }) {
+                    let ts = card.backgroundTimestamp ?? 0.0
+                    let clamped = max(0.0, src.duration > 0 ? min(ts, src.duration - 0.05) : 0.0)
+                    bgImage = try? await VideoTrailerModel.extractStillImage(source: src, at: src.isImage ? 0.0 : clamped, maxPixelSize: 1280)
+                }
                 let rendered = TrailerTitleCardRenderer.renderCardImage(
                     card: card,
-                    sourceImage: card.usesFirstOrLastImage ? (isIntro ? input.introBackground : input.outroBackground) : nil,
+                    sourceImage: bgImage,
                     renderSize: size,
                     bodyTypography: card.usesBodyTypography ? input.bodyTypography : nil
                 )

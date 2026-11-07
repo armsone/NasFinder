@@ -1679,6 +1679,12 @@ private struct VideoTrailerSettings: View {
         var id: String { rawValue }
     }
     @State private var cardOriginalRenderSize: CGSize?
+    @State private var introCustomBackground: UIImage? = nil
+    @State private var outroCustomBackground: UIImage? = nil
+    @AppStorage("trailer.editor.backgroundViewMode") private var backgroundViewModeRaw = "thumbnail"
+    @State private var rankedBackgroundCandidates: [TrailerBackgroundCandidate] = []
+    @State private var isRankingBackgrounds = false
+    @State private var backgroundRankGeneration = 0
     @State private var isAnalyzingTempo = false
     @State private var tempoNotice: String? = nil
     @State private var tempoTask: Task<Void, Never>? = nil
@@ -2309,6 +2315,9 @@ private struct VideoTrailerSettings: View {
         .background(TrailerWindowBottomReader { windowUsableBottom = $0 })
         .onAppear {
             restoreCaptionDraftFromSelectedScene()
+        }
+        .task(id: backgroundPreparationKey) {
+            await updateBackgroundRanking()
         }
         .onChange(of: isRequestedExportReady) { ready in
             guard ready else { return }
@@ -3054,17 +3063,22 @@ private struct VideoTrailerSettings: View {
             }
         }
         guard segments.contains(where: { $0.kind == .clip }) else { return nil }
-        func background(_ card: TrailerTitleCard, fallback: VideoTrailerSource?) -> UIImage? {
+        func background(_ card: TrailerTitleCard, isIntro: Bool, fallback: VideoTrailerSource?) -> UIImage? {
             guard card.usesFirstOrLastImage else { return nil }
-            let id = card.backgroundSourceID.flatMap { id in sources.first { $0.id == id && $0.isImage }?.id } ?? fallback?.id
-            return id.flatMap { sourceImages[$0] }
+            let selectedThumb: UIImage? = card.backgroundSourceID.flatMap { id in
+                guard byID[id] != nil else { return nil }
+                let custom = isIntro ? introCustomBackground : outroCustomBackground
+                return custom ?? sourceImages[id]
+            }
+            let fallbackThumb = (fallback?.id).flatMap { sourceImages[$0] }
+            return selectedThumb ?? fallbackThumb
         }
         return TrailerDraftPreviewInput(
             projectID: chrome.projectID,
             segments: segments, sources: sources, captions: captions,
             introCard: introCard, outroCard: outroCard,
-            introBackground: background(introCard, fallback: firstIncludedSource),
-            outroBackground: background(outroCard, fallback: lastIncludedSource),
+            introBackground: background(introCard, isIntro: true, fallback: firstIncludedSource),
+            outroBackground: background(outroCard, isIntro: false, fallback: lastIncludedSource),
             bodyTypography: bodyCardTypography,
             selectedSceneID: selectedSceneID,
             music: music
@@ -3530,8 +3544,117 @@ private struct VideoTrailerSettings: View {
         }
     }
 
+    private var backgroundPreparationKey: String {
+        let sourceKey = sources.map { "\($0.id):\($0.url.path):\($0.isImage ? 1 : 0):\($0.duration)" }.joined(separator: ",")
+        let sceneKey = proposal.map { "\($0.sourceID):\($0.start):\($0.length)" }.joined(separator: ",")
+        return "\(sourceKey)|\(sceneKey)"
+    }
+
+    private func updateBackgroundRanking() async {
+        backgroundRankGeneration += 1
+        let currentGen = backgroundRankGeneration
+        isRankingBackgrounds = true
+
+        let rawCandidates = initialBackgroundCandidates
+        guard !rawCandidates.isEmpty else {
+            if !Task.isCancelled && backgroundRankGeneration == currentGen {
+                rankedBackgroundCandidates = []
+                isRankingBackgrounds = false
+            }
+            return
+        }
+
+        let ranked = await TrailerBackgroundRanker.rank(candidates: rawCandidates)
+
+        guard !Task.isCancelled, backgroundRankGeneration == currentGen else { return }
+
+        self.rankedBackgroundCandidates = ranked
+        self.isRankingBackgrounds = false
+
+        if let top1 = ranked.first {
+            if introCard.isEnabled && introCard.usesFirstOrLastImage && introCard.backgroundSourceID == nil {
+                var nextIntro = introCard
+                nextIntro.backgroundSourceID = top1.source.id
+                nextIntro.backgroundTimestamp = top1.timestamp
+                introCard = nextIntro
+            }
+            if outroCard.isEnabled && outroCard.usesFirstOrLastImage && outroCard.backgroundSourceID == nil {
+                var nextOutro = outroCard
+                nextOutro.backgroundSourceID = top1.source.id
+                nextOutro.backgroundTimestamp = top1.timestamp
+                outroCard = nextOutro
+            }
+        }
+    }
+
+    private var initialBackgroundCandidates: [TrailerBackgroundCandidate] {
+        let photoSources: [VideoTrailerSource]
+        let activePhotoIDs = Set(proposal.filter { scene in
+            sources.contains { $0.id == scene.sourceID && $0.isImage }
+        }.map(\.sourceID))
+        if !activePhotoIDs.isEmpty {
+            photoSources = sources.filter { $0.isImage && activePhotoIDs.contains($0.id) }
+        } else {
+            photoSources = sources.filter(\.isImage)
+        }
+        let photoCandidates = photoSources.map { TrailerBackgroundCandidate(source: $0, timestamp: nil) }
+
+        let videoClips = proposal.compactMap { scene -> (VideoTrailerSource, Double, Double)? in
+            guard let src = sources.first(where: { $0.id == scene.sourceID && !$0.isImage }) else { return nil }
+            return (src, scene.start, scene.length)
+        }
+        let effectiveClips: [(VideoTrailerSource, Double, Double)]
+        if !videoClips.isEmpty {
+            effectiveClips = videoClips
+        } else {
+            effectiveClips = sources.filter { !$0.isImage }.map { ($0, 0.0, $0.duration) }
+        }
+
+        var videoClipBuckets: [[Double]] = []
+        var videoClipSources: [VideoTrailerSource] = []
+
+        for (src, start, length) in effectiveClips {
+            let maxTime = max(0.0, src.duration > 0 ? src.duration - 0.05 : 0.0)
+            let rawTimes: [Double]
+            if length >= 1.2 {
+                rawTimes = [start + length * 0.15, start + length * 0.50, start + length * 0.85]
+            } else if length >= 0.6 {
+                rawTimes = [start + length * 0.30, start + length * 0.70]
+            } else {
+                rawTimes = [start + length * 0.50]
+            }
+            let clampedTimes = rawTimes.map { min(maxTime, max(0.0, $0)) }
+            videoClipBuckets.append(clampedTimes)
+            videoClipSources.append(src)
+        }
+
+        var stillCandidates: [TrailerBackgroundCandidate] = []
+        let maxCount = videoClipBuckets.map(\.count).max() ?? 0
+        for idx in 0..<maxCount {
+            for (clipIdx, bucket) in videoClipBuckets.enumerated() {
+                if idx < bucket.count {
+                    stillCandidates.append(TrailerBackgroundCandidate(source: videoClipSources[clipIdx], timestamp: bucket[idx]))
+                }
+            }
+        }
+
+        return photoCandidates + stillCandidates
+    }
+
+    private func isSameTimestamp(_ lhs: Double?, _ rhs: Double?) -> Bool {
+        if let lhs, let rhs {
+            return abs(lhs - rhs) < 0.01
+        }
+        return lhs == nil && rhs == nil
+    }
+
+    private func isCandidateChosen(_ candidate: TrailerBackgroundCandidate, card: TrailerTitleCard) -> Bool {
+        guard card.usesFirstOrLastImage, card.backgroundSourceID == candidate.source.id else { return false }
+        return isSameTimestamp(candidate.timestamp, card.backgroundTimestamp)
+    }
+
     /// 와이드 편집기 시작/마지막 화면: 설정 시트 없이 사용 여부·문구, 2/3/5초 단축과 정밀 조절,
-    /// 단색 또는 프로젝트 사진 배경을 그 자리에서 고른다. 문구는 본편 자막 서체로 미리보기와 내보내기에 똑같이 그려진다.
+    /// 단색 또는 프로젝트 사진/비디오 스틸 배경을 그 자리에서 고른다. 문구는 본편 자막 서체로 미리보기와 내보내기에 똑같이 그려진다.
     @ViewBuilder
     private func wideTitleCardEditor(isIntro: Bool) -> some View {
         let card = isIntro ? introCard : outroCard
@@ -3545,15 +3668,29 @@ private struct VideoTrailerSettings: View {
             }
         )
         let name = isIntro ? "시작 화면" : "마지막 화면"
-        let photos = sources.filter(\.isImage)
-        let chosenPhoto = card.backgroundSourceID.flatMap { id in photos.first { $0.id == id } }
+        let candidates: [TrailerBackgroundCandidate] = !rankedBackgroundCandidates.isEmpty
+            ? rankedBackgroundCandidates
+            : (isRankingBackgrounds ? [] : initialBackgroundCandidates.prefix(1).map { $0 })
+        let chosenCandidateImage = isIntro ? introCustomBackground : outroCustomBackground
         let frameSource = isIntro ? firstIncludedSource : lastIncludedSource
         let background: UIImage? = card.usesFirstOrLastImage
-            ? (chosenPhoto.flatMap { sourceImages[$0.id] } ?? frameSource.flatMap { sourceImages[$0.id] })
+            ? (chosenCandidateImage ?? frameSource.flatMap { sourceImages[$0.id] })
             : nil
         VStack(alignment: .leading, spacing: ui(10)) {
-            Toggle("\(name) 사용", isOn: binding.isEnabled)
-                .font(.subheadline.weight(.semibold))
+            Toggle("\(name) 사용", isOn: Binding(
+                get: { binding.wrappedValue.isEnabled },
+                set: { enabled in
+                    var next = binding.wrappedValue
+                    next.isEnabled = enabled
+                    if enabled && next.usesFirstOrLastImage && next.backgroundSourceID == nil,
+                       let top1 = rankedBackgroundCandidates.first {
+                        next.backgroundSourceID = top1.source.id
+                        next.backgroundTimestamp = top1.timestamp
+                    }
+                    binding.wrappedValue = next
+                }
+            ))
+            .font(.subheadline.weight(.semibold))
             if card.isEnabled {
                 TextField("제목 (예: 우리들의 제주 여행)", text: binding.title)
                     .textFieldStyle(.roundedBorder)
@@ -3594,7 +3731,15 @@ private struct VideoTrailerSettings: View {
                     set: { usesPhoto in
                         var next = binding.wrappedValue
                         next.usesFirstOrLastImage = usesPhoto
-                        if !usesPhoto { next.backgroundSourceID = nil }
+                        if usesPhoto {
+                            if next.backgroundSourceID == nil, let top1 = rankedBackgroundCandidates.first {
+                                next.backgroundSourceID = top1.source.id
+                                next.backgroundTimestamp = top1.timestamp
+                            }
+                        } else {
+                            next.backgroundSourceID = nil
+                            next.backgroundTimestamp = nil
+                        }
                         binding.wrappedValue = next
                     }
                 )) {
@@ -3602,42 +3747,6 @@ private struct VideoTrailerSettings: View {
                     Text("사진").tag(true)
                 }
                 .pickerStyle(.segmented)
-
-                if card.usesFirstOrLastImage {
-                    if photos.isEmpty {
-                        Text("프로젝트에 사진이 없어 \(isIntro ? "첫" : "마지막") 장면을 배경으로 씁니다.")
-                            .font(.caption).foregroundStyle(.secondary)
-                    } else {
-                        Text(chosenPhoto == nil
-                             ? "사진을 고르지 않으면 \(isIntro ? "첫" : "마지막") 장면을 배경으로 씁니다."
-                             : "선택한 사진을 어둡게 깔고 문구를 올립니다.")
-                            .font(.caption).foregroundStyle(.secondary)
-                        ScrollView(.horizontal, showsIndicators: false) {
-                            HStack(spacing: 6) {
-                                ForEach(photos) { photo in
-                                    let isChosen = chosenPhoto?.id == photo.id
-                                    Button {
-                                        var next = binding.wrappedValue
-                                        next.usesFirstOrLastImage = true
-                                        next.backgroundSourceID = isChosen ? nil : photo.id
-                                        binding.wrappedValue = next
-                                    } label: {
-                                        TrailerCardPhotoThumbnail(source: photo)
-                                            .frame(width: 56, height: 56)
-                                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                                            .overlay(
-                                                RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                                    .stroke(isChosen ? PorcelainMetrics.accent : PorcelainMetrics.line, lineWidth: isChosen ? 2 : 0.5)
-                                            )
-                                    }
-                                    .buttonStyle(.plain)
-                                    .accessibilityLabel("\(photo.name) 배경 사진")
-                                    .accessibilityAddTraits(isChosen ? .isSelected : [])
-                                }
-                            }
-                        }
-                    }
-                }
 
                 if let preview = TrailerTitleCardRenderer.renderCardImage(
                     card: card,
@@ -3653,9 +3762,168 @@ private struct VideoTrailerSettings: View {
                         .overlay(RoundedRectangle(cornerRadius: 8, style: .continuous).stroke(PorcelainMetrics.line, lineWidth: 0.5))
                         .accessibilityLabel("\(name) 미리보기")
                 }
+
+                if card.usesFirstOrLastImage {
+                    let hasManual = card.backgroundSourceID != nil
+                    let top1 = rankedBackgroundCandidates.first
+                    let isTop1 = top1 != nil && card.backgroundSourceID == top1?.source.id && isSameTimestamp(card.backgroundTimestamp, top1?.timestamp)
+
+                    HStack(alignment: .center, spacing: ui(8)) {
+                        VStack(alignment: .leading, spacing: ui(2)) {
+                            HStack(spacing: ui(6)) {
+                                Text("배경 후보")
+                                    .font(.subheadline.weight(.semibold))
+                                if isRankingBackgrounds {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                } else if !candidates.isEmpty {
+                                    Text("\(candidates.count)개")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Text(isTop1
+                                 ? "추천 1위 장면을 배경으로 씁니다."
+                                 : (hasManual
+                                    ? "선택한 장면을 어둡게 깔고 문구를 올립니다."
+                                    : "선택하지 않으면 \(isIntro ? "첫" : "마지막") 장면을 배경으로 씁니다."))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        if hasManual && !isTop1 {
+                            Button("기본값으로") {
+                                var next = binding.wrappedValue
+                                if let top1 {
+                                    next.backgroundSourceID = top1.source.id
+                                    next.backgroundTimestamp = top1.timestamp
+                                } else {
+                                    next.backgroundSourceID = nil
+                                    next.backgroundTimestamp = nil
+                                }
+                                binding.wrappedValue = next
+                            }
+                            .font(.caption.weight(.medium))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(PorcelainMetrics.accent)
+                            .accessibilityLabel("추천 1위 기본값으로 되돌리기")
+                        }
+                        Picker("보기 모드", selection: $backgroundViewModeRaw) {
+                            Text("썸네일").tag("thumbnail")
+                            Text("포스터").tag("poster")
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(width: ui(128))
+                    }
+
+                    if isRankingBackgrounds && candidates.isEmpty {
+                        HStack(spacing: ui(8)) {
+                            ProgressView()
+                            Text("배경 후보 품질 순위 분석 중...")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.vertical, ui(12))
+                    } else if candidates.isEmpty {
+                        Text("프로젝트에 영상/사진이 없어 \(isIntro ? "첫" : "마지막") 장면을 배경으로 씁니다.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        let isPoster = backgroundViewModeRaw == "poster"
+                        let candidateColumns = isPoster
+                            ? [GridItem(.adaptive(minimum: ui(120)), spacing: ui(8))]
+                            : [GridItem(.adaptive(minimum: ui(80)), spacing: ui(6))]
+                        let tileHeight: CGFloat = isPoster ? ui(166) : ui(80)
+
+                        LazyVGrid(columns: candidateColumns, spacing: isPoster ? ui(8) : ui(6)) {
+                            ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
+                                let rank = index + 1
+                                let isChosen = isCandidateChosen(candidate, card: card)
+                                Button {
+                                    var next = binding.wrappedValue
+                                    next.usesFirstOrLastImage = true
+                                    if isChosen {
+                                        if let top1 = rankedBackgroundCandidates.first,
+                                           candidate.source.id != top1.source.id || !isSameTimestamp(candidate.timestamp, top1.timestamp) {
+                                            next.backgroundSourceID = top1.source.id
+                                            next.backgroundTimestamp = top1.timestamp
+                                        } else {
+                                            next.backgroundSourceID = candidate.source.id
+                                            next.backgroundTimestamp = candidate.timestamp
+                                        }
+                                    } else {
+                                        next.backgroundSourceID = candidate.source.id
+                                        next.backgroundTimestamp = candidate.timestamp
+                                    }
+                                    binding.wrappedValue = next
+                                } label: {
+                                    VStack(spacing: ui(3)) {
+                                        ZStack(alignment: .topTrailing) {
+                                            TrailerCardPhotoThumbnail(
+                                                source: candidate.source,
+                                                timestamp: candidate.timestamp,
+                                                maxPixelSize: isPoster ? 768 : 320
+                                            )
+                                            .frame(maxWidth: .infinity)
+                                            .frame(height: tileHeight)
+                                            .clipped()
+                                            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                                    .stroke(isChosen ? PorcelainMetrics.accent : PorcelainMetrics.line, lineWidth: isChosen ? 2 : 0.5)
+                                            )
+                                            .overlay(alignment: .topLeading) {
+                                                if rank == 1 {
+                                                    HStack(spacing: 2) {
+                                                        Image(systemName: "hand.thumbsup.fill")
+                                                            .font(.system(size: 8, weight: .bold))
+                                                        Text("추천 1위")
+                                                            .font(.system(size: ui(9), weight: .bold))
+                                                    }
+                                                    .foregroundStyle(.white)
+                                                    .padding(.horizontal, ui(5))
+                                                    .padding(.vertical, ui(2.5))
+                                                    .background(PorcelainMetrics.accent, in: Capsule())
+                                                    .padding(ui(4))
+                                                } else {
+                                                    Text("\(rank)")
+                                                        .font(.system(size: ui(10), weight: .bold))
+                                                        .foregroundStyle(.white)
+                                                        .padding(.horizontal, ui(5))
+                                                        .padding(.vertical, ui(2))
+                                                        .background(Color.black.opacity(0.65), in: Capsule())
+                                                        .padding(ui(4))
+                                                }
+                                            }
+
+                                            if isChosen {
+                                                Image(systemName: "checkmark.circle.fill")
+                                                    .font(.system(size: 15, weight: .bold))
+                                                    .foregroundStyle(PorcelainMetrics.accent)
+                                                    .background(Circle().fill(Color.white).padding(1))
+                                                    .padding(ui(4))
+                                            }
+                                        }
+                                        Text(candidate.timestamp.map { videoTrailerTime($0) } ?? candidate.source.name)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                            .truncationMode(.middle)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(
+                                    rank == 1
+                                        ? "추천 1위, \(candidate.timestamp != nil ? "\(candidate.source.name) 스틸 프레임" : "\(candidate.source.name) 배경 사진")"
+                                        : "\(rank)번째 추천, \(candidate.timestamp != nil ? "\(candidate.source.name) 스틸 프레임" : "\(candidate.source.name) 배경 사진")"
+                                )
+                                .accessibilityAddTraits(isChosen ? .isSelected : [])
+                            }
+                        }
+                    }
+                }
             }
         }
-        .task(id: "\(isIntro)-\(card.usesFirstOrLastImage)-\(card.backgroundSourceID ?? -1)") {
+        .task(id: "\(isIntro)-\(card.usesFirstOrLastImage)-\(card.backgroundSourceID ?? -1)-\(card.backgroundTimestamp.map { String(format: "%.3f", $0) } ?? "nil")") {
             await loadWideCardBackground(isIntro: isIntro)
         }
     }
@@ -3673,15 +3941,21 @@ private struct VideoTrailerSettings: View {
         return bodyCardTypography
     }
 
-    /// 고른 프로젝트 사진과 첫/마지막 장면 프레임을 미리 읽어 둔다. 사진을 읽지 못하면 장면 프레임이 대신 쓰인다.
+    /// 고른 프로젝트 사진/스틸과 첫/마지막 장면 프레임을 미리 읽어 둔다. 사진/스틸을 읽지 못하면 장면 프레임이 대신 쓰인다.
     private func loadWideCardBackground(isIntro: Bool) async {
         await loadCardSheetMedia(isIntro ? .intro : .outro)
         let card = isIntro ? introCard : outroCard
         guard card.usesFirstOrLastImage, let id = card.backgroundSourceID,
-              let photo = sources.first(where: { $0.id == id && $0.isImage }),
-              sourceImages[photo.id] == nil else { return }
-        let image = try? await VideoTrailerModel.extractStillImage(source: photo, at: 0)
-        if !Task.isCancelled, let image { sourceImages[photo.id] = image }
+              let src = sources.first(where: { $0.id == id }) else {
+            if isIntro { introCustomBackground = nil } else { outroCustomBackground = nil }
+            return
+        }
+        let ts = card.backgroundTimestamp ?? 0.0
+        let clampedTime = max(0.0, src.duration > 0 ? min(ts, src.duration - 0.05) : 0.0)
+        let image = try? await VideoTrailerModel.extractStillImage(source: src, at: src.isImage ? 0 : clampedTime, maxPixelSize: 1920)
+        if !Task.isCancelled {
+            if isIntro { introCustomBackground = image } else { outroCustomBackground = image }
+        }
     }
 
     private func moveScenes(_ ids: Set<Int>, to position: Int) {
@@ -6211,12 +6485,15 @@ final class VideoTrailerModel: ObservableObject {
                     } else {
                         firstThumb = nil
                     }
-                    // 고른 프로젝트 사진이 있으면 그 사진을, 없거나 읽지 못하면 기존 첫/마지막 장면을 배경으로 쓴다.
+                    // 고른 프로젝트 사진 또는 비디오 스틸이 있으면 그 이미지를, 없거나 읽지 못하면 기존 첫/마지막 장면을 배경으로 쓴다.
                     var introBackground = firstThumb
-                    if intro.usesFirstOrLastImage, let photoID = intro.backgroundSourceID,
-                       let photo = currentSourceByID[photoID], photo.isImage,
-                       let photoImage = try? await Self.extractStillImage(source: photo, at: 0, maxPixelSize: 1920) {
-                        introBackground = photoImage
+                    if intro.usesFirstOrLastImage, let bgID = intro.backgroundSourceID,
+                       let bgSource = currentSourceByID[bgID] {
+                        let ts = intro.backgroundTimestamp ?? 0.0
+                        let clampedTime = max(0.0, bgSource.duration > 0 ? min(ts, bgSource.duration - 0.05) : 0.0)
+                        if let stillImage = try? await Self.extractStillImage(source: bgSource, at: bgSource.isImage ? 0 : clampedTime, maxPixelSize: 1920) {
+                            introBackground = stillImage
+                        }
                     }
                     if let cardImage = TrailerTitleCardRenderer.renderCardImage(card: intro, sourceImage: introBackground, renderSize: renderSize, bodyTypography: cardTypography) {
                         let tempCardImgURL = directory.appendingPathComponent("intro-img-\(UUID().uuidString).png")
@@ -6268,12 +6545,15 @@ final class VideoTrailerModel: ObservableObject {
                     } else {
                         lastThumb = nil
                     }
-                    // 고른 프로젝트 사진이 있으면 그 사진을, 없거나 읽지 못하면 기존 첫/마지막 장면을 배경으로 쓴다.
+                    // 고른 프로젝트 사진 또는 비디오 스틸이 있으면 그 이미지를, 없거나 읽지 못하면 기존 첫/마지막 장면을 배경으로 쓴다.
                     var outroBackground = lastThumb
-                    if outro.usesFirstOrLastImage, let photoID = outro.backgroundSourceID,
-                       let photo = currentSourceByID[photoID], photo.isImage,
-                       let photoImage = try? await Self.extractStillImage(source: photo, at: 0, maxPixelSize: 1920) {
-                        outroBackground = photoImage
+                    if outro.usesFirstOrLastImage, let bgID = outro.backgroundSourceID,
+                       let bgSource = currentSourceByID[bgID] {
+                        let ts = outro.backgroundTimestamp ?? 0.0
+                        let clampedTime = max(0.0, bgSource.duration > 0 ? min(ts, bgSource.duration - 0.05) : 0.0)
+                        if let stillImage = try? await Self.extractStillImage(source: bgSource, at: bgSource.isImage ? 0 : clampedTime, maxPixelSize: 1920) {
+                            outroBackground = stillImage
+                        }
                     }
                     if let cardImage = TrailerTitleCardRenderer.renderCardImage(card: outro, sourceImage: outroBackground, renderSize: renderSize, bodyTypography: cardTypography) {
                         let tempCardImgURL = directory.appendingPathComponent("outro-img-\(UUID().uuidString).png")
@@ -7134,9 +7414,25 @@ private final class TrailerVelocityDurationSlider: UISlider {
     }
 }
 
-/// 와이드 시작/마지막 화면의 배경 사진 후보 썸네일. 작은 크기로만 읽어 온다.
+/// 와이드 시작/마지막 화면의 배경 후보 (사진 또는 비디오 스틸).
+struct TrailerBackgroundCandidate: Identifiable, Sendable {
+    var id: String {
+        if let timestamp {
+            return "\(source.id)@\(String(format: "%.3f", timestamp))"
+        } else {
+            return "\(source.id)"
+        }
+    }
+    let source: VideoTrailerSource
+    let timestamp: Double?
+    var score: Double? = nil
+}
+
+/// 와이드 시작/마지막 화면의 배경 사진/스틸 후보 썸네일. 작은 크기로만 읽어 온다.
 private struct TrailerCardPhotoThumbnail: View {
     let source: VideoTrailerSource
+    var timestamp: Double? = nil
+    var maxPixelSize: CGFloat = 320
     @State private var image: UIImage?
 
     var body: some View {
@@ -7147,10 +7443,133 @@ private struct TrailerCardPhotoThumbnail: View {
             }
         }
         .clipped()
-        .task(id: source.id) {
-            let loaded = try? await VideoTrailerModel.extractStillImage(source: source, at: 0, maxPixelSize: 160)
-            if !Task.isCancelled { image = loaded }
+        .task(id: "\(source.id)@\(timestamp ?? 0)@\(maxPixelSize)") {
+            if source.isImage {
+                let loaded = await trailerThumbnailImage(at: source.url, maxPixelSize: maxPixelSize)
+                if !Task.isCancelled { image = loaded }
+            } else {
+                let loaded = try? await VideoTrailerModel.extractStillImage(source: source, at: timestamp ?? 0, maxPixelSize: maxPixelSize)
+                if !Task.isCancelled { image = loaded }
+            }
         }
+    }
+}
+
+/// 로컬 품질 지표 및 지문 엔진을 재사용하여 활성 프로젝트 장면들에서 최대 30개의 최적·다양 배경 후보를 선별·순위화한다.
+enum TrailerBackgroundRanker {
+    static func rank(candidates: [TrailerBackgroundCandidate]) async -> [TrailerBackgroundCandidate] {
+        guard !candidates.isEmpty else { return [] }
+        if Task.isCancelled { return [] }
+
+        // 1. 고유 후보 중복 제거
+        var seenIDs = Set<String>()
+        var distinctCandidates: [TrailerBackgroundCandidate] = []
+        for c in candidates {
+            if !seenIDs.contains(c.id) {
+                seenIDs.insert(c.id)
+                distinctCandidates.append(c)
+            }
+        }
+        guard !distinctCandidates.isEmpty else { return [] }
+
+        struct ScoredCandidate: Sendable {
+            let candidate: TrailerBackgroundCandidate
+            let measurement: VideoTrailerPhotoQuality.Measurement
+            let score: Double
+            let originalIndex: Int
+        }
+
+        // 2. UI 스레드 밖에서 저해상도(~240px)로 순차 디코드 및 객관 지표 측정
+        var scoredList: [ScoredCandidate] = []
+        for (index, candidate) in distinctCandidates.enumerated() {
+            if Task.isCancelled { return [] }
+            let measurement: VideoTrailerPhotoQuality.Measurement?
+            if candidate.source.isImage {
+                measurement = await VideoTrailerPhotoQuality.measure(
+                    fileAt: candidate.source.url,
+                    maxPixelSize: 240,
+                    includeAesthetics: false
+                )
+            } else {
+                guard let uiImage = try? await VideoTrailerModel.extractStillImage(
+                    source: candidate.source,
+                    at: candidate.timestamp ?? 0,
+                    maxPixelSize: 240
+                ), let cgImage = uiImage.cgImage else {
+                    continue
+                }
+                if Task.isCancelled { return [] }
+
+                let pixelCount = cgImage.width * cgImage.height
+                measurement = await VideoTrailerPhotoQuality.measure(
+                    cgImage: cgImage,
+                    originalPixelCount: max(1, pixelCount),
+                    includeAesthetics: false
+                )
+            }
+            if Task.isCancelled { return [] }
+            guard let measurement else {
+                continue
+            }
+
+            // 3. 점수 계산: 0.65 선명도 + 0.35 노출 정규화 점수 기본
+            var score = 0.65 * measurement.sharpnessScore + 0.35 * measurement.exposureScore
+
+            // 극단적 흑백(너무 어둡거나 날아간 사진) 감점
+            let meanLum = VideoTrailerPhotoQuality.meanLuminance(of: measurement)
+            if measurement.exposureScore < 0.15 || meanLum < 18 || meanLum > 238 {
+                score *= 0.2
+            }
+
+            // 심한 흐림 감점
+            if measurement.sharpnessScore < 0.08 {
+                score *= 0.25
+            }
+
+            scoredList.append(ScoredCandidate(
+                candidate: candidate,
+                measurement: measurement,
+                score: score,
+                originalIndex: index
+            ))
+        }
+
+        if Task.isCancelled { return [] }
+
+        // 4. 안정적 정렬 (점수 내림차순, 기존 순서 오름차순, id 오름차순)
+        scoredList.sort { lhs, rhs in
+            if abs(lhs.score - rhs.score) > 0.00001 {
+                return lhs.score > rhs.score
+            }
+            if lhs.originalIndex != rhs.originalIndex {
+                return lhs.originalIndex < rhs.originalIndex
+            }
+            return lhs.candidate.id < rhs.candidate.id
+        }
+
+        // 5. 지문 근접도를 사용한 유사 복제 필터링 후 상위 최대 30개 유지
+        var retained: [TrailerBackgroundCandidate] = []
+        var retainedMeasurements: [VideoTrailerPhotoQuality.Measurement] = []
+
+        for item in scoredList {
+            if retained.count >= 30 { break }
+
+            let isNearDuplicate = retainedMeasurements.contains { existing in
+                if let closeness = VideoTrailerPhotoQuality.closeness(item.measurement, existing), closeness > 0.50 {
+                    return true
+                }
+                return false
+            }
+
+            if !isNearDuplicate {
+                var candidateWithScore = item.candidate
+                candidateWithScore.score = item.score
+                retained.append(candidateWithScore)
+                retainedMeasurements.append(item.measurement)
+            }
+        }
+
+        return retained
     }
 }
 
