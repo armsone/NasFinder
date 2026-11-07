@@ -1558,6 +1558,56 @@ capabilities:
       android: {status: runtime_verified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/MaterialBasketScreen.kt", "app/src/main/java/com/armsone/nasfinder/ui/DurableMaterialStore.kt", "app/src/main/java/com/armsone/nasfinder/ui/NasFinderViewModel.kt"], tests: [], evidence: ["Android 2.39.69 user accepted and tested on TriFold"]}
     dependencies: [workbench.pockets]
     parity_row_ids: []
+  - id: editing.preview_transport_fullscreen
+    purpose: "편집 중인 타임라인을 바로 전체화면으로 보고 재생을 제어한다."
+    source_refs: ["NasFinder/Features/Preview/VideoTrailerView.swift", "NasFinder/Features/Video/TrailerSceneEditing.swift", "../NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/AdaptiveEditorWorkspace.kt"]
+    entry_points: ["영상 편집 미리보기", "타임라인 재생·시간 표시줄 오른쪽 전체화면 버튼"]
+    preconditions: ["재생 가능한 편집 장면이 있음"]
+    inputs: ["전체화면", "화면 한 번 탭", "화면 내 재생·일시정지 버튼", "아래로 쓸어내리기", "닫기·뒤로·Escape", "Mac 영상 위 휠·트랙패드 상하 스크롤"]
+    normal_result: "첫 화면 터치부터 재생이 일시정지되고, 명시적 버튼으로 이어서 재생한다. 전체화면 종료는 편집 화면으로만 돌아오며 프로젝트를 닫지 않는다. Mac 영상 위에서 위로 스크롤하면 실제 재생 음량이 증가하고 아래로 스크롤하면 감소한다."
+    states: [paused, playing, fullscreen, inline, empty, unavailable]
+    algorithms_and_thresholds: ["아래로 시작한 세로 드래그 120pt/dp 이상은 전체화면만 종료", "재생 위치·선택 장면·타임라인 연속 재생 상태 공유", "전체화면 중 인라인 재생·타이머 중복 금지", "드래그와 버튼 터치는 배경 탭으로 중복 실행하지 않음"]
+    data_contracts: ["기존 편집본 저장 형식·원본 미디어 변경 없음"]
+    producer_consumer_routes: ["타임라인/미리보기 입력 -> 기존 재생 상태 -> 인라인 또는 전체화면 미디어 표면"]
+    persistence_relaunch: "전체화면은 임시 화면 상태이며 원본과 저장된 편집본은 유지된다."
+    permissions_privacy_security: ["새 권한·외부 전송·원본 수정 없음"]
+    background_lifecycle: "기존 앱 비활성 재생 정책을 유지하고 화면 교체 시 이전 재생기·관찰자를 정리한다."
+    gestures_accessibility: ["명시적 재생·일시정지 및 전체화면 종료 접근성 이름", "첫 탭 즉시 일시정지", "버튼·제스처 입력 충돌 방지"]
+    supported_devices_layouts: ["iPhone/iPad/Mac Catalyst", "Android phone/foldable/tablet"]
+    visual_reference: "사용자 지정 배치: 타임라인 재생·시간 줄 오른쪽 끝 전체화면"
+    platform_adaptations: {ios: ["SwiftUI/AVPlayer, Mac 키보드·포인터"], android: ["Compose/ExoPlayer, Android 뒤로"]}
+    intentional_differences: ["Mac 편집 인라인은 타임라인 재생 버튼 하나만 표시하며 전체화면은 화면 내 버튼 하나를 표시한다. iPhone과 Android는 터치 조작에 맞춘 명시적 화면 내 버튼을 유지한다."]
+    implementations:
+      ios: {status: implemented_source_only, source_refs: ["NasFinder/Features/Preview/VideoTrailerView.swift", "NasFinder/Features/Video/TrailerSceneEditing.swift"], tests: ["8 existing iPhone device tests passed"], evidence: ["Mac inline/fullscreen single play button, first tap pause, 3s output continuity, scroll volume runtime passed; .sync/evidence/preview-2.39.71/mac/", "iPhone install passed; relaunch/UI pending device unlock"]}
+      android: {status: runtime_verified, source_refs: ["app/src/main/java/com/armsone/nasfinder/ui/AdaptiveEditorWorkspace.kt"], tests: ["22 existing scoped tests passed"], evidence: ["2.39.71 Fold6 actual tap/fullscreen/dismiss/continuity runtime; TriFold/Fold6/SM-T500 install hash matched; Android commit a4e002f9aa34dea742177a82117915a46df04ac1"]}
+    dependencies: ["기존 편집 타임라인 재생기"]
+    parity_row_ids: ["editor_preview.fullscreen.entry", "editor_preview.transport.tap_pause", "editor_preview.transport.explicit_control", "editor_preview.fullscreen.dismiss", "editor_preview.transport.continuity"]
+
+  - id: editing.preview_preparation_feedback
+    purpose: "편집 변경 뒤 미리보기가 준비되는 동안 기다리는 이유를 명확히 알린다."
+    source_refs: ["NasFinder/Features/Preview/VideoTrailerView.swift", "NasFinder/Features/Video/TrailerSceneEditing.swift", "../NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/AdaptiveEditorWorkspace.kt"]
+    entry_points: ["편집 미리보기", "편집 전체화면 미리보기"]
+    preconditions: ["사진 분석·프레임 로딩·자막/타이틀 렌더링·영상 버퍼링 등 실제 준비 작업이 진행 중"]
+    inputs: ["장면·구도·자막·제목·재생 위치 변경"]
+    normal_result: "미리보기 안에 '미리보기 준비 중…'과 움직이는 진행 막대를 표시하고 준비 완료·실패·이탈 시 종료한다."
+    states: [preparing, ready, failed, cancelled]
+    algorithms_and_thresholds: ["실제 비동기 작업 상태에 연동하고 가짜 백분율·예상 시간 없음", "이전 이미지가 남아도 새 결과 준비 중이면 안내", "취소된 과거 작업 결과가 새 작업 표시를 끄거나 화면을 덮지 않음", "터치·재생 조작을 가로막지 않음"]
+    data_contracts: ["기존 렌더러·분석 결과와 편집 데이터 유지"]
+    producer_consumer_routes: ["미리보기 작업 시작/완료/실패 -> 상태 -> 진행 표시"]
+    persistence_relaunch: "준비 중 표시는 저장하지 않고 현재 작업 상태에서 다시 산출한다."
+    permissions_privacy_security: ["새 권한·외부 분석·원본 변경 없음"]
+    background_lifecycle: "화면 이탈/새 편집으로 취소된 작업의 결과 무효화, 종료 시 무한 진행 표시 금지"
+    gestures_accessibility: ["읽을 수 있는 상태 문구", "진행 막대는 입력 비차단"]
+    supported_devices_layouts: ["iPhone/iPad/Mac Catalyst", "Android phone/foldable/tablet"]
+    visual_reference: "기존 미리보기 위 절제된 상태 안내"
+    platform_adaptations: {ios: ["SwiftUI ProgressView"], android: ["Compose LinearProgressIndicator"]}
+    intentional_differences: []
+    implementations:
+      ios: {status: implemented_source_only, tests: [], evidence: []}
+      android: {status: runtime_verified, tests: [], evidence: ["2.39.71 Fold6 actual preparing bar visible then settled; .parity/evidence/preview-2.39.71/android/"]}
+    dependencies: ["기존 미리보기 비동기 작업"]
+    parity_row_ids: ["editor_preview.preparation.feedback"]
+
 known_unknowns:
   - id: UNKNOWN-RUNTIME-NAS-MATRIX
     description: "No live Synology/SFTP/SMB/WebDAV/FTP/cloud endpoint matrix was exercised; firmware-specific authentication, thumbnails, mutations and cancellation remain runtime-unverified."

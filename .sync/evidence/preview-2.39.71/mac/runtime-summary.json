@@ -1,0 +1,24 @@
+{
+  "version": "2.39.71",
+  "build": "202611070910",
+  "media": "synthetic test pattern and generated still only",
+  "inlinePlayButtons": 1,
+  "fullscreenPlayButtons": 1,
+  "firstMediaClick": "paused before natural end; draft and rendered output",
+  "fullscreenReturn": "down swipe returned same editor; rendered output held 3 seconds",
+  "volume": {
+    "input": "Mac media-scoped scroll",
+    "draftDown": 68,
+    "draftUp": 89,
+    "outputDown": 68,
+    "outputUp": 79
+  },
+  "preparation": "actual AX preparing label and progress element observed on reopen, absent after ready; screenshot not captured",
+  "reuse": "fullscreen screenshots preceded the final two Mac-only scroll sign corrections; unchanged controls runtime evidence reused",
+  "ios": "8 existing device tests and data-preserving install passed; final relaunch/UI pending device unlock",
+  "notClaimed": [
+    "full product pixel parity",
+    "iPad runtime",
+    "VoiceOver runtime"
+  ]
+}

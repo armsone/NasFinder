@@ -24,11 +24,18 @@ enum SharedMediaAudioSession {
 struct SharedVideoPlayerSurface: UIViewRepresentable {
     let player: AVPlayer
     let videoGravity: AVLayerVideoGravity
+#if targetEnvironment(macCatalyst)
+    var onScrollVolume: ((CGFloat) -> Void)? = nil
+#endif
 
     func makeUIView(context: Context) -> SharedVideoPlayerSurfaceView {
         let view = SharedVideoPlayerSurfaceView()
         view.playerLayer.player = player
         view.playerLayer.videoGravity = videoGravity
+#if targetEnvironment(macCatalyst)
+        view.onScrollVolume = onScrollVolume
+        view.configureScrollGestureIfNeeded()
+#endif
         return view
     }
 
@@ -40,6 +47,10 @@ struct SharedVideoPlayerSurface: UIViewRepresentable {
         if uiView.playerLayer.videoGravity != videoGravity {
             uiView.playerLayer.videoGravity = videoGravity
         }
+#if targetEnvironment(macCatalyst)
+        uiView.onScrollVolume = onScrollVolume
+        uiView.configureScrollGestureIfNeeded()
+#endif
     }
 }
 
@@ -47,6 +58,22 @@ final class SharedVideoPlayerSurfaceView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
 
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+#if targetEnvironment(macCatalyst)
+    var onScrollVolume: ((CGFloat) -> Void)?
+    private var scrollHandler: MacVideoVolumeScrollHandler?
+
+    func configureScrollGestureIfNeeded() {
+        guard onScrollVolume != nil else { return }
+        if scrollHandler == nil {
+            let handler = MacVideoVolumeScrollHandler()
+            handler.onDeltaY = { [weak self] dy in
+                self?.onScrollVolume?(dy)
+            }
+            _ = handler.attach(to: self)
+            scrollHandler = handler
+        }
+    }
+#endif
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -64,6 +91,67 @@ final class SharedVideoPlayerSurfaceView: UIView {
         playerLayer.videoGravity = .resizeAspect
     }
 }
+
+#if targetEnvironment(macCatalyst)
+@MainActor
+final class MacVideoVolumeScrollHandler: NSObject, UIGestureRecognizerDelegate {
+    private var lastTranslationY: CGFloat = 0
+    var onDeltaY: ((CGFloat) -> Void)?
+
+    func attach(to view: UIView) -> UIPanGestureRecognizer {
+        let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
+        recognizer.allowedScrollTypesMask = .all
+        recognizer.allowedTouchTypes = []
+        recognizer.cancelsTouchesInView = false
+        recognizer.delegate = self
+        view.addGestureRecognizer(recognizer)
+        return recognizer
+    }
+
+    @objc private func handlePan(_ recognizer: UIPanGestureRecognizer) {
+        guard let view = recognizer.view else { return }
+        switch recognizer.state {
+        case .began:
+            lastTranslationY = 0
+            let currentY = recognizer.translation(in: view).y
+            let dy = currentY
+            lastTranslationY = currentY
+            if dy != 0 {
+                onDeltaY?(dy)
+            }
+        case .changed:
+            let currentY = recognizer.translation(in: view).y
+            let dy = currentY - lastTranslationY
+            lastTranslationY = currentY
+            if dy != 0 {
+                onDeltaY?(dy)
+            }
+        case .ended:
+            let currentY = recognizer.translation(in: view).y
+            let dy = currentY - lastTranslationY
+            lastTranslationY = 0
+            if dy != 0 {
+                onDeltaY?(dy)
+            }
+        case .cancelled, .failed:
+            lastTranslationY = 0
+        default:
+            break
+        }
+    }
+
+    func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive event: UIEvent) -> Bool {
+        event.type == .scroll
+    }
+
+    func gestureRecognizer(
+        _ gestureRecognizer: UIGestureRecognizer,
+        shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+    ) -> Bool {
+        true
+    }
+}
+#endif
 
 struct SharedVideoProgressBar: View {
     let player: AVPlayer

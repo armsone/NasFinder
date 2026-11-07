@@ -80,6 +80,10 @@ struct RemotePreviewView: View {
     @State private var volumeDragStart: Float?
     @State private var videoVerticalDragMode: RemotePreviewVerticalDragMode?
     @State private var systemVolumeSlider: UISlider?
+#if targetEnvironment(macCatalyst)
+    @State private var macPlayerVolume: Float = 1.0
+    @State private var volumeHUDDismissTask: Task<Void, Never>?
+#endif
     @State private var screenAwakeActivityID = UUID()
     @State private var resumeAfterSuspension = false
     @State private var handedToPlayerChooser = false
@@ -94,6 +98,7 @@ struct RemotePreviewView: View {
     private let editorCompact: Bool
     /// 영상 편집기 타임라인이 위치를 읽고 탐색을 요청하는 다리(없으면 기존 동작 그대로).
     private let timelineBridge: TrailerTimelineBridge?
+    private let isExternallyOwnedModel: Bool
 
     init(
         item: RemoteFileItem,
@@ -106,7 +111,8 @@ struct RemotePreviewView: View {
         pauseRequest: Int = 0,
         editorCompact: Bool = false,
         timelineBridge: TrailerTimelineBridge? = nil,
-        onCurrentItemChanged: ((RemoteFileItem) -> Void)? = nil
+        onCurrentItemChanged: ((RemoteFileItem) -> Void)? = nil,
+        retainedViewModel: RemotePreviewViewModel? = nil
     ) {
         self.accessoryControls = accessoryControls
         self.onClose = onClose
@@ -115,6 +121,7 @@ struct RemotePreviewView: View {
         self.pauseRequest = pauseRequest
         self.editorCompact = editorCompact
         self.timelineBridge = timelineBridge
+        self.isExternallyOwnedModel = retainedViewModel != nil
         let orderedItems: [RemoteFileItem]
         if item.isImage || item.isVideo {
             let mediaItems = sequentialItems.filter { $0.isImage || $0.isVideo }
@@ -125,17 +132,21 @@ struct RemotePreviewView: View {
             orderedItems = [item]
         }
 
-        _viewModel = StateObject(wrappedValue: {
-            let model = RemotePreviewViewModel(
-                items: orderedItems,
-                relatedItems: sequentialItems,
-                initialItemID: item.id,
-                service: service
-            )
-            // 재생기를 붙이기 전에 멈춤 상태로 두면 첫 화면에서 스스로 재생하지 않는다.
-            if initiallyPaused { model.pauseForLifecycle() }
-            return model
-        }())
+        if let retained = retainedViewModel {
+            _viewModel = StateObject(wrappedValue: retained)
+        } else {
+            _viewModel = StateObject(wrappedValue: {
+                let model = RemotePreviewViewModel(
+                    items: orderedItems,
+                    relatedItems: sequentialItems,
+                    initialItemID: item.id,
+                    service: service
+                )
+                // 재생기를 붙이기 전에 멈춤 상태로 두면 첫 화면에서 스스로 재생하지 않는다.
+                if initiallyPaused { model.pauseForLifecycle() }
+                return model
+            }())
+        }
     }
 
     private var isRunningOnMac: Bool {
@@ -144,6 +155,10 @@ struct RemotePreviewView: View {
         #else
         ProcessInfo.processInfo.isiOSAppOnMac
         #endif
+    }
+
+    private var isEditorPreview: Bool {
+        editorCompact || timelineBridge != nil
     }
 
     var body: some View {
@@ -175,8 +190,14 @@ struct RemotePreviewView: View {
                 }
 
                 if let volume = videoDragVolume {
+                    #if targetEnvironment(macCatalyst)
                     volumeHUD(volume)
                         .transition(.scale.combined(with: .opacity))
+                        .allowsHitTesting(false)
+                    #else
+                    volumeHUD(volume)
+                        .transition(.scale.combined(with: .opacity))
+                    #endif
                 }
             }
             .animation(.easeInOut(duration: 0.18), value: viewModel.currentItem.id)
@@ -188,24 +209,42 @@ struct RemotePreviewView: View {
             revealControls()
             updateScreenAwakeActivity()
             if accessoryControls != nil { refreshPausedPositionSoon() }
+#if targetEnvironment(macCatalyst)
+            if let bridge = timelineBridge {
+                macPlayerVolume = bridge.masterVolume
+            }
+            if let player = viewModel.player {
+                player.volume = macPlayerVolume
+            }
+#endif
         }
         .task(id: viewModel.currentItem.id) {
-            // 영상 편집기 안에서 같은 미리보기가 다시 나타나면 이미 있는 재생기와 위치를 그대로 쓴다.
-            if accessoryControls != nil, viewModel.hasVideoPlayer, viewModel.errorMessage == nil { return }
+            // 영상 편집기 안에서 같은 미리보기가 다시 나타나거나 외부에서 유지된 모델이면 이미 있는 재생기와 위치를 그대로 쓴다.
+            if (isExternallyOwnedModel || accessoryControls != nil), viewModel.hasVideoPlayer, viewModel.errorMessage == nil { return }
             await viewModel.loadCurrentItem()
         }
         .task(id: timelineBridge != nil) {
             guard let bridge = timelineBridge else { return }
             let token = UUID()
             bridge.owner = token
+#if targetEnvironment(macCatalyst)
+            macPlayerVolume = bridge.masterVolume
+            viewModel.player?.volume = bridge.masterVolume
+#endif
             bridge.pauseHandler = { [weak viewModel] in
+                guard bridge.owner == token else { return }
                 if let viewModel, viewModel.isPlaying { viewModel.togglePlayback() }
             }
-            bridge.seekHandler = { [weak viewModel] seconds in viewModel?.seekVideo(to: seconds) }
+            bridge.seekHandler = { [weak viewModel] seconds in
+                guard bridge.owner == token else { return }
+                viewModel?.seekVideo(to: seconds)
+            }
             bridge.playHandler = { [weak viewModel] in
+                guard bridge.owner == token else { return }
                 if let viewModel, !viewModel.isPlaying { viewModel.togglePlayback() }
             }
             while !Task.isCancelled {
+                guard bridge.owner == token else { break }
                 if let snapshot = viewModel.timelineSnapshot() {
                     if !bridge.hasPlayer { bridge.hasPlayer = true }
                     if abs(bridge.currentSeconds - snapshot.current) > 0.01 { bridge.currentSeconds = snapshot.current }
@@ -233,6 +272,11 @@ struct RemotePreviewView: View {
         }
         .onChange(of: viewModel.hasVideoPlayer) { _, _ in
             resumeSuspendedPlaybackIfReady()
+#if targetEnvironment(macCatalyst)
+            if let player = viewModel.player {
+                player.volume = macPlayerVolume
+            }
+#endif
         }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
@@ -266,6 +310,11 @@ struct RemotePreviewView: View {
             revealControls()
             updateScreenAwakeActivity()
             onCurrentItemChanged?(viewModel.currentItem)
+#if targetEnvironment(macCatalyst)
+            if let player = viewModel.player {
+                player.volume = macPlayerVolume
+            }
+#endif
         }
         .onReceive(
             NotificationCenter.default.publisher(
@@ -286,7 +335,9 @@ struct RemotePreviewView: View {
         .onDisappear {
             controlsHideTask?.cancel()
             ScreenAwakeController.shared.finishActivity(screenAwakeActivityID)
-            viewModel.tearDown()
+            if !isExternallyOwnedModel {
+                viewModel.tearDown()
+            }
             shareCoordinator.cancelAndCleanUp()
         }
         .sheet(
@@ -360,6 +411,9 @@ struct RemotePreviewView: View {
                         viewModel.navigateImage(by: offset, autoplay: viewModel.isPlaying)
                     },
                     onSingleTap: {
+                        if isEditorPreview {
+                            viewModel.togglePlayback()
+                        }
                         revealControls()
                     },
                     onDoubleTap: {
@@ -376,12 +430,14 @@ struct RemotePreviewView: View {
         case .video:
             if viewModel.hasVideoPlayer {
                 ZStack {
+#if !targetEnvironment(macCatalyst)
                     SharedSystemVolumeView { slider in
                         systemVolumeSlider = slider
                     }
                     .frame(width: ui(1), height: ui(1))
                     .opacity(0.001)
                     .allowsHitTesting(false)
+#endif
 
                     videoPlayerSurface
                         .background(Color.black)
@@ -390,12 +446,24 @@ struct RemotePreviewView: View {
                         .offset(y: videoVerticalOffset)
                         .opacity(videoDismissOpacity)
                         .overlay {
+#if targetEnvironment(macCatalyst)
+                            RemoteVideoTapSurface(
+                                onSingleTap: handleVideoSingleTap,
+                                onDoubleTap: handleVideoDoubleTap,
+                                onScrollVolume: { dy in
+                                    handleMacVideoVolumeScroll(deltaY: dy)
+                                }
+                            )
+                            .simultaneousGesture(videoDragGesture(in: geometry.size))
+                            .simultaneousGesture(videoMagnificationGesture(in: geometry.size))
+#else
                             RemoteVideoTapSurface(
                                 onSingleTap: handleVideoSingleTap,
                                 onDoubleTap: handleVideoDoubleTap
                             )
                                 .simultaneousGesture(videoDragGesture(in: geometry.size))
                                 .simultaneousGesture(videoMagnificationGesture(in: geometry.size))
+#endif
                         }
                         .accessibilityLabel("공용 동영상 플레이어")
                         .accessibilityHint(
@@ -981,6 +1049,14 @@ struct RemotePreviewView: View {
         }
     }
 
+    private var shouldOmitPlayPauseInTransport: Bool {
+        #if targetEnvironment(macCatalyst)
+        editorCompact && timelineBridge != nil
+        #else
+        false
+        #endif
+    }
+
     private var transportControls: some View {
         let canNavigate = viewModel.currentItem.isImage
             ? viewModel.imageCount > 1
@@ -1001,17 +1077,19 @@ struct RemotePreviewView: View {
                 .accessibilityLabel(viewModel.currentItem.isImage ? "이전 사진" : "이전 미디어")
             }
 
-            Button {
-                viewModel.togglePlayback()
-                revealControls()
-            } label: {
-                SharedPlayerCircleLabel(
-                    systemImage: viewModel.isPlaying ? "pause.fill" : "play.fill"
-                )
+            if !shouldOmitPlayPauseInTransport {
+                Button {
+                    viewModel.togglePlayback()
+                    revealControls()
+                } label: {
+                    SharedPlayerCircleLabel(
+                        systemImage: viewModel.isPlaying ? "pause.fill" : "play.fill"
+                    )
+                }
+                .disabled(viewModel.currentItem.isImage && viewModel.imageCount <= 1)
+                .accessibilityLabel(viewModel.isPlaying ? "일시 정지" : "재생")
+                .keyboardShortcut(.space, modifiers: [])
             }
-            .disabled(viewModel.currentItem.isImage && viewModel.imageCount <= 1)
-            .accessibilityLabel(viewModel.isPlaying ? "일시 정지" : "재생")
-            .keyboardShortcut(.space, modifiers: [])
 
             if canNavigate {
                 Button {
@@ -1222,6 +1300,9 @@ struct RemotePreviewView: View {
                         viewWidth: max(size.width, 1)
                     )
                 case .vertical:
+#if targetEnvironment(macCatalyst)
+                    videoVerticalOffset = max(0, value.translation.height)
+#else
                     let verticalMode = RemotePreviewVerticalDragMode.resolve(
                         existing: videoVerticalDragMode,
                         verticalTranslation: value.translation.height
@@ -1239,6 +1320,7 @@ struct RemotePreviewView: View {
                     } else {
                         videoVerticalOffset = max(0, value.translation.height)
                     }
+#endif
                 case .pan:
                     videoZoomOffset = clampedVideoOffset(
                         CGSize(
@@ -1258,12 +1340,39 @@ struct RemotePreviewView: View {
                 case .horizontal:
                     viewModel.endVideoScrub()
                 case .vertical:
+#if targetEnvironment(macCatalyst)
+                    let isDownwardDominant = value.translation.height > 0
+                        && abs(value.translation.height) > abs(value.translation.width)
+                    if isDownwardDominant && value.translation.height >= 120 {
+                        if !isEditorPreview {
+                            viewModel.tearDown()
+                        }
+                        withAnimation(
+                            .easeOut(duration: 0.16),
+                            completionCriteria: .logicallyComplete
+                        ) {
+                            videoVerticalOffset = size.height
+                        } completion: {
+                            var transaction = Transaction(animation: nil)
+                            transaction.disablesAnimations = true
+                            withTransaction(transaction) {
+                                closePreview()
+                            }
+                        }
+                    } else {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                            videoVerticalOffset = 0
+                        }
+                    }
+#else
                     let shouldDismiss = videoVerticalDragMode == .dismiss
                     let isDownwardDominant = shouldDismiss
                         && value.translation.height > 0
                         && abs(value.translation.height) > abs(value.translation.width)
                     if isDownwardDominant && value.translation.height >= 120 {
-                        viewModel.tearDown()
+                        if !isEditorPreview {
+                            viewModel.tearDown()
+                        }
                         withAnimation(
                             .easeOut(duration: 0.16),
                             completionCriteria: .logicallyComplete
@@ -1284,6 +1393,7 @@ struct RemotePreviewView: View {
                     volumeDragStart = nil
                     videoDragVolume = nil
                     videoVerticalDragMode = nil
+#endif
                 case .pan:
                     videoZoomOffset = clampedVideoOffset(videoZoomOffset, in: size)
                     videoPanStartOffset = videoZoomOffset
@@ -1315,7 +1425,7 @@ struct RemotePreviewView: View {
     }
 
     private func handleVideoSingleTap() {
-        if RemotePreviewInteractionPolicy.shouldTogglePlaybackOnSingleTap(
+        if isEditorPreview || RemotePreviewInteractionPolicy.shouldTogglePlaybackOnSingleTap(
             controlsAreVisible: areControlsVisible
         ) {
             viewModel.togglePlayback()
@@ -1373,11 +1483,49 @@ struct RemotePreviewView: View {
             withAnimation(.easeInOut(duration: 0.2)) { areControlsVisible = false }
         }
     }
+
+#if targetEnvironment(macCatalyst)
+    private func handleMacVideoVolumeScroll(deltaY: CGFloat) {
+        let currentVolume: Float
+        if let player = viewModel.player {
+            currentVolume = player.volume
+        } else if let bridge = timelineBridge {
+            currentVolume = bridge.masterVolume
+        } else {
+            currentVolume = macPlayerVolume
+        }
+
+        let gain: Float = 1.0 / 360.0
+        let target = min(max(currentVolume + Float(deltaY) * gain, 0), 1)
+
+        macPlayerVolume = target
+        timelineBridge?.masterVolume = target
+
+        if let player = viewModel.player {
+            player.volume = target
+        }
+
+        volumeHUDDismissTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.12)) {
+            videoDragVolume = target
+        }
+        volumeHUDDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1200))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                videoDragVolume = nil
+            }
+        }
+    }
+#endif
 }
 
 private struct RemoteVideoTapSurface: UIViewRepresentable {
     let onSingleTap: () -> Void
     let onDoubleTap: () -> Void
+#if targetEnvironment(macCatalyst)
+    var onScrollVolume: ((CGFloat) -> Void)? = nil
+#endif
 
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
@@ -1393,6 +1541,11 @@ private struct RemoteVideoTapSurface: UIViewRepresentable {
         singleTap.require(toFail: doubleTap)
         view.addGestureRecognizer(singleTap)
         view.addGestureRecognizer(doubleTap)
+#if targetEnvironment(macCatalyst)
+        if onScrollVolume != nil {
+            context.coordinator.setupScrollVolume(on: view)
+        }
+#endif
         return view
     }
 
@@ -1402,10 +1555,19 @@ private struct RemoteVideoTapSurface: UIViewRepresentable {
 
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.surface = self
+#if targetEnvironment(macCatalyst)
+        if onScrollVolume != nil && context.coordinator.scrollHandler == nil {
+            context.coordinator.setupScrollVolume(on: uiView)
+        }
+#endif
     }
 
+    @MainActor
     final class Coordinator: NSObject {
         var surface: RemoteVideoTapSurface
+#if targetEnvironment(macCatalyst)
+        var scrollHandler: MacVideoVolumeScrollHandler?
+#endif
 
         init(surface: RemoteVideoTapSurface) {
             self.surface = surface
@@ -1413,6 +1575,18 @@ private struct RemoteVideoTapSurface: UIViewRepresentable {
 
         @objc func singleTap() { surface.onSingleTap() }
         @objc func doubleTap() { surface.onDoubleTap() }
+
+#if targetEnvironment(macCatalyst)
+        func setupScrollVolume(on view: UIView) {
+            guard scrollHandler == nil else { return }
+            let handler = MacVideoVolumeScrollHandler()
+            handler.onDeltaY = { [weak self] dy in
+                self?.surface.onScrollVolume?(dy)
+            }
+            _ = handler.attach(to: view)
+            scrollHandler = handler
+        }
+#endif
     }
 }
 

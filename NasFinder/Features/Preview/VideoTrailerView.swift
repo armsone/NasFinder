@@ -1124,9 +1124,41 @@ func trailerOrientedVideoSize(url: URL) async throws -> CGSize? {
     return CGSize(width: abs(oriented.width), height: abs(oriented.height))
 }
 
+/// 영상 편집기 안에서 완성 영상(RemotePreviewView)을 볼 때 재생기와 위치·재생 상태를 전체 화면 전환에도 유지하는 전용 소유자.
+@MainActor
+private final class TrailerOutputPlaybackOwner {
+    private(set) var cachedURL: URL?
+    private var cachedModel: RemotePreviewViewModel?
+
+    func model(for url: URL, name: String) -> RemotePreviewViewModel {
+        if let cachedModel, cachedURL == url {
+            return cachedModel
+        }
+        cleanup()
+        let previewService = TrailerOutputFileService(url: url, name: name)
+        let newModel = RemotePreviewViewModel(
+            items: [previewService.item],
+            relatedItems: [previewService.item],
+            initialItemID: previewService.item.id,
+            service: previewService
+        )
+        newModel.pauseForLifecycle()
+        cachedURL = url
+        cachedModel = newModel
+        return newModel
+    }
+
+    func cleanup() {
+        cachedModel?.tearDown()
+        cachedModel = nil
+        cachedURL = nil
+    }
+}
+
 /// 대형 프리뷰: 완성 영상이 있으면 RemotePreviewView로 재생하고, 준비 중일 때는 선택/첫 미디어의 커버와 사진 카메라 모션 플랜을 화면 비율에 맞춰 실시간으로 보여준다.
 private struct TrailerWorkspacePreview: View {
     let outputURL: URL?
+    var retainedModel: RemotePreviewViewModel? = nil
     let firstSource: VideoTrailerSource?
     /// The first video in the current order: 원본 follows its orientation-correct ratio.
     let firstVideo: VideoTrailerSource?
@@ -1165,6 +1197,13 @@ private struct TrailerWorkspacePreview: View {
     @State private var photoMotionStartDate = Date()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+    private enum SwipeDismissLock: Equatable {
+        case undetermined
+        case downward
+        case lockedOther
+    }
+    @State private var swipeDismissLock: SwipeDismissLock = .undetermined
+
     /// Same sizing rule as the export: a chosen ratio's real size, otherwise 원본 = the first
     /// video's own ratio (photos only: the first photo's), 16:9 only until that is known.
     private var aspectSize: CGSize {
@@ -1187,6 +1226,9 @@ private struct TrailerWorkspacePreview: View {
 
     var body: some View {
         ZStack {
+            if isFullscreen {
+                Color.black.ignoresSafeArea()
+            }
             if let outputURL {
                 let previewService = TrailerOutputFileService(url: outputURL, name: outputName)
                 // The only output caller (makeArea) already gives this an explicit height, so the
@@ -1209,7 +1251,8 @@ private struct TrailerWorkspacePreview: View {
                             pauseRequest: pauseRequest,
                             // 편집기 안에서는 닫기·제목이 이미 위에 있어 작은 컨트롤만, 전체 화면은 전체 컨트롤.
                             editorCompact: !isFullscreen,
-                            timelineBridge: timelineBridge
+                            timelineBridge: timelineBridge,
+                            retainedViewModel: retainedModel
                         )
                         .id(outputURL)
                     }
@@ -1393,6 +1436,54 @@ private struct TrailerWorkspacePreview: View {
             }
         }
         .clipShape(RoundedRectangle(cornerRadius: isFullscreen ? 0 : ui(12), style: .continuous))
+        .overlay(alignment: .topTrailing) {
+            if isFullscreen && outputURL == nil {
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundStyle(.white)
+                        .frame(width: 36, height: 36)
+                        .background(Circle().fill(Color.black.opacity(0.65)))
+                }
+                .buttonStyle(.plain)
+                .padding(ui(16))
+                .accessibilityLabel("전체 화면 나가기")
+            }
+        }
+        .simultaneousGesture(
+            (isFullscreen && outputURL == nil) ? DragGesture(minimumDistance: 0)
+                .onChanged { value in
+                    if swipeDismissLock == .undetermined {
+                        let dx = value.translation.width
+                        let dy = value.translation.height
+                        if hypot(dx, dy) >= 12 {
+                            if dy > 0 && dy > abs(dx) * 1.5 {
+                                swipeDismissLock = .downward
+                            } else {
+                                swipeDismissLock = .lockedOther
+                            }
+                        }
+                    }
+                }
+                .onEnded { value in
+                    if swipeDismissLock == .downward,
+                       value.translation.height >= 120 {
+                        onClose()
+                    }
+                    swipeDismissLock = .undetermined
+                } : nil
+        )
+        .onChange(of: isFullscreen) { current in
+            if !current {
+                swipeDismissLock = .undetermined
+            }
+        }
+        .onChange(of: outputURL) { _ in
+            swipeDismissLock = .undetermined
+        }
+        .onDisappear {
+            swipeDismissLock = .undetermined
+        }
     }
 }
 
@@ -1606,6 +1697,7 @@ private struct VideoTrailerSettings: View {
     /// Mac 자막 탭 "선택 클립" 대상. nil이면 클립 관리 선택(없으면 현재 클립)을 그대로 이어받는다.
     @State private var captionTargetIDs: Set<Int>? = nil
     @StateObject private var timelineBridge = TrailerTimelineBridge()
+    @State private var outputPlaybackOwner = TrailerOutputPlaybackOwner()
     @State private var columns: Int = 3
     @State private var captionScope: CaptionApplyScope = .all
     @State private var hasInitializedColumns = false
@@ -1691,6 +1783,7 @@ private struct VideoTrailerSettings: View {
         if previewingOutput {
             previewingOutput = false
             pauseRequest += 1
+            outputPlaybackOwner.cleanup()
         }
     }
 
@@ -2303,6 +2396,15 @@ private struct VideoTrailerSettings: View {
         .onDisappear {
             tempoTask?.cancel()
             tempoTask = nil
+            outputPlaybackOwner.cleanup()
+        }
+        .onChange(of: isOutputCurrent) { _, current in
+            if !current { outputPlaybackOwner.cleanup() }
+        }
+        .onChange(of: outputURL) { _, newURL in
+            if let cached = outputPlaybackOwner.cachedURL, cached != newURL {
+                outputPlaybackOwner.cleanup()
+            }
         }
         .navigationTitle(settingsTitle)
         .navigationBarTitleDisplayMode(.inline)
@@ -2326,11 +2428,10 @@ private struct VideoTrailerSettings: View {
         }
     }
 
-    /// 전체 화면은 같은 플레이어를 키우기만 한다(재생기는 하나라 소리가 겹치지 않는다). 들어갈 때와 나올 때
-    /// 지금 위치에서 멈추고, 스스로 다시 재생하지 않는다.
+    /// 전체 화면은 같은 플레이어를 키우기만 한다(재생기는 하나라 소리가 겹치지 않는다).
+    /// 타임라인 위치와 재생 상태는 그대로 유지된다.
     private func setFullscreen(_ on: Bool) {
         guard on != isPreviewFullscreen else { return }
-        pauseRequest += 1
         isPreviewFullscreen = on
     }
 
@@ -2386,12 +2487,11 @@ private struct VideoTrailerSettings: View {
         let height = min(bounds.maximum, max(bounds.minimum, previewHeight ?? bounds.preferred))
         return VStack(spacing: 0) {
             previewSection(showsOutput: previewingOutput && isOutputCurrent,
-                           showsPlayOverlay: isPreviewFullscreen || timelineSegments.isEmpty)
+                           showsPlayOverlay: true)
                 .frame(height: isPreviewFullscreen ? bodyHeight : height)
                 .frame(maxWidth: .infinity)
             #if !targetEnvironment(macCatalyst)
             // iPhone 좁은 편집기: Mac·Android처럼 미리보기 바로 아래에 같은 필름스트립을 둔다.
-            // 재생 단추는 현재 시간 옆(compactTimeline)에 있고, 미리보기 위 단추는 전체 화면일 때만 쓴다.
             if !isPreviewFullscreen, !timelineSegments.isEmpty {
                 compactTimeline(sizeRatio: height / max(1, bounds.preferred))
             }
@@ -2428,6 +2528,16 @@ private struct VideoTrailerSettings: View {
                         .font(.caption.monospacedDigit())
                 }
                 Spacer(minLength: 0)
+                Button { setFullscreen(!isPreviewFullscreen) } label: {
+                    Image(systemName: isPreviewFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 32, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(timelineSegments.isEmpty || isBusy)
+                .opacity((timelineSegments.isEmpty || isBusy) ? 0.5 : 1)
+                .accessibilityLabel(isPreviewFullscreen ? "전체 화면 나가기" : "전체 화면")
             }
             .foregroundStyle(.white)
             wideTimeline
@@ -2814,9 +2924,20 @@ private struct VideoTrailerSettings: View {
                 .disabled(!timelineBridge.hasPlayer)
                 .opacity(timelineBridge.hasPlayer ? 1 : 0.5)
                 .accessibilityLabel(timelineBridge.isPlaying ? "일시 정지" : "재생")
+                .keyboardShortcut(.space, modifiers: [])
                 Text("\(videoTrailerTime(timelineBridge.currentSeconds)) / \(videoTrailerTime(timelineBridge.durationSeconds))")
                     .font(.caption.monospacedDigit())
                 Spacer(minLength: 0)
+                Button { setFullscreen(!isPreviewFullscreen) } label: {
+                    Image(systemName: isPreviewFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(width: 32, height: 28)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(timelineSegments.isEmpty || isBusy)
+                .opacity((timelineSegments.isEmpty || isBusy) ? 0.5 : 1)
+                .accessibilityLabel(isPreviewFullscreen ? "전체 화면 나가기" : "전체 화면")
             }
             .foregroundStyle(.white)
             wideTimeline
@@ -3860,8 +3981,11 @@ private struct VideoTrailerSettings: View {
         let context = activePreviewContext
         let still = renderStillContext
         let rendering = still != nil
+        let activeOutputURL = showsOutput && isOutputCurrent && !rendering ? outputURL : nil
+        let retainedModel = activeOutputURL.map { outputPlaybackOwner.model(for: $0, name: outputName) }
         return TrailerWorkspacePreview(
-            outputURL: showsOutput && isOutputCurrent && !rendering ? outputURL : nil,
+            outputURL: activeOutputURL,
+            retainedModel: retainedModel,
             firstSource: still?.source ?? context.source,
             firstVideo: sources.first { !$0.isImage },
             aspectRatio: aspectRatio,
@@ -3886,14 +4010,19 @@ private struct VideoTrailerSettings: View {
             draftPreview: showsOutput && isOutputCurrent ? nil : draftPreviewInput,
             hugsPicture: hugsPicture
         )
-        #if !targetEnvironment(macCatalyst)
         .overlay(alignment: .topLeading) {
-            if showsPlayOverlay {
+            #if targetEnvironment(macCatalyst)
+            if isPreviewFullscreen, showsPlayOverlay && activeOutputURL == nil {
                 TrailerPreviewPlayPauseButton(bridge: timelineBridge)
                     .padding(8)
             }
+            #else
+            if showsPlayOverlay && activeOutputURL == nil {
+                TrailerPreviewPlayPauseButton(bridge: timelineBridge)
+                    .padding(8)
+            }
+            #endif
         }
-        #endif
     }
 
     /// 플레이어 안의 전체 화면 버튼. 저장은 아래 고정 줄의 주 행동 하나뿐이다.
@@ -7024,5 +7153,8 @@ struct TrailerPreviewPlayPauseButton: View {
         .disabled(!bridge.hasPlayer)
         .opacity(bridge.hasPlayer ? 1 : 0.5)
         .accessibilityLabel(bridge.isPlaying ? "일시 정지" : "재생")
+        #if targetEnvironment(macCatalyst)
+        .keyboardShortcut(.space, modifiers: [])
+        #endif
     }
 }

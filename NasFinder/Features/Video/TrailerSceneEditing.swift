@@ -792,10 +792,17 @@ final class TrailerTimelineBridge: ObservableObject {
     var pauseHandler: (() -> Void)?
     /// 핸들러를 건 플레이어 세션. 이전 세션의 늦은 정리가 새 세션의 핸들러를 지우지 못하게 한다.
     var owner: UUID?
+    private var lastToggleDate = Date.distantPast
+#if targetEnvironment(macCatalyst)
+    @Published var masterVolume: Float = 1.0
+#endif
 
     /// 재생 중이면 멈추고, 멈춰 있으면 지금 위치에서 재생한다(타임라인 클릭 재생과 같은 경로).
     func togglePlayback() {
         guard hasPlayer else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastToggleDate) >= 0.15 else { return }
+        lastToggleDate = now
         if isPlaying { pauseHandler?() } else { playHandler?() }
     }
 
@@ -822,9 +829,6 @@ final class TrailerTimelineBridge: ObservableObject {
         playHandler = nil
         pauseHandler = nil
         hasPlayer = false
-        currentSeconds = 0
-        durationSeconds = 0
-        isPlaying = false
     }
 }
 
@@ -2525,9 +2529,82 @@ struct TrailerDraftPreviewInput {
 @MainActor
 final class TrailerDraftVideoDriver: ObservableObject {
     let player = AVPlayer()
+    @Published private(set) var isPreparingLayout = false
+    @Published private(set) var isBuffering = false
+    var isPreparingMedia: Bool { isBuffering }
     private var segmentID: String?
 
-    init() { player.actionAtItemEnd = .pause }
+    private var layoutGeneration = 0
+    private var itemGeneration = 0
+    private var timeControlObservation: NSKeyValueObservation?
+    private var itemStatusObservation: NSKeyValueObservation?
+
+    init() {
+        player.actionAtItemEnd = .pause
+        setupPlayerObservation()
+    }
+
+    deinit {
+        timeControlObservation?.invalidate()
+        itemStatusObservation?.invalidate()
+    }
+
+    private func setupPlayerObservation() {
+        timeControlObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
+            self?.scheduleReadinessEvaluation()
+        }
+    }
+
+    private func attachItemObservation(_ item: AVPlayerItem, generation: Int) {
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = item.observe(\.status, options: [.initial, .new]) { [weak self, weak item] observedItem, _ in
+            guard let self, let item, observedItem === item else { return }
+            self.scheduleReadinessEvaluation(expectedItem: item, generation: generation)
+        }
+    }
+
+    private func teardownItemObservation() {
+        itemStatusObservation?.invalidate()
+        itemStatusObservation = nil
+    }
+
+    private func scheduleReadinessEvaluation(expectedItem: AVPlayerItem? = nil, generation: Int? = nil) {
+        if Thread.isMainThread {
+            updateReadiness(expectedItem: expectedItem, generation: generation)
+        } else {
+            Task { @MainActor [weak self] in
+                self?.updateReadiness(expectedItem: expectedItem, generation: generation)
+            }
+        }
+    }
+
+    @MainActor
+    private func updateReadiness(expectedItem: AVPlayerItem? = nil, generation: Int? = nil) {
+        if let generation, generation != itemGeneration { return }
+        guard segmentID != nil, let currentItem = player.currentItem else {
+            if isBuffering { isBuffering = false }
+            return
+        }
+        if let expectedItem, currentItem !== expectedItem { return }
+
+        // Failed video must not endlessly spin.
+        if currentItem.status == .failed || currentItem.error != nil || player.error != nil {
+            if isBuffering { isBuffering = false }
+            return
+        }
+
+        switch currentItem.status {
+        case .unknown:
+            if !isBuffering { isBuffering = true }
+        case .readyToPlay:
+            let buffering = (player.timeControlStatus == .waitingToPlayAtSpecifiedRate)
+            if isBuffering != buffering { isBuffering = buffering }
+        case .failed:
+            if isBuffering { isBuffering = false }
+        @unknown default:
+            if isBuffering { isBuffering = false }
+        }
+    }
 
     /// 영상 구간의 화면 구성(채우기/맞추기/위치)과 미리보기 화면 크기.
     struct Layout: Equatable {
@@ -2547,13 +2624,25 @@ final class TrailerDraftVideoDriver: ObservableObject {
             segmentID = segment.id
             layoutKey = nil
             layoutTask?.cancel()
-            player.replaceCurrentItem(with: AVPlayerItem(url: url))
+            layoutGeneration += 1
+            itemGeneration += 1
+            let gen = itemGeneration
+            let item = AVPlayerItem(url: url)
+            attachItemObservation(item, generation: gen)
+            player.replaceCurrentItem(with: item)
             player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            scheduleReadinessEvaluation(expectedItem: item, generation: gen)
         } else if !playing || abs(player.currentTime().seconds - target) > 0.3 {
             player.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+            scheduleReadinessEvaluation(expectedItem: player.currentItem, generation: itemGeneration)
         }
         applyLayout(layout)
-        if playing { if player.timeControlStatus == .paused { player.play() } } else { player.pause() }
+        if playing {
+            if player.timeControlStatus == .paused { player.play() }
+        } else {
+            player.pause()
+        }
+        scheduleReadinessEvaluation(expectedItem: player.currentItem, generation: itemGeneration)
     }
 
     /// 내보내기와 같은 `aspectFit/aspectFillTransform`을 항목의 비디오 합성에 걸어 일시정지·재생 모두에 반영한다.
@@ -2562,7 +2651,15 @@ final class TrailerDraftVideoDriver: ObservableObject {
         guard layout != layoutKey, let item = player.currentItem else { return }
         layoutKey = layout
         layoutTask?.cancel()
+        layoutGeneration += 1
+        let generation = layoutGeneration
+        isPreparingLayout = true
         layoutTask = Task { [weak self, weak item] in
+            defer {
+                if let self, self.layoutGeneration == generation {
+                    self.isPreparingLayout = false
+                }
+            }
             guard let item else { return }
             let asset = item.asset
             guard let track = try? await asset.loadTracks(withMediaType: .video).first,
@@ -2586,7 +2683,7 @@ final class TrailerDraftVideoDriver: ObservableObject {
             composition.renderSize = size
             composition.frameDuration = CMTime(value: 1, timescale: 30)
             composition.instructions = [instruction]
-            guard let self, !Task.isCancelled, self.player.currentItem === item else { return }
+            guard let self, !Task.isCancelled, self.layoutGeneration == generation, self.player.currentItem === item else { return }
             item.videoComposition = composition
             // 일시정지 중에도 보이는 프레임을 새 구성으로 다시 그린다(같은 위치).
             if self.player.rate == 0 {
@@ -2597,10 +2694,16 @@ final class TrailerDraftVideoDriver: ObservableObject {
 
     func stop() {
         player.pause()
+        layoutGeneration += 1
+        itemGeneration += 1
+        layoutTask?.cancel()
+        layoutTask = nil
+        isPreparingLayout = false
+        isBuffering = false
+        teardownItemObservation()
         guard segmentID != nil else { return }
         segmentID = nil
         layoutKey = nil
-        layoutTask?.cancel()
         player.replaceCurrentItem(with: nil)
     }
 }
@@ -2722,6 +2825,15 @@ struct TrailerDraftPreviewPlayer: View {
     @State private var originalVideoSize: (url: URL, size: CGSize)?
     @StateObject private var video = TrailerDraftVideoDriver()
     @StateObject private var music = TrailerDraftMusicDriver()
+    @State private var preparationOps: Set<String> = []
+#if targetEnvironment(macCatalyst)
+    @State private var draftVolumeHUD: Float?
+    @State private var draftVolumeDismissTask: Task<Void, Never>?
+#endif
+
+    private var isPreparingPreview: Bool {
+        !preparationOps.isEmpty || video.isPreparingLayout || video.isBuffering
+    }
 
     private var currentVideoSource: VideoTrailerSource? {
         guard let id = currentSegment?.sourceID, currentSegment?.kind == .clip else { return nil }
@@ -2734,6 +2846,9 @@ struct TrailerDraftPreviewPlayer: View {
                    offset: location?.offset ?? 0, playing: bridge.isPlaying,
                    layout: .init(fitsFrame: segment?.fitsFrame ?? false, offsetX: segment?.offsetX ?? 0,
                                  offsetY: segment?.offsetY ?? 0, renderSize: renderSize))
+#if targetEnvironment(macCatalyst)
+        video.player.volume = bridge.masterVolume
+#endif
     }
 
     /// 사진 한 장면을 내보내기와 같은 카메라 계획으로 그린다. 직접 정한 구성이 없으면 자동 확대 효과의 해당 시점.
@@ -2803,7 +2918,17 @@ struct TrailerDraftPreviewPlayer: View {
                             }
                         case .clip:
                             if currentVideoSource != nil {
+#if targetEnvironment(macCatalyst)
+                                SharedVideoPlayerSurface(
+                                    player: video.player,
+                                    videoGravity: .resizeAspect,
+                                    onScrollVolume: { dy in
+                                        handleDraftVolumeScroll(delta: dy)
+                                    }
+                                )
+#else
                                 SharedVideoPlayerSurface(player: video.player, videoGravity: .resizeAspect)
+#endif
                             } else if let id = segment.sourceID, let photo = photos[id] {
                                 photoView(photo, segment: segment)
                             } else {
@@ -2814,22 +2939,63 @@ struct TrailerDraftPreviewPlayer: View {
                     }
                 }
             }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                bridge.togglePlayback()
+            }
             .task(id: originalVideoURL) {
-                guard let url = originalVideoURL,
-                      let size = try? await trailerOrientedVideoSize(url: url),
+                guard let url = originalVideoURL else { return }
+                let opKey = "videoMeta:\(url.absoluteString)"
+                preparationOps.insert(opKey)
+                defer { preparationOps.remove(opKey) }
+                guard let size = try? await trailerOrientedVideoSize(url: url),
                       size.width > 0, size.height > 0, !Task.isCancelled else { return }
                 originalVideoSize = (url, size)
             }
-            .task(id: frameKey) { await loadFrame() }
+            .task(id: frameKey) {
+                let opKey = "frame:\(frameKey)"
+                preparationOps.insert(opKey)
+                defer { preparationOps.remove(opKey) }
+                await loadFrame()
+            }
             .task(id: attachKey) { await runClock() }
             .task(id: input.musicKey) {
+                let opKey = "music:\(input.musicKey)"
+                preparationOps.insert(opKey)
+                defer { preparationOps.remove(opKey) }
                 await music.prepare(input)
                 // 준비가 끝난 시점의 재생 위치로 바로 이어 붙는다(재생 중에 음악을 바꾼 경우).
                 music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying)
+#if targetEnvironment(macCatalyst)
+                music.player.volume = bridge.masterVolume
+#endif
             }
             .onChange(of: bridge.currentSeconds) { _, _ in syncVideo(); music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying) }
             .onChange(of: videoLayoutKey) { _, _ in syncVideo() }
             .onChange(of: bridge.isPlaying) { _, _ in syncVideo(); music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying) }
+            .overlay(alignment: .center) {
+#if targetEnvironment(macCatalyst)
+                if let volume = draftVolumeHUD {
+                    volumeHUD(volume)
+                        .transition(.scale.combined(with: .opacity))
+                }
+#endif
+                if isPreparingPreview {
+                    VStack(spacing: 8) {
+                        Text("미리보기 준비 중…")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.white)
+                        ProgressView()
+                            .progressViewStyle(.linear)
+                            .tint(.white)
+                            .frame(width: 140)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.black.opacity(0.75)))
+                    .allowsHitTesting(false)
+                }
+            }
             .overlay(alignment: .bottom) {
                 if let failure = music.failure {
                     Text("배경음악을 미리 들을 수 없어요 · \(failure)")
@@ -2881,13 +3047,22 @@ struct TrailerDraftPreviewPlayer: View {
             bridge.isPlaying = true
         }
         bridge.durationSeconds = total
-        let start = input.selectedSceneID.flatMap { input.startSeconds(ofScene: $0) } ?? 0
-        bridge.currentSeconds = min(max(start, 0), total)
-        bridge.isPlaying = false
+        let preservedTime = bridge.currentSeconds
+        let wasPlaying = bridge.isPlaying
+        if preservedTime <= 0 || preservedTime > total {
+            let start = input.selectedSceneID.flatMap { input.startSeconds(ofScene: $0) } ?? 0
+            bridge.currentSeconds = min(max(start, 0), total)
+        }
+        bridge.isPlaying = wasPlaying
         bridge.hasPlayer = true
         // The selected clip can already be at this time. In that case no change
         // handler runs, so attach its video before waiting for playback.
         syncVideo()
+        music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying)
+#if targetEnvironment(macCatalyst)
+        video.player.volume = bridge.masterVolume
+        music.player.volume = bridge.masterVolume
+#endif
         var last = Date()
         while !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(33))
@@ -2904,4 +3079,41 @@ struct TrailerDraftPreviewPlayer: View {
         }
         bridge.detach(ifOwner: token)
     }
+
+#if targetEnvironment(macCatalyst)
+    private func handleDraftVolumeScroll(delta: CGFloat) {
+        let current = bridge.masterVolume
+        let gain: Float = 1.0 / 360.0
+        let target = min(max(current + Float(delta) * gain, 0), 1)
+        bridge.masterVolume = target
+        video.player.volume = target
+        music.player.volume = target
+        draftVolumeDismissTask?.cancel()
+        withAnimation(.easeInOut(duration: 0.12)) {
+            draftVolumeHUD = target
+        }
+        draftVolumeDismissTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1200))
+            guard !Task.isCancelled else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                draftVolumeHUD = nil
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func volumeHUD(_ volume: Float) -> some View {
+        HStack(spacing: 9) {
+            Image(interfaceSystemName: volume <= 0.001 ? "speaker.slash.fill" : "speaker.wave.2.fill")
+            Text("\(Int((volume * 100).rounded()))%")
+                .monospacedDigit()
+        }
+        .font(.system(size: 17, weight: .bold, design: .rounded))
+        .foregroundStyle(.white)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: Capsule())
+        .allowsHitTesting(false)
+    }
+#endif
 }
