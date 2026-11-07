@@ -1,4 +1,5 @@
 import AVFoundation
+import CryptoKit
 import SwiftUI
 import UIKit
 
@@ -2481,6 +2482,7 @@ struct TrailerSceneInspector: View {
 
 /// 완성 영상이 없을 때 사진·영상·타이틀 카드로 초안을 재생하기 위한 입력.
 struct TrailerDraftPreviewInput {
+    var projectID: UUID? = nil
     var segments: [TrailerTimelineSegment]
     var sources: [VideoTrailerSource]
     var captions: [String: TrailerCaption]
@@ -2497,7 +2499,9 @@ struct TrailerDraftPreviewInput {
     var musicKey: String {
         guard let music else { return "none" }
         let layout = segments.map { "\($0.id):\($0.length):\($0.start):\($0.muted)" }.joined(separator: ",")
-        return "\(music.recordID)|\(music.url.path)|\(music.policy.rawValue)|\(music.fitCount)|\(music.autoDuck)|\(music.level)|\(layout)"
+        let projStr = projectID?.uuidString ?? "default"
+        let attrs = TrailerDraftPreviewCache.sourceFileAttributes(for: music.url)
+        return "\(projStr)|\(music.recordID)|\(music.url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)|\(music.policy.rawValue)|\(music.fitCount)|\(music.autoDuck)|\(music.level)|\(layout)"
     }
 
     /// 타임라인 필름스트립과 같은 가중치(최소 0.05초)로 센 전체 길이.
@@ -2527,6 +2531,7 @@ struct TrailerDraftPreviewInput {
 
 /// 미리보기 자산(사진 썸네일, 타이틀 카드, 비디오 컴포지션, 메타데이터)을 프로젝트 단위로 유지하는 바운디드 캐시.
 /// 인라인과 전체화면 전환, 그리고 탐색 중에 미리보기가 재생성되어도 준비 상태를 유지한다.
+/// 앱 전용 private Caches 폴더에 영구 보관하여 프로세스 종료 후 동일 편집 재오픈 시 디스크에서 고속 재사용한다.
 @MainActor
 final class TrailerDraftPreviewCache {
     static let shared = TrailerDraftPreviewCache()
@@ -2539,18 +2544,108 @@ final class TrailerDraftPreviewCache {
     private var videoSizeKeys: [String] = []
     private var preparedSignatures: [String] = []
 
+    private nonisolated static let cacheSchemaVersion = "v1"
+    private nonisolated static let maxDiskCacheBytes: Int64 = 120 * 1024 * 1024
+    private nonisolated static let maxDiskFileCount = 400
+    private nonisolated static let stateLock = NSLock()
+    nonisolated(unsafe) private static var lastPruneTime: TimeInterval = 0
+    nonisolated(unsafe) private static var attributeMemo: [String: (size: Int64, mtime: Int64, at: TimeInterval)] = [:]
+
+    nonisolated static let cacheFolder: URL = {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+        let folder = base.appendingPathComponent("NasFinderPreviewCache", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }()
+
+    nonisolated static func sha256(_ string: String) -> String {
+        let digest = SHA256.hash(data: Data(string.utf8))
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// 크기·수정시각. 뷰 키 계산에서 반복 호출되므로 짧은 시간 동안 메모리에 둔 값을 쓰고, 항목 수를 제한한다.
+    nonisolated static func sourceFileAttributes(for url: URL) -> (fileSize: Int64, mtime: Int64) {
+        let path = url.path
+        let now = Date().timeIntervalSince1970
+        stateLock.lock()
+        if let hit = attributeMemo[path], now - hit.at < 3 {
+            stateLock.unlock()
+            return (hit.size, hit.mtime)
+        }
+        stateLock.unlock()
+
+        var size: Int64 = 0
+        var mtime: Int64 = 0
+        if let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]) {
+            size = Int64(values.fileSize ?? 0)
+            mtime = Int64(values.contentModificationDate?.timeIntervalSince1970 ?? 0)
+        }
+
+        stateLock.lock()
+        if attributeMemo.count > 256 { attributeMemo.removeAll(keepingCapacity: true) }
+        attributeMemo[path] = (size, mtime, now)
+        stateLock.unlock()
+        return (size, mtime)
+    }
+
+    nonisolated static func photoCacheKey(sourceID: Int, url: URL, projectID: UUID? = nil) -> String {
+        let attrs = sourceFileAttributes(for: url)
+        let projStr = projectID?.uuidString ?? "default"
+        let raw = "photo:\(cacheSchemaVersion):\(projStr):\(sourceID):\(url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)"
+        return sha256(raw)
+    }
+
+    nonisolated static func videoSizeCacheKey(url: URL) -> String {
+        let attrs = sourceFileAttributes(for: url)
+        let raw = "size:\(cacheSchemaVersion):\(url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)"
+        return sha256(raw)
+    }
+
+    private struct SizeRecord: Codable { let w: Double; let h: Double }
+
     init() {
         photoCache.countLimit = 64
         cardCache.countLimit = 16
     }
 
-    func photo(for sourceID: Int, url: URL) -> UIImage? {
-        photoCache.object(forKey: "\(sourceID)|\(url.absoluteString)" as NSString)
+    // MARK: - Photos
+
+    func photo(for sourceID: Int, url: URL, projectID: UUID? = nil) -> UIImage? {
+        let key = Self.photoCacheKey(sourceID: sourceID, url: url, projectID: projectID)
+        return photoCache.object(forKey: key as NSString)
     }
 
-    func setPhoto(_ image: UIImage, for sourceID: Int, url: URL) {
-        photoCache.setObject(image, forKey: "\(sourceID)|\(url.absoluteString)" as NSString)
+    func setPhoto(_ image: UIImage, for sourceID: Int, url: URL, projectID: UUID? = nil) {
+        let key = Self.photoCacheKey(sourceID: sourceID, url: url, projectID: projectID)
+        photoCache.setObject(image, forKey: key as NSString)
+        let fileURL = Self.cacheFolder.appendingPathComponent("photo_\(key).jpg")
+        Self.writeAsync(to: fileURL) { image.jpegData(compressionQuality: 0.9) }
     }
+
+    func loadPhoto(for sourceID: Int, url: URL, projectID: UUID? = nil) async -> UIImage? {
+        if let existing = photo(for: sourceID, url: url, projectID: projectID) { return existing }
+        let key = Self.photoCacheKey(sourceID: sourceID, url: url, projectID: projectID)
+        let fileURL = Self.cacheFolder.appendingPathComponent("photo_\(key).jpg")
+        let loaded = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard FileManager.default.fileExists(atPath: fileURL.path),
+                  let data = try? Data(contentsOf: fileURL),
+                  let img = UIImage(data: data) else { return nil }
+            return img.preparingForDisplay() ?? img
+        }.value
+
+        if let loaded {
+            photoCache.setObject(loaded, forKey: key as NSString)
+            return loaded
+        }
+        return nil
+    }
+
+    func hasOrLoadPhoto(for sourceID: Int, url: URL, projectID: UUID? = nil) async -> UIImage? {
+        await loadPhoto(for: sourceID, url: url, projectID: projectID)
+    }
+
+    // MARK: - Cards
 
     func card(for key: String) -> UIImage? {
         cardCache.object(forKey: key as NSString)
@@ -2558,14 +2653,39 @@ final class TrailerDraftPreviewCache {
 
     func setCard(_ image: UIImage, for key: String) {
         cardCache.setObject(image, forKey: key as NSString)
+        let fileURL = Self.cacheFolder.appendingPathComponent("card_\(key).png")
+        Self.writeAsync(to: fileURL) { image.pngData() }
     }
 
+    func loadCard(for key: String) async -> UIImage? {
+        if let existing = card(for: key) { return existing }
+        let fileURL = Self.cacheFolder.appendingPathComponent("card_\(key).png")
+        let loaded = await Task.detached(priority: .userInitiated) { () -> UIImage? in
+            guard FileManager.default.fileExists(atPath: fileURL.path),
+                  let data = try? Data(contentsOf: fileURL),
+                  let img = UIImage(data: data) else { return nil }
+            return img.preparingForDisplay() ?? img
+        }.value
+
+        if let loaded {
+            cardCache.setObject(loaded, forKey: key as NSString)
+            return loaded
+        }
+        return nil
+    }
+
+    func hasOrLoadCard(for key: String) async -> UIImage? {
+        await loadCard(for: key)
+    }
+
+    // MARK: - Video Sizes
+
     func videoSize(for url: URL) -> CGSize? {
-        videoSizes[url.absoluteString]
+        videoSizes[Self.videoSizeCacheKey(url: url)]
     }
 
     func setVideoSize(_ size: CGSize, for url: URL) {
-        let key = url.absoluteString
+        let key = Self.videoSizeCacheKey(url: url)
         if videoSizes[key] == nil {
             videoSizeKeys.append(key)
             if videoSizeKeys.count > 64 {
@@ -2574,7 +2694,32 @@ final class TrailerDraftPreviewCache {
             }
         }
         videoSizes[key] = size
+
+        let record = SizeRecord(w: Double(size.width), h: Double(size.height))
+        let fileURL = Self.cacheFolder.appendingPathComponent("size_\(key).json")
+        Self.writeAsync(to: fileURL) { try? JSONEncoder().encode(record) }
     }
+
+    func loadVideoSize(for url: URL) async -> CGSize? {
+        if let size = videoSize(for: url) { return size }
+        let key = Self.videoSizeCacheKey(url: url)
+        let fileURL = Self.cacheFolder.appendingPathComponent("size_\(key).json")
+
+        let loaded = await Task.detached(priority: .userInitiated) { () -> CGSize? in
+            guard let data = try? Data(contentsOf: fileURL),
+                  let rec = try? JSONDecoder().decode(SizeRecord.self, from: data),
+                  rec.w > 0, rec.h > 0 else { return nil }
+            return CGSize(width: rec.w, height: rec.h)
+        }.value
+
+        if let loaded {
+            setVideoSize(loaded, for: url)
+            return loaded
+        }
+        return nil
+    }
+
+    // MARK: - Video Compositions (In-Memory Only)
 
     func videoComposition(for key: String) -> AVVideoComposition? {
         videoCompositions[key]
@@ -2591,6 +2736,8 @@ final class TrailerDraftPreviewCache {
         videoCompositions[key] = composition
     }
 
+    // MARK: - Signatures
+
     func isPrepared(signature: String) -> Bool {
         preparedSignatures.contains(signature)
     }
@@ -2602,6 +2749,61 @@ final class TrailerDraftPreviewCache {
         preparedSignatures.append(signature)
         if preparedSignatures.count > 32 {
             preparedSignatures.removeFirst()
+        }
+    }
+
+    // MARK: - Disk I/O & Bounded Budget Background Pruning
+
+    /// 인코딩과 쓰기 모두 백그라운드에서 수행한다. 원자적 쓰기라 중간 파일은 읽히지 않는다.
+    private nonisolated static func writeAsync(to fileURL: URL, encode: @escaping @Sendable () -> Data?) {
+        Task.detached(priority: .utility) {
+            guard let data = encode() else { return }
+            try? data.write(to: fileURL, options: .atomic)
+            pruneDiskIfNeeded()
+        }
+    }
+
+    private nonisolated static func pruneDiskIfNeeded() {
+        let now = Date().timeIntervalSince1970
+        stateLock.lock()
+        guard now - lastPruneTime > 60 else {
+            stateLock.unlock()
+            return
+        }
+        lastPruneTime = now
+        stateLock.unlock()
+
+        let folder = cacheFolder
+        let files = FileManager.default
+        guard let contents = try? files.contentsOfDirectory(
+            at: folder,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            options: .skipsHiddenFiles
+        ) else { return }
+
+        var totalSize: Int64 = 0
+        var items: [(url: URL, size: Int64, date: Date)] = []
+
+        for fileURL in contents {
+            let values = try? fileURL.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let size = Int64(values?.fileSize ?? 0)
+            let date = values?.contentModificationDate ?? Date.distantPast
+            totalSize += size
+            items.append((fileURL, size, date))
+        }
+
+        if totalSize > maxDiskCacheBytes || items.count > maxDiskFileCount {
+            items.sort { $0.date < $1.date }
+            var currentSize = totalSize
+            var currentCount = items.count
+            let targetBytes = Int64(Double(maxDiskCacheBytes) * 0.75)
+            let targetCount = Int(Double(maxDiskFileCount) * 0.75)
+            for item in items {
+                guard currentSize > targetBytes || currentCount > targetCount else { break }
+                try? files.removeItem(at: item.url)
+                currentSize -= item.size
+                currentCount -= 1
+            }
         }
     }
 }
@@ -2696,7 +2898,8 @@ final class TrailerDraftVideoDriver: ObservableObject {
     }
 
     static func compositionKey(url: URL, layout: Layout) -> String {
-        "\(url.absoluteString)|\(layout.fitsFrame)|\(layout.offsetX)|\(layout.offsetY)|\(Int(layout.renderSize.width))x\(Int(layout.renderSize.height))"
+        let attrs = TrailerDraftPreviewCache.sourceFileAttributes(for: url)
+        return "\(url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)|\(layout.fitsFrame)|\(layout.offsetX)|\(layout.offsetY)|\(Int(layout.renderSize.width))x\(Int(layout.renderSize.height))"
     }
 
     @discardableResult
@@ -3059,7 +3262,7 @@ struct TrailerDraftPreviewPlayer: View {
                 return OutputAspectRatio.renderSize(for: cachedSize)
             }
         } else if let firstID = input.segments.compactMap(\.sourceID).first,
-                  let image = (currentPhoto?.sourceID == firstID ? currentPhoto?.image : nil) ?? (input.sources.first(where: { $0.id == firstID })?.url).flatMap({ TrailerDraftPreviewCache.shared.photo(for: firstID, url: $0) }) {
+                  let image = (currentPhoto?.sourceID == firstID ? currentPhoto?.image : nil) ?? (input.sources.first(where: { $0.id == firstID })?.url).flatMap({ TrailerDraftPreviewCache.shared.photo(for: firstID, url: $0, projectID: input.projectID) }) {
             return OutputAspectRatio.renderSize(for: image.size)
         }
         return OutputAspectRatio.landscape16x9.renderSize
@@ -3101,22 +3304,34 @@ struct TrailerDraftPreviewPlayer: View {
     }
 
     private var projectSourcesKey: String {
-        input.sources.map { "\($0.id):\($0.url.absoluteString)" }.joined(separator: ";")
+        input.sources.map {
+            let attrs = TrailerDraftPreviewCache.sourceFileAttributes(for: $0.url)
+            return "\($0.id):\($0.name):\($0.url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)"
+        }.joined(separator: ";")
     }
 
     private func backgroundKey(isIntro: Bool, card: TrailerTitleCard) -> String {
         if let bgID = card.backgroundSourceID {
-            let urlStr = input.sources.first(where: { $0.id == bgID })?.url.absoluteString ?? ""
-            return "bgID:\(bgID):\(urlStr)"
+            if let src = input.sources.first(where: { $0.id == bgID }) {
+                let attrs = TrailerDraftPreviewCache.sourceFileAttributes(for: src.url)
+                return "bgID:\(bgID):\(src.name):\(src.url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)"
+            }
+            return "bgID:\(bgID):none"
         } else if card.usesFirstOrLastImage {
             if isIntro {
                 let firstClipSourceID = input.segments.first(where: { $0.kind == .clip })?.sourceID ?? input.sources.first?.id
-                let urlStr = input.sources.first(where: { $0.id == firstClipSourceID })?.url.absoluteString ?? ""
-                return "introFirst:\(firstClipSourceID ?? -1):\(urlStr)"
+                if let src = input.sources.first(where: { $0.id == firstClipSourceID }) {
+                    let attrs = TrailerDraftPreviewCache.sourceFileAttributes(for: src.url)
+                    return "introFirst:\(firstClipSourceID ?? -1):\(src.name):\(src.url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)"
+                }
+                return "introFirst:\(firstClipSourceID ?? -1):none"
             } else {
                 let lastClipSourceID = input.segments.last(where: { $0.kind == .clip })?.sourceID ?? input.sources.last?.id
-                let urlStr = input.sources.first(where: { $0.id == lastClipSourceID })?.url.absoluteString ?? ""
-                return "outroLast:\(lastClipSourceID ?? -1):\(urlStr)"
+                if let src = input.sources.first(where: { $0.id == lastClipSourceID }) {
+                    let attrs = TrailerDraftPreviewCache.sourceFileAttributes(for: src.url)
+                    return "outroLast:\(lastClipSourceID ?? -1):\(src.name):\(src.url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)"
+                }
+                return "outroLast:\(lastClipSourceID ?? -1):none"
             }
         } else {
             return "solidColor"
@@ -3127,7 +3342,9 @@ struct TrailerDraftPreviewPlayer: View {
         let cardJSON = Self.encodeCard(card)
         let bodyJSON = Self.encodeCaption(input.bodyTypography)
         let bg = backgroundKey(isIntro: isIntro, card: card)
-        return "\(projectSourcesKey)|\(isIntro)|\(bg)|\(cardJSON)|\(bodyJSON)|\(Int(renderSize.width))x\(Int(renderSize.height))"
+        let projStr = input.projectID?.uuidString ?? "default"
+        let raw = "card:v1:\(projStr)|\(isIntro)|\(bg)|\(cardJSON)|\(bodyJSON)|\(Int(renderSize.width))x\(Int(renderSize.height))"
+        return TrailerDraftPreviewCache.sha256(raw)
     }
 
     var body: some View {
@@ -3158,7 +3375,7 @@ struct TrailerDraftPreviewPlayer: View {
                                 SharedVideoPlayerSurface(player: video.player, videoGravity: .resizeAspect)
 #endif
                             } else if let id = segment.sourceID,
-                                      let photo = (currentPhoto?.sourceID == id ? currentPhoto?.image : nil) ?? (input.sources.first(where: { $0.id == id })?.url).flatMap({ TrailerDraftPreviewCache.shared.photo(for: id, url: $0) }) {
+                                      let photo = (currentPhoto?.sourceID == id ? currentPhoto?.image : nil) ?? (input.sources.first(where: { $0.id == id })?.url).flatMap({ TrailerDraftPreviewCache.shared.photo(for: id, url: $0, projectID: input.projectID) }) {
                                 photoView(photo, segment: segment)
                             } else {
                                 Image(systemName: "photo").font(.system(size: 36)).foregroundStyle(.white.opacity(0.6))
@@ -3177,7 +3394,7 @@ struct TrailerDraftPreviewPlayer: View {
             }
             .task(id: originalVideoURL) {
                 guard let url = originalVideoURL else { return }
-                if let cached = TrailerDraftPreviewCache.shared.videoSize(for: url) {
+                if let cached = await TrailerDraftPreviewCache.shared.loadVideoSize(for: url) {
                     originalVideoSize = (url, cached)
                     return
                 }
@@ -3243,7 +3460,8 @@ struct TrailerDraftPreviewPlayer: View {
         let segKey = input.segments.map { "\($0.id):\($0.sourceID ?? -1):\($0.start):\($0.length):\($0.fitsFrame):\($0.offsetX):\($0.offsetY)" }.joined(separator: ";")
         let introKey = cardKey(isIntro: true, card: input.introCard, renderSize: renderSize)
         let outroKey = cardKey(isIntro: false, card: input.outroCard, renderSize: renderSize)
-        return "\(segKey)|\(projectSourcesKey)|\(input.musicKey)|\(introKey)|\(outroKey)|\(Int(renderSize.width))x\(Int(renderSize.height))"
+        let projStr = input.projectID?.uuidString ?? "default"
+        return "prep:v1:\(projStr)|\(segKey)|\(projectSourcesKey)|\(input.musicKey)|\(introKey)|\(outroKey)|\(Int(renderSize.width))x\(Int(renderSize.height))"
     }
 
     private func performProjectPreparation(signature: String) async {
@@ -3267,20 +3485,17 @@ struct TrailerDraftPreviewPlayer: View {
 
         var totalSteps = 0
         let refVideoURL = originalVideoURL
-        if let refVideoURL, TrailerDraftPreviewCache.shared.videoSize(for: refVideoURL) == nil {
-            totalSteps += 1
-        }
-        if input.music != nil {
+        if let refVideoURL, await TrailerDraftPreviewCache.shared.loadVideoSize(for: refVideoURL) == nil {
             totalSteps += 1
         }
         let introNeeded = input.segments.contains { $0.kind == .intro }
         let introKey = cardKey(isIntro: true, card: input.introCard, renderSize: renderSize)
-        if introNeeded, TrailerDraftPreviewCache.shared.card(for: introKey) == nil {
+        if introNeeded, await TrailerDraftPreviewCache.shared.hasOrLoadCard(for: introKey) == nil {
             totalSteps += 1
         }
         let outroNeeded = input.segments.contains { $0.kind == .outro }
         let outroKey = cardKey(isIntro: false, card: input.outroCard, renderSize: renderSize)
-        if outroNeeded, TrailerDraftPreviewCache.shared.card(for: outroKey) == nil {
+        if outroNeeded, await TrailerDraftPreviewCache.shared.hasOrLoadCard(for: outroKey) == nil {
             totalSteps += 1
         }
 
@@ -3289,7 +3504,7 @@ struct TrailerDraftPreviewPlayer: View {
         var pendingPhotos: [(Int, URL)] = []
         for seg in photoSegments {
             if let id = seg.sourceID, let src = byID[id], src.isImage {
-                if TrailerDraftPreviewCache.shared.photo(for: src.id, url: src.url) == nil,
+                if await TrailerDraftPreviewCache.shared.hasOrLoadPhoto(for: src.id, url: src.url, projectID: input.projectID) == nil,
                    !pendingPhotos.contains(where: { $0.0 == src.id }) {
                     pendingPhotos.append((src.id, src.url))
                 }
@@ -3308,23 +3523,19 @@ struct TrailerDraftPreviewPlayer: View {
                 }
             }
         }
-        totalSteps += pendingVideoLayouts.count
 
-        if totalSteps == 0 {
-            TrailerDraftPreviewCache.shared.markPrepared(signature: signature)
-            isPreparingProject = false
-            preparationProgress = nil
-            return
+        // 진행률은 디스크에도 없는 비싼 자산(영상 크기·카드·사진)에만 보인다.
+        // 비디오 컴포지션과 음악은 메모리 전용 경량 재구성이라 진행률 없이 조용히 만든다.
+        if totalSteps > 0 {
+            isPreparingProject = true
+            preparationProgress = 0.0
         }
-
-        isPreparingProject = true
-        preparationProgress = 0.0
         var completed = 0
         var failedAssets = 0
 
         func stepDone() {
             completed += 1
-            if preparationGeneration == generation && activePreparationSignature == signature {
+            if totalSteps > 0, preparationGeneration == generation && activePreparationSignature == signature {
                 preparationProgress = min(1.0, Double(completed) / Double(max(1, totalSteps)))
             }
         }
@@ -3384,7 +3595,7 @@ struct TrailerDraftPreviewPlayer: View {
 
         for (sourceID, url) in pendingPhotos {
             if let img = await trailerThumbnailImage(at: url, maxPixelSize: 1280) {
-                TrailerDraftPreviewCache.shared.setPhoto(img, for: sourceID, url: url)
+                TrailerDraftPreviewCache.shared.setPhoto(img, for: sourceID, url: url, projectID: input.projectID)
                 if preparationGeneration == generation && activePreparationSignature == signature {
                     photoCacheRevision += 1
                     if currentSegment?.sourceID == sourceID {
@@ -3404,7 +3615,6 @@ struct TrailerDraftPreviewPlayer: View {
                 failedAssets += 1
             }
             guard !Task.isCancelled, preparationGeneration == generation, activePreparationSignature == signature, projectPreparationKey == signature else { return }
-            stepDone()
         }
 
         if input.music != nil {
@@ -3419,7 +3629,6 @@ struct TrailerDraftPreviewPlayer: View {
                 failedAssets += 1
             }
             guard !Task.isCancelled, preparationGeneration == generation, activePreparationSignature == signature, projectPreparationKey == signature else { return }
-            stepDone()
         }
 
         guard !Task.isCancelled, preparationGeneration == generation, activePreparationSignature == signature, projectPreparationKey == signature else { return }
@@ -3429,6 +3638,7 @@ struct TrailerDraftPreviewPlayer: View {
         failedAssetCount = failedAssets
         isPreparingProject = false
         preparationProgress = nil
+        await loadFrame()
     }
 
     private func loadFrame() async {
@@ -3443,7 +3653,7 @@ struct TrailerDraftPreviewPlayer: View {
             let isIntro = segment.kind == .intro
             let card = isIntro ? input.introCard : input.outroCard
             let key = cardKey(isIntro: isIntro, card: card, renderSize: renderSize)
-            if let cached = TrailerDraftPreviewCache.shared.card(for: key) {
+            if let cached = await TrailerDraftPreviewCache.shared.hasOrLoadCard(for: key) {
                 cardImage = cached
             } else {
                 let scale = min(1, 960 / max(renderSize.width, renderSize.height))
@@ -3467,10 +3677,10 @@ struct TrailerDraftPreviewPlayer: View {
                 return
             }
             if currentPhoto?.sourceID == id { return }
-            if let cached = TrailerDraftPreviewCache.shared.photo(for: id, url: source.url) {
+            if let cached = await TrailerDraftPreviewCache.shared.hasOrLoadPhoto(for: id, url: source.url, projectID: input.projectID) {
                 currentPhoto = (id, cached)
             } else if let image = await trailerThumbnailImage(at: source.url, maxPixelSize: 1280), !Task.isCancelled {
-                TrailerDraftPreviewCache.shared.setPhoto(image, for: id, url: source.url)
+                TrailerDraftPreviewCache.shared.setPhoto(image, for: id, url: source.url, projectID: input.projectID)
                 if !Task.isCancelled, currentSegment?.sourceID == id {
                     currentPhoto = (id, image)
                 }

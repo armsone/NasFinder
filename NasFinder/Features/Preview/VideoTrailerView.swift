@@ -3060,6 +3060,7 @@ private struct VideoTrailerSettings: View {
             return id.flatMap { sourceImages[$0] }
         }
         return TrailerDraftPreviewInput(
+            projectID: chrome.projectID,
             segments: segments, sources: sources, captions: captions,
             introCard: introCard, outroCard: outroCard,
             introBackground: background(introCard, fallback: firstIncludedSource),
