@@ -619,7 +619,7 @@ private struct LocalPhotoLibraryPicker: View {
         let clips = prepared.map { $0.0.item }.filter(\.isTrailerEligible)
         guard !clips.isEmpty else { return }
         editingService = LocalPhotoLibraryFileService(entries: prepared.map { ($0.0.item, $0.1) })
-        trailerSelection = VideoTrailerSelection(items: clips, mode: mode, keepsSelectionOrder: true)
+        trailerSelection = VideoTrailerSelection(items: clips, mode: mode, keepsSelectionOrder: false)
     }
 
     /// 편집 준비에서만 표현을 바꾸며 바스켓의 원래 Entry/URL과 원본 복사는 유지한다.
@@ -681,7 +681,7 @@ private struct LocalPhotoLibraryPicker: View {
     }
     private func previewSelected(ids: [String]? = nil) async {
         let subset = ids.map { ids in entries.filter { ids.contains($0.id) } } ?? entries
-        if let asset = subset.first?.asset { nativePreviewAsset = asset; return }
+        if subset.count == 1, let asset = subset.first?.asset { nativePreviewAsset = asset; return }
         await showPreview(await prepare(subset))
     }
     private func showPreview(_ prepared: [(Entry, URL)]) async {

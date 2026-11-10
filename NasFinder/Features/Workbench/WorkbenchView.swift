@@ -305,7 +305,7 @@ struct WorkbenchPocketView: View {
         .navigationDestination(isPresented: $isFinderPresented) { WorkbenchFinderSourcePage(pocketID: pocketID) }
         .trailerEditorCover(item: $editor, onDismiss: { run.finish() }) { presentation in
             VideoTrailerView(items: presentation.items, service: presentation.service, mode: presentation.mode,
-                             keepsSelectionOrder: true, originPrivate: presentation.originPrivate)
+                             keepsSelectionOrder: false, originPrivate: presentation.originPrivate)
                 .environmentObject(inboxStore)
         }
         .onChange(of: run.phase) { _, phase in

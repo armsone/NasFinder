@@ -1540,6 +1540,122 @@ final class RemotePreviewStateTests: XCTestCase {
         XCTAssertTrue(viewModel.isPlaying)
     }
 
+    func testMultiVideoEOSHonorsPlaybackModesAndSingleVideoLoopAndPhotoIntervalPersist() {
+        let recorder = StallingPreviewRecorder()
+        let service = StallingPreviewService(recorder: recorder)
+        let first = previewVideoItem(connectionID: service.connection.id)
+        let second = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/share/second.mov",
+            name: "second.mov",
+            kind: .file,
+            size: 2_048,
+            modifiedAt: nil,
+            contentTypeIdentifier: "com.apple.quicktime-movie"
+        )
+        let third = RemoteFileItem(
+            connectionID: service.connection.id,
+            path: "/share/third.mov",
+            name: "third.mov",
+            kind: .file,
+            size: 3_072,
+            modifiedAt: nil,
+            contentTypeIdentifier: "com.apple.quicktime-movie"
+        )
+        let defaults = UserDefaults.standard
+        let modeKey = "previewPlaybackMode"
+        let intervalKey = "previewPhotoAdvanceIntervalSeconds"
+        let loopKey = "previewVideoLoopEnabled"
+        let hadModeObject = defaults.object(forKey: modeKey) != nil
+        let hadIntervalObject = defaults.object(forKey: intervalKey) != nil
+        let hadLoopObject = defaults.object(forKey: loopKey) != nil
+
+        let viewModel = RemotePreviewViewModel(
+            items: [first, second, third],
+            initialItemID: first.id,
+            service: service
+        )
+        let previousMode = viewModel.playbackMode
+        let previousInterval = viewModel.photoAdvanceInterval
+        let previousLoop = viewModel.videoLoopEnabled
+        var singleModel: RemotePreviewViewModel?
+        var defaultIntervalModel: RemotePreviewViewModel?
+        var reloadedModel: RemotePreviewViewModel?
+        defer {
+            reloadedModel?.tearDown()
+            defaultIntervalModel?.tearDown()
+            singleModel?.tearDown()
+            viewModel.setPlaybackMode(previousMode)
+            viewModel.setPhotoAdvanceInterval(previousInterval)
+            viewModel.setVideoLoop(previousLoop)
+            if !hadModeObject {
+                defaults.removeObject(forKey: modeKey)
+            }
+            if !hadIntervalObject {
+                defaults.removeObject(forKey: intervalKey)
+            }
+            if !hadLoopObject {
+                defaults.removeObject(forKey: loopKey)
+            }
+            viewModel.tearDown()
+        }
+
+        viewModel.setPlaybackMode(.repeatAll)
+        viewModel.videoDidFinish()
+        XCTAssertEqual(viewModel.currentItem.id, second.id)
+        XCTAssertTrue(viewModel.isPlaying)
+
+        viewModel.setPlaybackMode(.repeatOne)
+        viewModel.videoDidFinish()
+        XCTAssertEqual(viewModel.currentItem.id, second.id)
+        XCTAssertTrue(viewModel.isPlaying)
+
+        viewModel.setPlaybackMode(.shuffle)
+        viewModel.videoDidFinish()
+        XCTAssertNotEqual(viewModel.currentItem.id, second.id)
+        XCTAssertTrue(viewModel.isPlaying)
+
+        let beforeOnceID = viewModel.currentItem.id
+        viewModel.setPlaybackMode(.once)
+        viewModel.videoDidFinish()
+        XCTAssertEqual(viewModel.currentItem.id, beforeOnceID)
+        XCTAssertFalse(viewModel.isPlaying)
+
+        let createdSingleModel = RemotePreviewViewModel(
+            items: [first],
+            initialItemID: first.id,
+            service: service
+        )
+        singleModel = createdSingleModel
+        if createdSingleModel.videoLoopEnabled {
+            createdSingleModel.toggleVideoLoop()
+        }
+        createdSingleModel.videoDidFinish()
+        XCTAssertFalse(createdSingleModel.isPlaying)
+        createdSingleModel.toggleVideoLoop()
+        createdSingleModel.videoDidFinish()
+        XCTAssertTrue(createdSingleModel.isPlaying)
+
+        XCTAssertEqual(PhotoAdvanceInterval.allCases.map(\.rawValue), [1, 2, 3, 5, 10, 15, 30])
+        defaults.removeObject(forKey: intervalKey)
+        let createdDefaultModel = RemotePreviewViewModel(
+            items: [first],
+            initialItemID: first.id,
+            service: service
+        )
+        defaultIntervalModel = createdDefaultModel
+        XCTAssertEqual(createdDefaultModel.photoAdvanceInterval, .fiveSeconds)
+
+        createdSingleModel.setPhotoAdvanceInterval(.fifteenSeconds)
+        let createdReloadedModel = RemotePreviewViewModel(
+            items: [first],
+            initialItemID: first.id,
+            service: service
+        )
+        reloadedModel = createdReloadedModel
+        XCTAssertEqual(createdReloadedModel.photoAdvanceInterval, .fifteenSeconds)
+    }
+
     private func previewVideoItem(connectionID: UUID) -> RemoteFileItem {
         RemoteFileItem(
             connectionID: connectionID,

@@ -1113,19 +1113,24 @@ struct RemotePreviewView: View {
             if viewModel.currentItem.isImage {
                 if viewModel.imageCount > 1 {
                     positionLabel
+                    photoPlaybackModeControl
                 }
-                photoPlaybackModeControl
+                photoAdvanceIntervalControl
             } else if viewModel.currentItem.isVideo {
                 if viewModel.itemsCount > 1 {
                     positionLabel
+                    videoPlaybackModeControl
+                } else {
+                    videoRepeatControl
                 }
-                videoRepeatControl
                 videoAspectControl
             } else if viewModel.currentItem.isPlayerMedia {
                 if viewModel.itemsCount > 1 {
                     positionLabel
+                    videoPlaybackModeControl
+                } else {
+                    videoRepeatControl
                 }
-                photoPlaybackModeControl
             } else {
                 if viewModel.itemsCount > 1 {
                     positionLabel
@@ -1194,6 +1199,75 @@ struct RemotePreviewView: View {
         .accessibilityLabel(
             "사진 반복: \(viewModel.playbackMode.title), 간격 \(viewModel.photoAdvanceInterval.title)"
         )
+    }
+
+    private var photoAdvanceIntervalControl: some View {
+        Menu {
+            Section("사진 전환 간격") {
+                ForEach(PhotoAdvanceInterval.allCases) { interval in
+                    Button {
+                        viewModel.setPhotoAdvanceInterval(interval)
+                        revealControls()
+                    } label: {
+                        Label(
+                            interval.title,
+                            interfaceSystemImage: viewModel.photoAdvanceInterval == interval
+                                ? "checkmark"
+                                : "timer"
+                        )
+                    }
+                }
+            }
+        } label: {
+            Text(viewModel.photoAdvanceInterval.title)
+                .font(.system(size: ui(13), weight: .bold, design: .rounded).monospacedDigit())
+                .foregroundStyle(viewModel.photoAdvanceInterval != .fiveSeconds ? Color.accentColor : .white)
+                .frame(width: ui(44), height: ui(44))
+                .background(
+                    (viewModel.photoAdvanceInterval != .fiveSeconds
+                        ? Color.white.opacity(0.24)
+                        : Color.black.opacity(0.32)),
+                    in: Circle()
+                )
+                .overlay {
+                    Circle()
+                        .stroke(
+                            viewModel.photoAdvanceInterval != .fiveSeconds
+                                ? Color.accentColor.opacity(0.9)
+                                : Color.white.opacity(0.22),
+                            lineWidth: 1
+                        )
+                }
+                .frame(minWidth: ui(48), minHeight: ui(48))
+                .contentShape(Rectangle())
+        }
+        .accessibilityLabel("사진 전환 간격: \(viewModel.photoAdvanceInterval.title)")
+    }
+
+    private var videoPlaybackModeControl: some View {
+        Menu {
+            Section("재생 방식") {
+                ForEach(PreviewPlaybackMode.allCases) { mode in
+                    Button {
+                        viewModel.setPlaybackMode(mode)
+                        revealControls()
+                    } label: {
+                        Label(
+                            mode.title,
+                            interfaceSystemImage: viewModel.playbackMode == mode
+                                ? "checkmark"
+                                : mode.systemImage
+                        )
+                    }
+                }
+            }
+        } label: {
+            SharedPlayerCircleLabel(
+                systemImage: viewModel.playbackMode.systemImage,
+                isActive: viewModel.playbackMode != .repeatAll
+            )
+        }
+        .accessibilityLabel("재생 방식: \(viewModel.playbackMode.title)")
     }
 
     private var videoRepeatControl: some View {
@@ -2303,7 +2377,7 @@ final class RemotePreviewViewModel: ObservableObject {
     func videoDidFinish() {
         guard currentItem.isPlayerMedia else { return }
 
-        if currentItem.isVideo {
+        if currentItem.isVideo, items.count <= 1 {
             if videoLoopEnabled {
                 replayCurrentVideo()
             } else {

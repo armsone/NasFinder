@@ -1056,7 +1056,17 @@ enum AudioImpactClassifier {
         duration: Double,
         limit: Int = 12
     ) -> [Double] {
+        rankedImpacts(frames: frames, duration: duration, limit: limit).map(\.time)
+    }
+
+    /// 강한 순서의 (시각, 분류기가 실제 타격으로 판정했는지). 판정 안 된 항목은 단지 큰 소리/일반 하이라이트다.
+    static func rankedImpacts(
+        frames: [AudioImpactFrame],
+        duration: Double,
+        limit: Int = 12
+    ) -> [(time: Double, isTriggered: Bool)] {
         guard !frames.isEmpty else { return [] }
+        var triggeredTimes = Set<Double>()
 
         var baseline = 0.008
         var recentLevel = 0.008
@@ -1097,6 +1107,7 @@ enum AudioImpactClassifier {
                 + score * 0.12
 
             fallback.append((frame.time, combinedScore))
+            if decision.isTriggered { triggeredTimes.insert(frame.time) }
             if decision.isTriggered
                 || highlightScore > 0.82
                 || memorableMomentScore > 0.78
@@ -1120,7 +1131,7 @@ enum AudioImpactClassifier {
                 break
             }
         }
-        return selected.map(\.time)
+        return selected.map { ($0.time, triggeredTimes.contains($0.time)) }
     }
 
     private static func effectiveSensitivity(

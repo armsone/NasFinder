@@ -152,6 +152,17 @@ final class TrailerDraftStore: ObservableObject {
         refreshOutputDuration(for: record)
     }
 
+    /// 원본은 그대로 두고, 새로 분석한 추천으로 장면을 다시 고른 복제본을 목록에 추가한다.
+    func duplicateRebuiltFromRecommendation(_ id: UUID) async {
+        guard let result = await TrailerProjectStore.shared.duplicateRebuiltFromRecommendation(id),
+              let record = TrailerProjectStore.shared.records[result.id] else { return }
+        storedEntries.append(Self.entry(from: record))
+        refreshOutputDuration(for: record)
+        if !result.rebuilt {
+            errorMessage = "새 분석으로 장면을 다시 고르지 못해 일반 복제본만 만들었습니다. 원래 편집본은 그대로입니다."
+        }
+    }
+
     /// Suspended editors of the same kind other than the session `id`.
     func others(mode: VideoTrailerMode, than id: UUID) -> [TrailerDraftEntry] {
         entries.filter { $0.mode == mode && $0.id != id }

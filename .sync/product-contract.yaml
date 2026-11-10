@@ -51,6 +51,7 @@ capabilities:
     source_refs: ["NasFinder/Features/Preview/VideoTrailerView.swift", "NasFinder/Features/Preview/VideoTrailerPhotoQuality.swift", "NasFinder/Features/Preview/VideoTrailerPlan.swift", "NasFinder/Features/Video/TrailerSceneEditing.swift", "NasFinder/Features/Video/TrailerProjectStore.swift", "../NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/AdaptiveEditorWorkspace.kt", "../NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/VideoEditorState.kt", "../NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/TrailerPhotoAnalysis.kt", "../NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/TrailerDraftStore.kt", "../NasFinder-Android/app/src/main/java/com/armsone/nasfinder/ui/NasFinderViewModel.kt"]
     algorithms_and_thresholds:
       - "증감 단위: 10초 미만0.5초, 30초 미만1초, 3분 미만5초, 10분 미만30초, 이후1분. 현재값/추천값/양옆후보와 슬라이더가 같은 유효 범위를 사용한다."
+      - "빠른 선택: 전체 길이 줄 [−][3분][추천][5분][+](180/300초, 카드 포함 전체 예산), 영상 클립 길이 줄 [−][1][2][추천][4][6][+]. 고정 선택지는 범위 밖이면 비활성, 숫자는 명시 선택(추천과 같은 값이어도 추천 아님)."
       - "사진 기본 중요도 비율은 0.10...0.95 순위 보간이며 단단한 상하한이 아니다. 비슷한 사진은 최소0.01 비율, 상위 품질의 실제 중앙값 초과 근거가 있는 사진은 최대0.30 추가 가중치를 준다. 표시 시간은 1/30초...30초 렌더 범위 내에서 클립시간 곱으로 계산한다."
       - "품질/지문/DINO 기존 신호를 재사용한다. 클릭/드래그마다 재분석하지 않는다. 수동 전체 길이는 기존 장면을 비례 조절하되 원본 경계 내에서 분배한다."
     data_contracts: ["사진 비율 정책 버전2, 누락된 저장 필드는 이전 버전1", "이전 비율은 명시적 클립 변경 때 한 번 변환하며 장면·비율·버전을 같은 편집 기록에 저장"]
@@ -622,8 +623,8 @@ capabilities:
     inputs: ["ordered previewable items", "selected index", "playback/slideshow preferences"]
     normal_result: "Preview prioritizes errors, otherwise immediately displays a visible preparing/buffering state and then prepared image/video/audio/Quick Look content; selecting a playable item requests automatic playback, previous/next wraps, manual navigation autoplays, and retry fully tears down stale work. Playback failure becomes an actionable retry/external-open/close state rather than a silent first-frame stall. Browser remote files, Shared Inbox/PhoneHard local files, and WebHard local files all enter this same viewer contract instead of a reduced platform-specific viewer. Fullscreen image and video surfaces hide the device status bar; video also retains immersive navigation-bar hiding, and dismissal restores the system bars."
     states: [idle, loading, streaming, downloading, image, video, quicklook, error, retrying, cancelled, dismissed]
-    algorithms_and_thresholds: ["controls auto-hide after 5 seconds", "image preview remains the same zoomable single-image surface across device portrait and landscape; browser poster-to-overflow rules never alter an already opened image", "JPEG/HEIF EXIF orientation including mirrored variants is normalized before image fit and aspect decisions", "download cache max 512 MiB and 7 days", "mixed image/video/audio navigation wraps", "sequence mode is persisted and offers repeat-all, shuffle and repeat-one for video/audio; photo slideshow uses the same sequence modes plus 1/2/3/5/10/15/30-second intervals", "manual next/previous starts the newly selected playable item while automatic advance preserves the user's pause policy", "traffic counts only positive uncached byte deltas"]
-    data_contracts: ["RemotePreviewContentKind/LoadStrategy/PlaybackMode(repeatAll,shuffle,repeatOne)/PhotoAdvanceInterval", "cache v2 SHA key includes connection/path/modifiedAt/size", "unknown remote size is null in the common model and is encoded as sentinel -1 only when forming deterministic cache/vault identity"]
+    algorithms_and_thresholds: ["controls auto-hide after 5 seconds", "image preview remains the same zoomable single-image surface across device portrait and landscape; browser poster-to-overflow rules never alter an already opened image", "JPEG/HEIF EXIF orientation including mirrored variants is normalized before image fit and aspect decisions", "download cache max 512 MiB and 7 days", "mixed image/video/audio navigation wraps", "sequence mode is persisted and offers repeat-all, shuffle, repeat-one and play-once for multi-item video/audio/photo lists while single-URI video exposes single-item repeat toggle without fabricating a playlist; photo viewer explicitly shows and persists 1/2/3/5/10/15/30-second advance intervals (default 5s) near playback controls even for a single photo", "manual next/previous starts the newly selected playable item while automatic advance preserves the user's pause policy", "traffic counts only positive uncached byte deltas", "movie collections and completed trailer/music-video lists open through the shared Byungki RemotePreviewView surface"]
+    data_contracts: ["RemotePreviewContentKind/LoadStrategy/PlaybackMode(repeatAll,shuffle,repeatOne,once)/PhotoAdvanceInterval(1,2,3,5,10,15,30s, default 5s)", "cache v2 SHA key includes connection/path/modifiedAt/size", "unknown remote size is null in the common model and is encoded as sentinel -1 only when forming deterministic cache/vault identity"]
     producer_consumer_routes: ["remote browser item or PhoneHard/WebHard local adapter -> one common ordered media model -> cache/stream/download/local URL -> image/video/audio/compatibility/QuickLook surface -> share/navigation"]
     persistence_relaunch: "Download cache and playback/slideshow option preferences persist where stored; active preview does not."
     permissions_privacy_security: ["Cache stays private", "share prepares a safe local file"]
@@ -1312,6 +1313,62 @@ capabilities:
       ios: {status: source_build_install_verified_runtime_partial, evidence: ["manual duration plan repeats to exact600Hz ticks and trims last scene; final velocity-sensitive horizontal slider built and installed as2.11.1; physical feel and full2hour export unverified"]}
       android: {status: source_build_install_verified_runtime_partial, evidence: ["real original about7seconds -> 600seconds/10minute plan shown; final velocity-sensitive horizontal slider built and installed as2.11.1; physical feel and full2hour export unverified"]}
 
+  - id: trailer.music_fit_repeat
+    purpose: "음악 길이 맞춤에서 선택한 음악을 1,2,3...회 반복한 총 길이에 영상 구성을 맞추고, 직접 편집한 장면도 원본 파일·시작 위치·순서·자막을 보존한 채 길이만 맞춘다."
+    entry_points: ["예고편 편집 > 음악 선택 > 길이 N회 버튼"]
+    normal_result: "'길이 N회'를 다시 누를 때마다 재생 횟수가 1,2,3...으로 늘고 'N회 재생 · 총 m:ss'와 다음 탭 결과 안내가 보인다. 다른 방식으로 바꿨다가 돌아오면 1회부터 시작한다. 직접 편집 장면은 원본 길이 범위 안에서 길이만 재분배된다."
+    states: [fit_count_1, fit_count_n, switched_policy_reset, manual_scenes_redistributed, source_bound_unreachable]
+    algorithms_and_thresholds: ["목표 길이 = 음악 길이 x 반복 횟수 - 시작/마지막 화면 길이", "장면 길이는 sceneDurationBounds 실제 원본 범위로만 제한하고 범위상 못 맞추면 가능한 만큼만 바뀐다"]
+    data_contracts: ["music.fitCount는 저장 후 다시 열어도 유지되며 누락된 이전 값은 1회"]
+    persistence_relaunch: "fitCount와 재분배된 장면 길이는 편집본 저장·재열기에 유지. 원본 파일은 변경하지 않음."
+    visual_reference: "Android 최종 게시 2.39.80 동작을 의미 기준으로 하며 Apple UI 캡처 쌍은 아직 없음"
+    implementations:
+      ios: {status: source_build_install_verified_runtime_partial, source_refs: ["NasFinder/Features/Preview/VideoTrailerView.swift", "NasFinder/Features/Video/TrailerSceneEditing.swift"], tests: ["NasFinderTests/PhotoSelectionEngineTests (PhotoSelectionEngineTests 22개 0 실패, iPhone 실행)"], evidence: ["2026-11-09 2.39.80 (202611091947) iPhone 17 Pro와 Mac /Applications 설치·실행 확인(작업 로그 iphone-install.log, mac-install.log). 설치 커밋 표기 3cce7bf, 작업트리 미커밋 변경 포함. 길이 N회 화면, 총 시간 문구, 다음 탭 안내, 저장/재열기는 UI 관찰 없음: visually_verified=false"]}
+      android: {status: not_rechecked_by_this_task, source_refs: [], tests: [], evidence: ["Android는 읽기 전용 기준이며 이 작업에서 변경·재검증하지 않음"]}
+    parity_row_ids: ["trailer_music_fit.repeat_count.cycle_1_2_3", "trailer_music_fit.repeat_label.total_and_hint_visible", "trailer_music_fit.manual_scenes.redistribute_within_source_bounds"]
+
+  - id: trailer.music_beat_sync
+    purpose: "음악 비트 분석 시각을 실제 PCM 프레임 기준으로 정확히 하고, 음악템포 맞춤이 영상·사진 장면 길이를 원본 범위 안에서 비트 전환점에 맞추되 마지막 장면이 음악 끝을 채우게 한다."
+    entry_points: ["예고편 편집 > 음악 선택 > 음악템포 버튼"]
+    normal_result: "무음 구간처럼 닿는 비트가 없는 장면은 그대로 두고 알림으로 개수를 알리며, 영상 시작 위치·자막·순서·제외 장면은 보존된다. 모든 컷이 비트에 닿는다고 주장하지 않는다."
+    states: [beats_found, no_beats_found, already_aligned, partially_unaligned, fit_residual_reported]
+    algorithms_and_thresholds: ["5ms RMS 구간, 시각 = 누적 디코드 PCM 프레임 / 샘플레이트(PTS 미사용)", "온셋 = 직전 40ms 평균 대비 이후 20ms 평균 증가, 지역 1초 평균 x1.5 및 전역 상위1% x0.2 하한, 최소 간격 0.15초", "장면 길이 한계는 실제 원본 범위(영상: 시작 위치 이후 남은 길이, 사진: 1/30~30초). 임의 0.8초 하한/15초 상한/1.8초 근접 제한 없음", "남은 장면 최소/최대 길이 합으로 끝점을 제한하고 이미 맞춘 컷을 되돌리지 않음"]
+    data_contracts: ["syncScenesToBeatOnsets 결과: adjustedCount, averageShift, unalignedCount, fitResidual"]
+    persistence_relaunch: "조절된 장면 길이는 편집본 저장·되돌리기·재열기·내보내기에 동일하게 사용"
+    implementations:
+      ios: {status: source_build_install_verified_runtime_partial, source_refs: ["NasFinder/Features/Preview/HanClipAnalysis/AudioAnalysisService.swift", "NasFinder/Features/Video/TrailerSceneEditing.swift", "NasFinder/Features/Preview/VideoTrailerView.swift"], tests: ["NasFinderTests/PhotoSelectionEngineTests.testBeatSyncMovesVideoAndPhotoScenesWithinSourceBoundsAndFillsMusicBudget (iPhone 22개 0 실패)"], evidence: ["합성 wav/mp3/m4a 오디트에서 비트 시각 오차 0ms(이전 약 12.5ms 늦음), MP3 디코드 프레임 882000=20.0000s, firstPTS 0 (작업 audit 폴더)", "내보내기 청크 6개 asset duration이 계획과 일치(+0.0ms)하여 export 변경 없음", "2.39.80 iPhone/Mac 설치·실행 확인. 음악템포 버튼 UI와 알림은 관찰 없음: visually_verified=false, 실제 음악 파일 장면 비트 정렬 런타임 추적 없음"]}
+      android: {status: not_rechecked_by_this_task, source_refs: [], tests: [], evidence: ["Android는 읽기 전용 기준이며 이 작업에서 변경·재검증하지 않음"]}
+    parity_row_ids: ["trailer_music_beat.analysis.pcm_frame_timebase", "trailer_music_beat.solver.source_bounds_and_budget", "trailer_music_beat.notice.result_visible"]
+
+  - id: trailer.action_window_protection
+    purpose: "자동 추천·추천 재선정 사본·자동 초기화·음악 맞춤·템포 맞춤·길이 조절이 감지된 샷(셋업-임팩트-팔로스루)을 조용히 빼거나 잘라내지 않도록 동작 후보와 보호 구간을 정한다."
+    entry_points: ["예고편 자동 추천", "초안 메뉴 '추천으로 다시 맞춘 사본'", "자동 추천 다시 적용/길이 변경", "음악 길이 맞춤 N회", "음악템포 맞춤", "저장된 편집본 재열기"]
+    normal_result: "고립 타격(transient)이 있는 동작은 소스당 개수 한도 없이 모두 장면이 되고, 분류기 검증 동작은 이웃이면 합치거나(≤18초) 빈 틈에 들어가며, 큰 소리만은 기존 한도(용량·절반·8). 보호 구간은 앞 2.5초·뒤 3.5초(큰 고립 클릭 = 임팩트 자체), 그 밖의 근거(조용한 클릭, 클릭 없는 검증/큰 소리)는 뒤 6.0초(연습 스윙·준비 소리 뒤 소리 없는 실제 스트로크와 공 구름·카메라 추적). 자동 길이(맞춤/반복 어느 쪽이든)가 보호 최소보다 짧으면 장면을 빼지 않고 길이·반복을 늘리고 알린다. 실제 샷을 모두 인식한다고 주장하지 않는다(소리 근거 없는 먼 샷은 이웃 근거의 문맥으로만 포함)."
+    states: [sharp_action_kept_unlimited, verified_merged_or_gap, loud_only_limited, protected_minimum_raises_total, repeat_count_raised, fewest_unaligned_repeat]
+    algorithms_and_thresholds: ["transient: 피크≥0.04, 앞 8프레임 중앙값의 6배, 2~3프레임 뒤 ≤35%; 0.6초 이내 병합", "sharp = 피크 앞 3.8초~뒤 0.6초 안 transient; 순위 sharp>verified>세기(안정)", "follow: sharp && 세기≥55% 컷이면 3.5초, 아니면 6.0초(병합 상한 18초는 그대로)", "검증 이웃 병합 상한 3×(2.5+3.5)=18초, 못 합치면 앞뒤 1초 들어가는 빈 틈, 한도 건너뛴 검증은 2차 병합, ≤2초 틈 메움", "분석 후보: 분류기·피크 상한 없음(Android 기존 동작과 동일, Apple 12개 상한 제거)", "비트 최소 반복: +1/+2 중 10% 이하 없으면 미정렬 최소 횟수"]
+    data_contracts: ["EditorScene/TrailerEditScene.actionStart/actionEnd", "소스 분석 영속: waveform/peakTimes/verifiedPeakTimes/transientTimes/audioAvailability/highlightSource(깨지면 재분석)"]
+    persistence_relaunch: "보호 구간·분석은 저장·재열기에 유지. Android 저장소 재설정은 메모리를 비우고 다시 읽음(중복 기록 방지). 추천 재선정 사본은 분석 포함 저장."
+    implementations:
+      ios: {status: source_build_install_verified_runtime_partial, source_refs: ["NasFinder/Features/Preview/VideoTrailerPlan.swift", "NasFinder/Features/Video/TrailerSceneEditing.swift", "NasFinder/Features/Video/TrailerProjectStore.swift", "NasFinder/Features/Preview/VideoTrailerView.swift", "NasFinder/Features/Preview/HanClipAnalysis/AudioAnalysisService.swift"], tests: ["NasFinderTests/PhotoSelectionEngineTests 36개 0 실패(iPhone, install-verified)", "ShotFixRenderHarnessTests r5 실제 렌더 통과"], evidence: ["2026-11-10 2.39.81(202611092235) iPhone·Mac 최종 설치(소스 diff 390579e9). iPhone r5 실제 파이프라인 137장면 23:29 확정 샷 56개 누락 0, 저장·재열기 동일. Mac 실제 UI(루트) 사본 133장면 22:06 내보내기·끝까지 재생·재열기: 확정 56 중 54 포함, 2개(0번 52s 퍼팅, 37번 151.75s)는 임팩트 포함·임팩트 뒤 약 0.8초 이후 잘림(Mac 분석이 0번 검증 피크 2개를 덜 냄). 도움말·레거시 게이트 최종 UI 관찰은 루트 확인 대기: visually_verified=partial"]}
+      android: {status: source_build_install_verified_runtime_partial, source_refs: ["TrailerPlan.kt", "TrailerAudioAnalysis.kt", "TrailerDraftStore.kt", "NasFinderViewModel.kt", "VideoEditorState.kt"], tests: ["PhotoMotionGeometryTest 19개 0 실패", "BeatAuditInstrumentation plan/persist/recovery/remove/output"], evidence: ["2026-11-10 2.39.81/448300 releaseQa 71a3a233 설치(TriFold). 복구 사본 e9e4922d 133장면: 계측 렌더와 실제 UI 내보내기(루트, 22:06, 끝 프레임·재열기 확인) 모두 확정 샷 56개 누락 0, 보호 위반 0. 초기화(LOOP 268.7초) 131장면 누락 0: visually_verified=true(루트 UI)"]}
+    parity_row_ids: ["trailer_action.candidates.sharp_unlimited", "trailer_action.reset.protected_minimum", "trailer_action.copy.extra_scenes_ordered"]
+    superseded_by: "trailer.total_duration_budget (2026-11-10 대표님 지시: 정한 전체 길이·음악 반복 횟수가 우선. '길이·반복을 늘린다'·repeat_count_raised·fewest_unaligned_repeat 상태는 폐기)"
+
+  - id: trailer.total_duration_budget
+    purpose: "사용자가 정한 전체 길이(시작·마지막 화면 포함)와 음악 길이 N회는 넘지 않는 예산이다. 감지된 동작(보호 구간)은 자르지 않고, 다 안 들어가면 덜 중요한 장면을 통째로 빼며, 길이를 늘리면 뺀 장면이 편집 그대로 돌아온다."
+    entry_points: ["편집 > 전체 길이(버튼·슬라이더)", "음악 > 길이 N회(누를 때마다 +1, 다른 방식에서 오면 1회)", "음악템포 맞춤", "자동 추천 다시 적용/카드 변경 재맞춤", "저장된 편집본 재열기"]
+    normal_result: "전체 길이 = 시작/마지막 카드 + 본편. 본편 예산 안에 보호(최소) 길이가 다 들어가면 모든 장면을 비례로 나눈다. 넘치면 중요한 장면부터(소스마다 가장 중요한 장면이 다른 추가 장면보다 먼저, 같으면 앞쪽) 통째로 들어가는 장면만 담고 나머지는 뺀다. 이때 담는 최소 길이 합은 예산의 90%까지로 해 컷이 비트로 움직일 여유를 남긴다(그 여유로 한 장면도 안 들어가면 100%). 남은 장면은 보호 구간을 담은 채 예산을 나눈다(재료가 모자라면 예산보다 짧을 수 있음, 넘지 않음). 음악 길이 N회는 정확히 N회이고 자동으로 늘리지 않는다. 비트 맞춤은 반복 횟수를 바꾸지 않고 예산(음악 끝, 다른 정책은 지금 총길이)을 넘기지 않는다. 화면에 실제 전체 길이와 사용/뺀 장면 수를 표시한다."
+    states: [all_scenes_fit, whole_scenes_reserved, reserved_restored_on_longer, unachievable_previous_state_kept, exact_music_repeat, beat_within_budget]
+    algorithms_and_thresholds: ["중요도: 중요 사진 2, 사진 품질 비율(≤.95), 영상 컷: 창 안 근거 피크 1+sharp 1+verified .5(소스별 상대 세기는 쓰지 않음), 근거 있는데 창 안 피크 없음 .5, 근거 없음 1", "선택 순서: 소스 대표 먼저 → 중요도 높음 → 보호 최소 길이 짧은 것 → 앞 순서, 들어가는 것만(최소 길이 합 ≤ 예산×0.9, 안 되면 ×1.0)", "불가: 가장 짧은 한 장면 최소 길이 + 카드 > 목표면 변경 없이 '전체 X 이상 필요' 안내"]
+    data_contracts: ["Android EditorProject.budgetReserve(장면 그대로)+budgetOrder(복원 위치 키), 초안 JSON 선택 키 budgetReserve/budgetOrder", "Apple TrailerEditScene.budgetExcluded(선택 키, excluded=true와 함께; 목록에 '길이 맞춤으로 뺌')", "구 초안: 키 없음 = 뺀 장면 없음, 저장된 반복 횟수·장면은 그대로 열림(자동 재맞춤 없음)"]
+    persistence_relaunch: "뺀 장면·순서·자막·음량·프레이밍은 저장·재열기·되돌리기에 유지되고 다음 예산 변경 때 제자리로 돌아온다. 사용자가 직접 제외/삭제한 장면은 예산이 되살리지 않는다."
+    platform_adaptations:
+      ios: ["기존 목록 내 제외 표시를 써서 뺀 장면을 '길이 맞춤으로 뺌'으로 보여 준다"]
+      android: ["기존에 목록 내 제외 개념이 없어 뺀 장면은 목록에서 숨기고 전체 길이·음악 안내에 사용/뺀 개수를 보여 준다"]
+    implementations:
+      ios: {status: source_edited, source_refs: ["NasFinder/Features/Video/TrailerSceneEditing.swift", "NasFinder/Features/Video/TrailerProjectStore.swift", "NasFinder/Features/Preview/VideoTrailerPlan.swift", "NasFinder/Features/Preview/VideoTrailerView.swift"], tests: ["PhotoSelectionEngineTests testMusicFitKeepsTheChosenCountAndReservesWholeScenes/testBudgetRoundTripRestoresReservedScenes/testBeatSyncKeepsTheChosenRepeatCountAndBudget/testAutoPlanMusicFitKeepsTailAndProtectedWindows", "ShotFixRenderHarnessTests totalSeconds/budgetSequence"]}
+      android: {status: source_edited, source_refs: ["TrailerPlan.kt", "VideoEditorState.kt", "NasFinderViewModel.kt", "AdaptiveEditorWorkspace.kt", "TrailerDraftStore.kt"], tests: ["PhotoMotionGeometryTest automaticRegenerationWithAShortBudgetKeepsWholeShotsWithinIt/budgetFitReservesWholeScenesAndRestoresThemWithTheirEdits/beatFitKeepsTheChosenRepeatCountAndBudget", "BeatAuditInstrumentation mode=draft totalSec / mode=budget"]}
+
   - id: connections.cloud_dashboard_management
     purpose: "Google 포토를 네트워크 위치 행으로 표시하고 대시보드에서 추가·수정·삭제하며 Dropbox 연결 계정을 식별한다."
     entry_points: ["대시보드 > 네트워크 > Google 포토 > 점 세 개", "대시보드 > 네트워크 추가", "Dropbox 네트워크 행"]
@@ -1496,7 +1553,7 @@ capabilities:
     inputs: ["클립·자막·음악·화면 탭", "2~6열 클립 격자", "자막 문구·전체/선택/현재 범위·25개 위치·스타일·글꼴·크기·색상·그림자·줄 간격", "편집본 저장", "저장 후 내보내기"]
     normal_result: "미리보기와 네 탭은 한 묶음이며 탭을 누르면 해당 설정만 보인다. 폰은 한 페이지 스크롤을 쓰고 기본 3열 격자다. iPad 가로·세로와 넓은 Mac은 독립 스크롤하는 두 열이며 자막 탭의 왼쪽은 미리보기·탭과 내용/위치만, 오른쪽은 스타일/글꼴 다음 세부 조절이다."
     states: [clip_grid, caption_content, style_expanded, font_expanded, caption_details, music, picture, draft_dirty, draft_saved, saving_failed, rendering, rendered, render_failed, cancelled]
-    algorithms_and_thresholds: ["각 묶음 제목은 카드 바깥, 둥근 사각 카드와 일관된 44~48pt 터치 행", "위치판 160 높이와 날짜 버튼 76+8+76 높이 정렬", "새 자막 기본 전체 영상·맨 위 왼쪽", "스타일 우선, 글꼴은 그 다음 인라인 접기/펼치기", "글자색과 그림자색 각각 SV/색상띠 및 6개 샘플", "글자색 직접 변경 시 그림자 RGB를 반전하고 수동 그림자 변경은 다시 열어도 보존", "자막 크기 4단계, 줄간격 0.5~2.0", "내보내기 전 미적용 자막 처리와 내구성 편집본 저장 성공 대기"]
+    algorithms_and_thresholds: ["각 묶음 제목은 카드 바깥, 둥근 사각 카드와 일관된 44~48pt 터치 행", "위치판 160 높이와 날짜 버튼 76+8+76 높이 정렬", "새 자막 기본 전체 영상·맨 위 왼쪽", "스타일 우선, 글꼴은 그 다음 인라인 접기/펼치기", "글자색과 그림자색 각각 SV/색상띠 및 6개 샘플", "글자색 직접 변경 시 그림자 RGB를 반전하고 수동 그림자 변경은 다시 열어도 보존", "자막 크기 4단계, 줄간격 0.5~2.0", "내보내기 전 미적용 자막 처리와 내구성 편집본 저장 성공 대기", "클립 순서(촬영순 기본·추가순·랜덤)는 전체/클립 길이 설정 바로 아래에 모든 화면 크기와 분석 완료 후 장면 타임라인(Mac 포함)에서 표시되며, 새 프로젝트는 촬영순을 기본 적용하고 재열기 시에는 저장된 사용자 순서를 덮어쓰지 않으며, 재정렬 시 보호 구간·편집값·소스 내 분할 순서를 보존한다"]
     data_contracts: ["기존 프로젝트 역호환 디코딩", "자막의 폰트·25개 위치·글자색·그림자색·투명도·줄간격 저장", "원본 미디어 보존"]
     producer_consumer_routes: ["자막 입력 -> 초안 -> 범위 적용 -> 장면 모델 -> 편집본 디스크 -> 재열기", "동일 장면 자막 모델 -> 화면 미리보기 및 MP4 자막 래스터"]
     persistence_relaunch: "수동 그림자색과 사용자 글꼴을 포함한 편집 설정을 보존한다."
@@ -1513,7 +1570,7 @@ capabilities:
     dependencies: [editing.storyboard_grid_and_captions, editing.simple_two_area_flow_and_draft_save]
     parity_row_ids: [editor_20261101.preview_tabs.layout, editor_20261101.phone_scroll.behavior, editor_20261101.tablet_columns.layout, editor_20261101.caption_palettes.layout, editor_20261101.auto_shadow.behavior, editor_20261101.caption_persistence.behavior, editor_20261101.draft_export.behavior, editor_20261101.caption_output.behavior]
   - id: video.title_card_independent_style
-    purpose: "시작/마지막 화면의 제목과 부제목 서체·크기·위치(5x5)·글자색·그림자를 독립적으로 설정하고 이전 프로젝트와 역호환성을 보존한다."
+    purpose: "시작/마지막 화면의 기본 문구 편집과 제목 스타일·부제목 스타일(일반 자막 스타일/세부 조절 컨트롤 재사용, 5x5 위치)·배경 설정(단색/사진)을 시작/마지막 화면 모두 동일한 편집 구성으로 제공하고 이전 프로젝트와 역호환성을 보존한다."
     entry_points: ["와이드/폰 편집기 시작/마지막 화면 편집 영역"]
     preconditions: ["시작 또는 마지막 타이틀 카드가 활성화됨"]
     inputs: ["제목|부제목 선택기", "자막 크기 4종(작게/기본/크게/더크게)", "5x5 위치 격자", "글꼴 선택", "글자색 6종 프리셋 및 커스텀 HEX", "그림자 토글 및 불투명도", "선택 스타일 초기화"]

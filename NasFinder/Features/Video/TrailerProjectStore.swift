@@ -113,6 +113,8 @@ struct TrailerEditScene: Codable, Equatable, Identifiable, Sendable {
     var length: Double
     /// 결과 영상에서 빠지지만 목록에는 남는다. 삭제와 다르다.
     var excluded = false
+    /// 사용자가 아니라 정한 전체 길이·음악 길이(예산)에 맞추느라 뺀 장면(`excluded`도 참). 다음 예산 변경 때 먼저 되돌린다.
+    var budgetExcluded = false
     /// 이 장면의 원본 소리만 끈다(전역 음악과 별개).
     var muted = false
     /// 이 장면만 화면 전체를 채우지 않고 안에 맞춘다(영상·사진).
@@ -125,12 +127,15 @@ struct TrailerEditScene: Codable, Equatable, Identifiable, Sendable {
     var offsetY = 0.0
     /// 이 장면에 붙는 자막(nil이면 문구 없음).
     var caption: TrailerCaption? = nil
+    /// 자동 추천이 지키는 원본 시각의 동작 구간(nil이면 보호 없음: 수동 트림). 저장 전 초안은 열 때 저장된 창 전체로 옮긴다.
+    var actionStart: Double? = nil
+    var actionEnd: Double? = nil
 
     /// 사진 장면에서 사용자가 직접 정한 화면 구성이 있는지. 없으면 기존 자동 확대 효과를 그대로 쓴다.
     var hasCustomFraming: Bool { fitsFrame || offsetX != 0 || offsetY != 0 }
 
     enum CodingKeys: String, CodingKey {
-        case id, sourceID, start, length, excluded, muted, fitsFrame, volume, offsetX, offsetY, caption
+        case id, sourceID, start, length, excluded, budgetExcluded, muted, fitsFrame, volume, offsetX, offsetY, caption, actionStart, actionEnd
     }
 }
 
@@ -143,12 +148,21 @@ extension TrailerEditScene {
         start = try c.decode(Double.self, forKey: .start)
         length = try c.decode(Double.self, forKey: .length)
         excluded = try c.decodeIfPresent(Bool.self, forKey: .excluded) ?? false
+        let budgetFlag = try c.decodeIfPresent(Bool.self, forKey: .budgetExcluded) ?? false
+        budgetExcluded = excluded && budgetFlag
         muted = try c.decodeIfPresent(Bool.self, forKey: .muted) ?? false
         fitsFrame = try c.decodeIfPresent(Bool.self, forKey: .fitsFrame) ?? false
         volume = min(1, max(0, try c.decodeIfPresent(Double.self, forKey: .volume) ?? 1))
         offsetX = min(1, max(-1, try c.decodeIfPresent(Double.self, forKey: .offsetX) ?? 0))
         offsetY = min(1, max(-1, try c.decodeIfPresent(Double.self, forKey: .offsetY) ?? 0))
         caption = try c.decodeIfPresent(TrailerCaption.self, forKey: .caption)
+        // 동작 구간은 둘 다 있고 유한하며 순서가 맞을 때만 읽는다. 아니면 보호 없음(구버전과 같음).
+        let anchorStart = try c.decodeIfPresent(Double.self, forKey: .actionStart)
+        let anchorEnd = try c.decodeIfPresent(Double.self, forKey: .actionEnd)
+        if let anchorStart, let anchorEnd, anchorStart.isFinite, anchorEnd.isFinite, anchorEnd > anchorStart {
+            actionStart = anchorStart
+            actionEnd = anchorEnd
+        }
     }
 }
 
@@ -237,6 +251,10 @@ struct TrailerProjectRecord: Codable, Sendable {
         /// 1 = 레거시(0.35...0.75), 2 = 현재 정책(0.10...0.95 + 보너스). 구버전 저장본은 nil(1로 읽음).
         var imageDurationPolicyVersion: Int? = nil
         var isImportant: Bool? = nil
+        /// 분류기가 타격으로 판정한 피크. 구버전 저장본은 nil(검증 정보 없음 → 열 때 다시 분석한다).
+        var verifiedPeakTimes: [Double]? = nil
+        /// 짧고 고립된 날카로운 소리(조용한 임팩트) 시각. 구버전 저장본은 nil → 열 때 다시 분석한다(메모리만).
+        var transientTimes: [Double]? = nil
     }
 
     struct Music: Codable, Sendable {
@@ -285,6 +303,12 @@ struct TrailerProjectRecord: Codable, Sendable {
     var introCard: TrailerTitleCard? = nil
     /// 마지막 화면 타이틀 카드 (구버전은 nil)
     var outroCard: TrailerTitleCard? = nil
+    /// 동작 보호 구간을 도입하기 전에 저장된 장면을 이미 이관했는지(nil = 아직). 이관 뒤에 수동 트림으로 보호가 풀린 장면은 다시 보호하지 않는다.
+    var anchorsMigrated: Bool? = nil
+    /// 사용자가 정한 전체 길이(시작·마지막 화면 포함, 넘지 않는 예산). nil이면 없음(음악 길이 맞춤은 음악이 예산).
+    var budgetTarget: Double? = nil
+    /// 클립 길이 줄에서 마지막으로 누른 것이 숫자(1·2·4·6·−/+·슬라이더)인지(추천이면 nil/false). 숫자면 예산은 컷을 다시 늘리지 않는 상한이다.
+    var clipChoiceExplicit: Bool? = nil
 }
 
 /// 저장 요청 한 번에 필요한 값. 메인 액터에서 만들고 디스크 작업은 백그라운드에서 한다.
@@ -797,6 +821,73 @@ final class TrailerProjectStore: ObservableObject {
                 return nil
             }
         }
+    }
+
+    /// "추천으로 다시 맞춘 사본": 원본 프로젝트는 그대로 두고 복제본에서만, 새로 분석한 결과로 영상 장면의 시작 위치를 다시 고른다.
+    /// 순서·자막·프레이밍·음량·제외는 그대로이고, 이전에 만든 완성 영상은 이 장면들로 만든 것이 아니므로 사본에 잇지 않는다.
+    /// 분석이 끝나기 전에는 목록에 나타나지 않는다. `rebuilt`가 false면 일반 복제본만 만들어진 것이다(분석 불가 등).
+    func duplicateRebuiltFromRecommendation(_ id: UUID) async -> (id: UUID, rebuilt: Bool)? {
+        guard let newID = await duplicate(id), let copy = records[newID] else { return nil }
+        guard copy.mode != "mediaMusic" else { return (newID, false) }
+        var rows = copy.sources
+        var analysed = false
+        for index in rows.indices where !rows[index].isImage && rows[index].duration > 0 {
+            guard !deleted.contains(newID), let url = fileURL(rows[index].file, id: newID),
+                  FileManager.default.fileExists(atPath: url.path) else { continue }
+            let buckets = max(192, min(2048, Int(min(1024, rows[index].duration) * 2)))
+            guard let analysis = try? await AudioAnalysisService.analyze(url: url, bucketCount: buckets) else { continue }
+            rows[index].waveform = analysis.waveform
+            rows[index].peakTime = analysis.peakTime
+            rows[index].peakTimes = analysis.peakTimes
+            rows[index].highlightSource = analysis.highlightSource.rawValue
+            rows[index].audioAvailability = analysis.audioAvailability.rawValue
+            rows[index].highlightAnalyzed = true
+            rows[index].verifiedPeakTimes = analysis.verifiedPeakTimes
+            rows[index].transientTimes = analysis.transientTimes
+            analysed = true
+        }
+        guard analysed, !deleted.contains(newID) else { return (newID, false) }
+        let sources: [VideoTrailerSource] = rows.compactMap { row in
+            guard let url = fileURL(row.file, id: newID) else { return nil }
+            let analysis = AudioAnalysisResult(
+                waveform: row.waveform, peakTime: row.peakTime, peakTimes: row.peakTimes,
+                audioAvailability: ClipAudioAvailability(rawValue: row.audioAvailability) ?? .unknown,
+                highlightSource: ClipHighlightSource(rawValue: row.highlightSource) ?? .fallback,
+                verifiedPeakTimes: row.verifiedPeakTimes ?? [], transientTimes: row.transientTimes ?? [])
+            return VideoTrailerSource(id: row.id, name: row.name, url: url,
+                plan: VideoTrailerPlan(analysis: analysis, duration: row.duration), isImage: row.isImage,
+                imageDurationRatio: row.imageDurationRatio,
+                imageDurationPolicyVersion: row.imageDurationPolicyVersion ?? 1, isImportant: row.isImportant ?? false)
+        }
+        // 장면 수보다 많은 독립 동작은 새 장면이 되므로 새 id는 기록의 다음 id부터 쓴다.
+        var nextID = max(copy.nextSceneID, (copy.scenes?.map(\.id).max() ?? 0) + 1)
+        var scenes = copy.scenes.map { TrailerSceneEditor.rebuiltFromRecommendation(scenes: $0, sources: sources, nextID: &nextID) }
+        var music = copy.music
+        var total = copy.total
+        if var edited = scenes {
+            if let current = music, current.policy == TrailerMusicPolicy.fitMusic.rawValue, current.duration > 0 {
+                let cards = (copy.introCard.flatMap { $0.isEnabled ? $0.duration : nil } ?? 0)
+                    + (copy.outroCard.flatMap { $0.isEnabled ? $0.duration : nil } ?? 0)
+                let fitted = TrailerSceneEditor.fitScenesToMusic(scenes: &edited, sources: sources, musicDuration: current.duration,
+                    startCount: current.fitCount, cardsDuration: cards, maximumRepeats: TrailerMusic.maximumRepeats)
+                music?.fitCount = fitted.count
+            }
+            scenes = edited
+            total = edited.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+        }
+        let finalRows = rows, finalScenes = scenes, finalMusic = music, finalTotal = total, finalNextID = nextID
+        let title = (records[id]?.customTitle ?? "편집본") + " (추천 재선정 사본)"
+        let saved = await updateMetadata(newID) { record in
+            record.sources = finalRows
+            record.scenes = finalScenes
+            record.nextSceneID = max(record.nextSceneID, finalNextID)
+            record.music = finalMusic
+            record.total = finalTotal
+            record.outputFile = nil
+            record.outputMode = nil
+            record.customTitle = title
+        }
+        return (newID, saved)
     }
 
     /// 프로젝트 폴더만 지운다. 재료함·컬렉션 파일과 원본은 다른 폴더라 건드리지 않는다.

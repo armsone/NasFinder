@@ -96,7 +96,28 @@ struct MovieCollectionView: View {
             CollectionImportSheet(urls: pendingImport) { pendingImport = [] }
         }
         .fullScreenCover(item: $playing) { video in
-            CollectionPlayerView(url: store.playbackURL(video) ?? store.videoURL(video), title: video.title) { playing = nil }
+            if let preview = makeCollectionPreview(for: video) {
+                RemotePreviewView(
+                    item: preview.selectedItem,
+                    sequentialItems: preview.items,
+                    service: preview.service,
+                    onClose: { playing = nil }
+                )
+            } else {
+                NavigationStack {
+                    PorcelainStateView(
+                        systemImage: "exclamationmark.triangle",
+                        title: "영상을 열 수 없습니다",
+                        message: store.state(of: video).message ?? "원본 파일을 찾을 수 없습니다."
+                    )
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("닫기") { playing = nil }
+                                .accessibilityLabel("닫기")
+                        }
+                    }
+                }
+            }
         }
         .sheet(item: $posterTarget) { video in CollectionPosterPicker(video: video) }
         .trailerEditorCover(item: $openingEntry) { entry in
@@ -155,6 +176,34 @@ struct MovieCollectionView: View {
         }
     }
 
+    /// 컬렉션의 재생 가능한 영상 목록과 선택한 항목을 병기스타일 공유 플레이어(`RemotePreviewView`) 입력으로 구성한다.
+    private func makeCollectionPreview(for selected: CollectedVideo)
+        -> (selectedItem: RemoteFileItem, items: [RemoteFileItem], service: LocalPhotoLibraryFileService)? {
+        var entries: [(item: RemoteFileItem, url: URL)] = []
+        var selectedItem: RemoteFileItem?
+        for video in store.ordered {
+            guard let url = store.playbackURL(video) ?? (video.id == selected.id ? store.videoURL(video) : nil),
+                  FileManager.default.fileExists(atPath: url.path) else { continue }
+            let ext = url.pathExtension.isEmpty ? "mp4" : url.pathExtension
+            let contentType = UTType(filenameExtension: ext)?.identifier ?? UTType.mpeg4Movie.identifier
+            let item = RemoteFileItem(
+                connectionID: LocalPhotoLibraryFileService.connectionID,
+                path: "/collection/\(video.id.uuidString)/\(url.lastPathComponent)",
+                name: video.title,
+                kind: .file,
+                size: video.byteCount,
+                modifiedAt: video.createdAt,
+                contentTypeIdentifier: contentType
+            )
+            entries.append((item: item, url: url))
+            if video.id == selected.id {
+                selectedItem = item
+            }
+        }
+        guard let selectedItem else { return nil }
+        return (selectedItem, entries.map(\.item), LocalPhotoLibraryFileService(entries: entries))
+    }
+
     /// 가져온 영상은 복사본 한 개를 클립으로 쓰는 새 편집으로 시작한다. 컬렉션 파일은 바뀌지 않는다.
     private func startClip(from video: CollectedVideo) {
         guard let url = store.playbackURL(video) else {
@@ -171,7 +220,7 @@ struct MovieCollectionView: View {
 
     private func poster(_ video: CollectedVideo) -> some View {
         Button {
-            if store.playbackURL(video) != nil { playing = video }
+            if makeCollectionPreview(for: video) != nil { playing = video }
             else {
                 notice = (store.state(of: video).message ?? "영상을 열 수 없습니다.")
                 Task { await store.refreshReferences(ids: [video.id]) }
@@ -251,25 +300,6 @@ private struct PosterImage: View {
             Image(uiImage: image).resizable().scaledToFill()
         } else {
             Rectangle().fill(PorcelainMetrics.line)
-        }
-    }
-}
-
-private struct CollectionPlayerView: View {
-    let url: URL
-    let title: String
-    let onClose: () -> Void
-    @State private var player: AVPlayer?
-
-    var body: some View {
-        NavigationStack {
-            VideoPlayer(player: player)
-                .background(Color.black.ignoresSafeArea())
-                .navigationTitle(title)
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar { ToolbarItem(placement: .cancellationAction) { Button("닫기", action: onClose) } }
-                .onAppear { player = AVPlayer(url: url); player?.play() }
-                .onDisappear { player?.pause() }
         }
     }
 }

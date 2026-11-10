@@ -36,19 +36,27 @@ struct AudioAnalysisResult: Sendable {
     let peakTimes: [Double]
     let audioAvailability: ClipAudioAvailability
     let highlightSource: ClipHighlightSource
+    /// `peakTimes` 중 임팩트 분류기가 직접 타격으로 판정한 것(나머지는 단지 가장 큰/일반 소리).
+    let verifiedPeakTimes: [Double]
+    /// 조용한 클럽/공 클릭처럼 짧고 고립된 날카로운 소리의 시각. 더 뒤의 큰 지속 소음이 점수로는 앞서도 진짜 임팩트는 이쪽일 수 있다.
+    let transientTimes: [Double]
 
     init(
         waveform: [Double],
         peakTime: Double,
         peakTimes: [Double]? = nil,
         audioAvailability: ClipAudioAvailability = .present,
-        highlightSource: ClipHighlightSource = .audio
+        highlightSource: ClipHighlightSource = .audio,
+        verifiedPeakTimes: [Double] = [],
+        transientTimes: [Double] = []
     ) {
         self.waveform = waveform
         self.peakTime = peakTime
         self.peakTimes = peakTimes ?? [peakTime]
         self.audioAvailability = audioAvailability
         self.highlightSource = highlightSource
+        self.verifiedPeakTimes = verifiedPeakTimes
+        self.transientTimes = transientTimes
     }
 }
 
@@ -216,12 +224,14 @@ enum AudioAnalysisService {
             for candidate in strongestEnergyCandidates(values: values) {
                 candidates.append(candidate)
             }
-            let classifiedPeaks = AudioImpactClassifier.rankedImpactTimes(
+            // Android와 같은 후보 풀: 분류기 후보와 피크를 12개에서 자르지 않는다(Android 분석은 이 상한이 실제로 적용되지 않아
+            // 긴 영상의 조용한 퍼팅·1인칭 샷이 후보에 남는다). 추천 선택이 소스당 한도·병합으로 장면 수를 정한다.
+            let classifiedImpacts = AudioImpactClassifier.rankedImpacts(
                 frames: impactFrames,
                 duration: duration,
-                limit: 12
+                limit: Int.max
             )
-            for peak in classifiedPeaks {
+            for peak in classifiedImpacts.map(\.time) {
                 let index = min(
                     bucketCount - 1,
                     max(0, Int(peak / duration * Double(bucketCount)))
@@ -237,26 +247,43 @@ enum AudioAnalysisService {
                     abs($0.index - candidate.index) >= minimumSeparation
                 }) else { continue }
                 selected.append(candidate)
-                if selected.count >= 12 {
-                    break
-                }
             }
 
             if selected.isEmpty {
                 selected.append(bestCandidate)
             }
 
+            let selectedTimes = selected.map {
+                (Double($0.index) + 0.5) / Double(bucketCount) * duration
+            }
+            let verifiedTimes = selectedTimes.filter { time in
+                classifiedImpacts.contains {
+                    $0.isTriggered && abs($0.time - time) <= 0.5 / bucketsPerSecond + 0.25
+                }
+            }
             return AudioAnalysisResult(
                 waveform: values,
-                peakTime: (Double(selected[0].index) + 0.5)
-                    / Double(bucketCount) * duration,
-                peakTimes: selected.map {
-                    (Double($0.index) + 0.5) / Double(bucketCount) * duration
-                },
+                peakTime: selectedTimes[0],
+                peakTimes: selectedTimes,
                 audioAvailability: .present,
-                highlightSource: .audio
+                highlightSource: .audio,
+                verifiedPeakTimes: verifiedTimes,
+                transientTimes: isolatedTransientTimes(impactFrames)
             )
         }.value
+    }
+
+    /// 프레임(버킷)의 peak가 들을 수 있고(>= 0.04), 앞 8프레임 peak 중앙값의 6배 이상이며, 2~3프레임 뒤에는 35% 이하로 사라지는 시각.
+    /// 바람·손잡이 소음·말소리 같은 지속음은 그렇게 빨리 줄지 않으므로 제외된다.
+    static func isolatedTransientTimes(_ frames: [AudioImpactFrame]) -> [Double] {
+        frames.indices.compactMap { index -> Double? in
+            let peak = frames[index].metrics.peak
+            let history = frames[max(0, index - 8)..<index].map(\.metrics.peak).sorted()
+            let median = history.isEmpty ? 0 : history[history.count / 2]
+            let after = (index + 2...index + 3).filter { $0 < frames.count }.map { frames[$0].metrics.peak }
+            guard peak >= 0.04, peak >= 6 * max(median, 0.004), let loudest = after.max(), loudest <= 0.35 * peak else { return nil }
+            return frames[index].time
+        }
     }
 
     private static func strongestEnergyCandidates(
@@ -325,11 +352,13 @@ enum AudioAnalysisService {
             reader.add(output)
             guard reader.startReading() else { return [] }
 
-            // 40Hz (25ms 간격) 에너지 버킷팅으로 메모리 엄격 제한 (5분 음악 기준 약 12,000개 버킷 = 96KB)
-            let bucketInterval = 0.025
-            let totalBuckets = max(1, Int(analyzeDuration / bucketInterval))
-            var energyTotals = Array(repeating: 0.0, count: totalBuckets)
-            var sampleCounts = Array(repeating: 0, count: totalBuckets)
+            // 5ms 구간별 RMS. 시각은 샘플 버퍼의 PTS가 아니라 지금까지 디코드된 PCM 프레임 수 / 샘플레이트로 계산한다.
+            // AVAssetReader는 MP3/AAC의 인코더 지연·패딩을 직접 잘라 내므로 누적 프레임 0이 곧 재생 시작이다.
+            let binSeconds = 0.005
+            let totalBins = max(1, Int(analyzeDuration / binSeconds) + 1)
+            var squareSums = [Double](repeating: 0, count: totalBins)
+            var sampleCounts = [Int](repeating: 0, count: totalBins)
+            var decodedFrames = 0
 
             while let sample = output.copyNextSampleBuffer() {
                 try Task.checkCancellation()
@@ -347,90 +376,33 @@ enum AudioAnalysisService {
                       length >= MemoryLayout<Int16>.size
                 else { continue }
 
-                let sampleCount = length / MemoryLayout<Int16>.size
+                let format = CMSampleBufferGetFormatDescription(sample)
+                    .flatMap { CMAudioFormatDescriptionGetStreamBasicDescription($0)?.pointee }
+                let channels = max(1, Int(format?.mChannelsPerFrame ?? 2))
+                let rate = (format?.mSampleRate ?? 0) > 0 ? format!.mSampleRate : 44100.0
+                let framesPerBin = rate * binSeconds
+                let frames = length / MemoryLayout<Int16>.size / channels
                 let values = UnsafeRawPointer(pointer).assumingMemoryBound(to: Int16.self)
-                let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-                let startTime = pts.seconds
-                guard startTime.isFinite, startTime >= 0, startTime < analyzeDuration else { continue }
-
-                let bufDuration = CMSampleBufferGetDuration(sample)
-                let totalDuration = (bufDuration.isValid && bufDuration.seconds.isFinite && bufDuration.seconds > 0)
-                    ? bufDuration.seconds
-                    : (Double(sampleCount) / 44100.0)
-
-                // 버퍼 내 샘플들을 하위 블록으로 나누어 정확한 시간 위치 버킷들에 RMS 에너지 분배
-                let subChunkCount = min(8, max(1, Int((totalDuration / bucketInterval).rounded(.up))))
-                let step = max(1, sampleCount / subChunkCount)
-                var offset = 0
-                while offset < sampleCount {
-                    let chunkEnd = min(sampleCount, offset + step)
-                    let chunkSize = chunkEnd - offset
+                for frame in 0..<frames {
+                    let bin = Int(Double(decodedFrames + frame) / framesPerBin)
+                    if bin >= totalBins { break }
                     var sum = 0.0
-                    for i in offset..<chunkEnd {
-                        let v = Double(values[i]) / Double(Int16.max)
+                    for channel in 0..<channels {
+                        let v = Double(values[frame * channels + channel]) / Double(Int16.max)
                         sum += v * v
                     }
-                    let rms = sqrt(sum / Double(max(1, chunkSize)))
-                    let fraction = (Double(offset) + Double(chunkSize) / 2.0) / Double(max(1, sampleCount))
-                    let chunkTime = startTime + fraction * totalDuration
-                    if chunkTime >= 0 && chunkTime < analyzeDuration {
-                        let bucket = min(totalBuckets - 1, max(0, Int(chunkTime / bucketInterval)))
-                        energyTotals[bucket] += rms
-                        sampleCounts[bucket] += 1
-                    }
-                    offset = chunkEnd
+                    squareSums[bin] += sum
+                    sampleCounts[bin] += channels
                 }
+                decodedFrames += frames
             }
 
             if reader.status == .failed || reader.status == .cancelled {
                 return []
             }
 
-            var energyCurve = Array(repeating: 0.0, count: totalBuckets)
-            for i in 0..<totalBuckets {
-                energyCurve[i] = sampleCounts[i] > 0 ? energyTotals[i] / Double(sampleCounts[i]) : 0
-            }
-
-            let maxEnergy = energyCurve.max() ?? 0
-            guard maxEnergy > 0.005 else {
-                return []
-            }
-
-            // Positive Energy Flux (에너지 온셋)
-            var flux = Array(repeating: 0.0, count: totalBuckets)
-            for i in 1..<totalBuckets {
-                let diff = energyCurve[i] - energyCurve[i - 1]
-                flux[i] = max(0.0, diff)
-            }
-
-            // 로컬 이동 평균 적응형 임계값 계산 (윈도우 ±10 버킷 = ±0.25초)
-            let windowRadius = 10
-            var beats: [Double] = []
-            var lastBeatTime = -1.0
-            let minInterval = 0.22 // 최소 비트 간격 (최대 270 BPM)
-
-            for i in 1..<(totalBuckets - 1) {
-                let currentFlux = flux[i]
-                guard currentFlux > 0.001 else { continue }
-                guard currentFlux >= flux[i - 1], currentFlux >= flux[i + 1] else { continue }
-
-                let wStart = max(0, i - windowRadius)
-                let wEnd = min(totalBuckets - 1, i + windowRadius)
-                var localSum = 0.0
-                for k in wStart...wEnd { localSum += flux[k] }
-                let localAvg = localSum / Double(max(1, wEnd - wStart + 1))
-                let threshold = localAvg * 1.35 + 0.004
-
-                if currentFlux > threshold {
-                    let beatTime = (Double(i) + 0.5) * bucketInterval
-                    if beatTime - lastBeatTime >= minInterval {
-                        beats.append(beatTime)
-                        lastBeatTime = beatTime
-                    }
-                }
-            }
-
-            return beats
+            let energyCurve = (0..<totalBins).map { sampleCounts[$0] > 0 ? (squareSums[$0] / Double(sampleCounts[$0])).squareRoot() : 0.0 }
+            return pickPercussiveBeats(energyCurve, binSeconds: binSeconds)
         }
 
         return try await withTaskCancellationHandler {
@@ -438,6 +410,44 @@ enum AudioAnalysisService {
         } onCancel: {
             task.cancel()
         }
+    }
+
+    /// 5ms RMS 곡선에서 타악기처럼 갑자기 커지는 지점을 비트로 고른다. 온셋 세기는 직전 40ms 평균 대비 이후 20ms 평균의 증가량이고,
+    /// 근처 1초 평균의 1.5배 이상(지역 임계값)이면서 전체 상위 1% 세기의 20% 이상(전역 하한)인 극대점만 세기 순으로 0.15초 간격을 두고 남긴다.
+    private static func pickPercussiveBeats(_ energy: [Double], binSeconds: Double) -> [Double] {
+        guard (energy.max() ?? 0) > 0.005 else { return [] }
+        let size = energy.count
+        var prefix = [Double](repeating: 0, count: size + 1)
+        for i in 0..<size { prefix[i + 1] = prefix[i] + energy[i] }
+        func mean(_ from: Int, _ to: Int) -> Double {
+            let a = max(0, from), b = min(size, to)
+            return b > a ? (prefix[b] - prefix[a]) / Double(b - a) : 0
+        }
+        var strength = [Double](repeating: 0, count: size)
+        if size > 1 { for i in 1..<size { strength[i] = max(0, mean(i, i + 4) - mean(i - 8, i)) } }
+        let floorValue = strength.sorted()[min(size - 1, Int(Double(size) * 0.99))] * 0.20
+        guard floorValue > 0, size > 2 else { return [] }
+
+        var strengthPrefix = [Double](repeating: 0, count: size + 1)
+        for i in 0..<size { strengthPrefix[i + 1] = strengthPrefix[i] + strength[i] }
+        let localRadius = Int(0.5 / binSeconds)
+        let peakRadius = 4
+        var candidates: [Int] = []
+        for i in 1..<(size - 1) {
+            let value = strength[i]
+            if value < floorValue { continue }
+            if (max(0, i - peakRadius)...min(size - 1, i + peakRadius)).contains(where: { strength[$0] > value }) { continue }
+            let from = max(0, i - localRadius), to = min(size, i + localRadius + 1)
+            let localAverage = (strengthPrefix[to] - strengthPrefix[from]) / Double(to - from)
+            if value > localAverage * 1.5 { candidates.append(i) }
+        }
+        let minGap = Int(0.15 / binSeconds)
+        var taken: [Int] = []
+        for i in candidates.sorted(by: { strength[$0] > strength[$1] }) where !taken.contains(where: { abs($0 - i) < minGap }) {
+            taken.append(i)
+        }
+        // 온셋이 시작된 구간의 시작 시각이 비트 시각이다(+0.5 구간이면 전환이 비트보다 늦는다).
+        return taken.sorted().map { Double($0) * binSeconds }
     }
 }
 
