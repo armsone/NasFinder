@@ -518,21 +518,30 @@ final class PhotoSelectionEngineTests: XCTestCase {
         XCTAssertEqual(TrailerSceneEditor.startKeepingAction(protectedScene, start: 5.0, length: 5.0, sourceDuration: 20), 7.0, accuracy: 1e-9)
     }
 
-    /// 음악 맞춤: 고른 반복 횟수 그대로이고, 보호 길이가 그 길이를 넘으면 장면을 자르지 않고 덜 중요한 장면을 통째로 뺀다.
+    /// 음악 맞춤: 고른 반복 횟수 그대로이고, 보호 길이가 그 길이를 넘으면 직접 편집한 장면을 자르지 않고 덜 중요한 자동 장면을 피크 중심으로 좁히거나(자리가 있으면) 뺀다.
     func testMusicFitKeepsTheChosenCountAndReservesWholeScenes() {
         let sources = [spikeSource(id: 1, spike: 10, peakTimes: [10.5]), spikeSource(id: 2, spike: 3, peakTimes: [3.5])]
         func scenes() -> [TrailerEditScene] {
-            [TrailerEditScene(id: 1, sourceID: 1, start: 4.0, length: 6.0, actionStart: 4.0, actionEnd: 10.0),
-             TrailerEditScene(id: 2, sourceID: 2, start: 1.0, length: 6.0, caption: TrailerCaption(text: "끝"), actionStart: 1.0, actionEnd: 7.0)]
+            var list = [TrailerEditScene(id: 1, sourceID: 1, start: 5.0, length: 6.0, actionStart: 5.0, actionEnd: 11.0),
+                        TrailerEditScene(id: 2, sourceID: 2, start: 1.0, length: 6.0, actionStart: 1.0, actionEnd: 7.0)]
+            // 자막은 사용자가 고친 것으로 기록해야 직접 편집 장면(빠지지 않음)이다.
+            TrailerSceneEditor.update(2, in: &list) { $0.caption = TrailerCaption(text: "끝") }
+            return list
         }
         var fits = scenes()
         let one = TrailerSceneEditor.fitScenesToMusic(scenes: &fits, sources: sources, musicDuration: 10, startCount: 1, cardsDuration: 0, maximumRepeats: 600)
         XCTAssertEqual(one.count, 1, "반복 횟수는 자동으로 늘지 않습니다.")
         XCTAssertTrue(one.fits)
-        XCTAssertEqual(one.excluded, 1)
-        XCTAssertLessThanOrEqual(one.total, 10.0 + 1e-6)
-        XCTAssertTrue(fits.filter { !$0.excluded }.allSatisfy { $0.length >= 6.0 - 1e-6 })
-        XCTAssertEqual(fits.filter(\.budgetExcluded).count, 1)
+        // 자막 장면(최소 6초)이 먼저 자리를 잡고 남는 4초에 순수 자동 장면이 빠지는 대신 실제 피크(10.5초)를 담도록 좁아져 둘 다 산다.
+        XCTAssertEqual(one.excluded, 0)
+        XCTAssertEqual(one.total, 10.0, accuracy: 1e-3)
+        XCTAssertEqual(fits[1].length, 6.0, accuracy: 1e-6, "자막 장면의 동작 구간은 그대로입니다.")
+        XCTAssertEqual(fits[0].length, 4.0, accuracy: 1e-3)
+        XCTAssertLessThanOrEqual(fits[0].start, 10.5)
+        XCTAssertGreaterThanOrEqual(fits[0].start + fits[0].length, 10.5)
+        XCTAssertGreaterThanOrEqual(fits[0].start, 5.0 - 1e-9, "기존 동작 구간 안의 시각만 씁니다.")
+        XCTAssertLessThanOrEqual(fits[0].start + fits[0].length, 11.0 + 1e-9)
+        XCTAssertFalse(fits.contains { $0.excluded || $0.budgetExcluded })
         // 2회로 늘리면 뺀 장면이 자막 그대로 다시 들어간다.
         let two = TrailerSceneEditor.fitScenesToMusic(scenes: &fits, sources: sources, musicDuration: 10, startCount: 2, cardsDuration: 0, maximumRepeats: 600)
         XCTAssertEqual(two.count, 2)
@@ -541,11 +550,22 @@ final class PhotoSelectionEngineTests: XCTestCase {
         XCTAssertEqual(fits.map(\.id), [1, 2])
         XCTAssertEqual(fits[1].caption?.text, "끝")
         XCTAssertFalse(fits.contains { $0.excluded || $0.budgetExcluded })
-        // 한 장면도 통째로 안 들어가면 그대로 두고 fits=false.
+        // 한 장면도 통째로 안 들어가도 실패하지 않는다: 자막 장면이 실제 피크(3.5초)를 담도록 요청한 4초로 좁아지고 자막·순서는 그대로이며,
+        // 순수 자동 장면이 먼저 빠진다.
         var tiny = scenes()
         let none = TrailerSceneEditor.fitScenesToMusic(scenes: &tiny, sources: sources, musicDuration: 4, startCount: 1, cardsDuration: 0, maximumRepeats: 600)
-        XCTAssertFalse(none.fits)
-        XCTAssertEqual(tiny, scenes())
+        XCTAssertTrue(none.fits)
+        XCTAssertEqual(none.total, 4.0, accuracy: 1e-3)
+        XCTAssertEqual(none.excluded, 1)
+        XCTAssertEqual(tiny.map(\.id), [1, 2])
+        XCTAssertTrue(tiny[0].excluded && tiny[0].budgetExcluded, "순수 자동 장면이 먼저 빠집니다.")
+        XCTAssertFalse(tiny[1].excluded || tiny[1].budgetExcluded, "자막 장면은 사라지지 않습니다.")
+        XCTAssertEqual(tiny[1].caption?.text, "끝")
+        XCTAssertEqual(tiny[1].length, 4.0, accuracy: 1e-3)
+        XCTAssertLessThanOrEqual(tiny[1].start, 3.5, "좁힌 창이 실제 피크를 담습니다.")
+        XCTAssertGreaterThanOrEqual(tiny[1].start + tiny[1].length, 3.5)
+        XCTAssertGreaterThanOrEqual(tiny[1].start, 1.0 - 1e-9, "기존 동작 구간 안의 시각만 씁니다.")
+        XCTAssertLessThanOrEqual(tiny[1].start + tiny[1].length, 7.0 + 1e-9)
         // 사용자가 직접 제외한 장면은 예산이 다시 넣지 않는다.
         var userExcluded = scenes()
         userExcluded[0].excluded = true
@@ -628,6 +648,16 @@ final class PhotoSelectionEngineTests: XCTestCase {
         XCTAssertFalse(fitted.filter { !$0.excluded }.isEmpty)
         for (index, scene) in fitted.enumerated() {
             guard let a = anchors[index].0, let b = anchors[index].1 else { continue }
+            if let newStart = scene.actionStart, let newEnd = scene.actionEnd, abs(newStart - a) > 1e-6 || abs(newEnd - b) > 1e-6 {
+                // 남는 자리에 맞춰 피크 중심으로 좁힌 장면: 좁힌 창이 새 보호 구간이고, 기존 구간 안에서 실제 피크(10.5초)를 담는다.
+                XCTAssertGreaterThanOrEqual(newStart, a - 1e-6)
+                XCTAssertLessThanOrEqual(newEnd, b + 1e-6)
+                XCTAssertLessThanOrEqual(newStart, 10.5)
+                XCTAssertGreaterThanOrEqual(newEnd, 10.5)
+                XCTAssertLessThanOrEqual(scene.start, newStart + 1e-6)
+                XCTAssertGreaterThanOrEqual(scene.start + scene.length, newEnd - 1e-6, "좁힌 보호 구간이 창 밖으로 밀리면 안 됩니다.")
+                continue
+            }
             XCTAssertLessThanOrEqual(scene.start, a + 1e-6)
             XCTAssertGreaterThanOrEqual(scene.start + scene.length, b - 1e-6, "보호된 동작 구간이 창 밖으로 밀리면 안 됩니다.")
         }
@@ -737,12 +767,21 @@ final class PhotoSelectionEngineTests: XCTestCase {
 
     /// 전체 길이 예산 3→5→3: 같은 장면이 빠지고, 늘리면 제자리로 돌아오며, 가장 짧은 한 장면보다 짧으면 받지 않는다.
     func testBudgetRoundTripRestoresReservedScenes() {
-        let sources = (1...3).map { spikeSource(id: $0, duration: 40, spike: 10, peakTimes: [10.5]) }
+        let sources = (1...3).map { spikeSource(id: $0, duration: 40, spike: 5, peakTimes: [10.5]) }
         let original = (1...3).map { TrailerEditScene(id: $0, sourceID: $0, start: 9.0, length: 4.0, volume: 0.4, actionStart: 9.0, actionEnd: 13.0) }
         var scenes = original
+        // 4초 두 장면이 통째로 들어가고 남는 1초에 세 번째 장면이 빠지는 대신 피크(10.5초) 중심으로 좁혀 담긴다.
         let short = TrailerSceneEditor.fitScenesToBudget(scenes: &scenes, sources: sources, bodyTarget: 9)
-        XCTAssertEqual(short?.included, 2)
-        XCTAssertEqual(short?.excluded, 1)
+        XCTAssertEqual(short?.included, 3)
+        XCTAssertEqual(short?.excluded, 0)
+        XCTAssertEqual(short?.total ?? 0, 9, accuracy: 1e-3)
+        XCTAssertEqual(scenes[0].length, 4, accuracy: 1e-3)
+        XCTAssertEqual(scenes[1].length, 4, accuracy: 1e-3)
+        XCTAssertEqual(scenes[2].length, 1, accuracy: 1e-3)
+        XCTAssertLessThanOrEqual(scenes[2].start, 10.5)
+        XCTAssertGreaterThanOrEqual(scenes[2].start + scenes[2].length, 10.5)
+        XCTAssertGreaterThanOrEqual(scenes[2].start, 9.0 - 1e-9)
+        XCTAssertLessThanOrEqual(scenes[2].start + scenes[2].length, 13.0 + 1e-9)
         let shortChoice = scenes.map(\.excluded)
         let long = TrailerSceneEditor.fitScenesToBudget(scenes: &scenes, sources: sources, bodyTarget: 15)
         XCTAssertEqual(long?.excluded, 0)
@@ -751,8 +790,22 @@ final class PhotoSelectionEngineTests: XCTestCase {
         XCTAssertTrue(scenes.allSatisfy { $0.volume == 0.4 })
         TrailerSceneEditor.fitScenesToBudget(scenes: &scenes, sources: sources, bodyTarget: 9)
         XCTAssertEqual(scenes.map(\.excluded), shortChoice)
-        XCTAssertNil(TrailerSceneEditor.fitScenesToBudget(scenes: &scenes, sources: sources, bodyTarget: 3))
-        XCTAssertEqual(TrailerSceneEditor.budgetBodyBounds(scenes: scenes, sources: sources).minimum, 4, accuracy: 1e-9)
+        // 가장 짧은 한 장면보다 짧은 목표도 받는다: 가장 원하는 장면 하나의 동작 구간이 실제 피크(10.5초)를 담도록 요청한 3초로 좁아진다.
+        scenes = original
+        let tiny = TrailerSceneEditor.fitScenesToBudget(scenes: &scenes, sources: sources, bodyTarget: 3)
+        XCTAssertEqual(tiny?.total ?? 0, 3, accuracy: 1e-3)
+        XCTAssertEqual(tiny?.included, 1)
+        let kept = scenes.filter { !$0.excluded }
+        XCTAssertEqual(kept.count, 1)
+        XCTAssertEqual(kept[0].length, 3, accuracy: 1e-3)
+        XCTAssertLessThanOrEqual(kept[0].start, 10.5, "좁힌 창이 실제 피크를 담습니다.")
+        XCTAssertGreaterThanOrEqual(kept[0].start + kept[0].length, 10.5)
+        XCTAssertGreaterThanOrEqual(kept[0].start, 9.0 - 1e-9, "기존 동작 구간 안의 시각만 씁니다.")
+        XCTAssertLessThanOrEqual(kept[0].start + kept[0].length, 13.0 + 1e-9)
+        XCTAssertEqual(kept[0].volume, 0.4)
+        XCTAssertEqual(scenes.map(\.id), [1, 2, 3])
+        XCTAssertEqual(TrailerSceneEditor.budgetBodyBounds(scenes: scenes, sources: sources).minimum, 3, accuracy: 1e-9,
+                       "좁힌 동작 구간이 새 보호 구간이라 가장 짧은 한 장면은 3초입니다.")
     }
 
     /// 고립된 짧은 타격만 transient: 큰 소리라도 지속되면(2~3프레임 뒤에도 35% 넘게 남으면) 아니고, 들리지 않는 소리(<0.04)도 아니다.
@@ -921,6 +974,8 @@ private struct ShotFixRun: Decodable {
     let saveKeptOutput: Bool?
     /// 화면의 '전체 길이'(setManualTotal)와 같은 예산 맞춤(초, 카드 없음). 음악은 반복(loopMusic)으로 영상 끝까지 깐다.
     let totalSeconds: Double?
+    /// true면 합성 빨강/파랑 영상으로 고급 편집(배속·디졸브·큐·색상·키프레임·해설·짧은 목표)을 앱의 실제 렌더로 만들고 출력 파일에서 길이·화소·소리를 읽는다.
+    let advanced: Bool?
     /// 전체 길이 예산을 차례로(예: 180,300,180) 맞추고 음악 맞춤 1→2회까지, 매번 저장 → 새 저장소로 재로드해 같은지 기록한다(totalSeconds가 있으면 이어서 렌더).
     let budgetSequence: [Double]?
 }
@@ -1035,6 +1090,12 @@ private final class ShotFixHarness {
                     "peakTimes": analysis.peakTimes, "verifiedPeakTimes": analysis.verifiedPeakTimes,
                     "transientTimes": analysis.transientTimes]
         })
+
+        if run.advanced == true {
+            do { try await advancedProof(model: model, items: items, service: service) } catch { fail("고급 렌더 예외: \(error)") }
+            model.stop()
+            return
+        }
 
         // 3. 안드로이드 초안과 같은 상태(원본 순서·72장면·음악)의 '원본 프로젝트'를 저장. 앵커 도입 전 프로젝트와 같게 anchorsMigrated는 비운다.
         let musicURL = input(manifest.music.file)
@@ -1389,5 +1450,301 @@ private final class ShotFixHarness {
         } else {
             try? text.write(to: url)
         }
+    }
+}
+
+
+// MARK: - 고급 편집 실제 렌더 증명 (합성 빨강/파랑 영상만 사용)
+
+extension ShotFixHarness {
+    fileprivate struct Probe { let seconds: Double; let video: Int; let audio: Int; let audioSeconds: Double }
+
+    fileprivate func advancedProof(model: VideoTrailerModel, items: [RemoteFileItem], service: TrailerProjectMediaService) async throws {
+        let fm = FileManager.default
+        let frame = TrailerSceneEditor.frameMinimum
+        func scene(_ id: Int, _ sourceID: Int, length: Double, start: Double = 0, _ adjust: (inout TrailerEditScene) -> Void = { _ in }) -> TrailerEditScene {
+            var value = TrailerEditScene(id: id, sourceID: sourceID, start: start, length: length)
+            value.manual = [.adjust]
+            adjust(&value)
+            return value
+        }
+        func render(_ name: String, _ scenes: [TrailerEditScene], music: TrailerMusicSelection? = nil,
+                    voices: [TrailerVoiceoverTake] = []) async throws -> (url: URL, probe: Probe)? {
+            model.start(items: items, service: service, mode: .trailer, generate: true, sourceOrder: model.sources.map(\.id), total: nil,
+                        clipLength: 4, aspectRatio: nil, music: music, manualScenes: scenes, draftSources: model.sources,
+                        revision: nil, introCard: nil, outroCard: nil, voiceovers: voices)
+            try await wait("고급 렌더 \(name)", timeout: 600, model: model) { !model.isBusy }
+            guard model.error == nil, let produced = model.outputURL, fm.fileExists(atPath: produced.path) else {
+                fail("\(name): 렌더 실패 \(model.error ?? "출력 없음")")
+                return nil
+            }
+            let target = out.appendingPathComponent("\(name).mp4")
+            try? fm.removeItem(at: target)
+            try fm.copyItem(at: produced, to: target)
+            let asset = AVURLAsset(url: target)
+            let video = try await asset.loadTracks(withMediaType: .video)
+            let audio = try await asset.loadTracks(withMediaType: .audio)
+            let audioRange = try await audio.first?.load(.timeRange)
+            let probe = Probe(seconds: try await asset.load(.duration).seconds, video: video.count, audio: audio.count,
+                              audioSeconds: audioRange?.duration.seconds ?? 0)
+            return (target, probe)
+        }
+        func image(_ url: URL, _ seconds: Double) async throws -> CGImage {
+            let generator = AVAssetImageGenerator(asset: AVURLAsset(url: url))
+            generator.requestedTimeToleranceBefore = .zero
+            generator.requestedTimeToleranceAfter = .zero
+            generator.appliesPreferredTrackTransform = true
+            return try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600)).image
+        }
+        /// 영역의 평균 색(0...255).
+        func mean(_ cg: CGImage, _ region: CGRect = CGRect(x: 0.3, y: 0.3, width: 0.4, height: 0.4)) -> (r: Double, g: Double, b: Double) {
+            let crop = CGRect(x: region.minX * Double(cg.width), y: region.minY * Double(cg.height),
+                              width: region.width * Double(cg.width), height: region.height * Double(cg.height))
+            guard let part = cg.cropping(to: crop) else { return (0, 0, 0) }
+            var pixels = [UInt8](repeating: 0, count: 16 * 16 * 4)
+            let drawn = pixels.withUnsafeMutableBytes { buffer -> Bool in
+                guard let context = CGContext(data: buffer.baseAddress, width: 16, height: 16, bitsPerComponent: 8, bytesPerRow: 64,
+                                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return false }
+                context.interpolationQuality = .high
+                context.draw(part, in: CGRect(x: 0, y: 0, width: 16, height: 16))
+                return true
+            }
+            guard drawn else { return (0, 0, 0) }
+            var sum = (0.0, 0.0, 0.0)
+            for index in 0..<256 { sum.0 += Double(pixels[index * 4]); sum.1 += Double(pixels[index * 4 + 1]); sum.2 += Double(pixels[index * 4 + 2]) }
+            return (sum.0 / 256, sum.1 / 256, sum.2 / 256)
+        }
+        /// 두 프레임이 아래쪽 영역에서 다른 화소의 비율(자막이 있고 없고를 본다).
+        func difference(_ a: CGImage, _ b: CGImage, _ region: CGRect = CGRect(x: 0, y: 0.5, width: 1, height: 0.5)) -> Double {
+            func gray(_ cg: CGImage) -> [UInt8] {
+                let crop = CGRect(x: region.minX * Double(cg.width), y: region.minY * Double(cg.height),
+                                  width: region.width * Double(cg.width), height: region.height * Double(cg.height))
+                var pixels = [UInt8](repeating: 0, count: 160 * 90)
+                guard let part = cg.cropping(to: crop) else { return pixels }
+                pixels.withUnsafeMutableBytes { buffer in
+                    guard let context = CGContext(data: buffer.baseAddress, width: 160, height: 90, bitsPerComponent: 8, bytesPerRow: 160,
+                                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return }
+                    context.interpolationQuality = .high
+                    context.draw(part, in: CGRect(x: 0, y: 0, width: 160, height: 90))
+                }
+                return pixels
+            }
+            let left = gray(a), right = gray(b)
+            let different = zip(left, right).filter { abs(Int($0) - Int($1)) > 40 }.count
+            return Double(different) / Double(left.count)
+        }
+        /// 영역에서 흰 글자(밝은 회색 200 초과) 화소의 비율.
+        func whiteShare(_ cg: CGImage, _ region: CGRect) -> Double {
+            let crop = CGRect(x: region.minX * Double(cg.width), y: region.minY * Double(cg.height),
+                              width: region.width * Double(cg.width), height: region.height * Double(cg.height))
+            var pixels = [UInt8](repeating: 0, count: 320 * 180)
+            guard let part = cg.cropping(to: crop) else { return 0 }
+            pixels.withUnsafeMutableBytes { buffer in
+                guard let context = CGContext(data: buffer.baseAddress, width: 320, height: 180, bitsPerComponent: 8, bytesPerRow: 320,
+                                              space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return }
+                context.interpolationQuality = .high
+                context.draw(part, in: CGRect(x: 0, y: 0, width: 320, height: 180))
+            }
+            return Double(pixels.filter { $0 > 200 }.count) / Double(pixels.count)
+        }
+        /// 출력 파일 소리의 RMS(0...1)를 `from...to`초에서 읽는다.
+        func rms(_ url: URL, _ from: Double, _ to: Double) async throws -> Double {
+            let asset = AVURLAsset(url: url)
+            guard let track = try await asset.loadTracks(withMediaType: .audio).first else { return -1 }
+            let reader = try AVAssetReader(asset: asset)
+            let output = AVAssetReaderTrackOutput(track: track, outputSettings: [
+                AVFormatIDKey: kAudioFormatLinearPCM, AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false,
+                AVLinearPCMIsBigEndianKey: false, AVLinearPCMIsNonInterleaved: false, AVNumberOfChannelsKey: 1, AVSampleRateKey: 44100])
+            reader.timeRange = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600), duration: CMTime(seconds: to - from, preferredTimescale: 600))
+            reader.add(output)
+            guard reader.startReading() else { return -1 }
+            var squares = 0.0, count = 0.0
+            while let buffer = output.copyNextSampleBuffer() {
+                guard let block = CMSampleBufferGetDataBuffer(buffer) else { continue }
+                var length = 0
+                var pointer: UnsafeMutablePointer<Int8>?
+                guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &length, dataPointerOut: &pointer) == noErr,
+                      let pointer else { continue }
+                pointer.withMemoryRebound(to: Int16.self, capacity: length / 2) { samples in
+                    for index in 0..<(length / 2) { let value = Double(samples[index]) / 32768; squares += value * value; count += 1 }
+                }
+            }
+            return count > 0 ? (squares / count).squareRoot() : 0
+        }
+        func previewSeconds(_ scenes: [TrailerEditScene], music: TrailerMusicSelection? = nil, captions: [String: TrailerCaption] = [:]) async -> Double {
+            var segments = scenes.filter { !$0.excluded }.enumerated().map { index, edit in
+                TrailerTimelineSegment(id: "s\(index)", kind: .clip, sceneID: edit.id, sourceID: edit.sourceID, start: edit.start, length: edit.length,
+                                       muted: edit.muted, adjustments: edit.adjustments)
+            }
+            segments = TrailerAdvancedComposer.annotatingOverlaps(segments)
+            let input = TrailerDraftPreviewInput(segments: segments, sources: model.sources, captions: captions, introCard: TrailerTitleCard(),
+                                                 outroCard: TrailerTitleCard(), introBackground: nil, outroBackground: nil, bodyTypography: nil,
+                                                 selectedSceneID: nil, music: music)
+            let driver = TrailerAdvancedPreviewDriver()
+            driver.attach(player: AVPlayer())
+            await driver.prepare(input: input, key: UUID().uuidString, renderSize: CGSize(width: 1280, height: 720), introImage: nil, outroImage: nil, resumeAt: 0)
+            if let failure = driver.failure { fail("미리보기 합성 실패: \(failure)") }
+            let seconds = driver.duration
+            driver.stop()
+            return seconds
+        }
+        func record(_ name: String, _ values: [String: Any]) { noteDict("advanced.\(name)", values) }
+
+        // A. 배속 2: 원본 10초 → 출력 5초
+        let rate2 = [scene(1, 0, length: 10) { $0.adjustments = TrailerClipAdjustments(rate: 2) }]
+        if let result = try await render("a-rate2", rate2) {
+            record("a-rate2", ["seconds": result.probe.seconds, "expected": 5.0, "video": result.probe.video, "audio": result.probe.audio,
+                               "planned": TrailerSceneEditor.outputBodyDuration(rate2)])
+            if abs(result.probe.seconds - 5) > 0.12 || result.probe.video != 1 || result.probe.audio < 1 { fail("a-rate2: 길이/트랙 \(result.probe)") }
+        }
+
+        // B. 5초 + 5초, 1초 디졸브 → 9초, 가운데 프레임은 빨강과 파랑이 섞인다
+        let dissolve = [scene(1, 0, length: 5) { $0.adjustments = TrailerClipAdjustments(transition: TrailerTransition(dissolveDuration: 1)) },
+                        scene(2, 1, length: 5)]
+        if let result = try await render("b-dissolve", dissolve) {
+            let early = mean(try await image(result.url, 2)), mixed = mean(try await image(result.url, 4.5)), late = mean(try await image(result.url, 7))
+            let preview = await previewSeconds(dissolve)
+            record("b-dissolve", ["seconds": result.probe.seconds, "expected": 9.0, "previewSeconds": preview,
+                                  "frame2": [early.r, early.g, early.b], "frame4.5": [mixed.r, mixed.g, mixed.b], "frame7": [late.r, late.g, late.b]])
+            if abs(result.probe.seconds - 9) > 0.12 { fail("b-dissolve: 길이 \(result.probe.seconds)") }
+            if !(early.r > 150 && early.b < 80) || !(late.b > 150 && late.r < 80) { fail("b-dissolve: 양끝 색 \(early) \(late)") }
+            if !(mixed.r > 60 && mixed.b > 60 && mixed.r < 190 && mixed.b < 190) { fail("b-dissolve: 가운데 프레임이 섞이지 않음 \(mixed)") }
+            if abs(preview - result.probe.seconds) > 0.12 { fail("b-dissolve: 미리보기 \(preview) != 내보내기 \(result.probe.seconds)") }
+        }
+
+        // C. 시간 큐(원본 2~3초, 배속 2 → 출력 1~1.5초)와 정적 수동 자막. 큐는 일부러 다른 위치(아래 가운데)에 두어 둘 다 읽히는지 본다.
+        let cueStyle = TrailerCaption(text: "", column: 2, row: 4)
+        let cue = TrailerTimedCaptionCue(sourceID: 0, sourceStart: 2, sourceEnd: 3, text: "큐 자막", style: cueStyle, origin: .manual, manuallyEdited: true)
+        let cued = [scene(1, 0, length: 4) {
+            $0.adjustments = TrailerClipAdjustments(rate: 2, cues: [cue])
+            $0.caption = TrailerCaption(text: "고정 자막")
+            $0.manual.insert(.caption)
+        }]
+        if let result = try await render("c-cue", cued) {
+            let before = try await image(result.url, 0.25), inside = try await image(result.url, 1.25), after = try await image(result.url, 1.75)
+            let staticArea = CGRect(x: 0.05, y: 0.05, width: 0.4, height: 0.2), cueArea = CGRect(x: 0.2, y: 0.75, width: 0.6, height: 0.23)
+            let preview = await previewSeconds(cued, captions: ["s0": TrailerCaption(text: "고정 자막")])
+            let staticBefore = whiteShare(before, staticArea), staticInside = whiteShare(inside, staticArea), staticAfter = whiteShare(after, staticArea)
+            let cueBefore = whiteShare(before, cueArea), cueInside = whiteShare(inside, cueArea), cueAfter = whiteShare(after, cueArea)
+            record("c-cue", ["seconds": result.probe.seconds, "expected": 2.0, "previewSeconds": preview,
+                             "staticText(before,inside,after)": [staticBefore, staticInside, staticAfter],
+                             "cueText(before,inside,after)": [cueBefore, cueInside, cueAfter]])
+            if abs(result.probe.seconds - 2) > frame + 0.02 { fail("c-cue: 길이 \(result.probe.seconds)") }
+            if !(staticBefore > 0.003 && staticInside > 0.003 && staticAfter > 0.003) { fail("c-cue: 고정 자막이 큐 구간 안팎에서 계속 보이지 않음 \(staticBefore) \(staticInside) \(staticAfter)") }
+            if !(cueInside > 0.003 && cueBefore < 0.0005 && cueAfter < 0.0005) { fail("c-cue: 큐가 출력 1~1.5초에만 보여야 함 \(cueBefore) \(cueInside) \(cueAfter)") }
+            if abs(preview - result.probe.seconds) > frame + 0.02 { fail("c-cue: 미리보기 \(preview) != 내보내기 \(result.probe.seconds)") }
+        }
+
+        // D. 색상(채도 0)과 키프레임(불투명도 1 → 0): 값이 바뀌면 프레임이 바뀐다
+        let look = [scene(1, 0, length: 3) { $0.adjustments = TrailerClipAdjustments(color: TrailerColorAdjustment(saturation: 0)) },
+                    scene(2, 1, length: 3) {
+                        $0.adjustments = TrailerClipAdjustments(keyframes: [TrailerTransformKeyframe(sourceTime: 0, opacity: 1),
+                                                                            TrailerTransformKeyframe(sourceTime: 3, opacity: 0)])
+                    }]
+        if let result = try await render("d-color-keyframe", look) {
+            let gray = mean(try await image(result.url, 1.5)), bright = mean(try await image(result.url, 3.2)), dim = mean(try await image(result.url, 5.8))
+            record("d-color-keyframe", ["seconds": result.probe.seconds, "expected": 6.0, "grayFrame": [gray.r, gray.g, gray.b],
+                                        "keyframeStart": [bright.r, bright.g, bright.b], "keyframeEnd": [dim.r, dim.g, dim.b]])
+            if abs(result.probe.seconds - 6) > 0.12 { fail("d: 길이 \(result.probe.seconds)") }
+            if !(abs(gray.r - gray.g) < 25 && abs(gray.g - gray.b) < 25 && gray.r > 20) { fail("d: 채도 0 프레임이 회색이 아님 \(gray)") }
+            if !(bright.b > 120 && dim.b < bright.b * 0.5) { fail("d: 키프레임 불투명도 변화 없음 \(bright) → \(dim)") }
+        }
+
+        // E. 독립 음성 해설 1레인: 원본 소리를 끄면 해설 구간만 들리고, 켜면 원본과 함께 섞인다
+        let voiceID = UUID()
+        let staged = try model.stageVoiceover(copying: root.appendingPathComponent("voice/voice.wav"), id: voiceID)
+        let take = TrailerVoiceoverTake(stableID: voiceID, relativeFile: staged, outputStart: 1, sourceIn: 0, sourceOut: 2, volume: 1)
+        let muted = [scene(1, 0, length: 4) { $0.muted = true; $0.manual.insert(.audio) }]
+        if let result = try await render("e-voice-muted", muted, voices: [take]) {
+            let silent = try await rms(result.url, 0.1, 0.8), voiced = try await rms(result.url, 1.2, 2.8), tail = try await rms(result.url, 3.2, 3.8)
+            record("e-voice-muted", ["seconds": result.probe.seconds, "rmsBefore": silent, "rmsVoice": voiced, "rmsAfter": tail])
+            if abs(result.probe.seconds - 4) > 0.12 { fail("e-muted: 길이 \(result.probe.seconds)") }
+            if !(voiced > 0.02 && silent < 0.004 && tail < 0.004) { fail("e-muted: 해설 구간만 들려야 함 \(silent) \(voiced) \(tail)") }
+        }
+        let open = [scene(1, 0, length: 4)]
+        if let result = try await render("e-voice-mixed", open, voices: [take]) {
+            let original = try await rms(result.url, 0.1, 0.8), mixed = try await rms(result.url, 1.2, 2.8)
+            record("e-voice-mixed", ["seconds": result.probe.seconds, "rmsOriginalOnly": original, "rmsOriginalPlusVoice": mixed])
+            if !(original > 0.02 && mixed > original * 1.15) { fail("e-mixed: 원본과 해설이 섞이지 않음 \(original) \(mixed)") }
+        }
+        model.releaseVoiceover(voiceID)
+
+        // F. 짧은 목표와 큰 디졸브 재클램프: 실제 출력이 요청의 한 프레임 안
+        let clamp = [scene(1, 0, length: 10) { $0.adjustments = TrailerClipAdjustments(transition: TrailerTransition(dissolveDuration: 50)) },
+                     scene(2, 1, length: 10) { $0.adjustments = TrailerClipAdjustments(rate: 1.5) }]
+        for target in [3.0, 0.5] {
+            var fitted = clamp
+            guard let fit = TrailerSceneEditor.fitScenesToBudget(scenes: &fitted, sources: model.sources, bodyTarget: target) else { fail("f: 목표 \(target) 맞춤 실패"); continue }
+            let planned = TrailerSceneEditor.outputBodyDuration(fitted)
+            let name = "f-target-\(target)"
+            record("\(name)-plan", ["target": target, "fitTotal": fit.total, "plannedOutput": planned, "starts": fitted.map(\.start), "sceneLengths": fitted.map(\.length),
+                                    "excluded": fitted.map(\.excluded), "rates": fitted.map { $0.adjustments?.rate ?? 1 },
+                                    "dissolves": fitted.map { $0.adjustments?.transition?.dissolveDuration ?? 0 }])
+            guard let result = try await render(name, fitted) else { continue }
+            record(name, ["target": target, "fitTotal": fit.total, "plannedOutput": planned, "seconds": result.probe.seconds,
+                          "sceneLengths": fitted.map(\.length), "excluded": fitted.map(\.excluded)])
+            if abs(planned - target) > frame + 1e-6 { fail("\(name): 계획 \(planned) != 목표 \(target)") }
+            if abs(result.probe.seconds - planned) > frame + 0.04 { fail("\(name): 실제 \(result.probe.seconds) != 계획 \(planned)") }
+        }
+
+        // F2. 큰 디졸브가 이웃 클립을 거의 덮는 경우도 실제로 내보내진다(배속 유무)
+        let swallow: [(String, [TrailerEditScene])] = [
+            ("f2-swallow-plain", [scene(1, 0, length: 3) { $0.adjustments = TrailerClipAdjustments(transition: TrailerTransition(dissolveDuration: 50)) }, scene(2, 1, length: 2)]),
+            ("f2-swallow-rate", [scene(1, 0, length: 3) { $0.adjustments = TrailerClipAdjustments(transition: TrailerTransition(dissolveDuration: 50)) },
+                                 scene(2, 1, length: 2) { $0.adjustments = TrailerClipAdjustments(rate: 1.5) }]),
+            ("f2-dissolve-rate", [scene(1, 0, length: 3) { $0.adjustments = TrailerClipAdjustments(transition: TrailerTransition(dissolveDuration: 1)) },
+                                  scene(2, 1, length: 2) { $0.adjustments = TrailerClipAdjustments(rate: 1.5) }])]
+        for (name, list) in swallow {
+            let planned = TrailerSceneEditor.outputBodyDuration(list)
+            guard let result = try await render(name, list) else { continue }
+            record(name, ["planned": planned, "seconds": result.probe.seconds])
+            if abs(result.probe.seconds - planned) > frame + 0.04 { fail("\(name): 실제 \(result.probe.seconds) != 계획 \(planned)") }
+        }
+
+        // G. 0.25배속에서 출력 한 프레임
+        var tiny = [scene(1, 0, length: 8) { $0.adjustments = TrailerClipAdjustments(rate: 0.25) }]
+        if TrailerSceneEditor.fitScenesToBudget(scenes: &tiny, sources: model.sources, bodyTarget: frame) != nil,
+           let result = try await render("g-tiny-one-frame", tiny) {
+            record("g-tiny-one-frame", ["seconds": result.probe.seconds, "sourceLength": tiny[0].length, "video": result.probe.video])
+            if result.probe.video != 1 || result.probe.seconds < 0.02 || result.probe.seconds > frame + 0.1 { fail("g: 한 프레임 출력 이상 \(result.probe)") }
+        } else { fail("g: 한 프레임 목표 맞춤/렌더 실패") }
+
+        // H. 음악(3초)을 영상 5초에 반복으로 깐다: 영상·소리·미리보기 길이가 같다
+        let musicURL = input(manifest.music.file)
+        let musicSelection = TrailerMusicSelection(recordID: UUID(), name: manifest.music.name, url: musicURL,
+                                                   duration: try await TrailerMusic.usableDuration(of: musicURL), policy: .loopMusic, fitCount: 1)
+        let withMusic = [scene(1, 0, length: 5)]
+        if let result = try await render("h-music", withMusic, music: musicSelection) {
+            let preview = await previewSeconds(withMusic, music: musicSelection)
+            record("h-music", ["seconds": result.probe.seconds, "audioSeconds": result.probe.audioSeconds, "previewSeconds": preview])
+            if abs(result.probe.seconds - 5) > 0.12 || abs(result.probe.audioSeconds - result.probe.seconds) > 0.12
+                || abs(preview - result.probe.seconds) > 0.12 { fail("h-music: 길이 불일치 \(result.probe) 미리보기 \(preview)") }
+        }
+
+        // J/K. 읽을 수 없게 망가진 원본(이 하네스가 받은 작업 사본만 덮어쓴다): 직접 편집한 장면은 조용히 빠지지 않고 오류, 순수 자동 장면만 건너뛴다.
+        if let damaged = model.sources.first(where: { $0.id == 1 }) {
+            try Data(repeating: 0, count: 2048).write(to: damaged.url)
+            let skippedBefore = model.skippedCount
+            func attempt(_ scenes: [TrailerEditScene]) async throws -> String? {
+                model.start(items: items, service: service, mode: .trailer, generate: true, sourceOrder: model.sources.map(\.id), total: nil,
+                            clipLength: 4, aspectRatio: nil, music: nil, manualScenes: scenes, draftSources: model.sources,
+                            revision: nil, introCard: nil, outroCard: nil, voiceovers: [])
+                try await wait("손상 원본", timeout: 600, model: model) { !model.isBusy }
+                return model.error
+            }
+            let manualBlue = [scene(1, 0, length: 3), scene(2, 1, length: 3)]
+            let manualError = try await attempt(manualBlue)
+            record("j-damaged-manual", ["error": manualError ?? "nil", "outputURLIsNil": model.outputURL == nil])
+            if manualError == nil { fail("j: 직접 편집한 장면의 원본이 손상됐는데 성공으로 끝남") }
+            let advancedError = try await attempt([scene(1, 0, length: 3), scene(2, 1, length: 3) { $0.adjustments = TrailerClipAdjustments(rate: 1.25) }])
+            record("j2-damaged-manual-advanced", ["error": advancedError ?? "nil"])
+            if advancedError == nil { fail("j2: 고급 편집 경로에서 직접 편집한 장면의 원본이 손상됐는데 성공으로 끝남") }
+            var autoBlue = scene(2, 1, length: 3)
+            autoBlue.manual = []
+            let autoError = try await attempt([scene(1, 0, length: 3), autoBlue])
+            let autoSeconds = model.outputURL.map { (try? AVURLAsset(url: $0).duration.seconds) ?? -1 } ?? -1
+            record("k-damaged-auto", ["error": autoError ?? "nil", "skipped": model.skippedCount - skippedBefore, "seconds": autoSeconds])
+            if autoError != nil || abs(autoSeconds - 3) > 0.12 { fail("k: 순수 자동 장면은 건너뛰고 나머지 3초가 나와야 함 \(autoError ?? "-") \(autoSeconds)") }
+        } else { fail("j: 손상시킬 작업 사본을 찾지 못함") }
     }
 }

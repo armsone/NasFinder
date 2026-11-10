@@ -4,6 +4,10 @@
 <dict>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>영상 편집에서 음성 해설을 녹음할 때만 마이크를 사용합니다.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>자막 만들기를 눌렀을 때만 기기 안에서 음성을 인식합니다. 오디오는 외부로 전송되지 않습니다.</string>
 	<key>CFBundleDisplayName</key>
 	<string>NasFinder</string>
 	<key>CFBundleDocumentTypes</key>

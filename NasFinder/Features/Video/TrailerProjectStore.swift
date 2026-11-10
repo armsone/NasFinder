@@ -104,6 +104,32 @@ struct TrailerCaption: Codable, Equatable, Sendable {
     }
 }
 
+/// 사용자가 직접 고친 장면 필드 표시. 표시된 필드만 자동 추천·박자·길이/예산 맞춤이 건드리지 않는다.
+struct TrailerManualFields: OptionSet, Codable, Equatable, Sendable {
+    let rawValue: Int
+    static let timing = TrailerManualFields(rawValue: 1 << 0)
+    static let audio = TrailerManualFields(rawValue: 1 << 1)
+    static let framing = TrailerManualFields(rawValue: 1 << 2)
+    static let caption = TrailerManualFields(rawValue: 1 << 3)
+    static let order = TrailerManualFields(rawValue: 1 << 4)
+    static let exclusion = TrailerManualFields(rawValue: 1 << 5)
+    /// 배속·디졸브처럼 시간 창을 고정하지 않는 고급 조정값. 값은 자동 맞춤이 바꾸지 않지만 창(start/length)은 계속 자동이다.
+    static let adjust = TrailerManualFields(rawValue: 1 << 6)
+    static let content: TrailerManualFields = [.audio, .framing, .caption, .adjust]
+    static let all: TrailerManualFields = [.timing, .audio, .framing, .caption, .order, .exclusion, .adjust]
+
+    init(rawValue: Int) { self.rawValue = rawValue }
+    /// 알 수 없는 비트는 버리고 정수 하나로 읽고 쓴다.
+    init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(Int.self)
+        self.init(rawValue: raw & ((1 << 7) - 1))
+    }
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+}
+
 /// 장면 직접 편집에서 쓰는 한 장면. 자동 추천 계획(VideoTrailerScene)을 그대로 씨앗으로 삼고,
 /// 사용자가 고친 값만 이 목록에 남는다. 영상은 start/length(트림), 사진은 length(표시 시간).
 struct TrailerEditScene: Codable, Equatable, Identifiable, Sendable {
@@ -130,12 +156,43 @@ struct TrailerEditScene: Codable, Equatable, Identifiable, Sendable {
     /// 자동 추천이 지키는 원본 시각의 동작 구간(nil이면 보호 없음: 수동 트림). 저장 전 초안은 열 때 저장된 창 전체로 옮긴다.
     var actionStart: Double? = nil
     var actionEnd: Double? = nil
+    /// 명시적(또는 출처를 알 수 없는 이전 버전) 전체 보호. 켜지면 모든 필드를 직접 편집한 것으로 본다.
+    /// 일반 편집은 이 값을 켜지 않고 `manual`에 바뀐 필드만 남긴다. 새로 만든 장면은 false, 이전 버전 저장본은 true로 읽는다.
+    var automationProtected = false
+    /// 사용자가 실제로 바꾼 필드(시간·소리·화면 구성·자막·순서·제외). 새로 만든 장면은 비어 있다.
+    var manual: TrailerManualFields = []
+    /// 클립 세부 조정 (배속, 색상, 키프레임, 전환, 자막 큐, 제외 구간 등). nil이면 기본값/중립.
+    var adjustments: TrailerClipAdjustments? = nil
 
     /// 사진 장면에서 사용자가 직접 정한 화면 구성이 있는지. 없으면 기존 자동 확대 효과를 그대로 쓴다.
     var hasCustomFraming: Bool { fitsFrame || offsetX != 0 || offsetY != 0 }
 
+    /// 자동 길이·박자·추천이 start/length/동작 구간을 바꾸면 안 되는지. 직접 트림·분할한 창만 통째로 고정된다.
+    /// 직접 놓은 자막 구간·키프레임은 창 전체를 고정하지 않고 `anchorRange`로 자동 맞춤이 지켜야 할 하드 구간만 만든다.
+    var timingProtected: Bool { automationProtected || manual.contains(.timing) }
+    /// 자동 맞춤이 창을 줄이거나 옮겨도 남겨야 할 원본 구간: 동작 구간과, 현재 창 안의 직접 놓은 자막·키프레임 앵커의 합.
+    var protectedSpan: (start: Double, end: Double)? {
+        var span: (start: Double, end: Double)?
+        if let a = actionStart, let b = actionEnd, a.isFinite, b.isFinite, b > a { span = (a, b) }
+        if length.isFinite, start.isFinite, length > 0,
+           let anchor = adjustments?.anchorSpan(windowStart: start, windowEnd: start + length) {
+            span = span.map { (min($0.start, anchor.start), max($0.end, anchor.end)) } ?? anchor
+        }
+        return span
+    }
+    /// 자동 예산이 포함/제외 상태를 바꾸면 안 되는지(직접 포함·제외 의도).
+    var exclusionProtected: Bool { automationProtected || manual.contains(.exclusion) }
+    var orderProtected: Bool { automationProtected || manual.contains(.order) }
+    var audioProtected: Bool { automationProtected || manual.contains(.audio) }
+    var framingProtected: Bool { automationProtected || manual.contains(.framing) }
+    var captionProtected: Bool { automationProtected || manual.contains(.caption) }
+    /// 직접 고친 소리·화면 구성·자막이 있는지(출력에서 장면이 빠지면 그 작업이 사라진다).
+    var hasManualContent: Bool { automationProtected || !manual.isDisjoint(with: .content) }
+    /// 직접 편집 흔적이 전혀 없는 장면. 예산이 모자랄 때 통째로 뺄 수 있는 것은 이런 장면뿐이다.
+    var isPureAutomatic: Bool { !automationProtected && manual.isEmpty }
+
     enum CodingKeys: String, CodingKey {
-        case id, sourceID, start, length, excluded, budgetExcluded, muted, fitsFrame, volume, offsetX, offsetY, caption, actionStart, actionEnd
+        case id, sourceID, start, length, excluded, budgetExcluded, muted, fitsFrame, volume, offsetX, offsetY, caption, actionStart, actionEnd, automationProtected, manual, adjustments
     }
 }
 
@@ -163,6 +220,10 @@ extension TrailerEditScene {
             actionStart = anchorStart
             actionEnd = anchorEnd
         }
+        // 이전 버전은 어떤 장면이 직접 고쳐졌는지 남기지 않았으므로 안전하게 모두 보호된 것으로 읽는다.
+        automationProtected = try c.decodeIfPresent(Bool.self, forKey: .automationProtected) ?? true
+        manual = try c.decodeIfPresent(TrailerManualFields.self, forKey: .manual) ?? []
+        adjustments = try c.decodeIfPresent(TrailerClipAdjustments.self, forKey: .adjustments)
     }
 }
 
@@ -309,6 +370,8 @@ struct TrailerProjectRecord: Codable, Sendable {
     var budgetTarget: Double? = nil
     /// 클립 길이 줄에서 마지막으로 누른 것이 숫자(1·2·4·6·−/+·슬라이더)인지(추천이면 nil/false). 숫자면 예산은 컷을 다시 늘리지 않는 상한이다.
     var clipChoiceExplicit: Bool? = nil
+    /// 녹음된 음성 해설 트랙 목록 (구버전은 nil 또는 빈 목록)
+    var voiceovers: [TrailerVoiceoverTake]? = nil
 }
 
 /// 저장 요청 한 번에 필요한 값. 메인 액터에서 만들고 디스크 작업은 백그라운드에서 한다.
@@ -318,6 +381,8 @@ struct TrailerProjectSnapshot: Sendable {
     var stagedFiles: [Int: URL]
     var musicFile: URL?
     var outputFile: URL?
+    /// 음성 해설 id → 편집기가 들고 있는 임시 사본. 저장이 성공해야 프로젝트 사본이 기준이 된다.
+    var voiceFiles: [UUID: URL] = [:]
 }
 
 enum TrailerProjectSaveState: Equatable {
@@ -390,6 +455,11 @@ enum TrailerProjectDisk {
         var files = Set(record.sources.map(\.file))
         if let music = record.music { files.insert(music.file) }
         if let output = record.outputFile { files.insert(output) }
+        if let voiceovers = record.voiceovers {
+            for take in voiceovers where !take.relativeFile.isEmpty {
+                files.insert(take.relativeFile)
+            }
+        }
         return files
     }
 
@@ -451,6 +521,20 @@ enum TrailerProjectDisk {
                     throw TrailerProjectError.stagedMissing(music.name)
                 }
                 record.music = music
+            }
+            if var takes = record.voiceovers {
+                for index in takes.indices {
+                    let take = takes[index]
+                    if let staged = snapshot.voiceFiles[take.stableID], files.fileExists(atPath: staged.path) {
+                        takes[index].relativeFile = try place(staged)
+                    } else if let existing = previous?.voiceovers?.first(where: { $0.stableID == take.stableID }),
+                              let url = resolve(existing.relativeFile, in: folder), files.fileExists(atPath: url.path) {
+                        takes[index].relativeFile = existing.relativeFile
+                    } else {
+                        throw TrailerProjectError.stagedMissing("음성 해설")
+                    }
+                }
+                record.voiceovers = takes.isEmpty ? nil : takes
             }
             if let output = snapshot.outputFile, files.fileExists(atPath: output.path) {
                 record.outputFile = try place(output)
@@ -868,12 +952,13 @@ final class TrailerProjectStore: ObservableObject {
             if let current = music, current.policy == TrailerMusicPolicy.fitMusic.rawValue, current.duration > 0 {
                 let cards = (copy.introCard.flatMap { $0.isEnabled ? $0.duration : nil } ?? 0)
                     + (copy.outroCard.flatMap { $0.isEnabled ? $0.duration : nil } ?? 0)
+                let outro = copy.outroCard.flatMap { $0.isEnabled ? $0.duration : nil } ?? 0
                 let fitted = TrailerSceneEditor.fitScenesToMusic(scenes: &edited, sources: sources, musicDuration: current.duration,
-                    startCount: current.fitCount, cardsDuration: cards, maximumRepeats: TrailerMusic.maximumRepeats)
+                    startCount: current.fitCount, cardsDuration: cards, maximumRepeats: TrailerMusic.maximumRepeats, outroLength: outro)
                 music?.fitCount = fitted.count
             }
             scenes = edited
-            total = edited.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+            total = TrailerSceneEditor.outputBodyDuration(edited, outroLength: copy.outroCard.flatMap { $0.isEnabled ? $0.duration : nil } ?? 0)
         }
         let finalRows = rows, finalScenes = scenes, finalMusic = music, finalTotal = total, finalNextID = nextID
         let title = (records[id]?.customTitle ?? "편집본") + " (추천 재선정 사본)"
@@ -900,6 +985,11 @@ final class TrailerProjectStore: ObservableObject {
             var relatives = other.sources.map(\.file)
             if let music = other.music { relatives.append(music.file) }
             if let output = other.outputFile { relatives.append(output) }
+            if let voiceovers = other.voiceovers {
+                for take in voiceovers where !take.relativeFile.isEmpty {
+                    relatives.append(take.relativeFile)
+                }
+            }
             for relative in relatives {
                 if let url = TrailerProjectDisk.resolve(relative, in: folder) { protected.insert(url.standardizedFileURL.path) }
             }

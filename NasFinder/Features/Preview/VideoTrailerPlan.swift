@@ -16,6 +16,16 @@ struct VideoTrailerScene: Identifiable {
     var offsetY = 0.0
     /// 직접 편집에서 이 장면에 붙인 자막. 미리보기와 내보내기가 같은 값을 그린다.
     var caption: TrailerCaption? = nil
+    /// 직접 편집한 배속·색상·키프레임·전환·자막 큐. nil이면 중립(기존 경로와 동일).
+    var adjustments: TrailerClipAdjustments? = nil
+    /// 직접 편집(시간·소리·화면 구성·자막·순서·포함)의 흔적이 있어 출력에 반드시 들어가야 하는 장면. 자동 구성은 false다.
+    /// 원본을 읽지 못해도 이 장면은 조용히 빠지지 않는다(복구 후에도 안 되면 오류로 알린다).
+    var keepsInclusion = false
+
+    /// 배속을 적용한 출력 길이. `length`는 원본 구간 길이로 그대로 둔다.
+    var outputLength: Double { length / (adjustments?.rate ?? 1) }
+    /// 중립이 아닌 고급 편집(배속·색상·키프레임·디졸브·큐)이 있는지.
+    var hasAdvancedEdits: Bool { adjustments?.isAdvanced ?? false }
 }
 
 struct VideoTrailerPlan {
@@ -480,6 +490,8 @@ enum VideoTrailerBatchPlan {
             fittedScene.offsetX = scene.offsetX
             fittedScene.offsetY = scene.offsetY
             fittedScene.caption = scene.caption
+            fittedScene.adjustments = scene.adjustments
+            fittedScene.keepsInclusion = scene.keepsInclusion
             result.append(fittedScene)
             used += length
         }
@@ -506,6 +518,8 @@ enum VideoTrailerBatchPlan {
             repeated.offsetX = source.offsetX
             repeated.offsetY = source.offsetY
             repeated.caption = source.caption
+            repeated.adjustments = source.adjustments
+            repeated.keepsInclusion = source.keepsInclusion
             result.append(repeated)
             used += ticks
         }

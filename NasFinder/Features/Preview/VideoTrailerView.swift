@@ -14,9 +14,11 @@ enum MediaError: LocalizedError {
 }
 
 private enum TrailerError: LocalizedError {
-    case exportUnavailable, exportFailed, noUsableSources, outputMissing, intermediateInvalid, musicTooShortForCards
+    case exportUnavailable, exportFailed, noUsableSources, outputMissing, intermediateInvalid, musicTooShortForCards, voiceoverMissing, manualSceneUnreadable
     var errorDescription: String? {
         switch self {
+        case .manualSceneUnreadable: "직접 고친 장면의 원본을 읽을 수 없어 영상을 완성하지 못했습니다. 프로젝트와 원본은 그대로이니 원본을 다시 가져오거나 그 장면을 직접 빼 주세요."
+        case .voiceoverMissing: "음성 해설 파일을 찾을 수 없어 영상을 만들지 못했습니다. 해설을 다시 가져오거나 지워 주세요."
         case .intermediateInvalid: "만든 중간 영상을 읽지 못했습니다. 다시 시도해 주세요."
         case .exportUnavailable: "이 영상 형식으로 예고편을 만들 수 없습니다."
         case .exportFailed: "예고편을 만들지 못했습니다. 다시 시도해 주세요."
@@ -117,6 +119,8 @@ struct TrailerRestoredFiles: Sendable {
 enum TrailerPreparedPlan {
     /// 직접 편집한 장면 목록을 그대로 계획으로 바꾼다. 제외한 장면과 사라진 소스의 장면은 빠지고,
     /// 시간 값은 실제 소스 길이 안으로 맞춘다. 자동 추천 규칙은 쓰지 않는다.
+    /// 최소 길이는 UI 정책(0.2초)이 아니라 물리적 최소(프레임 한 장)라서, 예산이 피크 중심으로 좁힌 짧은 자동 장면이
+    /// 미리보기·내보내기·저장 뒤 다시 열기에서 조용히 늘어나지 않고 목록의 길이 그대로 계획이 된다.
     static func manual(_ edits: [TrailerEditScene], sources: [VideoTrailerSource]) -> [VideoTrailerScene] {
         let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var result: [VideoTrailerScene] = []
@@ -124,16 +128,17 @@ enum TrailerPreparedPlan {
             guard let source = byID[edit.sourceID] else { continue }
             var scene: VideoTrailerScene
             if source.isImage {
-                let bounds = TrailerSceneEditor.sceneDurationBounds(scene: edit, source: source)
+                let bounds = TrailerSceneEditor.planDurationBounds(scene: edit, source: source)
                 scene = VideoTrailerScene(id: result.count, start: 0, length: min(bounds.maximum, max(bounds.minimum, edit.length)))
             } else {
                 guard source.duration > 0 else { continue }
-                let bounds = TrailerSceneEditor.sceneDurationBounds(scene: edit, source: source)
+                let bounds = TrailerSceneEditor.planDurationBounds(scene: edit, source: source)
                 let start = min(max(0, edit.start), max(0, source.duration - bounds.minimum))
                 let length = min(bounds.maximum, max(bounds.minimum, edit.length))
                 scene = VideoTrailerScene(id: result.count, start: start, length: length)
             }
             scene.sourceID = source.id
+            scene.keepsInclusion = !edit.isPureAutomatic
             scene.muted = edit.muted && !source.isImage
             scene.fitsFrame = edit.fitsFrame
             scene.volume = source.isImage ? 1 : min(1, max(0, edit.volume))
@@ -141,6 +146,11 @@ enum TrailerPreparedPlan {
             scene.offsetY = min(1, max(-1, edit.offsetY))
             if let caption = edit.caption, !caption.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 scene.caption = caption
+            }
+            // 사진도 저장된 배속을 예산·시간표와 같은 뜻으로 따른다(원본 시간 길이 ÷ 배속 = 출력 길이). 저장 값은 바꾸지 않고, 범위 밖 값만 계획에서 1로 읽는다.
+            if var adjustments = edit.adjustments {
+                adjustments.rate = TrailerSceneEditor.outputRate(edit)
+                scene.adjustments = adjustments.isNeutral ? nil : adjustments
             }
             result.append(scene)
         }
@@ -163,12 +173,15 @@ enum TrailerPreparedPlan {
         guard let music else { return base }
         switch music.policy {
         case .fitMusic:
+            // 직접 편집한 흔적이 있으면 편집 목록이 곧 최종 계획이다. 두 번째 맞춤이 그 장면을 반복하거나 자르거나 다시 정하지 못하고,
+            // 음악이 목록보다 짧거나 길어도 음악은 영상 끝에 맞춰 이어 재생되거나 멈춘다(렌더가 같은 규칙을 쓴다).
             let bodyTarget = music.fittedDuration - cardsDuration
+            if TrailerSceneEditor.keepsManualScenesAsIs(manual) { return base }
             guard bodyTarget >= 0.5 else { return [] }
             return VideoTrailerBatchPlan.fitted(base, to: bodyTarget) ?? []
         case .loopMusic:
             guard music.duration > 0 else { return 0 <= TrailerMusic.maximumRepeats ? base : [] }
-            let baseTotal = base.reduce(0) { $0 + $1.length }
+            let baseTotal = TrailerSceneEditor.outputBodyDuration(planned: base)
             let repeats = max(1, Int((baseTotal / music.duration - 0.000001).rounded(.up)))
             return repeats <= TrailerMusic.maximumRepeats ? base : []
         case .single:
@@ -250,6 +263,8 @@ struct TrailerSettingsDraft {
     var budgetTarget: Double? = nil
     /// 클립 길이 줄에서 마지막으로 숫자를 골랐는지(추천이면 false). 숫자면 예산은 컷을 다시 늘리지 않는다.
     var clipChoiceExplicit = false
+    /// 독립 음성 해설 1레인. 출력 시간 기준이며 영상 배속과 무관하다.
+    var voiceovers: [TrailerVoiceoverTake] = []
 }
 
 /// What a suspended editor leaves in `TrailerDraftStore` and takes back when it is
@@ -586,6 +601,10 @@ struct VideoTrailerView: View {
         chrome.onRetryRender = { runGuarded(retry) }
         chrome.projectID = sessionID
         chrome.guarded = { runGuarded($0) }
+        chrome.voiceURL = { [model] in model.voiceFiles[$0] }
+        chrome.stageVoiceover = { [model] url, id in try model.stageVoiceover(copying: url, id: id) }
+        chrome.voiceWorkFolder = { [model] in model.workDirectory }
+        chrome.saveDraftNow = { await saveDraftNow() }
         return chrome
     }
 
@@ -933,10 +952,12 @@ struct VideoTrailerView: View {
         if prepared.sources.isEmpty {
             entry.totalDuration = model.sources.reduce(0) { $0 + $1.duration } + cardsDur
         } else {
-            let sceneDur = TrailerPreparedPlan.scenes(
+            let sceneList = TrailerPreparedPlan.scenes(
                 mode: mode, sources: prepared.sources, total: prepared.total,
                 clipLength: prepared.clipLength, music: prepared.music, manual: prepared.scenes,
-                cardsDuration: cardsDur).reduce(0) { $0 + $1.length }
+                cardsDuration: cardsDur)
+            let outroDur = prepared.outroCard.isEnabled ? prepared.outroCard.duration : 0.0
+            let sceneDur = TrailerSceneEditor.outputBodyDuration(planned: sceneList, outroLength: outroDur)
             entry.totalDuration = sceneDur > 0 ? sceneDur + cardsDur : 0
         }
         entry.suspendedAt = Date()
@@ -1040,11 +1061,14 @@ struct VideoTrailerView: View {
                 + (current.outroCard.isEnabled ? current.outroCard.duration : 0)
             let fit = TrailerSceneEditor.fitScenesToMusic(scenes: &edited, sources: current.sources, musicDuration: selection.duration,
                                                           startCount: selection.fitCount, cardsDuration: cards,
-                                                          maximumRepeats: TrailerMusic.maximumRepeats)
+                                                          maximumRepeats: TrailerMusic.maximumRepeats,
+                                                          outroLength: current.outroCard.isEnabled ? current.outroCard.duration : 0)
             current.scenes = edited
             selection.fitCount = fit.count
             current.music = selection
-            current.total = selection.fittedDuration
+            // 보호한 장면이 음악보다 길면 그 실제 길이가 전체 길이다(달성할 수 없는 짧은 목표를 남기지 않는다).
+            current.total = TrailerSceneEditor.effectiveFitDuration(fitted: selection.fittedDuration, scenes: edited, cardsDuration: cards,
+                                                                    outroLength: current.outroCard.isEnabled ? current.outroCard.duration : 0)
         }
         let seeded = TrailerPreparedPlan.scenes(mode: mode, sources: current.sources, total: current.total,
                                                 clipLength: current.clipLength, music: current.music, manual: current.scenes)
@@ -1096,7 +1120,8 @@ struct VideoTrailerView: View {
             model.start(items: items, service: service, mode: mode, generate: true, sourceOrder: reconciled.map(\.id),
                         total: draft.total, clipLength: draft.clipLength, aspectRatio: draft.aspectRatio, music: draft.music,
                         manualScenes: draft.scenes, draftSources: reconciled, revision: revision,
-                        introCard: draft.introCard, outroCard: draft.outroCard)
+                        introCard: draft.introCard, outroCard: draft.outroCard,
+                        voiceovers: draft.voiceovers)
             if dropsSources { history.reset(to: draft) }
         }
     }
@@ -1605,7 +1630,8 @@ private struct TrailerSettingsHost: View {
             introCard: binding.introCard,
             outroCard: binding.outroCard,
             budgetTarget: binding.budgetTarget,
-            clipChoiceExplicit: binding.clipChoiceExplicit
+            clipChoiceExplicit: binding.clipChoiceExplicit,
+            voiceovers: binding.voiceovers
         )
         .scrollContentBackground(isPorcelain ? .hidden : .automatic)
         .background(isPorcelain ? PorcelainMetrics.paper : Color.clear)
@@ -1662,6 +1688,7 @@ private struct VideoTrailerSettings: View {
     @Binding var outroCard: TrailerTitleCard
     @Binding var budgetTarget: Double?
     @Binding var clipChoiceExplicit: Bool
+    @Binding var voiceovers: [TrailerVoiceoverTake]
     @EnvironmentObject private var inboxStore: SharedInboxStore
     @AppStorage(AppThemePreference.storageKey) private var selectedThemeRawValue = AppThemePreference.light.rawValue
     @State private var showingMusicPicker = false
@@ -1719,6 +1746,8 @@ private struct VideoTrailerSettings: View {
     @AppStorage("trailer.editor.leftRatio.settings") private var settingsLayoutRatio = 0.40
     /// 미리보기가 왼쪽일 때 오른쪽 위(클립)가 차지하는 높이 비율.
     @AppStorage("trailer.editor.rightSplitRatio") private var rightSplitRatio = 0.5
+    /// 가운데 미리보기 왼쪽의 좁은 클립 줄이 차지하는 폭 비율(전체 폭 기준).
+    @AppStorage("trailer.editor.railWidthRatio") private var railWidthRatio = 0.18
     #endif
     @AppStorage("trailer.editor.clipListMode") private var clipListModeRaw = TrailerClipListMode.detail.rawValue
     /// 전체 화면 들어가기·나오기마다 늘려 재생을 그 자리에서 멈춘다.
@@ -1764,6 +1793,8 @@ private struct VideoTrailerSettings: View {
     @State private var backgroundRankGeneration = 0
     @State private var isAnalyzingTempo = false
     @State private var tempoNotice: String? = nil
+    /// 선택 추천·잠금·타임라인 편집(다듬기·나누기·이동)의 마지막 결과. 클립 관리 옆에 보이고 선택이 바뀌면 사라진다.
+    @State private var automationNotice: String? = nil
     @State private var musicFitNotice: String? = nil
     /// 정한 전체 길이를 받을 수 없을 때(한 장면도 통째로 안 들어감)의 안내.
     @State private var budgetNotice: String? = nil
@@ -1774,6 +1805,7 @@ private struct VideoTrailerSettings: View {
         case caption = "자막"
         case music = "음악"
         case screen = "화면"
+        case effects = "효과"
 
         var id: String { rawValue }
     }
@@ -1800,7 +1832,7 @@ private struct VideoTrailerSettings: View {
     private var baseProposal: [VideoTrailerScene] {
         TrailerPreparedPlan.base(mode: mode, sources: sources, total: total, clipLength: clipLength, manual: scenes)
     }
-    private var baseTotal: Double { baseProposal.reduce(0) { $0 + $1.length } }
+    private var baseTotal: Double { TrailerSceneEditor.outputBodyDuration(planned: baseProposal, outroLength: outroCard.isEnabled ? outroCard.duration : 0) }
     private var cardsDuration: Double {
         (introCard.isEnabled ? introCard.duration : 0.0) + (outroCard.isEnabled ? outroCard.duration : 0.0)
     }
@@ -2012,6 +2044,27 @@ private struct VideoTrailerSettings: View {
         )
     }
 
+    /// 내보내기: 적용 대기 자막을 먼저 처리하고 편집본을 저장한 뒤 같은 합성 경로로 만든다. Mac은 위쪽 오른쪽 버튼, 그 밖은 아래 막대가 쓴다.
+    private func startExport() {
+        guard applyPendingCaptionAction() else { return }
+        // 아직 기다리는 자동 저장을 먼저 비운다.
+        chrome.onSaveDraft()
+        startingOutputURL = outputURL
+        exportRequested = true
+        regenerate()
+    }
+
+    private var exportBlocked: Bool { proposal.isEmpty || (mode == .mediaMusic && music == nil) }
+
+    /// 아래 막대에 보일 것이 있는지. Mac의 편집 중에는 내보내기가 위쪽에 있으므로 저장 실패 안내만 있을 때 보인다.
+    private var showsCreateBar: Bool {
+        #if targetEnvironment(macCatalyst)
+        return (previewingOutput && isOutputCurrent && outputURL != nil) || chrome.saveFailed
+        #else
+        return true
+        #endif
+    }
+
     private var createBar: some View {
         let blocked: Bool = proposal.isEmpty || (mode == .mediaMusic && music == nil)
         let isShowingOutput: Bool = previewingOutput && isOutputCurrent && outputURL != nil
@@ -2039,19 +2092,13 @@ private struct VideoTrailerSettings: View {
                     .buttonStyle(.plain)
                 }
 
-                Button {
-                    if applyPendingCaptionAction() {
-                        // 아직 기다리는 자동 저장을 먼저 비운다.
-                        chrome.onSaveDraft()
-                        startingOutputURL = outputURL
-                        exportRequested = true
-                        regenerate()
-                    }
-                } label: {
+                #if !targetEnvironment(macCatalyst)
+                Button(action: startExport) {
                     footerButtonLabel(title: isBusy ? "내보내는 중…" : "내보내기", isProminent: true)
                 }
                 .buttonStyle(.plain)
                 .disabled(blocked || isBusy)
+                #endif
             }
         }
         .padding(.horizontal, MacUIScale.defaultPadding ?? 16)
@@ -2094,6 +2141,12 @@ private struct VideoTrailerSettings: View {
         }
         switch music.policy {
         case .fitMusic:
+            if TrailerSceneEditor.keepsManualScenesAsIs(scenes) {
+                // 직접 편집한 장면은 자르거나 반복하지 않는다. 장면 목록의 실제 길이(미리보기·내보내기와 같은 계획)가 그대로 결과이고 음악이 거기에 맞춰진다.
+                if actualTotal > music.fittedDuration + 0.05 { return "직접 편집한 클립을 지켜 영상(\(videoTrailerTime(actualTotal)))이 음악보다 길어요 · 음악은 영상 끝까지 이어서 재생돼요" }
+                if actualTotal < music.fittedDuration - 0.05 { return "직접 편집한 클립은 그대로라 영상(\(videoTrailerTime(actualTotal)))이 음악보다 짧아요 · 영상이 끝나면 음악도 멈춰요" }
+                return "영상과 음악 길이가 같아요"
+            }
             if baseTotal < music.fittedDuration - 0.05 { return "영상이 음악보다 짧아 장면을 처음부터 다시 이어 붙여요" }
             if baseTotal > music.fittedDuration + 0.05 { return "음악이 끝나는 곳에서 영상도 끝나요 · 뒤쪽 장면은 잘려요" }
             return "영상과 음악 길이가 같아요"
@@ -2105,7 +2158,7 @@ private struct VideoTrailerSettings: View {
         }
     }
     private var actualTotal: Double {
-        proposal.isEmpty ? 0 : proposal.reduce(0) { $0 + $1.length } + cardsDuration
+        proposal.isEmpty ? 0 : TrailerSceneEditor.outputBodyDuration(planned: proposal, outroLength: outroCard.isEnabled ? outroCard.duration : 0) + cardsDuration
     }
     private var sceneSummary: String {
         let cardCount = (introCard.isEnabled ? 1 : 0) + (outroCard.isEnabled ? 1 : 0)
@@ -2220,11 +2273,17 @@ private struct VideoTrailerSettings: View {
             musicLevelSlider
             if music.policy == .fitMusic {
                 let count = max(1, music.fitCount)
-                Text("\(count)회 재생 · 총 \(videoTrailerTime(music.duration * Double(count)))")
+                let musicWhole = music.duration * Double(count)
+                // 직접 편집한 목록이 최종 계획이면 실제 영상 길이(계획 합 + 카드)가 음악과 다를 때 그 길이를 그대로 보인다.
+                let differsFromMusic = TrailerSceneEditor.keepsManualScenesAsIs(scenes) && abs(actualTotal - musicWhole) > 0.05
+                Text(differsFromMusic
+                     ? "\(count)회 재생 · 음악 \(videoTrailerTime(musicWhole)) · 실제 영상 \(videoTrailerTime(actualTotal))"
+                     : "\(count)회 재생 · 총 \(videoTrailerTime(musicWhole))")
                     .font(.ui(.caption)).foregroundStyle(Color.accentColor).monospacedDigit()
                 let reserved = (scenes ?? []).filter(\.budgetExcluded).count
                 let used = (scenes ?? []).filter { !$0.excluded }.count
-                let whole = (scenes ?? []).filter { !$0.excluded }.reduce(0.0) { $0 + $1.length } + cardsDuration
+                // 표시하는 실제 길이는 미리보기·내보내기가 쓰는 계획(`proposal`)과 같은 값이다.
+                let whole = actualTotal
                 let shortOfMusic = music.duration * Double(count) - whole > 0.5 && scenes != nil
                 Text("장면 \(used)개 사용" + (reserved > 0 ? " · 길이에 안 들어가는 덜 중요한 \(reserved)개는 통째로 뺐어요" : " · 모든 장면이 들어가요")
                      + (shortOfMusic ? " · 실제 영상 \(videoTrailerTime(whole))" + (clipChoiceExplicit ? "(고른 클립 길이를 지켜 음악보다 짧아요)" : "(재료가 모자라 음악보다 짧아요)") : ""))
@@ -2251,10 +2310,39 @@ private struct VideoTrailerSettings: View {
             return
         }
         guard !isAnalyzingTempo else { return }
+        // 대상은 분석을 기다리기 전에 정한다: 체크로 고른 클립이 있으면 그 클립만, 없으면 모든 클립(보호된 클립은 어느 쪽이든 그대로).
+        // 기다리는 동안 선택이 바뀌어도 대상은 그대로이고, 장면 목록이 바뀌면 아래 서명 비교가 결과를 버린다.
+        let targetIDs: Set<Int>? = isSelectingScenes && !selectedSceneIDs.isEmpty ? selectedSceneIDs : nil
+        let protectedNote: String
+        if let editScenes = scenes {
+            let counts = TrailerSceneEditor.automationCounts(ids: targetIDs ?? Set(editScenes.map(\.id)), in: editScenes)
+            // 포함된 클립이 하나도 없으면 비싼 분석과 맞춤 전에 이유를 알리고 끝낸다.
+            guard counts.eligible + counts.protected > 0 else {
+                tempoNotice = "박자에 맞출 포함된 클립이 없어요."
+                return
+            }
+            // 시간이 모두 고정돼 박자가 바꿀 클립이 없어도 거절하지 않는다: 비싼 박자 분석 없이, 고정한 클립은 그대로 두고
+            // 허용된 자동 필드만 길이·음악 맞춤으로 정리해 실제 결과를 알린다(잠금 해제를 요구하지 않는다).
+            guard counts.eligible > 0 else {
+                if let targetIDs {
+                    fitSelectedScenesToMusic(targetIDs)
+                    fitSelectedScenesToBudget(targetIDs)
+                } else {
+                    fitManualScenesToMusic()
+                }
+                syncTotalToIncludedScenes()
+                tempoNotice = "\(targetIDs == nil ? "모든" : "고른") 클립 \(counts.protected)개의 시간이 고정돼 있어 박자에 맞춘 전환은 바꾸지 않고 길이 맞춤을 마무리했어요. \(actualResultLine)."
+                return
+            }
+            protectedNote = counts.protected > 0 ? " 보호된 클립 \(counts.protected)개는 그대로 두었습니다." : ""
+        } else {
+            protectedNote = ""
+        }
         isAnalyzingTempo = true
 
         // 맞춤이면 비트 맞춤 전에 보호 길이 기준으로 반복 횟수와 길이를 먼저 확정한다(예산이 보호된 마지막 장면을 자르지 않게).
-        fitManualScenesToMusic()
+        // 고른 클립만 대상이면 고르지 않은 클립은 이 맞춤에서도 바뀌지 않는다.
+        if let targetIDs { fitSelectedScenesToMusic(targetIDs) } else { fitManualScenesToMusic() }
         guard let music = self.music else { isAnalyzingTempo = false; return }
         let beforeSignature = TrailerDraftSignature(
             sourceIDs: sources.map(\.id), total: total, clipLength: clipLength, aspect: aspectRatio?.rawValue,
@@ -2301,7 +2389,8 @@ private struct VideoTrailerSettings: View {
                 let activeMusic = self.music ?? music
                 let synced = TrailerSceneEditor.syncToBeatsWithMinimumRepeats(
                     scenes: currentScenes, sources: sources, beatOnsets: beats, music: activeMusic,
-                    cardsDuration: introOffset + outroDuration, introOffset: introOffset, outroDuration: outroDuration)
+                    cardsDuration: introOffset + outroDuration, introOffset: introOffset, outroDuration: outroDuration,
+                    selectedIDs: targetIDs)
                 let candidateScenes = synced.scenes
                 let result = synced.result
 
@@ -2310,11 +2399,11 @@ private struct VideoTrailerSettings: View {
                         nextSceneID = (candidateScenes.map(\.id).max() ?? 0) + 1
                     }
                     scenes = candidateScenes
-                    total = candidateScenes.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+                    total = TrailerSceneEditor.outputBodyDuration(candidateScenes, outroLength: outroCard.isEnabled ? outroCard.duration : 0)
                     syncTotalToFit(self.music)
                     let unalignedNote = result.unalignedCount > 0 ? " \(result.unalignedCount)개는 원본 길이 안에서 닿는 비트가 없어 그대로 두었습니다." : ""
                     let residualNote = result.fitResidual != 0 ? " 음악 길이와 \(String(format: "%.1f", abs(result.fitResidual)))초 차이가 남았습니다." : ""
-                    tempoNotice = "\(result.adjustedCount)개 장면을 원본 길이 범위 안에서 음악 비트에 맞췄습니다. 시작 위치·자막·순서는 보존됩니다.\(unalignedNote)\(residualNote)"
+                    tempoNotice = "\(result.adjustedCount)개 장면을 원본 길이 범위 안에서 음악 비트에 맞췄습니다. 시작 위치·자막·순서는 보존됩니다.\(protectedNote)\(unalignedNote)\(residualNote) \(actualResultLine)."
                 } else {
                     if result.unalignedCount > 0 {
                         tempoNotice = "원본 길이 안에서 닿는 비트가 없어 기존 길이를 유지했습니다."
@@ -2525,10 +2614,20 @@ private struct VideoTrailerSettings: View {
             }
             if chrome.showsAdd {
                 ToolbarItem(placement: .primaryAction) {
-                    Button(action: chrome.onAdd) { InterfaceToolbarIcon(systemName: "plus.circle") }
-                        .accessibilityLabel("재료 추가")
+                    Button("클립 추가", action: chrome.onAdd).uiBarFont()
+                        .accessibilityLabel("클립 추가")
                 }
             }
+            #if targetEnvironment(macCatalyst)
+            if !(previewingOutput && isOutputCurrent && outputURL != nil) {
+                ToolbarItem(placement: .primaryAction) {
+                    Button(isBusy ? "내보내는 중…" : "내보내기", action: startExport)
+                        .buttonStyle(.borderedProminent)
+                        .disabled(exportBlocked || isBusy)
+                        .accessibilityLabel("영상으로 내보내기")
+                }
+            }
+            #endif
             // iPhone/iPad full-screen editor needs its own theme entry; Mac uses the global one.
             #if !targetEnvironment(macCatalyst)
             ToolbarItem(placement: .primaryAction) {
@@ -2549,7 +2648,7 @@ private struct VideoTrailerSettings: View {
     private func editorLayout(size: CGSize) -> some View {
         VStack(spacing: 0) {
             if !isPreviewFullscreen {
-                projectBar(showsPaneSelector: size.width >= 640)
+                projectBar(showsPaneSelector: size.width >= splitLayoutMinimumWidth)
                     .padding(.horizontal, MacUIScale.defaultPadding ?? 16).padding(.vertical, ui(6))
                     .contentShape(Rectangle())
                     .zIndex(1)
@@ -2559,7 +2658,7 @@ private struct VideoTrailerSettings: View {
                 areaContent(size: proxy.size)
                     .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
             }
-            if !isPreviewFullscreen {
+            if !isPreviewFullscreen, showsCreateBar {
                 Divider()
                 createBar
             }
@@ -2663,7 +2762,7 @@ private struct VideoTrailerSettings: View {
     private func areaContent(size: CGSize) -> some View {
         let pad: CGFloat = isPreviewFullscreen ? 0 : (MacUIScale.defaultPadding ?? 16)
         let inner = CGSize(width: max(0, size.width - pad * 2), height: max(0, size.height - pad * 2))
-        let wide = size.width >= 640
+        let wide = size.width >= splitLayoutMinimumWidth
 
         if isPreviewFullscreen {
             VStack(spacing: 0) {
@@ -2671,7 +2770,7 @@ private struct VideoTrailerSettings: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if (!previewingOutput || !isOutputCurrent) && !timelineSegments.isEmpty {
                     #if targetEnvironment(macCatalyst)
-                    macTimelineToolbar(timelineHeight: 56)
+                    macTimelineToolbar(timelineHeight: 56, showsEditLane: false)
                     #else
                     compactTimeline(sizeRatio: 1.0)
                     #endif
@@ -2698,6 +2797,16 @@ private struct VideoTrailerSettings: View {
                     }
                 }
         }
+    }
+
+    /// 가운데 미리보기·아래 전체 폭 타임라인을 쓰는 분할 배치의 최소 폭. Mac은 가장 좁은 창(800pt)에서도 타임라인이 보이도록
+    /// 480pt부터 쓰고(그 아래 폭과 iPhone/iPad는 기존 640pt), 이 폭에서는 미리보기 아래에 클립 줄과 속성이 나란히 쌓인다.
+    private var splitLayoutMinimumWidth: CGFloat {
+        #if targetEnvironment(macCatalyst)
+        return 480
+        #else
+        return 640
+        #endif
     }
 
     /// 폰 편집 본문의 위아래 바깥 여백. iPhone만 8pt이고 Mac은 기존 여백 그대로다. 전역 `ui()`는 건드리지 않는다.
@@ -2779,6 +2888,8 @@ private struct VideoTrailerSettings: View {
             musicTabContent
         case .screen:
             screenTabContent
+        case .effects:
+            effectsTabContent
         }
     }
 
@@ -2803,115 +2914,169 @@ private struct VideoTrailerSettings: View {
         }
     }
 
-    /// Mac: 머리글의 단추 하나로 왼쪽 전체 높이 창(클립/미리보기/설정)을 고른다. 세 창은 항상 같은 자리의 같은 뷰이고
-    /// 틀과 위치만 바뀌므로 클립 선택·스크롤·재생·탭 상태가 그대로 남는다. 미리보기 아래에는 재생 줄과 타임라인이 붙어 다닌다.
+    /// Mac: 가운데 큰 미리보기, 왼쪽 좁은 클립(재료) 줄, 오른쪽 선택 영역 속성, 아래 전체 폭 타임라인(재생·나누기·잠금·되돌리기가 바로 옆).
+    /// 머리글의 선택 단추 하나가 무엇을 크게 볼지 정한다: 클립 = 왼쪽 클립 줄 + 오른쪽 선택한 클립 속성, 미리보기 = 영상만 크게,
+    /// 설정 = 오른쪽에 프로젝트 전체 설정(음악·화면·음성 해설). 세 영역은 항상 같은 뷰이므로 선택·재생·스크롤이 그대로 남는다.
+    /// 좁은 창(980pt 미만)은 미리보기를 위에 두고 클립 줄과 속성을 그 아래에 나란히 쌓는다.
     private func macSplitLayout(size: CGSize) -> some View {
         let layout = macLayout
+        let focus = layout == .preview
         let handleWidth: CGFloat = 12
         let gap: CGFloat = 8
-        let gripHeight: CGFloat = 28
         let bodyHeight = max(1, size.height)
+        let timelineHeight: CGFloat = 56
+        // 직접 편집 중이면 필름스트립 아래에 눈금자와 편집 줄이 붙는다.
+        let laneExtra: CGFloat = scenes != nil ? TrailerSceneEditLane.totalHeight + 8 : 0
+        let toolbarHeight = timelineHeight + 40 + laneExtra
+        let topHeight = max(120, bodyHeight - toolbarHeight - gap)
+        let threeColumn = size.width >= 980
         let shared = max(1, size.width - handleWidth)
-        let lower = min(0.45, 260 / shared)
-        let upper = max(0.55, 1 - 360 / shared)
-        let ratio = min(max(macRatioBinding(layout).wrappedValue, lower), upper)
-        let leftWidth: CGFloat = shared * CGFloat(ratio)
-        let rightWidth: CGFloat = shared - leftWidth
-        let rightX = leftWidth + handleWidth
-        let timelineHeight: CGFloat = layout == .preview ? 96 : 56
-        let toolbarHeight = timelineHeight + 40
-        let minPane: CGFloat = 120
-        // 설정 창 배치에서는 오른쪽 아래 클립 패널이 제목·보기 전환·관리줄과 선택 가능한 클립 한 줄 이상을 항상 보이도록 남긴다.
-        let clipPanelMinimum: CGFloat = 240
+        let railLower = min(0.3, 200 / shared)
+        let railUpper = max(railLower, min(0.35, 320 / shared))
+        let railRatio = min(max(railWidthRatio, railLower), railUpper)
+        let railWidth = shared * CGFloat(railRatio)
+        let inspectorWidth = min(380, max(300, size.width * 0.27))
+        let narrowRail: CGFloat = 200
 
-        // 각 창의 틀(x, y, 폭, 높이)
-        var clipsFrame = CGRect.zero, previewFrame = CGRect.zero, settingsFrame = CGRect.zero
-        var gripY: CGFloat?
-        var splitY: CGFloat?
-        var previewVideoHeight: CGFloat = 0
-        var previewBounds: (minimum: CGFloat, preferred: CGFloat, maximum: CGFloat)?
-        var previewGripCurrent: CGFloat = 0
-        let left = CGRect(x: 0, y: 0, width: leftWidth, height: bodyHeight)
-
-        switch layout {
-        case .preview:
-            previewFrame = left
-            previewVideoHeight = max(48, bodyHeight - toolbarHeight)
-            let usable = max(1, bodyHeight - handleWidth)
-            let topHeight = min(max(usable * CGFloat(rightSplitRatio), min(minPane, usable / 2)), max(min(minPane, usable / 2), usable - minPane))
-            clipsFrame = CGRect(x: rightX, y: 0, width: rightWidth, height: topHeight)
-            splitY = topHeight
-            settingsFrame = CGRect(x: rightX, y: topHeight + handleWidth, width: rightWidth, height: max(1, bodyHeight - topHeight - handleWidth))
-        case .clips, .settings:
-            let lowerReserve = layout == .settings ? max(minPane, clipPanelMinimum) : minPane
-            let maximum = max(48, bodyHeight - toolbarHeight - gripHeight - gap * 2 - lowerReserve)
-            let minimum = min(72, maximum)
-            let bounds = (minimum: minimum, preferred: min(maximum, max(minimum, rightWidth * 9 / 16 + 1)), maximum: maximum)
-            let videoHeight = min(bounds.maximum, max(bounds.minimum, previewHeight ?? bounds.preferred))
-            previewVideoHeight = videoHeight
-            previewBounds = bounds
-            previewGripCurrent = videoHeight
-            let blockHeight = videoHeight + toolbarHeight
-            previewFrame = CGRect(x: rightX, y: 0, width: rightWidth, height: blockHeight)
-            gripY = blockHeight + gap
-            let bottomY = blockHeight + gap + gripHeight + gap
-            let bottom = CGRect(x: rightX, y: bottomY, width: rightWidth, height: max(1, bodyHeight - bottomY))
-            if layout == .clips {
-                clipsFrame = left
-                settingsFrame = bottom
-            } else {
-                settingsFrame = left
-                clipsFrame = bottom
-            }
-        }
-
-        return VStack(spacing: 0) {
-            ZStack(alignment: .topLeading) {
-                macClipsPane
-                    .frame(width: clipsFrame.width, height: clipsFrame.height, alignment: .top)
-                    .offset(x: clipsFrame.minX, y: clipsFrame.minY)
-                VStack(spacing: 0) {
-                    if layout == .preview {
-                        // 전체 높이 창: 그림은 화면 비율에 맞는 크기만큼만 차지하고 도구줄이 바로 아래에 붙으며 묶음은 위쪽에 둔다.
-                        previewSection(showsOutput: previewingOutput && isOutputCurrent, hugsPicture: true)
-                            .frame(maxWidth: .infinity, maxHeight: previewVideoHeight)
-                            .background(Color.black)
-                    } else {
-                        // 오른쪽 미리보기도 왼쪽과 같은 검은 카드: 그림이 아래 재생 줄·필름스트립에 바로 붙는다.
-                        previewSection(showsOutput: previewingOutput && isOutputCurrent, hugsPicture: true)
-                            .frame(maxWidth: .infinity, maxHeight: previewVideoHeight)
-                            .background(Color.black)
+        return VStack(spacing: gap) {
+            Group {
+                if focus {
+                    macPreviewCard
+                } else if threeColumn {
+                    HStack(spacing: 0) {
+                        macClipsPane
+                            .frame(width: railWidth, alignment: .top)
+                        TrailerSplitHandle(ratio: $railWidthRatio, totalWidth: shared, range: railLower...railUpper, defaultRatio: 0.18)
+                            .frame(width: handleWidth)
+                        macPreviewCard
+                            .frame(maxWidth: .infinity)
+                        Color.clear.frame(width: gap)
+                        macInspectorPane(width: inspectorWidth)
+                            .frame(width: inspectorWidth, alignment: .top)
                     }
-                    macTimelineToolbar(timelineHeight: timelineHeight)
-                        .frame(height: toolbarHeight)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: ui(12), style: .continuous))
-                .frame(width: previewFrame.width, height: previewFrame.height, alignment: .top)
-                .offset(x: previewFrame.minX, y: previewFrame.minY)
-                macSettingsPane(width: settingsFrame.width)
-                    .frame(width: settingsFrame.width, height: settingsFrame.height, alignment: .top)
-                    .offset(x: settingsFrame.minX, y: settingsFrame.minY)
-
-                TrailerSplitHandle(ratio: macRatioBinding(layout), totalWidth: shared, range: lower...upper, defaultRatio: layout.defaultRatio)
-                    .frame(width: handleWidth, height: bodyHeight)
-                    .offset(x: leftWidth, y: 0)
-                if let gripY, let previewBounds {
-                    previewGrip(current: previewGripCurrent, bounds: previewBounds, prominent: true)
-                        .frame(width: rightWidth, height: gripHeight)
-                        .offset(x: rightX, y: gripY)
-                }
-                if let splitY {
-                    TrailerVerticalSplitHandle(ratio: $rightSplitRatio, totalHeight: max(1, bodyHeight - handleWidth), range: 0.2...0.8, defaultRatio: 0.5)
-                        .frame(width: rightWidth, height: handleWidth)
-                        .offset(x: rightX, y: splitY)
+                } else {
+                    VStack(spacing: gap) {
+                        // 클립 줄의 관리 단추(선택·선택 추천·잠금·삭제)가 타임라인에 가리지 않도록 줄 높이를 먼저 남긴다.
+                        macPreviewCard
+                            .frame(height: max(96, min(topHeight * 0.5, topHeight - 224 - gap)))
+                        HStack(alignment: .top, spacing: gap) {
+                            macClipsPane
+                                .frame(width: narrowRail, alignment: .top)
+                            macInspectorPane(width: max(1, size.width - narrowRail - gap))
+                                .frame(maxWidth: .infinity, alignment: .top)
+                        }
+                    }
                 }
             }
-            .frame(width: size.width, height: bodyHeight, alignment: .topLeading)
-            // 본문 입력은 자기 영역 밖(머리글 쪽)으로 번지지 않게 가둔다.
-            .clipped()
+            .frame(width: size.width, height: topHeight, alignment: .top)
+            macTimelineToolbar(timelineHeight: timelineHeight)
+                .frame(height: toolbarHeight)
+                .clipShape(RoundedRectangle(cornerRadius: ui(12), style: .continuous))
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
-        .onAppear { if activeTab == .clips { activeTab = .caption } }
+        // 본문 입력은 자기 영역 밖(머리글 쪽)으로 번지지 않게 가둔다.
+        .clipped()
+        .onAppear { normalizeMacTab() }
+        .onChange(of: macLayoutRaw) { _ in normalizeMacTab() }
+    }
+
+    /// 가운데 큰 미리보기. 같은 `previewSection`이라 재생·타임라인 시계는 영역이 바뀌어도 그대로다.
+    private var macPreviewCard: some View {
+        previewSection(showsOutput: previewingOutput && isOutputCurrent)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.black)
+            .clipShape(RoundedRectangle(cornerRadius: ui(12), style: .continuous))
+    }
+
+    /// 오른쪽에 보이는 도구 모음. 클립 영역은 선택한 클립의 구간·자막/효과, 설정 영역은 프로젝트 전체의 음악·화면·음성 해설.
+    private func macInspectorTabs(projectScope: Bool) -> [VideoTrailerTab] {
+        projectScope ? [.music, .screen, .effects] : [.caption, .effects]
+    }
+
+    private func macToolTitle(_ tab: VideoTrailerTab, projectScope: Bool) -> String {
+        switch tab {
+        case .caption: return "구간·자막"
+        case .effects: return projectScope ? "음성 해설" : "효과"
+        default: return tab.rawValue
+        }
+    }
+
+    private func normalizeMacTab() {
+        let tabs = macInspectorTabs(projectScope: macLayout == .settings)
+        if !tabs.contains(activeTab), let first = tabs.first { activeTab = first }
+    }
+
+    /// 지금 무엇을 고치고 있는지 한눈에: 선택한 클립(번호·구간·길이·잠금/제외 상태)이나 프로젝트 전체 길이.
+    @ViewBuilder
+    private func macSelectionHeader(projectScope: Bool) -> some View {
+        if projectScope {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("프로젝트 전체 설정").font(.subheadline.weight(.semibold))
+                Text("\(trailerFullDurationTitle(actualTotal)) · \(sceneSummary)")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+        } else if let editScenes = scenes, let id = selectedSceneID,
+                  let index = TrailerSceneEditor.index(of: id, in: editScenes) {
+            let scene = editScenes[index]
+            let rate = scene.adjustments?.rate ?? 1
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text("선택한 클립 \(index + 1)").font(.subheadline.weight(.semibold))
+                    if scene.timingProtected { Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary) }
+                    if scene.excluded { Text("제외됨").font(.caption.weight(.semibold)).foregroundStyle(.orange) }
+                }
+                Text("\(videoTrailerTime(scene.length / rate)) 출력" + (rate != 1 ? " · 속도 \(String(format: "%g", rate))배" : "")
+                     + " · 재생 위치 \(videoTrailerTime(timelineBridge.currentSeconds))")
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).monospacedDigit()
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("클립을 선택하세요").font(.subheadline.weight(.semibold))
+                Text("왼쪽 목록이나 아래 타임라인에서 클립을 누르면 여기서 고칠 수 있어요.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func macInspectorPane(width: CGFloat) -> some View {
+        let projectScope = macLayout == .settings
+        let tabs = macInspectorTabs(projectScope: projectScope)
+        let tab = tabs.contains(activeTab) ? activeTab : (tabs.first ?? .caption)
+        return VStack(alignment: .leading, spacing: ui(8)) {
+            macSelectionHeader(projectScope: projectScope)
+            Picker("편집 도구", selection: Binding(get: { tab }, set: { activeTab = $0 })) {
+                ForEach(tabs) { Text(macToolTitle($0, projectScope: projectScope)).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            ScrollView {
+                VStack(alignment: .leading, spacing: ui(12)) {
+                    macInspectorBody(tab, projectScope: projectScope)
+                }
+                .frame(width: width, alignment: .leading)
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+        }
+    }
+
+    @ViewBuilder
+    private func macInspectorBody(_ tab: VideoTrailerTab, projectScope: Bool) -> some View {
+        switch tab {
+        case .caption:
+            VStack(alignment: .leading, spacing: ui(12)) {
+                if scenes != nil { inspectorPane }
+                captionCardA
+                captionCardB
+                captionCardC
+            }
+        case .music:
+            musicTabContent
+        case .screen:
+            screenTabContent
+        case .effects:
+            effectsTabContent(projectScope: projectScope)
+        case .clips:
+            EmptyView()
+        }
     }
 
     private var macClipsPane: some View {
@@ -2926,24 +3091,6 @@ private struct VideoTrailerSettings: View {
             }
             if scenes != nil { macClipActions }
             macClipList
-        }
-    }
-
-    private func macSettingsPane(width: CGFloat) -> some View {
-        VStack(alignment: .leading, spacing: ui(8)) {
-            Picker("편집 탭", selection: $activeTab) {
-                ForEach(VideoTrailerTab.allCases.filter { $0 != .clips }) { tab in
-                    Text(tab == .caption ? "자막·구간" : tab.rawValue).tag(tab)
-                }
-            }
-            .pickerStyle(.segmented)
-            ScrollView {
-                VStack(alignment: .leading, spacing: ui(12)) {
-                    wideInspectorContent
-                }
-                .frame(width: width, alignment: .leading)
-            }
-            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
         }
     }
 
@@ -3005,24 +3152,7 @@ private struct VideoTrailerSettings: View {
                     .disabled(photos.isEmpty)
                     .opacity(photos.isEmpty ? 0.4 : 1)
                 }
-                HStack(spacing: 8) {
-                    outlinedAction(isSelectingScenes ? "완료" : "선택") {
-                        if isSelectingScenes {
-                            isSelectingScenes = false
-                            selectedSceneIDs = selectedSceneID.map { [$0] } ?? []
-                        } else {
-                            isSelectingScenes = true
-                            if let selectedSceneID { selectedSceneIDs.insert(selectedSceneID) }
-                        }
-                    }
-                    outlinedAction("복사", enabled: !ids.isEmpty) { duplicateScenes(ids) }
-                    outlinedAction("이동", enabled: !ids.isEmpty) {
-                        let first = editScenes.firstIndex { ids.contains($0.id) } ?? 0
-                        sceneMoveTarget = "\(first + 1)"
-                        showingSceneMoveSheet = true
-                    }
-                    outlinedAction("삭제", tint: .red, enabled: !ids.isEmpty) { deleteScenes(ids) }
-                }
+                automationControls(ids: ids, scenes: editScenes)
             }
             .sheet(isPresented: $showingSceneMoveSheet) {
                 sceneMoveSheet(count: ids.count, total: editScenes.count)
@@ -3032,7 +3162,7 @@ private struct VideoTrailerSettings: View {
 
     /// 미리보기 바로 아래의 하나로 합친 타임라인 도구줄: 항상 보이는 재생/일시 정지 하나와 현재 위치/전체 길이, 그 아래 필름스트립.
     /// 미리보기와 같은 폭·같은 검은 배경이라 한 덩어리로 보이고, 재생 위치는 읽기만 하며 편집 대상(선택 클립)을 바꾸지 않는다.
-    private func macTimelineToolbar(timelineHeight: CGFloat) -> some View {
+    private func macTimelineToolbar(timelineHeight: CGFloat, showsEditLane: Bool = true) -> some View {
         VStack(spacing: ui(4)) {
             HStack(spacing: 10) {
                 Button { timelineBridge.togglePlayback() } label: {
@@ -3049,6 +3179,8 @@ private struct VideoTrailerSettings: View {
                 Text("\(videoTrailerTime(timelineBridge.currentSeconds)) / \(videoTrailerTime(timelineBridge.durationSeconds))")
                     .font(.caption.monospacedDigit())
                 Spacer(minLength: 0)
+                macUndoRedoButtons
+                if showsEditLane, scenes != nil { macSceneEditButtons }
                 Button { setFullscreen(!isPreviewFullscreen) } label: {
                     Image(systemName: isPreviewFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                         .font(.system(size: 13, weight: .semibold))
@@ -3063,10 +3195,109 @@ private struct VideoTrailerSettings: View {
             .foregroundStyle(.white)
             wideTimeline
                 .frame(height: timelineHeight)
+            if showsEditLane, let editScenes = scenes {
+                sceneEditLane(editScenes)
+                    .frame(height: TrailerSceneEditLane.totalHeight)
+            }
         }
         .padding(.horizontal, ui(6)).padding(.top, ui(2)).padding(.bottom, ui(6))
         .frame(maxWidth: .infinity)
         .background(Color.black)
+    }
+
+    /// 필름스트립 아래 편집 줄. 필름스트립과 같은 구간 목록을 쓰므로 시작/마지막 화면·제외된 클립·재생 위치가 서로 어긋나지 않는다.
+    private func sceneEditLane(_ editScenes: [TrailerEditScene]) -> some View {
+        TrailerSceneEditLane(
+            segments: timelineSegments, scenes: editScenes, sources: sources,
+            selectedSceneID: selectedSceneID, bridge: timelineBridge,
+            onSelect: { focusClip($0) },
+            onTrim: { id, edge, delta in trimScene(id, edge: edge, by: delta) },
+            onMove: { id, step in moveSceneStep(id, step) },
+            onToggleProtection: { id in
+                let locked = editScenes.first { $0.id == id }?.timingProtected ?? false
+                setProtection(!locked, ids: [id])
+            })
+    }
+
+    /// 타임라인 바로 옆의 되돌리기·다시 실행(머리글 것과 같은 동작).
+    @ViewBuilder
+    private var macUndoRedoButtons: some View {
+        Button(action: chrome.onUndo) {
+            Image(systemName: "arrow.uturn.backward").font(.system(size: 13, weight: .semibold))
+                .frame(width: 32, height: 28).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(!chrome.canUndo).opacity(chrome.canUndo ? 1 : 0.5)
+        .accessibilityLabel("되돌리기").help("마지막 편집을 되돌립니다")
+        Button(action: chrome.onRedo) {
+            Image(systemName: "arrow.uturn.forward").font(.system(size: 13, weight: .semibold))
+                .frame(width: 32, height: 28).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).disabled(!chrome.canRedo).opacity(chrome.canRedo ? 1 : 0.5)
+        .accessibilityLabel("다시 실행").help("되돌린 편집을 다시 적용합니다")
+    }
+
+    /// 선택한 클립을 쓸지(포함/제외) 바꾼다. 제외해도 목록에는 남고 다시 포함할 수 있다.
+    private func toggleIncluded(_ id: Int) {
+        chrome.guarded {
+            guard scenes != nil else { return }
+            TrailerSceneEditor.update(id, in: &scenes!) { $0.excluded.toggle(); $0.budgetExcluded = false }
+            syncTotalToIncludedScenes()
+        }
+    }
+
+    /// 재생 줄 안의 선택 클립 편집 단추: 앞/뒤 이동, 재생 위치에서 나누기, 잠금(자동 추천 제외), 포함/제외. 편집은 재생 상태를 바꾸지 않는다.
+    @ViewBuilder
+    private var macSceneEditButtons: some View {
+        let canSplit = splitLocalTime != nil && !isBusy
+        let selected = scenes?.first { $0.id == selectedSceneID }
+        Button { moveSceneStep(selectedSceneID ?? -1, -1) } label: {
+            Image(systemName: "chevron.left.2").font(.system(size: 12, weight: .semibold))
+                .frame(width: 32, height: 28).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(selectedSceneID == nil || isBusy)
+        .opacity(selectedSceneID == nil || isBusy ? 0.5 : 1)
+        .accessibilityLabel("선택한 클립 앞으로 이동")
+        .help("선택한 클립을 앞으로 한 칸 옮깁니다")
+        Button { moveSceneStep(selectedSceneID ?? -1, 1) } label: {
+            Image(systemName: "chevron.right.2").font(.system(size: 12, weight: .semibold))
+                .frame(width: 32, height: 28).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(selectedSceneID == nil || isBusy)
+        .opacity(selectedSceneID == nil || isBusy ? 0.5 : 1)
+        .accessibilityLabel("선택한 클립 뒤로 이동")
+        .help("선택한 클립을 뒤로 한 칸 옮깁니다")
+        Button { splitSelectedAtPlayhead() } label: {
+            Image(systemName: "scissors").font(.system(size: 13, weight: .semibold))
+                .frame(width: 32, height: 28).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canSplit)
+        .opacity(canSplit ? 1 : 0.5)
+        .accessibilityLabel("재생 위치에서 선택한 클립 나누기")
+        .accessibilityHint(canSplit ? "재생 위치에서 클립을 둘로 나눕니다" : splitDisabledHint)
+        .help(canSplit ? "재생 위치에서 선택한 클립을 둘로 나눕니다" : splitDisabledHint)
+        Button { if let selected { setProtection(!selected.timingProtected, ids: [selected.id]) } } label: {
+            Image(systemName: selected?.timingProtected == true ? "lock.fill" : "lock.open")
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 32, height: 28).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(selected == nil || isBusy)
+        .opacity(selected == nil || isBusy ? 0.5 : 1)
+        .accessibilityLabel(selected?.timingProtected == true ? "선택한 클립 보호 해제" : "선택한 클립 보호")
+        .help(selected?.timingProtected == true ? "보호를 풀면 자동 추천이 이 클립을 바꿀 수 있어요" : "보호하면 자동 추천·박자·길이 맞춤이 이 클립을 바꾸지 않아요")
+        Button { if let selected { toggleIncluded(selected.id) } } label: {
+            Image(systemName: selected?.excluded == true ? "eye.slash" : "eye")
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 32, height: 28).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(selected == nil || isBusy)
+        .opacity(selected == nil || isBusy ? 0.5 : 1)
+        .accessibilityLabel(selected?.excluded == true ? "선택한 클립 포함" : "선택한 클립 제외")
+        .help(selected?.excluded == true ? "이 클립은 영상에서 빠져 있어요. 누르면 다시 넣어요" : "이 클립은 영상에 들어가요. 누르면 영상에서 뺍니다")
     }
 
     #endif
@@ -3088,8 +3319,8 @@ private struct VideoTrailerSettings: View {
     private func seekPreview(toScene id: Int) {
         let segments = timelineSegments
         guard let index = segments.firstIndex(where: { $0.sceneID == id }) else { return }
-        let total = max(0.001, segments.reduce(0) { $0 + max(0.05, $1.length) })
-        let before = segments[..<index].reduce(0.0) { $0 + max(0.05, $1.length) }
+        let total = max(0.001, segments.reduce(0) { $0 + $1.timelineLength })
+        let before = segments[..<index].reduce(0.0) { $0 + $1.timelineLength }
         timelineBridge.seek(toFraction: before / total)
     }
 
@@ -3187,7 +3418,9 @@ private struct VideoTrailerSettings: View {
             outroBackground: background(outroCard, isIntro: false, fallback: lastIncludedSource),
             bodyTypography: bodyCardTypography,
             selectedSceneID: selectedSceneID,
-            music: music
+            music: music,
+            voices: voiceovers.compactMap { take in chrome.voiceURL(take.stableID).map { TrailerComposerVoice(take: take, url: $0) } },
+            missingVoiceCount: voiceovers.filter { chrome.voiceURL($0.stableID) == nil }.count
         )
     }
 
@@ -3212,7 +3445,9 @@ private struct VideoTrailerSettings: View {
                                     muted: plannedScene?.muted ?? edit.muted,
                                     fitsFrame: plannedScene?.fitsFrame ?? edit.fitsFrame,
                                     offsetX: plannedScene?.offsetX ?? edit.offsetX,
-                                    offsetY: plannedScene?.offsetY ?? edit.offsetY))
+                                    offsetY: plannedScene?.offsetY ?? edit.offsetY,
+                                    volume: plannedScene?.volume ?? edit.volume,
+                                    adjustments: plannedScene?.adjustments))
             }
         } else {
             for scene in planned {
@@ -3224,7 +3459,7 @@ private struct VideoTrailerSettings: View {
         if outroCard.isEnabled, outroCard.duration > 0 {
             result.append(.init(id: "outro", kind: .outro, sceneID: nil, sourceID: nil, start: 0, length: outroCard.duration))
         }
-        return result
+        return TrailerAdvancedComposer.annotatingOverlaps(result)
     }
 
     private var wideTimeline: some View {
@@ -3275,7 +3510,19 @@ private struct VideoTrailerSettings: View {
             musicTabContent
         case .screen:
             screenTabContent
+        case .effects:
+            effectsTabContent
         }
+    }
+
+    /// 속도·색상·전환·키프레임·시간별 자막(선택한 클립)과 음성 해설(프로젝트 전체).
+    private var effectsTabContent: some View { effectsTabContent(projectScope: nil) }
+
+    /// `projectScope` nil이면 선택한 클립 효과와 음성 해설을 함께(폰·좁은 화면), true면 프로젝트 전체 음성 해설만, false면 선택한 클립 효과만 보인다.
+    private func effectsTabContent(projectScope: Bool?) -> some View {
+        TrailerEffectsInspector(
+            sources: sources, scenes: $scenes, selectedID: $selectedSceneID, voiceovers: $voiceovers,
+            segments: timelineSegments, bridge: timelineBridge, chrome: chrome, projectScope: projectScope)
     }
 
     private var captionCardA: some View {
@@ -3451,24 +3698,12 @@ private struct VideoTrailerSettings: View {
                     .font(.ui(.caption)).foregroundStyle(.secondary)
             }
             HStack {
-                if mode == .trailer || scenes != nil {
-                    Button("자동 추천으로 되돌리기") {
-                        guard !legacyAnalysisPending else { return }
-                        scenes = nil
-                        selectedSceneID = nil
-                        clipLength = VideoTrailerModel.recommendedLength(sources)
-                        total = VideoTrailerBatchPlan.recommendedTotal(sources: sources, clipLength: clipLength)
-                        syncTotalToFit(music)
-                        showingDuration = false
-                        showingClipLength = false
-                    }
-                    .disabled(legacyAnalysisPending)
-                    .font(.ui(.caption)).frame(minHeight: ui(30))
-                }
+                recommendationMenu
                 Spacer()
                 Button("이 편집 버리기", role: .destructive) { confirmingDiscard = true }
                     .font(.ui(.caption)).frame(minHeight: ui(30))
             }
+            automationNoticeLine
         }
     }
 
@@ -4197,11 +4432,12 @@ private struct VideoTrailerSettings: View {
                 scenes: &nextScenes, sources: &nextSources, clipLength: clipLength)
             // 총길이는 그대로 두고 기존 비례 재분배로 맞춘다.
             if previousTotal > 0 {
-                TrailerSceneEditor.redistributeManualTotal(scenes: &nextScenes, sources: nextSources, targetTotal: previousTotal)
+                TrailerSceneEditor.redistributeOutputBody(scenes: &nextScenes, sources: nextSources, bodyTarget: previousTotal,
+                                                         outroLength: outroCard.isEnabled ? outroCard.duration : 0)
             }
             sources = nextSources
             scenes = nextScenes
-            total = nextScenes.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+            total = TrailerSceneEditor.outputBodyDuration(nextScenes, outroLength: outroCard.isEnabled ? outroCard.duration : 0)
         }
     }
 
@@ -4268,6 +4504,8 @@ private struct VideoTrailerSettings: View {
                                 .disabled(ids.isEmpty)
                             Button(role: .destructive) { deleteScenes(ids) } label: { Label("삭제", systemImage: "trash") }
                                 .disabled(ids.isEmpty)
+                            Divider()
+                            recommendationMenuItems
                         } label: {
                             Image(systemName: "ellipsis.circle")
                                 .font(.system(size: 22))
@@ -4313,25 +4551,9 @@ private struct VideoTrailerSettings: View {
                             .font(.subheadline.weight(.medium)).frame(minHeight: 44)
                     }
                 }
-                HStack(spacing: 8) {
-                    outlinedAction(isSelectingScenes ? "완료" : "선택") {
-                        if isSelectingScenes {
-                            isSelectingScenes = false
-                            selectedSceneIDs = selectedSceneID.map { [$0] } ?? []
-                        } else {
-                            isSelectingScenes = true
-                            if let selectedSceneID { selectedSceneIDs.insert(selectedSceneID) }
-                        }
-                    }
-                    outlinedAction("복사", enabled: !ids.isEmpty) { duplicateScenes(ids) }
-                    outlinedAction("이동", enabled: !ids.isEmpty) {
-                        let first = editScenes.firstIndex { ids.contains($0.id) } ?? 0
-                        sceneMoveTarget = "\(first + 1)"
-                        showingSceneMoveSheet = true
-                    }
-                    outlinedAction("삭제", tint: .red, enabled: !ids.isEmpty) { deleteScenes(ids) }
+                automationControls(ids: ids, scenes: editScenes)
                 }
-                }
+                if compact { automationNoticeLine }
                 if showsInspector, !isSelectingScenes {
                     inspectorPane
                 }
@@ -4566,9 +4788,6 @@ private struct VideoTrailerSettings: View {
     /// 그리고 편집 · 영상 만들기 두 영역 전환.
     private func projectBar(showsPaneSelector: Bool) -> some View {
         HStack(spacing: ui(4)) {
-            Text(chrome.title).font(.ui(.footnote).weight(.semibold)).lineLimit(1).truncationMode(.middle)
-                .layoutPriority(0)
-            Spacer(minLength: ui(4))
             #if targetEnvironment(macCatalyst)
             if showsPaneSelector {
                 // 클립/미리보기/설정은 같은 폭으로 나뉘고, 좁아지면 프로젝트 이름이 먼저 줄어든다.
@@ -4578,9 +4797,11 @@ private struct VideoTrailerSettings: View {
                 .pickerStyle(.segmented).labelsHidden()
                 .frame(minWidth: 210, idealWidth: 300, maxWidth: 360)
                 .layoutPriority(1)
-                Spacer(minLength: ui(4))
             }
             #endif
+            Spacer(minLength: ui(4))
+            // Mac은 타임라인 옆의 되돌리기·다시 실행 한 쌍만 둔다(머리글에 같은 단추를 겹쳐 두지 않는다).
+            #if !targetEnvironment(macCatalyst)
             Button(action: chrome.onUndo) {
                 InterfaceIcon(systemName: "arrow.uturn.backward", size: 24)
                     .frame(minWidth: ui(44), minHeight: ui(44)).contentShape(Rectangle())
@@ -4591,6 +4812,7 @@ private struct VideoTrailerSettings: View {
                     .frame(minWidth: ui(44), minHeight: ui(44)).contentShape(Rectangle())
             }
             .disabled(!chrome.canRedo).accessibilityLabel("다시 실행")
+            #endif
         }
         .buttonStyle(.plain)
     }
@@ -4672,28 +4894,17 @@ private struct VideoTrailerSettings: View {
                     .font(.ui(.caption)).foregroundStyle(.secondary)
             }
             HStack {
-                if mode == .trailer || scenes != nil {
-                    Button("자동 추천으로 되돌리기") {
-                        guard !legacyAnalysisPending else { return }
-                        scenes = nil
-                        selectedSceneID = nil
-                        clipLength = VideoTrailerModel.recommendedLength(sources)
-                        total = VideoTrailerBatchPlan.recommendedTotal(sources: sources, clipLength: clipLength)
-                        syncTotalToFit(music)
-                        showingDuration = false
-                        showingClipLength = false
-                    }
-                    .disabled(legacyAnalysisPending)
-                    .font(.ui(.caption)).frame(minHeight: ui(30))
-                }
+                recommendationMenu
                 Spacer()
                 Button("이 편집 버리기", role: .destructive) { confirmingDiscard = true }
                     .font(.ui(.caption)).frame(minHeight: ui(30))
             }
+            automationNoticeLine
         }
     }
 
-    private var settingsTitle: String { "영상 편집" }
+    /// 위쪽 제목은 지금 편집 중인 프로젝트 이름이다(이름이 비어 있을 때만 기본 문구).
+    private var settingsTitle: String { chrome.title.isEmpty ? "영상 편집" : chrome.title }
 
     private func musicPolicyTitle(_ policy: TrailerMusicPolicy) -> String {
         guard policy == .fitMusic, let music, music.policy == .fitMusic else { return policy.title }
@@ -4726,13 +4937,14 @@ private struct VideoTrailerSettings: View {
     private func refitToBudgetTarget(capOnly: Bool) {
         guard mode == .trailer, let target = budgetTarget, music?.policy != .fitMusic, var next = scenes else { return }
         guard TrailerSceneEditor.fitScenesToBudget(scenes: &next, sources: sources, bodyTarget: target - cardsDuration,
-                                                   capOnly: capOnly || clipChoiceExplicit) != nil else {
+                                                   capOnly: capOnly || clipChoiceExplicit,
+                                                   outroLength: outroCard.isEnabled ? outroCard.duration : 0) != nil else {
             let shortest = TrailerSceneEditor.budgetBodyBounds(scenes: next, sources: sources).minimum + cardsDuration
             budgetNotice = "가장 짧은 장면도 동작이 잘리지 않으려면 전체 \(videoTrailerTime(shortest)) 이상이 필요해요."
             return
         }
         if next != scenes { scenes = next }
-        total = next.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+        total = TrailerSceneEditor.outputBodyDuration(next, outroLength: outroCard.isEnabled ? outroCard.duration : 0)
     }
 
     /// 직접 편집한 장면은 컷·순서·자막·시작 위치를 그대로 두고 길이만 (음악 길이 × 고른 반복 − 시작/마지막 화면)에 맞춰 다시 나눈다.
@@ -4748,18 +4960,280 @@ private struct VideoTrailerSettings: View {
         guard var next = scenes, let selection = music else { musicFitNotice = nil; return true }
         let result = TrailerSceneEditor.fitScenesToMusic(scenes: &next, sources: sources, musicDuration: selection.duration,
                                                          startCount: selection.fitCount, cardsDuration: cardsDuration,
-                                                         maximumRepeats: TrailerMusic.maximumRepeats, capOnly: clipChoiceExplicit)
+                                                         maximumRepeats: TrailerMusic.maximumRepeats, capOnly: clipChoiceExplicit,
+                                                         outroLength: outroCard.isEnabled ? outroCard.duration : 0)
         if next != scenes! { scenes = next }
         syncTotalToFit(music)
+        let actualWhole = result.total + cardsDuration
         if !result.fits {
-            let shortest = TrailerSceneEditor.budgetBodyBounds(scenes: next, sources: sources).minimum + cardsDuration
-            musicFitNotice = "음악 \(selection.fitCount)회(\(videoTrailerTime(selection.fittedDuration)))로는 가장 짧은 장면도 동작이 잘리지 않게 넣을 수 없어요(최소 \(videoTrailerTime(shortest))). 이전 설정을 그대로 둡니다."
+            // 목표가 아무리 짧아도 동작 구간을 피크 중심으로 좁혀 담으므로, 맞출 수 없는 경우는 포함된 장면이 하나도 없을 때뿐이다.
+            musicFitNotice = "음악 \(selection.fitCount)회(\(videoTrailerTime(selection.fittedDuration)))에 맞출 포함된 장면이 없어요. 이전 설정을 그대로 둡니다."
+        } else if TrailerSceneEditor.keepsManualScenesAsIs(next), actualWhole > selection.fittedDuration + 0.05 {
+            // 직접 시간을 정했거나 더 줄일 수 없는 직접 편집 클립이 음악 길이보다 길다: 그 길이를 지키고 영상 전체를 실제 길이로 만든다. 음악은 영상 끝까지 이어서 재생한다.
+            musicFitNotice = "직접 편집한 클립을 그대로 지키려고 영상은 \(videoTrailerTime(actualWhole))로 만들어요(음악 \(selection.fitCount)회 \(videoTrailerTime(selection.fittedDuration))보다 김). 음악은 영상 끝까지 이어서 재생돼요." + (result.excluded > 0 ? " 직접 편집하지 않은 클립 \(result.excluded)개는 길이 맞춤으로 뺐어요." : "")
+        } else if TrailerSceneEditor.keepsManualScenesAsIs(next), actualWhole < selection.fittedDuration - 0.05 {
+            // 직접 편집한 목록이 곧 결과라 반복하지 않는다: 영상은 이 실제 길이이고 영상이 끝나면 음악도 멈춘다.
+            musicFitNotice = "직접 편집한 클립은 반복하지 않고 그대로 만들어 영상은 \(videoTrailerTime(actualWhole))예요(음악 \(selection.fitCount)회 \(videoTrailerTime(selection.fittedDuration))보다 짧음). 영상이 끝나면 음악도 멈춰요." + (result.excluded > 0 ? " 직접 편집하지 않은 클립 \(result.excluded)개는 길이 맞춤으로 뺐어요." : "")
         } else if result.excluded > 0 {
             musicFitNotice = "전체 \(videoTrailerTime(result.total + cardsDuration))에 맞추려고 덜 중요한 장면 \(result.excluded)개를 통째로 뺐어요. 길이를 늘리면 다시 들어갑니다."
         } else {
             musicFitNotice = nil
         }
         return result.fits
+    }
+
+    /// 고른 클립만 음악 길이에 다시 맞춘다. 고르지 않은 클립은 길이·제외·보호가 그대로다.
+    private func fitSelectedScenesToMusic(_ ids: Set<Int>) {
+        guard mode == .trailer, let selection = music, selection.policy == .fitMusic, selection.duration > 0,
+              var next = scenes else { return }
+        TrailerSceneEditor.freezing(except: ids, in: &next) { list in
+            _ = TrailerSceneEditor.fitScenesToMusic(scenes: &list, sources: sources, musicDuration: selection.duration,
+                                                    startCount: selection.fitCount, cardsDuration: cardsDuration,
+                                                    maximumRepeats: TrailerMusic.maximumRepeats, capOnly: clipChoiceExplicit,
+                                                    outroLength: outroCard.isEnabled ? outroCard.duration : 0)
+        }
+        if next != scenes { scenes = next }
+        syncTotalToFit(music)
+    }
+
+    /// 정한 전체 길이(음악 길이 맞춤이 아닐 때)를 고른 클립 안에서만 지킨다. 고르지 않은 클립은 그대로다.
+    private func fitSelectedScenesToBudget(_ ids: Set<Int>) {
+        guard mode == .trailer, let target = budgetTarget, music?.policy != .fitMusic, var next = scenes else { return }
+        TrailerSceneEditor.freezing(except: ids, in: &next) { list in
+            _ = TrailerSceneEditor.fitScenesToBudget(scenes: &list, sources: sources, bodyTarget: target - cardsDuration, capOnly: true,
+                                                   outroLength: outroCard.isEnabled ? outroCard.duration : 0)
+        }
+        if next != scenes { scenes = next }
+    }
+
+    /// 편집 뒤 실제 본편 길이를 전체 길이 값에 반영한다. 음악 길이 맞춤이면 보호 장면이 이기는 실제 길이를 쓴다.
+    private func syncTotalToIncludedScenes() {
+        guard let editScenes = scenes else { return }
+        total = TrailerSceneEditor.outputBodyDuration(editScenes, outroLength: outroCard.isEnabled ? outroCard.duration : 0)
+        syncTotalToFit(music)
+    }
+
+    // MARK: 선택 추천 · 잠금
+
+    private func protectionSummary(_ counts: (eligible: Int, protected: Int, excluded: Int)) -> String {
+        var parts = ["추천 가능 \(counts.eligible)"]
+        if counts.protected > 0 { parts.append("잠금 \(counts.protected)") }
+        if counts.excluded > 0 { parts.append("제외 \(counts.excluded)") }
+        return parts.joined(separator: " · ")
+    }
+
+    /// 미리보기·내보내기가 쓰는 계획과 같은 값으로 말하는 실제 결과 한 줄(길이 맞춤을 마친 뒤의 영상 길이, 장면 수, 음악 길이 맞춤이면 음악 길이).
+    private var actualResultLine: String {
+        var text = "실제 영상 \(videoTrailerTime(actualTotal)) · 장면 \(proposal.count)개"
+        if let music, music.policy == .fitMusic { text += " · 음악 \(music.fitCount)회 \(videoTrailerTime(music.fittedDuration))" }
+        return text
+    }
+
+    /// 고른 클립(또는 모든 클립)에 현재 자동 추천을 적용하고 길이·음악 맞춤까지 마무리한다. 순서는 바꾸지 않고, 고정한 클립과 고르지 않은 클립은 건드리지 않는다.
+    /// 추천이 바꿀 값이 없거나(이미 같음) 고른 클립의 시간이 모두 고정이어도 거절하지 않는다: 값은 그대로 두고 고른 클립 안에서 허용된 자동 필드만
+    /// 길이·음악 맞춤으로 정리해 실제 결과를 알린다. 잠금 해제를 요구하지 않는다. 포함된 클립이 하나도 없을 때만 거절한다.
+    /// 장면 목록을 버리지 않으므로 직접 편집한 클립의 자막·소리·프레이밍·제외·순서가 모두 남고 되돌리기 한 단계로 되돌아간다.
+    private func recommendAutomatically(allUnprotected: Bool) {
+        chrome.guarded {
+            guard !legacyAnalysisPending else {
+                automationNotice = "소리 분석이 끝난 뒤에 추천을 적용할 수 있어요."
+                return
+            }
+            guard var next = scenes else { return }
+            // 대상은 지금 정해 두고 끝까지 그 클립만 다룬다. 전체 적용은 사용자가 뺀 클립을 제외한 모든 클립(예산이 뺀 클립 포함)이다.
+            let ids = allUnprotected ? Set(next.filter { !$0.excluded || $0.budgetExcluded }.map(\.id)) : effectiveSceneIDs
+            guard !ids.isEmpty else {
+                automationNotice = allUnprotected ? "추천을 적용할 클립이 없어요." : "추천을 적용할 클립을 먼저 고르세요."
+                return
+            }
+            let counts = TrailerSceneEditor.automationCounts(ids: ids, in: next)
+            guard counts.eligible + counts.protected > 0 || next.contains(where: { ids.contains($0.id) && $0.budgetExcluded }) else {
+                automationNotice = "고른 클립이 모두 제외돼 있어 추천을 적용할 수 없어요."
+                return
+            }
+            let changed = TrailerSceneEditor.refreshAutomaticScenes(ids: ids, sources: sources, clipLength: clipLength, in: &next)
+            if next != scenes { scenes = next }
+            // 길이 맞춤도 고른 클립 안에서만 움직인다(고르지 않은 클립은 그대로). 추천이 바뀐 게 없어도 같은 맞춤을 끝까지 한다.
+            fitSelectedScenesToMusic(ids)
+            fitSelectedScenesToBudget(ids)
+            syncTotalToIncludedScenes()
+            if changed > 0 { appliedOrder = nil }
+            let lockedTail = counts.protected > 0 ? " 직접 고정한 \(counts.protected)개는 그대로 두었어요." : ""
+            if changed > 0 {
+                automationNotice = "추천을 \(changed)개 클립에 적용하고 길이를 맞췄어요. \(actualResultLine). 순서와 자막·소리·프레이밍은 그대로예요.\(lockedTail)"
+            } else if counts.eligible > 0 {
+                automationNotice = "추천 가능한 \(counts.eligible)개는 이미 추천과 같아 값은 그대로 두고 길이 맞춤을 마무리했어요. \(actualResultLine).\(lockedTail)"
+            } else {
+                automationNotice = "고른 클립의 시간이 모두 고정돼 있어 값은 그대로 두고 길이·음악 맞춤을 마무리했어요. \(actualResultLine).\(lockedTail)"
+            }
+        }
+    }
+
+    /// 사용자가 직접 고른 클립을 잠그거나(자동 추천·박자·길이 맞춤 제외) 잠금을 푼다. 값은 바꾸지 않는다.
+    private func setProtection(_ isProtected: Bool, ids: Set<Int>) {
+        chrome.guarded {
+            guard var next = scenes else { return }
+            guard !ids.isEmpty else {
+                automationNotice = "클립을 먼저 고르세요."
+                return
+            }
+            let changed = TrailerSceneEditor.setAutomationProtected(isProtected, ids: ids, in: &next)
+            guard changed > 0 else {
+                automationNotice = isProtected ? "고른 클립은 이미 모두 잠겨 있어요." : "고른 클립은 이미 모두 잠금이 풀려 있어요."
+                return
+            }
+            scenes = next
+            automationNotice = isProtected
+                ? "클립 \(changed)개를 잠갔어요. 자동 추천·박자·길이 맞춤이 이 클립을 바꾸지 않아요."
+                : "클립 \(changed)개의 잠금을 풀었어요. 이제 ‘추천 적용’이 이 클립을 바꿀 수 있어요."
+        }
+    }
+
+    // MARK: 타임라인 편집 줄 (다듬기 · 나누기 · 이동)
+
+    /// 선택한 포함 클립 안의 재생 위치(장면 안 초). 선택한 클립 밖이거나 경계에 너무 가까워 나눌 수 없으면 nil이다.
+    private var splitLocalTime: Double? {
+        guard let editScenes = scenes, let id = selectedSceneID,
+              let scene = editScenes.first(where: { $0.id == id }), !scene.excluded else { return nil }
+        let segments = timelineSegments
+        let playhead = TrailerTimelineGeometry.playheadSeconds(
+            currentSeconds: timelineBridge.currentSeconds, durationSeconds: timelineBridge.durationSeconds,
+            hasPlayer: timelineBridge.hasPlayer, segments: segments)
+        guard let local = TrailerTimelineGeometry.localTime(ofScene: id, atSeconds: playhead, segments: segments),
+              TrailerSceneEditor.canSplit(id, atLocalTime: local, source: sources.first { $0.id == scene.sourceID }, in: editScenes) else { return nil }
+        return local
+    }
+
+    private var splitDisabledHint: String {
+        if scenes == nil || selectedSceneID == nil { return "나눌 클립을 먼저 고르세요." }
+        if !timelineBridge.hasPlayer { return "미리보기 재생 위치가 있어야 나눌 수 있어요." }
+        return "재생 위치를 선택한 클립 안쪽(양 끝에서 조금 떨어진 곳)에 두면 나눌 수 있어요."
+    }
+
+    private func splitSelectedAtPlayhead() {
+        chrome.guarded {
+            guard let local = splitLocalTime, let id = selectedSceneID, var next = scenes,
+                  let scene = next.first(where: { $0.id == id }) else {
+                automationNotice = splitDisabledHint
+                return
+            }
+            var nextID = nextSceneID
+            let source = sources.first { $0.id == scene.sourceID }
+            guard TrailerSceneEditor.split(id, atLocalTime: local, source: source, in: &next, nextID: &nextID) != nil else {
+                automationNotice = splitDisabledHint
+                return
+            }
+            scenes = next
+            nextSceneID = nextID
+            // 총 길이는 그대로이고 두 조각 모두 잠긴다. 재생 상태는 건드리지 않는다.
+            automationNotice = String(format: "재생 위치에서 둘로 나눴어요 (앞 %.1f초 · 뒤 %.1f초). 두 조각 모두 잠겼어요.", local / TrailerSceneEditor.outputRate(scene), (scene.length - local) / TrailerSceneEditor.outputRate(scene))
+        }
+    }
+
+    private func trimScene(_ id: Int, edge: TrailerSceneEditor.TrimEdge, by delta: Double) {
+        chrome.guarded {
+            guard var next = scenes, let scene = next.first(where: { $0.id == id }),
+                  let source = sources.first(where: { $0.id == scene.sourceID }),
+                  let window = TrailerSceneEditor.trimCandidate(scene, edge: edge, by: delta, source: source) else { return }
+            guard TrailerSceneEditor.trim(id, start: window.start, length: window.length, source: source, in: &next) else {
+                automationNotice = "원본 범위 안에서 더 다듬을 수 없어요."
+                return
+            }
+            scenes = next
+            syncTotalToIncludedScenes()
+            automationNotice = String(format: "클립 길이를 %.1f초로 다듬었어요. 이 클립은 잠겼어요.", window.length / TrailerSceneEditor.outputRate(scene))
+        }
+    }
+
+    private func moveSceneStep(_ id: Int, _ step: Int) {
+        chrome.guarded {
+            guard var next = scenes, TrailerSceneEditor.moveIncluded(id, step: step, in: &next) else { return }
+            scenes = next
+            appliedOrder = nil
+        }
+    }
+
+    /// 클립 관리 옆 자동 추천 줄. 선택 상태와 잠금 개수, 마지막 결과를 항상 말로 보여 준다.
+    @ViewBuilder
+    private func automationControls(ids: Set<Int>, scenes editScenes: [TrailerEditScene]) -> some View {
+        let counts = TrailerSceneEditor.automationCounts(ids: ids, in: editScenes)
+        // 한 번에 하나의 잠금 동작만 보인다: 고른 클립이 모두 잠겨 있으면 ‘잠금 해제’, 아니면 ‘잠금’(섞였으면 해제는 … 메뉴).
+        let allLocked = !ids.isEmpty && counts.eligible == 0 && counts.protected > 0
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                outlinedAction(isSelectingScenes ? "완료" : "선택") { toggleSceneSelecting() }
+                outlinedAction("선택 추천", enabled: !ids.isEmpty && !legacyAnalysisPending) {
+                    recommendAutomatically(allUnprotected: false)
+                }
+                .accessibilityHint("고른 클립 중 잠기지 않은 클립에만 자동 추천을 적용합니다")
+                if allLocked {
+                    outlinedAction("잠금 해제") { setProtection(false, ids: ids) }
+                        .accessibilityHint("고른 클립을 다시 자동 추천이 바꿀 수 있게 합니다")
+                } else {
+                    outlinedAction("잠금", enabled: !ids.isEmpty) { setProtection(true, ids: ids) }
+                        .accessibilityHint("고른 클립을 자동 추천과 박자·길이 맞춤에서 제외합니다")
+                }
+            }
+            HStack(spacing: 8) {
+                outlinedAction("삭제", tint: .red, enabled: !ids.isEmpty) { deleteScenes(ids) }
+                Menu {
+                    Button { duplicateScenes(ids) } label: { Label("복사", systemImage: "plus.square.on.square") }
+                        .disabled(ids.isEmpty)
+                    Button {
+                        let first = editScenes.firstIndex { ids.contains($0.id) } ?? 0
+                        sceneMoveTarget = "\(first + 1)"
+                        showingSceneMoveSheet = true
+                    } label: { Label("이동", systemImage: "arrow.up.and.down.and.arrow.left.and.right") }
+                        .disabled(ids.isEmpty)
+                    Divider()
+                    recommendationMenuItems
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 22))
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+                .accessibilityLabel("복사·이동·자동 추천 더보기")
+            }
+            Text(ids.isEmpty ? "클립을 고르면 추천 가능·잠금 개수가 보여요." : "선택 \(ids.count)개 · \(protectionSummary(counts))")
+                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            if !ids.isEmpty, counts.eligible == 0, counts.protected > 0 {
+                // 잠금 해제를 요구하지 않는다: 고정한 클립은 그대로 두고 길이·음악 맞춤을 끝내 실제 결과를 알려 준다.
+                Text("고른 클립의 시간이 모두 고정돼 있어요. ‘선택 추천’은 값을 바꾸지 않고 길이·음악 맞춤만 마무리해 실제 길이를 알려 줘요.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if let automationNotice {
+                Text(automationNotice).font(.caption).foregroundStyle(PorcelainMetrics.accent)
+            }
+        }
+        .onChange(of: ids) { _, _ in automationNotice = nil }
+    }
+
+    @ViewBuilder
+    private var recommendationMenuItems: some View {
+        Button("선택한 클립에 추천 적용") { recommendAutomatically(allUnprotected: false) }
+        Button("잠기지 않은 모든 클립에 추천 적용") { recommendAutomatically(allUnprotected: true) }
+        Divider()
+        Button("선택한 클립 잠금 (자동 추천 제외)") { setProtection(true, ids: effectiveSceneIDs) }
+        Button("선택한 클립 잠금 해제") { setProtection(false, ids: effectiveSceneIDs) }
+    }
+
+    /// 예전 ‘자동 추천으로 되돌리기’ 자리: 장면 목록을 버리지 않고 선택 범위에만 추천을 적용하는 메뉴.
+    @ViewBuilder
+    private var recommendationMenu: some View {
+        if scenes != nil {
+            Menu("자동 추천") { recommendationMenuItems }
+                .disabled(legacyAnalysisPending)
+                .font(.ui(.caption)).frame(minHeight: ui(30))
+        }
+    }
+
+    /// 자동 추천·잠금·타임라인 편집의 마지막 결과 한 줄(관리줄이 보이지 않는 설정 탭에서도 같은 안내를 본다).
+    @ViewBuilder
+    private var automationNoticeLine: some View {
+        if let automationNotice {
+            Text(automationNotice).font(.ui(.caption)).foregroundStyle(PorcelainMetrics.accent)
+        }
     }
 
     /// 자동 추천(장면 목록 없음)에서 맞춤·비트 맞춤을 부르면 전체 추천(앵커 포함)을 장면 목록으로 옮긴 뒤 진행한다.
@@ -4776,7 +5250,9 @@ private struct VideoTrailerSettings: View {
     /// `setManualTotal`, so the chosen policy stays chosen.
     private func syncTotalToFit(_ selection: TrailerMusicSelection?) {
         guard mode == .trailer, let selection, selection.policy == .fitMusic else { return }
-        total = selection.fittedDuration
+        // 보호한 장면이 음악보다 길면 그 실제 길이가 이긴다. 달성할 수 없는 짧은 목표를 그대로 보이지 않는다.
+        total = TrailerSceneEditor.effectiveFitDuration(fitted: selection.fittedDuration, scenes: scenes, cardsDuration: cardsDuration,
+                                                           outroLength: outroCard.isEnabled ? outroCard.duration : 0)
     }
 
     private var durationControls: some View {
@@ -4801,7 +5277,7 @@ private struct VideoTrailerSettings: View {
         let maxTotal: Double
         var budgetExplanation = budgetNotice
         if let editScenes = scenes {
-            let actualSum = editScenes.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+            let actualSum = TrailerSceneEditor.outputBodyDuration(editScenes, outroLength: outroCard.isEnabled ? outroCard.duration : 0)
             totalValue = actualSum + cards
             let bounds = TrailerSceneEditor.budgetBodyBounds(scenes: editScenes, sources: sources)
             minTotal = min(actualSum, bounds.minimum) + cards
@@ -4865,18 +5341,23 @@ private struct VideoTrailerSettings: View {
         // 예산은 장면 목록에서 맞춘다(자동 추천이면 전체 추천을 먼저 목록으로 옮긴다).
         materializeSceneEditsIfNeeded()
         if var next = scenes {
-            guard TrailerSceneEditor.fitScenesToBudget(scenes: &next, sources: sources, bodyTarget: body, capOnly: clipChoiceExplicit) != nil else {
+            guard TrailerSceneEditor.fitScenesToBudget(scenes: &next, sources: sources, bodyTarget: body, capOnly: clipChoiceExplicit,
+                                                   outroLength: outroCard.isEnabled ? outroCard.duration : 0) != nil else {
                 let shortest = TrailerSceneEditor.budgetBodyBounds(scenes: next, sources: sources).minimum + cardsDuration
                 budgetNotice = "가장 짧은 장면도 동작이 잘리지 않으려면 전체 \(videoTrailerTime(shortest)) 이상이 필요해요. 이전 설정을 그대로 둡니다."
                 return
             }
             scenes = next
-            total = next.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+            total = TrailerSceneEditor.outputBodyDuration(next, outroLength: outroCard.isEnabled ? outroCard.duration : 0)
         } else {
             total = min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, body))
         }
         budgetTarget = value
-        budgetNotice = nil
+        // 잠긴 클립의 합이 요청보다 길면 그 실제 길이가 이긴다. 요청한 짧은 길이를 달성했다고 보이지 않는다.
+        let actualWhole = TrailerSceneEditor.outputBodyDuration(scenes ?? [], outroLength: outroCard.isEnabled ? outroCard.duration : 0) + cardsDuration
+        budgetNotice = scenes != nil && actualWhole > value + 0.05
+            ? "직접 편집해 잠근 클립을 지키려고 전체 \(videoTrailerTime(actualWhole))로 만들어요(요청한 \(videoTrailerTime(value))보다 김). 잠금을 풀면 요청한 길이에 가깝게 다시 맞출 수 있어요."
+            : nil
         guard var selection = music, selection.policy != .single else { return }
         selection.policy = .single
         selection.fitCount = 1
@@ -4900,7 +5381,7 @@ private struct VideoTrailerSettings: View {
             // 1·2·4·6(그 밖의 숫자)은 임팩트 둘레에 정확히, 추천은 동작 전체 보호(Android와 같은 규칙).
             clipChoiceExplicit = !recommended
             TrailerSceneEditor.applyExplicitClipLength(clipLength: valid, scenes: &scenes!, sources: &sources, recommended: recommended)
-            let actual = (scenes ?? []).filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+            let actual = TrailerSceneEditor.outputBodyDuration(scenes ?? [], outroLength: outroCard.isEnabled ? outroCard.duration : 0)
             total = actual
             // 정한 음악 길이·전체 길이는 그대로 상한이다.
             fitManualScenesToMusic()
@@ -5768,6 +6249,8 @@ final class VideoTrailerModel: ObservableObject {
     /// Session-owned copies of picked music, by PhoneHard record. The render only ever
     /// reads these, never the file in PhoneHard.
     private var musicSnapshots: [UUID: URL] = [:]
+    /// 음성 해설 id → 이 세션 작업 폴더 안의 사본. 저장이 성공해야 프로젝트 사본이 기준이 된다.
+    private(set) var voiceFiles: [UUID: URL] = [:]
     /// Every item has been staged or skipped. False while they are still coming in, so a
     /// reopened editor fetches the rest instead of treating a part as the whole.
     private(set) var isStaged = false
@@ -6246,6 +6729,162 @@ final class VideoTrailerModel: ObservableObject {
         finished = true
     }
 
+    /// 사진 한 장면의 정지 클립(같은 설정이면 캐시 재사용). 키프레임이 있는 사진은 자동 확대 움직임을 쓰지 않고
+    /// 고정 구성만 구워 두므로 키프레임이 유일한 움직임이다(이중 적용 금지).
+    private func stillClip(
+        for segment: VideoTrailerScene, source: VideoTrailerSource, renderSize: CGSize, directory: URL,
+        attemptFiles: inout [URL], imageClipCache: inout [String: URL]
+    ) async throws -> URL {
+        try await TrailerAdvancedComposer.photoClip(
+            id: segment.id, length: segment.length, fitsFrame: segment.fitsFrame, offsetX: segment.offsetX,
+            offsetY: segment.offsetY, hasKeyframes: !(segment.adjustments?.keyframes.isEmpty ?? true),
+            source: source, renderSize: renderSize, directory: directory, cache: &imageClipCache, created: &attemptFiles)
+    }
+
+    /// 읽지 못하는 영상 장면을 좁게 찾는다: 장면마다 처음·가운데·끝 프레임만 확인한다(전체 재인코딩 없음).
+    /// 취소·디스크·권한 같은 전역 오류는 소스 문제로 숨기지 않고 그대로 던진다.
+    private func probeUnreadableScenes(_ selected: [VideoTrailerScene], sourceByID: [Int: VideoTrailerSource],
+                                       excluding: Set<Int>) async throws -> [Int] {
+        var bad: [Int] = []
+        for (index, scene) in selected.enumerated() where !excluding.contains(index) {
+            try Task.checkCancellation()
+            guard let source = sourceByID[scene.sourceID], !source.isImage else { continue }
+            for time in [scene.start, scene.start + scene.length / 2, max(scene.start, scene.start + scene.length - 0.1)] {
+                if try await Self.extractStillImage(source: source, at: time) == nil { bad.append(index); break }
+            }
+        }
+        return bad
+    }
+
+    /// 캐노니컬 합성으로 최종 영상을 한 번에 내보낸다. 정상 영상은 원래 URL 그대로 쓰고, 읽지 못하는 장면만 정지 화면으로 바꾼 뒤
+    /// (원본 시간 → 대체 클립 지역시간 0 대응) 같은 전체 시간표로 다시 만든다. 한 번만 다시 시도한다.
+    private func runAdvancedExport(
+        selected: [VideoTrailerScene], cardClips: [TrailerRenderedClip], renderSize: CGSize,
+        sourceByID: [Int: VideoTrailerSource], directory: URL, attemptFiles: inout [URL],
+        imageClipCache: inout [String: URL], music: TrailerMusicSelection?,
+        musicInput: (asset: AVURLAsset, track: AVAssetTrack, range: CMTimeRange)?,
+        voices: [TrailerComposerVoice], voiceoverCount: Int, activity: [Int: AudioActivityEnvelope],
+        exportOutput: inout URL?
+    ) async throws -> CMTime {
+        guard voices.count == voiceoverCount else { throw TrailerError.voiceoverMissing }
+        var replacementStills: [Int: URL] = [:]
+        var skippedScenes = Set<Int>()
+        var recoveryCache: [String: URL] = [:]
+        for attempt in 0..<2 {
+            try Task.checkCancellation()
+            var clips: [TrailerComposerClip] = []
+            func card(_ prefix: String, id: Int) async throws -> TrailerComposerClip? {
+                guard let rendered = cardClips.first(where: { $0.url.lastPathComponent.hasPrefix(prefix) }) else { return nil }
+                let length = try await AVURLAsset(url: rendered.url).load(.duration).seconds
+                guard length.isFinite, length > 0 else { throw TrailerError.intermediateInvalid }
+                var scene = VideoTrailerScene(id: id, start: 0, length: length)
+                scene.sourceID = id
+                return TrailerComposerClip(scene: scene, url: rendered.url, localStart: 0, isStill: true, hasSound: false, isCard: true)
+            }
+            if let intro = try await card("intro-card", id: -1) { clips.append(intro) }
+            for (index, scene) in selected.enumerated() where !skippedScenes.contains(index) {
+                guard let source = sourceByID[scene.sourceID] else { throw TrailerError.exportFailed }
+                if source.isImage {
+                    let url = try await stillClip(for: scene, source: source, renderSize: renderSize, directory: directory,
+                                                  attemptFiles: &attemptFiles, imageClipCache: &imageClipCache)
+                    clips.append(TrailerComposerClip(scene: scene, url: url, localStart: 0, isStill: true, hasSound: false))
+                } else if let still = replacementStills[index] {
+                    clips.append(TrailerComposerClip(scene: scene, url: still, localStart: 0, isStill: true, hasSound: false))
+                } else {
+                    clips.append(TrailerComposerClip(scene: scene, url: source.url, localStart: scene.start, isStill: false, hasSound: true))
+                }
+            }
+            guard clips.contains(where: { !$0.isCard }) else { throw TrailerError.noUsableSources }
+            if let outro = try await card("outro-card", id: -2) { clips.append(outro) }
+
+            let output = directory.appendingPathComponent("trailer-\(UUID().uuidString).mp4")
+            exportOutput = output
+            do {
+                let composed = try await TrailerAdvancedComposer.build(
+                    clips: clips, renderSize: renderSize,
+                    music: musicInput.map { TrailerComposerMusic(selection: music, track: $0.track, range: $0.range) },
+                    voices: voices, activity: activity)
+                guard FileManager.default.fileExists(atPath: directory.path) else { throw TrailerError.outputMissing }
+                guard let session = AVAssetExportSession(asset: composed.composition, presetName: AVAssetExportPresetHighestQuality) else {
+                    throw TrailerError.exportUnavailable
+                }
+                session.videoComposition = composed.videoComposition
+                session.audioMix = composed.audioMix
+                session.audioTimePitchAlgorithm = .spectral
+                // 배속 소리의 시간 늘이기 지연이 끝에 남지 않도록 내보내는 길이를 합성의 최종 길이로 고정한다(미리보기와 같은 길이).
+                session.timeRange = CMTimeRange(start: .zero, duration: composed.duration)
+                session.outputURL = output
+                session.outputFileType = .mp4
+                session.shouldOptimizeForNetworkUse = true
+                status = "클립 연결 \(selected.count)/\(selected.count)개 · 영상으로 저장 중"
+                exporter = session
+                exportProgress = 0
+                let progressTask = Task {
+                    while !Task.isCancelled {
+                        exportProgress = min(0.99, Double(session.progress))
+                        try? await Task.sleep(for: .milliseconds(100))
+                    }
+                }
+                nonisolated(unsafe) let cancelTarget = session
+                await withTaskCancellationHandler {
+                    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                        session.exportAsynchronously { continuation.resume() }
+                    }
+                } onCancel: {
+                    cancelTarget.cancelExport()
+                }
+                progressTask.cancel()
+                withExtendedLifetime(musicInput?.asset) { }
+                try Task.checkCancellation()
+                guard session.status == .completed else {
+                    exporter = nil
+                    exportProgress = nil
+                    let failure = session.error ?? TrailerError.exportFailed
+                    Self.logger.error("trailer advanced export failed: \(trailerErrorChain(failure), privacy: .public)")
+                    throw failure
+                }
+                exporter = nil
+                exportProgress = 1
+                for card in cardClips { try? FileManager.default.removeItem(at: card.url) }
+                return composed.duration
+            } catch {
+                exporter = nil
+                try? FileManager.default.removeItem(at: output)
+                exportOutput = nil
+                guard attempt == 0, Self.isBisectableSourceFailure(error) else { throw error }
+                status = "풀 수 없는 장면을 찾는 중…"
+                let bad = try await probeUnreadableScenes(selected, sourceByID: sourceByID, excluding: skippedScenes)
+                guard !bad.isEmpty else { throw error }
+                for index in bad {
+                    let scene = selected[index]
+                    var jpegData: Data?
+                    if let source = sourceByID[scene.sourceID] {
+                        jpegData = try await Self.extractRepresentativeStill(source: source, scene: scene)?.jpegData(compressionQuality: 0.85)
+                    }
+                    guard let source = sourceByID[scene.sourceID], let jpeg = jpegData else {
+                        // 직접 편집으로 반드시 들어가야 하는 장면은 복구가 끝내 안 되면 조용히 빼지 않고 오류로 알린다(프로젝트·원본은 그대로).
+                        if scene.keepsInclusion { throw TrailerError.manualSceneUnreadable }
+                        skippedScenes.insert(index)
+                        if skippedSourceIDs.insert(scene.sourceID).inserted { skippedCount += 1 }
+                        continue
+                    }
+                    let stillURL = directory.appendingPathComponent("recovered-still-\(index)-\(UUID().uuidString).jpg")
+                    attemptFiles.append(stillURL)
+                    try jpeg.write(to: stillURL)
+                    let stand = VideoTrailerSource(
+                        id: source.id, name: source.name, url: stillURL, plan: source.plan, isImage: true,
+                        contentTypeIdentifier: "public.jpeg", captureDate: source.captureDate,
+                        imageDurationRatio: source.imageDurationRatio,
+                        imageDurationPolicyVersion: source.imageDurationPolicyVersion, isImportant: source.isImportant)
+                    replacementStills[index] = try await stillClip(for: scene, source: stand, renderSize: renderSize, directory: directory,
+                                                                   attemptFiles: &attemptFiles, imageClipCache: &recoveryCache)
+                    recoveredCount += 1
+                }
+            }
+        }
+        throw TrailerError.exportFailed
+    }
+
     private func recoverFailedGroup(
         scenes: [VideoTrailerScene],
         renderSize: CGSize,
@@ -6328,13 +6967,14 @@ final class VideoTrailerModel: ObservableObject {
         // Singleton offending item isolation
         let singleton = scenes[0]
         guard let source = sourceByID[singleton.sourceID] else {
+            if singleton.keepsInclusion { throw TrailerError.manualSceneUnreadable }
             if skippedSourceIDs.insert(singleton.sourceID).inserted { skippedCount += 1 }
             return []
         }
 
         Self.logger.notice("trailer isolating singleton source \(source.id, privacy: .public) scene \(singleton.id, privacy: .public)")
 
-        if let stillImage = try await Self.extractStillImage(source: source, at: singleton.start),
+        if let stillImage = try await Self.extractRepresentativeStill(source: source, scene: singleton),
            let jpegData = stillImage.jpegData(compressionQuality: 0.85) {
             let stillURL = directory.appendingPathComponent("recovered-still-\(singleton.id)-\(UUID().uuidString).jpg")
             let recoveredClipURL = directory.appendingPathComponent("recovered-chunk-\(singleton.id)-\(UUID().uuidString).mp4")
@@ -6383,9 +7023,21 @@ final class VideoTrailerModel: ObservableObject {
 
         // A still that could not be extracted because the work was cancelled is not a skip.
         try Task.checkCancellation()
+        // 직접 편집으로 반드시 들어가야 하는 장면은 복구가 끝내 안 되면 조용히 빼지 않고 오류로 알린다(프로젝트·원본은 그대로).
+        if singleton.keepsInclusion { throw TrailerError.manualSceneUnreadable }
         Self.logger.error("trailer source \(source.id, privacy: .public) skipped: no safe still available")
         if skippedSourceIDs.insert(source.id).inserted { skippedCount += 1 }
         return []
+    }
+
+    /// 장면의 대표 정지 프레임. 시작 지점을 못 읽으면 같은 구간의 다른 시각(가운데·끝 근처·파일 앞부분)을 차례로 시도한다.
+    nonisolated static func extractRepresentativeStill(source: VideoTrailerSource, scene: VideoTrailerScene) async throws -> UIImage? {
+        let times = [scene.start, scene.start + scene.length / 2, max(scene.start, scene.start + scene.length - 0.1), 0, max(0, source.duration / 2)]
+        for time in times {
+            try Task.checkCancellation()
+            if let image = try await extractStillImage(source: source, at: time) { return image }
+        }
+        return nil
     }
 
     /// 60% of the final render size for the temporary Ken Burns photo clip, kept even
@@ -6468,8 +7120,11 @@ final class VideoTrailerModel: ObservableObject {
                manualScenes: [TrailerEditScene]? = nil, draftSources: [VideoTrailerSource]? = nil,
                revision: TrailerOutputRevision? = nil,
                introCard: TrailerTitleCard? = nil,
-               outroCard: TrailerTitleCard? = nil) {
+               outroCard: TrailerTitleCard? = nil,
+               voiceovers: [TrailerVoiceoverTake] = []) {
         guard !isBusy, !items.isEmpty else { return }
+        // 값 복사: 렌더가 도는 동안 편집이 바뀌어도 이번 렌더는 시작 때의 해설·사본만 쓴다.
+        let voiceURLs = voiceFiles
         let total = total.map { $0.isFinite ? min(VideoTrailerBatchPlan.maximumRequestedDuration, max(1, $0)) : 1 }
         self.mode = mode
         isAwaitingSettings = false
@@ -6702,7 +7357,12 @@ final class VideoTrailerModel: ObservableObject {
                 baseSelected = TrailerPreparedPlan.base(mode: mode, sources: sources, total: total,
                     clipLength: clipLength ?? recommendedClipLength, manual: manualScenes)
                 guard !baseSelected.isEmpty else { throw TrailerError.exportFailed }
-                if let music, let musicInput, music.policy == .fitMusic {
+                // 미리보기(`scenes(...)`)와 같은 규칙으로 판단해 두 계획이 어긋나지 않게 한다.
+                if music?.policy == .fitMusic, TrailerSceneEditor.keepsManualScenesAsIs(manualScenes) {
+                    // 직접 편집한 흔적이 있으면 미리보기와 같은 최종 목록 그대로 쓴다. 자르거나 반복하거나 다시 길이를 정하지 않고,
+                    // 음악은 아래 `insertPieces`가 영상 끝(`finalCursor`)까지 이어 붙이거나 거기서 멈춘다(영상이 음악보다 짧거나 길어도 실패가 아니다).
+                    selected = baseSelected
+                } else if let music, let musicInput, music.policy == .fitMusic {
                     // 시작/끝 카드가 켜져 있으면 카드 길이를 음악 예산에서 공제
                     let cardsDuration = (introCard?.isEnabled == true ? introCard!.duration : 0)
                         + (outroCard?.isEnabled == true ? outroCard!.duration : 0)
@@ -6753,6 +7413,9 @@ final class VideoTrailerModel: ObservableObject {
                 }
                 guard let renderSize else { throw TrailerError.exportUnavailable }
 
+                // 배속·색·키프레임·디졸브·자막 큐 또는 음성 해설이 하나라도 있으면 청크를 따로 굽지 않고,
+                // 정상/복구된 입력 전체에 한 번에 같은 시간표를 적용하는 캐노니컬 합성 경로를 쓴다.
+                let advancedRender = selected.contains { $0.hasAdvancedEdits } || !voiceovers.isEmpty
                 stage = "chunk-render"
                 renderPlan = selected
                 layout = "sources \(sources.count) skipped \(skippedCount) segments \(selected.count)"
@@ -6760,7 +7423,7 @@ final class VideoTrailerModel: ObservableObject {
 
                 var sceneChunks: [[VideoTrailerScene]] = []
                 var chunkStart = 0
-                while chunkStart < selected.count {
+                while !advancedRender && chunkStart < selected.count {
                     let chunkEnd = min(chunkStart + Self.maximumItemsPerComposition, selected.count)
                     sceneChunks.append(Array(selected[chunkStart..<chunkEnd]))
                     chunkStart = chunkEnd
@@ -6817,10 +7480,10 @@ final class VideoTrailerModel: ObservableObject {
                     }
                 }
 
-                guard !intermediateClips.isEmpty else { throw TrailerError.noUsableSources }
+                guard advancedRender || !intermediateClips.isEmpty else { throw TrailerError.noUsableSources }
 
                 // 카드가 들어가기 전, 실제로 렌더된 본편 장면 (카드 클립은 scenes가 비어 있다)
-                let actualBodyScenes = intermediateClips.flatMap(\.scenes)
+                let actualBodyScenes = advancedRender ? selected : intermediateClips.flatMap(\.scenes)
                 let cardTypography = TrailerTitleCardRenderer.bodyTypography(from: selected.map(\.caption))
 
                 // 시작 화면 타이틀 카드 클립 생성 및 맨 앞 삽입
@@ -6942,166 +7605,179 @@ final class VideoTrailerModel: ObservableObject {
                     }
                 }
 
-                stage = "compose-final"
-                let finalComposition = AVMutableComposition()
-                guard let finalVideoTrack = finalComposition.addMutableTrack(
-                    withMediaType: .video,
-                    preferredTrackID: kCMPersistentTrackID_Invalid
-                ) else {
-                    throw TrailerError.exportUnavailable
-                }
-                let finalAudioTrack = finalComposition.addMutableTrack(
-                    withMediaType: .audio,
-                    preferredTrackID: kCMPersistentTrackID_Invalid
-                )
-                var finalCursor = CMTime.zero
-                var intermediateAssets: [AVURLAsset] = []
-                // Built from the scenes that really made it into the output, in order, so a
-                // skipped scene never shifts the ducking and a still stand-in has no sound.
-                var originalSound: [TrailerMusicDucking.Clip] = []
-
-                for rendered in intermediateClips {
-                    try Task.checkCancellation()
-                    let asset = AVURLAsset(url: rendered.url)
-                    intermediateAssets.append(asset)
-                    // These are this attempt's own intermediates: one that cannot be read is a
-                    // failure to report, never a clip to drop quietly.
-                    guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
-                        throw TrailerError.intermediateInvalid
-                    }
-                    let loadedDuration = try await asset.load(.duration)
-                    guard loadedDuration.isNumeric, loadedDuration.seconds.isFinite, loadedDuration.seconds > 0 else {
-                        throw TrailerError.intermediateInvalid
-                    }
-                    // 본편 청크 mp4는 30fps 프레임 수로 올림되어 계획보다 최대 1프레임 길다. 그 꼬리를 그대로 이으면 청크마다 뒤 컷이
-                    // 누적으로 늦어져 박자에서 벗어나므로, 청크 안 장면들의 계획 길이(1/600초 단위 합)까지만 잇는다. 카드 클립은 그대로.
-                    let plannedBody = rendered.scenes.reduce(CMTime.zero) {
-                        CMTimeAdd($0, CMTime(seconds: $1.length, preferredTimescale: 600))
-                    }
-                    let duration = rendered.scenes.isEmpty || plannedBody <= .zero ? loadedDuration : min(loadedDuration, plannedBody)
-                    let timeRange = CMTimeRange(start: .zero, duration: duration)
-                    try finalVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: finalCursor)
-                    if let audioTrack = try await asset.loadTracks(withMediaType: .audio).first,
-                       try await audioTrack.load(.isDecodable),
-                       let finalAudioTrack {
-                        let audioRange = try await audioTrack.load(.timeRange)
-                        let overlap = CMTimeRangeGetIntersection(timeRange, otherRange: audioRange)
-                        if overlap.duration.seconds > 0 {
-                            let audioStart = CMTimeAdd(finalCursor, CMTimeSubtract(overlap.start, timeRange.start))
-                            try finalAudioTrack.insertTimeRange(overlap, of: audioTrack, at: audioStart)
-                        }
-                    }
-                    if rendered.hasOriginalSound {
-                        var sceneStart = finalCursor.seconds
-                        for segment in rendered.scenes {
-                            if let source = currentSourceByID[segment.sourceID], !source.isImage, !segment.muted {
-                                originalSound.append(TrailerMusicDucking.Clip(
-                                    outputStart: sceneStart,
-                                    sourceStart: segment.start,
-                                    length: segment.length,
-                                    envelope: activityBySourceID[source.id]
-                                ))
-                            }
-                            sceneStart += segment.length
-                        }
-                    }
-                    finalCursor = CMTimeAdd(finalCursor, duration)
-                }
-
-                guard finalCursor.seconds > 0 else { throw TrailerError.noUsableSources }
-                cursor = finalCursor
-
-                if let finalAudioTrack, finalAudioTrack.segments.isEmpty {
-                    finalComposition.removeTrack(finalAudioTrack)
-                }
-
-                var audioMix: AVMutableAudioMix?
-                if let musicInput {
-                    stage = "music"
-                    guard let musicTrack = finalComposition.addMutableTrack(
-                        withMediaType: .audio,
+                if advancedRender {
+                    stage = "compose-final"
+                    cursor = try await runAdvancedExport(
+                        selected: selected, cardClips: intermediateClips, renderSize: renderSize,
+                        sourceByID: currentSourceByID, directory: directory, attemptFiles: &attemptFiles,
+                        imageClipCache: &imageClipCache, music: music, musicInput: musicInput,
+                        voices: voiceovers.compactMap { take in
+                            voiceURLs[take.stableID].map { TrailerComposerVoice(take: take, url: $0) } },
+                        voiceoverCount: voiceovers.count, activity: activityBySourceID, exportOutput: &exportOutput)
+                    diagnostic.outputSeconds = cursor.seconds
+                    layout += " advanced \(Int(renderSize.width))x\(Int(renderSize.height)) seconds \(Int(cursor.seconds))"
+                } else {
+                    stage = "compose-final"
+                    let finalComposition = AVMutableComposition()
+                    guard let finalVideoTrack = finalComposition.addMutableTrack(
+                        withMediaType: .video,
                         preferredTrackID: kCMPersistentTrackID_Invalid
                     ) else {
                         throw TrailerError.exportUnavailable
                     }
-                    let placed = try TrailerMusicMix.insertPieces(
-                        into: musicTrack, source: musicInput.track, range: musicInput.range,
-                        total: finalCursor, policy: music?.policy ?? .single)
-                    let pieces = placed.pieces
-                    diagnostic.music?.pieces = pieces
-                    let built = TrailerMusicMix.audioMix(for: musicTrack, selection: music,
-                                                         originalSound: originalSound, musicEnd: placed.end.seconds)
-                    audioMix = built.mix
-                    layout += " music \(pieces) ducked \(built.ramps)"
-                    diagnostic.music?.ducked = built.ramps
-                }
+                    let finalAudioTrack = finalComposition.addMutableTrack(
+                        withMediaType: .audio,
+                        preferredTrackID: kCMPersistentTrackID_Invalid
+                    )
+                    var finalCursor = CMTime.zero
+                    var intermediateAssets: [AVURLAsset] = []
+                    // Built from the scenes that really made it into the output, in order, so a
+                    // skipped scene never shifts the ducking and a still stand-in has no sound.
+                    var originalSound: [TrailerMusicDucking.Clip] = []
 
-                let finalVideoComposition = AVMutableVideoComposition()
-                finalVideoComposition.renderSize = renderSize
-                finalVideoComposition.frameDuration = CMTime(value: 1, timescale: 30)
-                let instruction = AVMutableVideoCompositionInstruction()
-                instruction.timeRange = CMTimeRange(start: .zero, duration: finalCursor)
-                let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: finalVideoTrack)
-                instruction.layerInstructions = [layerInstruction]
-                instruction.backgroundColor = UIColor.black.cgColor
-                finalVideoComposition.instructions = [instruction]
-
-                let output = directory.appendingPathComponent("trailer-\(UUID().uuidString).mp4")
-                stage = "export"
-                layout += " tracks \(finalComposition.tracks.count) render \(Int(renderSize.width))x\(Int(renderSize.height)) seconds \(Int(finalCursor.seconds))"
-                diagnostic.tracks = finalComposition.tracks.count
-                diagnostic.renderWidth = Int(renderSize.width)
-                diagnostic.renderHeight = Int(renderSize.height)
-                diagnostic.outputSeconds = finalCursor.seconds
-                exportOutput = output
-
-                guard FileManager.default.fileExists(atPath: directory.path) else { throw TrailerError.outputMissing }
-                Self.logger.notice("trailer model \(self.identity, privacy: .public) export start: \(layout, privacy: .public) app \(UIApplication.shared.applicationState.rawValue, privacy: .public)")
-
-                guard let session = AVAssetExportSession(
-                    asset: finalComposition,
-                    presetName: AVAssetExportPresetHighestQuality
-                ) else {
-                    throw TrailerError.exportUnavailable
-                }
-                session.videoComposition = finalVideoComposition
-                session.audioMix = audioMix
-                session.outputURL = output
-                session.outputFileType = .mp4
-                session.shouldOptimizeForNetworkUse = true
-                status = "클립 연결 \(selected.count)/\(selected.count)개 · 영상으로 저장 중"
-                exporter = session
-                exportProgress = 0
-
-                let progressTask = Task {
-                    while !Task.isCancelled {
-                        exportProgress = min(0.99, Double(session.progress))
-                        try? await Task.sleep(for: .milliseconds(100))
+                    for rendered in intermediateClips {
+                        try Task.checkCancellation()
+                        let asset = AVURLAsset(url: rendered.url)
+                        intermediateAssets.append(asset)
+                        // These are this attempt's own intermediates: one that cannot be read is a
+                        // failure to report, never a clip to drop quietly.
+                        guard let videoTrack = try await asset.loadTracks(withMediaType: .video).first else {
+                            throw TrailerError.intermediateInvalid
+                        }
+                        let loadedDuration = try await asset.load(.duration)
+                        guard loadedDuration.isNumeric, loadedDuration.seconds.isFinite, loadedDuration.seconds > 0 else {
+                            throw TrailerError.intermediateInvalid
+                        }
+                        // 본편 청크 mp4는 30fps 프레임 수로 올림되어 계획보다 최대 1프레임 길다. 그 꼬리를 그대로 이으면 청크마다 뒤 컷이
+                        // 누적으로 늦어져 박자에서 벗어나므로, 청크 안 장면들의 계획 길이(1/600초 단위 합)까지만 잇는다. 카드 클립은 그대로.
+                        let plannedBody = rendered.scenes.reduce(CMTime.zero) {
+                            CMTimeAdd($0, CMTime(seconds: $1.length, preferredTimescale: 600))
+                        }
+                        let duration = rendered.scenes.isEmpty || plannedBody <= .zero ? loadedDuration : min(loadedDuration, plannedBody)
+                        let timeRange = CMTimeRange(start: .zero, duration: duration)
+                        try finalVideoTrack.insertTimeRange(timeRange, of: videoTrack, at: finalCursor)
+                        if let audioTrack = try await asset.loadTracks(withMediaType: .audio).first,
+                           try await audioTrack.load(.isDecodable),
+                           let finalAudioTrack {
+                            let audioRange = try await audioTrack.load(.timeRange)
+                            let overlap = CMTimeRangeGetIntersection(timeRange, otherRange: audioRange)
+                            if overlap.duration.seconds > 0 {
+                                let audioStart = CMTimeAdd(finalCursor, CMTimeSubtract(overlap.start, timeRange.start))
+                                try finalAudioTrack.insertTimeRange(overlap, of: audioTrack, at: audioStart)
+                            }
+                        }
+                        if rendered.hasOriginalSound {
+                            var sceneStart = finalCursor.seconds
+                            for segment in rendered.scenes {
+                                if let source = currentSourceByID[segment.sourceID], !source.isImage, !segment.muted {
+                                    originalSound.append(TrailerMusicDucking.Clip(
+                                        outputStart: sceneStart,
+                                        sourceStart: segment.start,
+                                        length: segment.length,
+                                        envelope: activityBySourceID[source.id]
+                                    ))
+                                }
+                                sceneStart += segment.length
+                            }
+                        }
+                        finalCursor = CMTimeAdd(finalCursor, duration)
                     }
-                }
-                nonisolated(unsafe) let cancelTarget = session
-                await withTaskCancellationHandler {
-                    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-                        session.exportAsynchronously { continuation.resume() }
+
+                    guard finalCursor.seconds > 0 else { throw TrailerError.noUsableSources }
+                    cursor = finalCursor
+
+                    if let finalAudioTrack, finalAudioTrack.segments.isEmpty {
+                        finalComposition.removeTrack(finalAudioTrack)
                     }
-                } onCancel: {
-                    cancelTarget.cancelExport()
-                }
-                progressTask.cancel()
-                withExtendedLifetime(musicInput?.asset) { }
-                withExtendedLifetime(intermediateAssets) { }
-                try Task.checkCancellation()
-                guard session.status == .completed else {
+
+                    var audioMix: AVMutableAudioMix?
+                    if let musicInput {
+                        stage = "music"
+                        guard let musicTrack = finalComposition.addMutableTrack(
+                            withMediaType: .audio,
+                            preferredTrackID: kCMPersistentTrackID_Invalid
+                        ) else {
+                            throw TrailerError.exportUnavailable
+                        }
+                        let placed = try TrailerMusicMix.insertPieces(
+                            into: musicTrack, source: musicInput.track, range: musicInput.range,
+                            total: finalCursor, policy: music?.policy ?? .single)
+                        let pieces = placed.pieces
+                        diagnostic.music?.pieces = pieces
+                        let built = TrailerMusicMix.audioMix(for: musicTrack, selection: music,
+                                                             originalSound: originalSound, musicEnd: placed.end.seconds)
+                        audioMix = built.mix
+                        layout += " music \(pieces) ducked \(built.ramps)"
+                        diagnostic.music?.ducked = built.ramps
+                    }
+
+                    let finalVideoComposition = AVMutableVideoComposition()
+                    finalVideoComposition.renderSize = renderSize
+                    finalVideoComposition.frameDuration = CMTime(value: 1, timescale: 30)
+                    let instruction = AVMutableVideoCompositionInstruction()
+                    instruction.timeRange = CMTimeRange(start: .zero, duration: finalCursor)
+                    let layerInstruction = AVMutableVideoCompositionLayerInstruction(assetTrack: finalVideoTrack)
+                    instruction.layerInstructions = [layerInstruction]
+                    instruction.backgroundColor = UIColor.black.cgColor
+                    finalVideoComposition.instructions = [instruction]
+
+                    let output = directory.appendingPathComponent("trailer-\(UUID().uuidString).mp4")
+                    stage = "export"
+                    layout += " tracks \(finalComposition.tracks.count) render \(Int(renderSize.width))x\(Int(renderSize.height)) seconds \(Int(finalCursor.seconds))"
+                    diagnostic.tracks = finalComposition.tracks.count
+                    diagnostic.renderWidth = Int(renderSize.width)
+                    diagnostic.renderHeight = Int(renderSize.height)
+                    diagnostic.outputSeconds = finalCursor.seconds
+                    exportOutput = output
+
+                    guard FileManager.default.fileExists(atPath: directory.path) else { throw TrailerError.outputMissing }
+                    Self.logger.notice("trailer model \(self.identity, privacy: .public) export start: \(layout, privacy: .public) app \(UIApplication.shared.applicationState.rawValue, privacy: .public)")
+
+                    guard let session = AVAssetExportSession(
+                        asset: finalComposition,
+                        presetName: AVAssetExportPresetHighestQuality
+                    ) else {
+                        throw TrailerError.exportUnavailable
+                    }
+                    session.videoComposition = finalVideoComposition
+                    session.audioMix = audioMix
+                    session.outputURL = output
+                    session.outputFileType = .mp4
+                    session.shouldOptimizeForNetworkUse = true
+                    status = "클립 연결 \(selected.count)/\(selected.count)개 · 영상으로 저장 중"
+                    exporter = session
+                    exportProgress = 0
+
+                    let progressTask = Task {
+                        while !Task.isCancelled {
+                            exportProgress = min(0.99, Double(session.progress))
+                            try? await Task.sleep(for: .milliseconds(100))
+                        }
+                    }
+                    nonisolated(unsafe) let cancelTarget = session
+                    await withTaskCancellationHandler {
+                        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                            session.exportAsynchronously { continuation.resume() }
+                        }
+                    } onCancel: {
+                        cancelTarget.cancelExport()
+                    }
+                    progressTask.cancel()
+                    withExtendedLifetime(musicInput?.asset) { }
+                    withExtendedLifetime(intermediateAssets) { }
+                    try Task.checkCancellation()
+                    guard session.status == .completed else {
+                        exporter = nil
+                        exportProgress = nil
+                        let failure = session.error ?? TrailerError.exportFailed
+                        Self.logger.error("trailer final export failed: \(trailerErrorChain(failure), privacy: .public)")
+                        try? FileManager.default.removeItem(at: output)
+                        exportOutput = nil
+                        throw failure
+                    }
                     exporter = nil
-                    exportProgress = nil
-                    let failure = session.error ?? TrailerError.exportFailed
-                    Self.logger.error("trailer final export failed: \(trailerErrorChain(failure), privacy: .public)")
-                    try? FileManager.default.removeItem(at: output)
-                    exportOutput = nil
-                    throw failure
+                    exportProgress = 1
                 }
-                exporter = nil
-                exportProgress = 1
                 for file in intermediateFiles { try? FileManager.default.removeItem(at: file) }
                 guard let output = exportOutput else { throw TrailerError.exportFailed }
                 Self.logger.notice("trailer model \(self.identity, privacy: .public) export completed: \(Self.workspaceState(directory: directory, output: output, sources: self.sources), privacy: .public)")
@@ -7208,6 +7884,27 @@ final class VideoTrailerModel: ObservableObject {
         suspend()
     }
 
+    /// 가져오거나 녹음한 음성 파일을 이 세션 작업 폴더에 고유 이름의 사본으로 둔다. 원본은 읽기만 한다.
+    /// 돌려주는 값은 프로젝트 안의 상대 경로(저장 때 이 사본이 그 자리로 복사된다).
+    func stageVoiceover(copying url: URL, id: UUID) throws -> String {
+        guard let directory else { throw TrailerError.outputMissing }
+        let name = "voice-\(id.uuidString).\(url.pathExtension.isEmpty ? "m4a" : url.pathExtension.lowercased())"
+        let destination = directory.appendingPathComponent(name)
+        if !FileManager.default.fileExists(atPath: destination.path) {
+            try FileManager.default.copyItem(at: url, to: destination)
+        }
+        voiceFiles[id] = destination
+        return "media/" + name
+    }
+
+    var workDirectory: URL? { directory }
+
+    /// 편집에서 빠진 음성 해설의 이 세션 사본만 지운다. 이미 저장된 프로젝트 사본은 건드리지 않는다.
+    func releaseVoiceover(_ id: UUID) {
+        guard let url = voiceFiles.removeValue(forKey: id) else { return }
+        try? FileManager.default.removeItem(at: url)
+    }
+
     func stagedMusicFile(_ music: TrailerMusicSelection) -> URL? {
         musicSnapshots[music.recordID].flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
     }
@@ -7261,9 +7958,13 @@ final class VideoTrailerModel: ObservableObject {
             outroCard: draft.outroCard,
             anchorsMigrated: true,
             budgetTarget: draft.budgetTarget,
-            clipChoiceExplicit: draft.clipChoiceExplicit ? true : nil)
+            clipChoiceExplicit: draft.clipChoiceExplicit ? true : nil,
+            voiceovers: draft.voiceovers.isEmpty ? nil : draft.voiceovers)
+        // 저장 요청 시점의 임시 사본 위치를 값으로 고정한다. 저장 뒤에 편집이 바뀌어도 이 요청은 그대로 복사한다.
+        var voiceStaged: [UUID: URL] = [:]
+        for take in draft.voiceovers { if let url = voiceFiles[take.stableID] { voiceStaged[take.stableID] = url } }
         return TrailerProjectSnapshot(record: record, stagedFiles: staged, musicFile: musicFile,
-                                      outputFile: keptOutput)
+                                      outputFile: keptOutput, voiceFiles: voiceStaged)
     }
 
     /// 저장된 프로젝트를 이 모델의 새 작업 폴더로 되살린다. 프로젝트 폴더의 파일은 읽기만 하고
@@ -7278,6 +7979,7 @@ final class VideoTrailerModel: ObservableObject {
         var relatives = record.sources.map(\.file)
         if let music = record.music { relatives.append(music.file) }
         if let output = record.outputFile { relatives.append(output) }
+        relatives.append(contentsOf: (record.voiceovers ?? []).map(\.relativeFile))
         var jobs: [(relative: String, origin: URL, destination: URL)] = []
         for relative in relatives where !relative.isEmpty {
             let destination = folder.appendingPathComponent((relative as NSString).lastPathComponent)
@@ -7376,6 +8078,12 @@ final class VideoTrailerModel: ObservableObject {
         draft.outroCard = record.outroCard ?? TrailerTitleCard()
         draft.budgetTarget = record.budgetTarget
         draft.clipChoiceExplicit = record.clipChoiceExplicit == true
+        draft.voiceovers = record.voiceovers ?? []
+        voiceFiles = [:]
+        for take in draft.voiceovers where !take.relativeFile.isEmpty {
+            let copy = bring(take.relativeFile)
+            if files.fileExists(atPath: copy.path) { voiceFiles[take.stableID] = copy }
+        }
         return draft
     }
 

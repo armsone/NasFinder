@@ -2,6 +2,7 @@ import AVFoundation
 import CryptoKit
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 // MARK: - 장면 편집 연산
 
@@ -17,6 +18,8 @@ enum TrailerSceneEditor {
         let to = from + offset
         guard scenes.indices.contains(to) else { return }
         scenes.swapAt(from, to)
+        // 직접 옮긴 장면은 순서 의도만 표시한다(시간은 계속 자동). 밀려난 이웃은 값이 그대로라 표시를 바꾸지 않는다.
+        scenes[to].manual.insert(.order)
     }
 
     static func duplicate(_ id: Int, in scenes: inout [TrailerEditScene], nextID: inout Int) -> Int? {
@@ -25,6 +28,8 @@ enum TrailerSceneEditor {
         copy.id = nextID
         copy.excluded = false
         copy.budgetExcluded = false
+        // 사용자가 만든 복제본: 포함·순서 의도만 표시하고 원래 장면의 표시는 그대로 이어받는다(시간을 괜히 고정하지 않는다).
+        copy.manual.formUnion([.order, .exclusion])
         nextID += 1
         scenes.insert(copy, at: at + 1)
         return copy.id
@@ -50,6 +55,9 @@ enum TrailerSceneEditor {
         let targetIndex = min(remainingScenes.count, max(0, targetPosition - 1))
         var result = remainingScenes
         result.insert(contentsOf: selectedScenes, at: targetIndex)
+        // 순서가 실제로 바뀔 때만 옮긴 장면을 보호한다. 제자리 이동은 아무것도 바꾸지 않는다.
+        guard result.map(\.id) != scenes.map(\.id) else { return }
+        for index in result.indices where ids.contains(result[index].id) { result[index].manual.insert(.order) }
         scenes = result
     }
 
@@ -82,7 +90,147 @@ enum TrailerSceneEditor {
                 reordered.append(contentsOf: sortedScenes(group))
             }
         }
+        // 사용자가 고른 순서로 자리가 바뀐 장면은 순서 의도를 표시한다. 자리가 그대로인 장면은 값을 바꾸지 않는다.
+        if reordered.count == scenes.count {
+            for index in reordered.indices where reordered[index].id != scenes[index].id {
+                reordered[index].manual.insert(.order)
+            }
+        }
         return reordered
+    }
+
+    /// 직접 편집한 흔적(시간·소리·화면 구성·자막·순서·포함/제외, 또는 전체 보호)이 하나라도 있으면 장면 목록이 곧 최종 계획이다.
+    /// 미리보기와 내보내기가 같은 목록을 그대로 쓰므로 음악 길이 맞춤의 두 번째 맞춤(`VideoTrailerBatchPlan.fitted`의 반복·꼬리 자르기)이
+    /// 사용자가 고친 장면을 다시 정하거나 반복하거나 빼지 못한다. 길이는 목록을 만드는 쪽(`fitScenesToBudget` 등)이 정하고 렌더는 그 결과 그대로 만든다.
+    /// 제외된 장면도 센다(사용자가 뺀 의도가 목록에 이미 들어 있다). 예산이 뺀 장면(`budgetExcluded`만 있는 순수 자동)은 직접 편집이 아니다.
+    /// 모든 장면이 순수 자동이면 false: 원래의 음악 길이 맞춤 반복 규칙이 그대로 의도된 동작이다.
+    static func keepsManualScenesAsIs(_ scenes: [TrailerEditScene]?) -> Bool {
+        guard let scenes else { return false }
+        return scenes.contains { !$0.isPureAutomatic }
+    }
+
+    /// 포함된 시간 고정 장면의 길이 합(유한하지 않은 길이는 0).
+    static func protectedIncludedTotal(_ scenes: [TrailerEditScene]) -> Double {
+        scenes.filter { !$0.excluded && $0.timingProtected }
+            .reduce(0.0) { $0 + ($1.length.isFinite ? max(0, $1.length) : 0) / outputRate($1) }
+    }
+
+    // MARK: 출력 시간표 (배속·디졸브·카드)
+
+    /// 장면의 출력 배속(합성기와 같은 규칙: 0.25...4 밖이면 1).
+    static func outputRate(_ scene: TrailerEditScene) -> Double {
+        let rate = scene.adjustments?.rate ?? 1
+        return rate.isFinite && rate >= 0.25 && rate <= 4 ? rate : 1
+    }
+
+    /// 포함된 장면 사이(그리고 마지막 장면과 마지막 화면 사이)에서 실제로 겹치는 길이의 합.
+    /// 미리보기·내보내기 합성기와 같은 시간표 팩토리가 겹침을 자른다(삼중 겹침 금지, 이웃 길이 안). 겹친 구간은 출력에서 한 번만 센다.
+    static func bodyOverlapTotal(_ scenes: [TrailerEditScene], outroLength: Double = 0) -> Double {
+        var inputs: [TrailerClipInput] = []
+        for scene in scenes where !scene.excluded && scene.length.isFinite && scene.length > 0.0001 {
+            inputs.append(TrailerClipInput(sceneID: inputs.count, sourceID: scene.sourceID, sourceStart: max(0, scene.start),
+                                           sourceLength: scene.length, rate: outputRate(scene),
+                                           requestedOutgoingOverlap: scene.adjustments?.transition?.dissolveDuration ?? 0))
+        }
+        guard !inputs.isEmpty, inputs.contains(where: { $0.requestedOutgoingOverlap > 0 }) else { return 0 }
+        if outroLength.isFinite, outroLength > 0.0001 {
+            inputs.append(TrailerClipInput(sceneID: inputs.count, sourceID: -2, sourceStart: 0, sourceLength: outroLength))
+        }
+        guard let maps = try? TrailerClipTimeMappingFactory.buildTimelineMappings(clips: inputs) else { return 0 }
+        return maps.reduce(0.0) { $0 + $1.outgoingOverlap }
+    }
+
+    /// 포함 장면의 출력 길이 합(배속 반영) 빼기 겹침. 카드는 뺀 본편 길이이며 최종 길이는 여기에 카드 길이를 더한다.
+    static func outputBodyDuration(_ scenes: [TrailerEditScene], outroLength: Double = 0) -> Double {
+        let raw = scenes.filter { !$0.excluded }.reduce(0.0) {
+            $0 + ($1.length.isFinite ? max(0, $1.length) : 0) / outputRate($1)
+        }
+        return max(0, raw - bodyOverlapTotal(scenes, outroLength: outroLength))
+    }
+
+    /// 계획 장면(`VideoTrailerScene`) 목록의 본편 출력 길이(배속 반영, 겹침은 한 번만 뺌). 미리보기·내보내기와 같은 시간표 팩토리를 쓴다.
+    static func outputBodyDuration(planned: [VideoTrailerScene], outroLength: Double = 0) -> Double {
+        let valid = planned.filter { $0.length.isFinite && $0.length > 0.0001 }
+        var inputs = valid.enumerated().map { index, scene in
+            TrailerClipInput(sceneID: index, sourceID: scene.sourceID, sourceStart: max(0, scene.start), sourceLength: scene.length,
+                             rate: scene.adjustments?.rate ?? 1,
+                             requestedOutgoingOverlap: scene.adjustments?.transition?.dissolveDuration ?? 0)
+        }
+        let raw = valid.reduce(0.0) { $0 + $1.outputLength }
+        guard !inputs.isEmpty, inputs.contains(where: { $0.requestedOutgoingOverlap > 0 }) else { return raw }
+        if outroLength.isFinite, outroLength > 0.0001 {
+            inputs.append(TrailerClipInput(sceneID: inputs.count, sourceID: -2, sourceStart: 0, sourceLength: outroLength))
+        }
+        guard let maps = try? TrailerClipTimeMappingFactory.buildTimelineMappings(clips: inputs) else { return raw }
+        return max(0, raw - maps.reduce(0.0) { $0 + $1.outgoingOverlap })
+    }
+
+    /// 포함 장면 중 가장 이른 순서의 장면부터 센 출력 시작 시각(겹침 반영). 합성기와 같은 팩토리를 쓴다.
+    static func outputStarts(_ scenes: [TrailerEditScene]) -> [Int: Double] {
+        let included = scenes.filter { !$0.excluded && $0.length.isFinite && $0.length > 0.0001 }
+        let inputs = included.enumerated().map { index, scene in
+            TrailerClipInput(sceneID: index, sourceID: scene.sourceID, sourceStart: max(0, scene.start), sourceLength: scene.length,
+                             rate: outputRate(scene), requestedOutgoingOverlap: scene.adjustments?.transition?.dissolveDuration ?? 0)
+        }
+        guard let maps = try? TrailerClipTimeMappingFactory.buildTimelineMappings(clips: inputs) else { return [:] }
+        var result: [Int: Double] = [:]
+        for (scene, map) in zip(included, maps) { result[scene.id] = map.outputStart }
+        return result
+    }
+
+    /// 음악 길이 맞춤의 실제 영상 길이(카드 포함). 목록이 최종 계획이면(`keepsManualScenesAsIs`) 포함 장면 길이 합 + 카드가 곧 길이다.
+    /// 음악보다 짧아도 길어도 그 값이며 음악 예산(`fitted`)보다 길거나 짧다고 주장하지 않는다. 그 밖에는 음악 예산 그대로다.
+    static func effectiveFitDuration(fitted: Double, scenes: [TrailerEditScene]?, cardsDuration: Double, outroLength: Double = 0) -> Double {
+        let cards = cardsDuration.isFinite ? max(0, cardsDuration) : 0
+        guard let scenes, keepsManualScenesAsIs(scenes) else { return fitted }
+        let actual = outputBodyDuration(scenes, outroLength: outroLength)
+        return actual > 0 ? actual + cards : fitted
+    }
+
+    /// 지정한 장면 중 포함된 장면의 보호 상태를 센다. 추천이 바꿀 수 있는 장면(`eligible`)과 이미 보호된 장면(`protected`).
+    static func automationCounts(ids: Set<Int>, in scenes: [TrailerEditScene]) -> (eligible: Int, protected: Int, excluded: Int) {
+        var eligible = 0, locked = 0, excluded = 0
+        for scene in scenes where ids.contains(scene.id) {
+            if scene.excluded { excluded += 1 } else if scene.timingProtected { locked += 1 } else { eligible += 1 }
+        }
+        return (eligible, locked, excluded)
+    }
+
+    /// 사용자가 직접 고른 장면의 전체 보호를 켜거나 끈다(잠금/잠금 해제). 바뀐 장면 수를 돌려준다.
+    /// 잠금은 `automationProtected`를 켠다. 해제는 그 표시와 시간·순서·제외 표시를 지우되, 이미 가진 자막·소리·화면 구성 값은
+    /// 계속 직접 편집한 내용으로 남긴다(값은 바꾸지 않는다).
+    @discardableResult
+    static func setAutomationProtected(_ isProtected: Bool, ids: Set<Int>, in scenes: inout [TrailerEditScene]) -> Int {
+        var changed = 0
+        for index in scenes.indices where ids.contains(scenes[index].id) {
+            let before = scenes[index]
+            if isProtected {
+                scenes[index].automationProtected = true
+            } else {
+                var content: TrailerManualFields = before.manual.intersection(.content)
+                if before.automationProtected {
+                    if before.caption != nil { content.insert(.caption) }
+                    if before.muted || before.volume != 1 { content.insert(.audio) }
+                    if before.hasCustomFraming { content.insert(.framing) }
+                }
+                scenes[index].automationProtected = false
+                scenes[index].manual = content
+            }
+            if scenes[index] != before { changed += 1 }
+        }
+        return changed
+    }
+
+    /// `ids` 밖의 장면은 잠시 전부 보호된 것으로 두고 `body`를 실행한 뒤, 그 장면들을 `body` 전의 값·표시 그대로 되돌린다.
+    /// 길이·예산 맞춤 같은 전체 연산이 선택한 장면 밖의 장면을 값이든 표시든 바꾸지 못하게 한다(선택 안의 장면 결과만 남는다).
+    /// `body`는 장면을 지우거나 id를 바꾸거나 순서를 바꾸지 않아야 한다.
+    static func freezing(except ids: Set<Int>, in scenes: inout [TrailerEditScene], _ body: (inout [TrailerEditScene]) -> Void) {
+        let originals = Dictionary(scenes.filter { !ids.contains($0.id) }.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for index in scenes.indices where originals[scenes[index].id] != nil { scenes[index].automationProtected = true }
+        body(&scenes)
+        for index in scenes.indices {
+            if let original = originals[scenes[index].id] { scenes[index] = original }
+        }
     }
 
     /// 선택된 장면들을 복제한다.
@@ -97,6 +245,7 @@ enum TrailerSceneEditor {
                 copy.id = nextID
                 copy.excluded = false
                 copy.budgetExcluded = false
+                copy.manual.formUnion([.order, .exclusion])
                 nextID += 1
                 newIDs.append(copy.id)
                 scenes.insert(copy, at: index + 1)
@@ -117,25 +266,306 @@ enum TrailerSceneEditor {
             } else if let at = index(of: id, in: scenes) {
                 scenes[at].excluded = true
                 scenes[at].budgetExcluded = false
+                scenes[at].manual.insert(.exclusion)
             }
         }
     }
 
+    /// 두 장면 값을 비교해 실제로 바뀐 필드만 돌려준다(시간: start/length/동작 구간, 소리: muted/volume, 화면 구성: fit/offset,
+    /// 자막, 제외: excluded). 예산 제외 표시만 달라진 것은 사용자의 편집이 아니므로 세지 않는다.
+    static func changedManualFields(from before: TrailerEditScene, to after: TrailerEditScene) -> TrailerManualFields {
+        var fields: TrailerManualFields = []
+        if before.start != after.start || before.length != after.length
+            || before.actionStart != after.actionStart || before.actionEnd != after.actionEnd { fields.insert(.timing) }
+        if before.muted != after.muted || before.volume != after.volume { fields.insert(.audio) }
+        if before.fitsFrame != after.fitsFrame || before.offsetX != after.offsetX || before.offsetY != after.offsetY { fields.insert(.framing) }
+        if before.caption != after.caption { fields.insert(.caption) }
+        // 고급 편집: 배속·디졸브는 값만 보존한다(시간 창 전체를 고정하는 `.timing`은 직접 트림·분할만 켠다).
+        // 색상·키프레임은 화면 구성, 자막 큐는 자막을 직접 고친 것이다. 직접 놓은 큐·키프레임 구간은 `protectedSpan` 앵커로 지켜진다.
+        let oldAdjust = before.adjustments ?? TrailerClipAdjustments(), newAdjust = after.adjustments ?? TrailerClipAdjustments()
+        if oldAdjust.rate != newAdjust.rate || oldAdjust.transition != newAdjust.transition { fields.insert(.adjust) }
+        if oldAdjust.color != newAdjust.color || oldAdjust.keyframes != newAdjust.keyframes { fields.insert(.framing) }
+        if oldAdjust.cues != newAdjust.cues || oldAdjust.suppressions != newAdjust.suppressions { fields.insert(.caption) }
+        if before.excluded != after.excluded { fields.insert(.exclusion) }
+        return fields
+    }
+
+    /// 인스펙터·자막 등 직접 고치는 모든 경로가 쓰는 한 장면 변경. 값이 실제로 바뀐 필드만 직접 편집으로 표시한다
+    /// (자막만 고치면 자막, 음량이면 소리 등). 전체 보호(`automationProtected`)는 켜지 않으므로 나머지 시간은 계속 자동이다.
+    /// 호출한 변경이 보호·표시를 스스로 정했다면(되돌리기·잠금 해제 등) 그 값을 따른다.
     static func update(_ id: Int, in scenes: inout [TrailerEditScene], _ change: (inout TrailerEditScene) -> Void) {
         guard let at = index(of: id, in: scenes) else { return }
+        let before = scenes[at]
         change(&scenes[at])
+        guard scenes[at].automationProtected == before.automationProtected, scenes[at].manual == before.manual else { return }
+        let fields = changedManualFields(from: before, to: scenes[at])
+        scenes[at].manual.formUnion(fields)
+        if fields.contains(.exclusion) { scenes[at].budgetExcluded = false }
+    }
+
+    /// 자동 생성된 자막 큐를 한 장면에 병합한다. 직접 고친 큐·지운 구간(tombstone)은 그 시점의 최신 값 그대로 지키고,
+    /// 건드리지 않은 이전 자동 큐는 새 결과로 바뀐다. 사용자가 편집한 것이 아니므로 `manual` 표시는 켜지 않는다(자막 보호로 승격하지 않는다).
+    /// 장면이 사라졌으면 false.
+    @discardableResult
+    static func mergeGeneratedCues(_ generated: [TrailerTimedCaptionCue], intoSceneID id: Int, in scenes: inout [TrailerEditScene]) -> Bool {
+        guard let at = index(of: id, in: scenes) else { return false }
+        var value = scenes[at].adjustments ?? TrailerClipAdjustments()
+        value.cues = TrailerTimedCaptionCue.merge(existingCues: value.cues, newGeneratedCues: generated, suppressions: value.suppressions)
+        scenes[at].adjustments = value == TrailerClipAdjustments() ? nil : value
+        return true
+    }
+
+    /// 직접 트림: 장면의 원본 시작 위치와 길이를 `start`/`length`로 바꾼다. 영상은 원본 안(0...원본 길이)이며 최소 길이 이상이어야 하고,
+    /// 사진은 표시 시간(길이)만 바뀐다(`start`는 쓰지 않는다). 유한하지 않거나 범위를 벗어나거나 실제로 바뀌는 게 없으면 false이고 장면은 그대로다.
+    /// 사용자가 직접 고른 창이므로 동작 보호 구간은 지우고 시간만 직접 편집으로 표시한다. 원본 미디어는 바꾸지 않는다.
+    @discardableResult
+    static func trim(_ id: Int, start: Double, length: Double, source: VideoTrailerSource?,
+                     in scenes: inout [TrailerEditScene]) -> Bool {
+        guard let at = index(of: id, in: scenes), let source, source.id == scenes[at].sourceID,
+              start.isFinite, length.isFinite, length > 0 else { return false }
+        let scene = scenes[at]
+        let eps = 1e-9
+        // 동작 보호 구간은 직접 트림을 막지 못한다. 그 구간 없이 계산한 범위를 쓴다.
+        var probe = scene
+        probe.actionStart = nil
+        probe.actionEnd = nil
+        probe.adjustments = nil
+        let bounds = sceneDurationBounds(scene: probe, source: source)
+        if source.isImage {
+            guard length >= bounds.minimum - eps, length <= bounds.maximum + eps else { return false }
+            let clamped = min(bounds.maximum, max(bounds.minimum, length))
+            guard abs(clamped - scene.length) > eps else { return false }
+            scenes[at].length = clamped
+            scenes[at].manual.insert(.timing)
+            return true
+        }
+        let duration = source.duration
+        guard duration.isFinite, duration > 0,
+              start >= -eps, length >= bounds.minimum - eps, start + length <= duration + eps else { return false }
+        let newLength = min(length, duration)
+        let newStart = min(max(0, start), max(0, duration - newLength))
+        guard abs(newStart - scene.start) > eps || abs(newLength - scene.length) > eps else { return false }
+        scenes[at].start = newStart
+        scenes[at].length = newLength
+        scenes[at].actionStart = nil
+        scenes[at].actionEnd = nil
+        scenes[at].manual.insert(.timing)
+        return true
+    }
+
+    /// 장면을 장면 안 시각 `atLocalTime`(장면 시작 기준 초, 영상은 원본 시간)에서 둘로 나눈다. 앞 조각은 원래 id를 지키고 뒤 조각은 바로 뒤에
+    /// 새 id로 들어간다. 영상은 원본 구간을 둘로, 사진은 표시 시간을 둘로 나누며 각 조각은 기존 최소 길이(영상 `min(0.2, 원본)`, 사진 1/30초) 이상이어야 한다.
+    /// 소스·자막·소리·프레이밍·제외와 기존 직접 편집 표시는 두 조각이 그대로 갖고, 동작 보호 구간은 지우며, 두 조각 모두 시간을 직접 정한 것으로 표시한다. 속도 모델은 없다.
+    /// 새 id는 `nextID`부터 `scenes`에 없는 첫 값이다. 거절하면 nil이고 `scenes`와 `nextID`는 그대로다.
+    @discardableResult
+    static func split(_ id: Int, atLocalTime time: Double, source: VideoTrailerSource?,
+                      in scenes: inout [TrailerEditScene], nextID: inout Int) -> Int? {
+        guard let at = index(of: id, in: scenes), let source, source.id == scenes[at].sourceID,
+              time.isFinite, scenes[at].length.isFinite, scenes[at].length > 0 else { return nil }
+        let scene = scenes[at]
+        let eps = 1e-9
+        var probe = scene
+        probe.actionStart = nil
+        probe.actionEnd = nil
+        probe.adjustments = nil
+        let minimum = sceneDurationBounds(scene: probe, source: source).minimum
+        guard time >= minimum - eps, scene.length - time >= minimum - eps else { return nil }
+        if !source.isImage {
+            let duration = source.duration
+            guard duration.isFinite, duration > 0, scene.start.isFinite, scene.start >= -eps,
+                  scene.start + scene.length <= duration + eps else { return nil }
+        }
+        var newID = max(1, nextID)
+        let used = Set(scenes.map(\.id))
+        while used.contains(newID) { newID += 1 }
+        var first = scene
+        var second = scene
+        second.id = newID
+        first.length = time
+        second.length = scene.length - time
+        if !source.isImage {
+            second.start = scene.start + time
+            first.actionStart = nil
+            first.actionEnd = nil
+            second.actionStart = nil
+            second.actionEnd = nil
+        }
+        // 두 조각 모두 시간이 직접 정해진 것이다. 기존 표시(자막·소리 등)는 그대로 이어받고, 새 조각은 포함·순서 의도도 갖는다.
+        first.manual.insert(.timing)
+        second.manual.formUnion([.timing, .order, .exclusion])
+        scenes[at] = first
+        scenes.insert(second, at: at + 1)
+        nextID = newID + 1
+        return newID
+    }
+
+    enum TrimEdge: Equatable { case start, end }
+
+    /// 손잡이를 `delta`초 끌었을 때의 다듬은 창(원본 시작 위치와 길이). 영상은 원본 안(0...원본 길이)과 최소 길이로, 사진은 표시 시간 범위로
+    /// 잘라 내며 어느 쪽 손잡이든 사진은 표시 시간만 바뀐다. 장면은 바꾸지 않고, 계산할 수 없으면 nil이다. 실제 적용은 `trim`이 다시 확인한다.
+    /// `outputDelta`는 타임라인에서 끈 거리(출력 초)다. 배속이 있으면 원본에서는 그 배속만큼 더 움직이므로 원본 초로 바꿔 적용한다.
+    static func trimCandidate(_ scene: TrailerEditScene, edge: TrimEdge, by outputDelta: Double,
+                              source: VideoTrailerSource?) -> (start: Double, length: Double)? {
+        let delta = outputDelta * outputRate(scene)
+        guard let source, source.id == scene.sourceID, delta.isFinite, scene.length.isFinite, scene.start.isFinite else { return nil }
+        var probe = scene
+        probe.actionStart = nil
+        probe.actionEnd = nil
+        probe.adjustments = nil
+        let bounds = sceneDurationBounds(scene: probe, source: source)
+        if source.isImage {
+            let proposed = edge == .end ? scene.length + delta : scene.length - delta
+            return (scene.start, min(bounds.maximum, max(bounds.minimum, proposed)))
+        }
+        let duration = source.duration
+        guard duration.isFinite, duration > 0 else { return nil }
+        let end = scene.start + scene.length
+        switch edge {
+        case .start:
+            let start = min(max(0, scene.start + delta), max(0, end - bounds.minimum))
+            return (start, end - start)
+        case .end:
+            let newEnd = min(duration, max(scene.start + bounds.minimum, end + delta))
+            return (scene.start, newEnd - scene.start)
+        }
+    }
+
+    /// 장면 안 시각 `time`에서 나눌 수 있는지. 실제 `split`과 같은 규칙을 한 장면짜리 복사본에 시험해 본다(원본 목록은 바꾸지 않는다).
+    static func canSplit(_ id: Int, atLocalTime time: Double, source: VideoTrailerSource?, in scenes: [TrailerEditScene]) -> Bool {
+        guard let at = index(of: id, in: scenes) else { return false }
+        var probe = [scenes[at]]
+        var nextID = scenes.map(\.id).max().map { $0 + 1 } ?? 1
+        return split(id, atLocalTime: time, source: source, in: &probe, nextID: &nextID) != nil
+    }
+
+    /// 포함된(제외되지 않은) 이웃 장면 하나 앞(`step` < 0) 또는 뒤(`step` > 0)로 옮긴다. 제외된 장면은 건너뛴다. 옮겼으면 true이고 그 장면은 보호된다.
+    @discardableResult
+    static func moveIncluded(_ id: Int, step: Int, in scenes: inout [TrailerEditScene]) -> Bool {
+        guard step != 0, let from = index(of: id, in: scenes), !scenes[from].excluded else { return false }
+        let neighbor = step < 0
+            ? scenes[..<from].lastIndex { !$0.excluded }
+            : scenes[(from + 1)...].firstIndex { !$0.excluded }
+        guard let neighbor else { return false }
+        let before = scenes.map(\.id)
+        moveScenes(ids: [id], toOneBasedPosition: neighbor + 1, in: &scenes)
+        return scenes.map(\.id) != before
+    }
+
+    /// 지정한 장면 중 시간이 고정되지 않은 포함 장면만 현재 추천 계획으로 제자리에서 다시 맞춘다. 자막·소리만 고친 장면의 시간은 다시 맞춘다.
+    /// 장면 순서·id와 자막·소리·프레이밍·제외는 그대로다.
+    /// 영상은 소스의 `plan.proposal`이 주는 창(같은 소스의 대상 장면이 여럿이면 목록 순서대로 서로 다른 구역의 창)과 그 동작 보호 구간,
+    /// 사진은 `weightedImageLength`로 길이만 다시 정한다. 소스가 없거나 유효하지 않은 장면은 건너뛰고, 보호된 장면은 절대 건드리지 않는다.
+    /// 바뀐 장면 수를 돌려준다.
+    @discardableResult
+    static func refreshAutomaticScenes(ids: Set<Int>, sources: [VideoTrailerSource], clipLength: Double,
+                                       in scenes: inout [TrailerEditScene]) -> Int {
+        guard !ids.isEmpty, clipLength.isFinite, clipLength > 0 else { return 0 }
+        let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let eps = 1e-9
+        let targets = scenes.indices.filter { ids.contains(scenes[$0].id) && !scenes[$0].timingProtected && !scenes[$0].excluded }
+        var perSource: [Int: [Int]] = [:]
+        for index in targets { perSource[scenes[index].sourceID, default: []].append(index) }
+        var changed = 0
+        for (sourceID, indices) in perSource {
+            guard let source = byID[sourceID] else { continue }
+            if source.isImage {
+                for index in indices {
+                    let bounds = sceneDurationBounds(scene: scenes[index], source: source)
+                    let length = min(bounds.maximum, max(bounds.minimum, source.weightedImageLength(clipLength: clipLength)))
+                    guard length.isFinite, abs(length - scenes[index].length) > eps else { continue }
+                    scenes[index].length = length
+                    changed += 1
+                }
+                continue
+            }
+            let duration = source.duration
+            guard duration.isFinite, duration > 0 else { continue }
+            let length = VideoTrailerBatchPlan.sceneLength(source, clipLength: clipLength)
+            guard length.isFinite, length > 0 else { continue }
+            let proposals = source.plan.proposal(total: length * Double(indices.count), clipLength: length)
+            let peaks = source.plan.rankedActionPeaks()
+            for (position, index) in indices.enumerated() where position < proposals.count {
+                let proposed = proposals[position]
+                guard proposed.start.isFinite, proposed.length.isFinite, proposed.length > 0 else { continue }
+                let proposedLength = min(proposed.length, duration)
+                let proposedStart = min(max(0, proposed.start), max(0, duration - proposedLength))
+                // 근거 있는 추천 창은 새 장면과 같은 규칙으로 동작 구간을 보호한다. 근거 없는 중앙 선택은 보호하지 않는다.
+                // 이 동작 구간은 자동 분석의 기준점일 뿐 직접 고정한 시간이 아니므로 목표 길이를 늘리지 않는다:
+                // 근거가 있으면 두 경계를 모두 `narrowToLength`로 맞춘다: 동작 구간이 추천 길이보다 길면 같은 소스의 가장 좋은 피크
+                // 중심으로 추천 길이만큼 좁히고, 짧거나 같은데 요청 창 밖에 걸쳐 있으면 같은 길이로 창을 옮겨 동작 구간을 담는다.
+                var window = source.plan.hasEvidence ? source.plan.actionWindow(start: proposedStart, length: proposedLength)
+                                                     : (start: proposedStart, length: proposedLength, action: (start: proposedStart, end: proposedStart + proposedLength))
+                if source.plan.hasEvidence {
+                    var probe = scenes[index]
+                    probe.start = window.start
+                    probe.length = window.length
+                    probe.actionStart = window.action.start
+                    probe.actionEnd = window.action.end
+                    narrowToLength(&probe, length: proposedLength, source: source, peaks: peaks)
+                    window = (probe.start, probe.length, (probe.actionStart ?? probe.start, probe.actionEnd ?? probe.start + probe.length))
+                }
+                let protects = source.plan.hasEvidence
+                let scene = scenes[index]
+                let anchored = keepingAnchors(of: scene, start: min(max(0, window.start), max(0, duration - min(window.length, duration))),
+                                              length: min(window.length, duration), duration: duration)
+                let newLength = anchored.length
+                let newStart = anchored.start
+                let newActionStart: Double? = protects ? max(newStart, min(window.action.start, newStart + newLength)) : nil
+                let newActionEnd: Double? = protects ? min(newStart + newLength, max(window.action.end, newStart)) : nil
+                guard abs(newStart - scene.start) > eps || abs(newLength - scene.length) > eps
+                        || newActionStart != scene.actionStart || newActionEnd != scene.actionEnd else { continue }
+                scenes[index].start = newStart
+                scenes[index].length = newLength
+                scenes[index].actionStart = newActionStart
+                scenes[index].actionEnd = newActionEnd
+                changed += 1
+            }
+        }
+        return changed
+    }
+
+    /// 이전 창 안의 직접 놓은 자막·키프레임 앵커를 새 창이 담도록 같은 길이로 옮긴다. 앵커가 새 길이보다 길면 앵커만큼 늘린다.
+    /// 앵커가 없으면 그대로 돌려준다. 앵커 둘레 문맥은 새 추천을 따른다.
+    static func keepingAnchors(of old: TrailerEditScene, start: Double, length: Double, duration: Double) -> (start: Double, length: Double) {
+        guard old.start.isFinite, old.length.isFinite, old.length > 0, duration.isFinite, duration > 0,
+              let anchor = old.adjustments?.anchorSpan(windowStart: old.start, windowEnd: old.start + old.length) else { return (start, length) }
+        let end = min(duration, anchor.end)
+        let first = max(0, min(anchor.start, end))
+        let newLength = min(duration, max(length, end - first))
+        let lower = max(0, end - newLength), upper = min(first, max(0, duration - newLength))
+        let newStart = lower <= upper ? min(max(start, lower), upper) : upper
+        return (newStart, newLength)
     }
 
     /// 보호 구간 길이(동작이 없으면 0). 소스 길이 안으로 잘라 낸다.
     static func protectedLength(_ scene: TrailerEditScene, sourceDuration: Double) -> Double {
-        guard let a = scene.actionStart, let b = scene.actionEnd, a.isFinite, b.isFinite, b > a else { return 0 }
-        return max(0, min(b, sourceDuration) - max(a, 0))
+        guard let span = scene.protectedSpan else { return 0 }
+        return max(0, min(span.end, sourceDuration) - max(span.start, 0))
+    }
+
+    /// 새 시간별 자막(직접 추가·자동 생성)의 서체. 장면에 직접 쓴 고정 자막이 있으면 그 서체를 따르되, 같은 자리에 겹쳐 읽을 수 없게 되지 않도록
+    /// 위치 행만 반대쪽 가장자리로 옮긴다(고정 자막은 그대로 남고 숨지 않는다). 없으면 기본 서체다.
+    static func cueStyle(for scene: TrailerEditScene) -> TrailerCaption {
+        guard var style = scene.caption else { return TrailerCaption() }
+        style.text = ""
+        if !(scene.caption?.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) {
+            style.row = style.row <= 2 ? 4 : 0
+        }
+        return style
+    }
+
+    /// 사진의 지금 보이는 앵커 끝까지의 논리 사진 시간(없으면 0). 사진 시간은 `start`(0)부터 길이까지이며 창 밖의 저장된 점은 세지 않는다.
+    static func photoAnchorLength(_ scene: TrailerEditScene) -> Double {
+        guard scene.start.isFinite, scene.length.isFinite, scene.length > 0,
+              let anchor = scene.adjustments?.anchorSpan(windowStart: scene.start, windowEnd: scene.start + scene.length) else { return 0 }
+        return max(0, anchor.end - scene.start)
     }
 
     /// 길이가 보호 구간 이상일 때, 창이 보호 구간을 모두 포함하도록 시작점을 옮긴다. 아니면 그대로.
     static func startKeepingAction(_ scene: TrailerEditScene, start: Double, length: Double, sourceDuration: Double) -> Double {
         let protected = protectedLength(scene, sourceDuration: sourceDuration)
-        guard protected > 0, length + 1e-9 >= protected, let a = scene.actionStart, let b = scene.actionEnd else { return start }
+        guard protected > 0, length + 1e-9 >= protected, let span = scene.protectedSpan else { return start }
+        let a = span.start, b = span.end
         let lower = max(0, min(b, sourceDuration) - length)
         let upper = min(max(a, 0), max(0, sourceDuration - length))
         return min(max(start, lower), max(lower, upper))
@@ -152,8 +582,11 @@ enum TrailerSceneEditor {
     }
 
     /// 직접 편집한 장면을 음악 길이 맞춤(반복 `startCount`회, 자동으로 늘리지 않는다)에 맞춘다. 음악 길이 × 횟수(카드 포함)가
-    /// 넘지 않는 예산이며 `fitScenesToBudget`이 보호 구간을 지키며 덜 중요한 장면을 통째로 뺀다. 한 장면도 안 들어가면 `fits`가 false이고
-    /// 장면은 그대로다. `maximumRepeats`는 횟수 상한으로만 쓴다. 반환값은 반복 횟수, 포함 장면 합계, 맞춤 여부와 뺀 장면 수.
+    /// 넘지 않는 예산이며 `fitScenesToBudget`이 동작 구간을 지키며 주변 문맥을 줄이고, 그래도 모자라면 직접 편집한 장면의 동작 구간을
+    /// 피크 중심으로 좁히며 덜 중요한 순수 자동 장면을 통째로 뺀다. 직접 시간을 정한 장면은 그대로 두고,
+    /// 그 물리적 최소 합이 예산보다 길 때만 실제 길이(`total`)가 이기며 이때도 `fits`는 true다(음악은 렌더가 영상 끝까지 이어 붙인다).
+    /// 포함 장면이 하나도 없을 때만 `fits`가 false이고 장면은 그대로다. `maximumRepeats`는 횟수 상한으로만 쓴다.
+    /// 반환값은 반복 횟수, 포함 장면 합계, 맞춤 여부와 뺀 장면 수.
     @discardableResult
     static func fitScenesToMusic(
         scenes: inout [TrailerEditScene],
@@ -162,14 +595,15 @@ enum TrailerSceneEditor {
         startCount: Int,
         cardsDuration: Double,
         maximumRepeats: Int,
-        capOnly: Bool = false
+        capOnly: Bool = false,
+        outroLength: Double = 0
     ) -> (count: Int, total: Double, fits: Bool, excluded: Int) {
-        func included(_ list: [TrailerEditScene]) -> Double { list.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length } }
+        func included(_ list: [TrailerEditScene]) -> Double { outputBodyDuration(list, outroLength: outroLength) }
         let count = min(max(1, maximumRepeats), max(1, startCount))
         let cards = cardsDuration.isFinite ? max(0, cardsDuration) : 0
         guard musicDuration.isFinite, musicDuration > 0 else { return (count, included(scenes), true, 0) }
         guard let fit = fitScenesToBudget(scenes: &scenes, sources: sources, bodyTarget: max(0.1, musicDuration * Double(count) - cards),
-                                          capOnly: capOnly) else {
+                                          capOnly: capOnly, outroLength: outroLength) else {
             return (count, included(scenes), false, 0)
         }
         return (count, fit.total, true, fit.excluded)
@@ -190,82 +624,267 @@ enum TrailerSceneEditor {
     }
 
     /// 정한 본편 길이(`bodyTarget` = 전체 길이 − 시작/마지막 화면)는 넘지 않는 예산이다(Android `fitEditorToBudget`과 같은 규칙).
-    /// 예산 때문에 뺐던 장면을 먼저 되돌리고, 보호(최소) 길이 합이 넘치면 중요한 장면부터(소스마다 가장 중요한 장면이 먼저, 같으면 앞쪽)
-    /// 통째로 들어가는 장면만 담고 나머지는 뺀다.
-    /// 남은 장면은 보호 구간을 그대로 둔 채 예산을 나눈다. 사용자가 직접 제외한 장면은 건드리지 않는다. 한 장면도 안 들어가면 nil(그대로).
+    /// 먼저 예산 때문에 뺐던 장면을 되돌린다(사용자가 직접 제외했거나 전체 보호된 장면은 그대로). 시간이 직접 정해진 장면(`timingProtected`)은
+    /// 길이·구간을 그대로 두고 그 길이만큼 예산에서 먼저 뗀다. 나머지 자동 시간 장면은 동작 구간(key point)을 지킨 채 주변 문맥만 줄이는
+    /// 것이 먼저다(소프트 최소 = 동작 구간, 최소 0.2초). 그래도 못 빼는 직접 편집 장면(자막·소리·화면 구성·순서·포함 의도, `mandatory`)의
+    /// 소프트 최소 합이 목표보다 길면 목표는 그대로 두고 그 장면들의 동작 구간을 알려진 가장 좋은 피크 중심으로 좁힌다(`narrowToBestPoint`):
+    /// 장면마다 물리적 최소(프레임 한 장 1/30초)부터 소프트 최소까지 같은 비율로 나눠 받으므로 어떤 장면도 빠지지 않고 직접 편집한 필드·포함도 그대로다.
+    /// 이때 직접 편집 흔적이 없는 순수 자동 장면은 모두 빠진다. 소프트 최소 합이 목표 안에 들면 남는 자리를 순수 자동 장면이 받는다:
+    /// 중요한 장면부터(소스마다 가장 중요한 장면이 먼저, 같으면 앞쪽) 통째로 들어가는 만큼 담고 나머지는 뺀다. 단, 더 중요한 장면이 통째로는
+    /// 안 들어가는데 뒤의 덜 중요한 짧은 장면이 들어간다는 이유만으로 그 장면을 받지는 않는다. 더 중요한 장면의 동작 구간을 피크 중심으로 좁혀
+    /// 남은 자리에 먼저 담는다. 통째로 들어가는 장면이 하나도 없으면 뒤에 들어갈 장면이 없어도 가장 원하는 장면을 물리적 최소(프레임 한 장)
+    /// 이상인 남은 자리에 좁혀 담는다(0.2초 UI 최소에 막히지 않는다). 담을 수 있는 장면이 하나도 없고 직접 정한 장면도 없으면 가장 원하는 장면 하나를 좁혀 남긴다.
+    /// 마지막으로 남은 자리를 자동 시간 장면이 다시 나눠 받는다(순서·사용자 제외는 그대로).
+    /// 유효 목표는 요청 목표 그대로다. 시간이 직접 정해진 장면과 못 뺀 장면의 물리적 최소(프레임) 합이 목표보다 길 때만 그 합이 이기며,
+    /// 이때 결과 길이는 그 합이다(순수 자동 장면은 목록에 남아 목표가 늘면 돌아온다).
+    /// 반환 `total`이 실제 본편 길이이고, 그 길이가 `bodyTarget`보다 길면 호출자는 더 짧은 목표를 달성했다고 알리지 않는다. 포함 장면이 없으면 nil(그대로).
+    /// 모든 길이는 출력 시간이다: 배속(`rate`)으로 줄거나 늘어난 장면 길이의 합에서 실제로 겹치는 디졸브 길이를 한 번 빼면 본편 길이다.
+    /// 겹침은 장면 길이에 따라 달라지므로 겹침을 합 목표에 더해 맞춘 뒤 다시 센다(몇 번 반복). 반환 `total`은 겹침을 뺀 본편 출력 길이다.
+    /// `outroLength`는 마지막 화면 길이로, 마지막 장면의 디졸브가 그 화면과 겹치는 길이까지 센다.
     @discardableResult
     static func fitScenesToBudget(scenes: inout [TrailerEditScene], sources: [VideoTrailerSource],
-                                  bodyTarget: Double, capOnly: Bool = false) -> (total: Double, included: Int, excluded: Int)? {
+                                  bodyTarget: Double, capOnly: Bool = false, outroLength: Double = 0) -> (total: Double, included: Int, excluded: Int)? {
         guard bodyTarget.isFinite, bodyTarget > 0 else { return nil }
+        // 원본 장면 복사본에서 `coreTarget`(겹침을 더한 장면 출력 길이 합)으로 한 번 맞추고, 그 결과의 실제 겹침을 뺀 본편 출력 길이를 돌려준다.
+        func evaluate(_ coreTarget: Double) -> (scenes: [TrailerEditScene], total: Double, included: Int, excluded: Int, overlap: Double)? {
+            var attempt = scenes
+            guard let core = fitScenesToBudgetCore(scenes: &attempt, sources: sources, bodyTarget: coreTarget, capOnly: capOnly) else { return nil }
+            let settled = bodyOverlapTotal(attempt, outroLength: outroLength)
+            return (attempt, max(0, core.total - settled), core.included, core.excluded, settled)
+        }
+        var overlap = bodyOverlapTotal(scenes.map { scene in var copy = scene; copy.excluded = copy.excluded && !copy.budgetExcluded; return copy },
+                                       outroLength: outroLength)
+        var best: (scenes: [TrailerEditScene], total: Double, included: Int, excluded: Int, overlap: Double)?
+        var coreTarget = bodyTarget + overlap
+        for _ in 0..<4 {
+            coreTarget = bodyTarget + overlap
+            guard let current = evaluate(coreTarget) else { return nil }
+            best = current
+            if abs(current.overlap - overlap) < 0.001 { break }
+            overlap = current.overlap
+        }
+        // 고정점 반복이 끝났는데도 실제 출력이 요청보다 물리적 프레임 하나(1/30초) 넘게 길면(큰 디졸브가 다시 잘리는 짧은 목표 등) 같은 맞춤을
+        // 겹침을 더한 합 목표에 대해 이분법으로 마저 끝낸다. 실제 출력은 그 목표에 대해 단조 증가하므로 요청 이하인 가장 큰 목표를 찾는다.
+        // 가장 작은 목표로도 못 맞추면 고정 장면·물리적 프레임 최소가 이기는 진짜 하한이므로 그 결과를 그대로 쓴다.
+        if let over = best, over.total > bodyTarget + frameMinimum {
+            var high = coreTarget
+            var low = frameMinimum
+            if let floor = evaluate(low) {
+                best = floor
+                if floor.total <= bodyTarget + frameMinimum {
+                    for _ in 0..<40 where high - low > 1e-4 {
+                        let mid = (low + high) / 2
+                        guard let probe = evaluate(mid) else { break }
+                        if probe.total <= bodyTarget + 1e-6 {
+                            low = mid
+                            best = probe
+                        } else {
+                            high = mid
+                        }
+                    }
+                }
+            }
+        }
+        guard let final = best else { return nil }
+        scenes = final.scenes
+        return (final.total, final.included, final.excluded)
+    }
+
+    /// `fitScenesToBudget`의 한 번 맞춤. `bodyTarget`은 겹침을 더한 장면 출력 길이 합 목표다.
+    private static func fitScenesToBudgetCore(scenes: inout [TrailerEditScene], sources: [VideoTrailerSource],
+                                              bodyTarget: Double, capOnly: Bool) -> (total: Double, included: Int, excluded: Int)? {
         var next = scenes
-        for index in next.indices where next[index].budgetExcluded {
+        for index in next.indices where next[index].budgetExcluded && !next[index].exclusionProtected {
             next[index].excluded = false
             next[index].budgetExcluded = false
         }
-        let candidates = next.indices.filter { !next[$0].excluded }
-        guard !candidates.isEmpty else { return nil }
+        let included = next.indices.filter { !next[$0].excluded }
+        guard !included.isEmpty else { return nil }
+        let locked = included.filter { next[$0].timingProtected }
+        let lockedSum = locked.reduce(0.0) { $0 + (next[$1].length.isFinite ? max(0, next[$1].length) : 0) / outputRate(next[$1]) }
+        // `candidates`는 시간이 자동인 장면. 그중 `droppable`(순수 자동)만 빠질 수 있고 `mandatory`(직접 편집 흔적 있음)는 빠지지 않고 좁아지기만 한다.
+        let candidates = included.filter { !next[$0].timingProtected }
+        let droppable = candidates.filter { next[$0].isPureAutomatic }
+        let mandatory = candidates.filter { !next[$0].isPureAutomatic }
         let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var peakCache: [Int: [VideoTrailerPlan.ActionPeak]] = [:]
+        func peaks(_ source: VideoTrailerSource) -> [VideoTrailerPlan.ActionPeak] {
+            if let cached = peakCache[source.id] { return cached }
+            let ranked = source.plan.rankedActionPeaks()
+            peakCache[source.id] = ranked
+            return ranked
+        }
+        // `minimum`은 소프트 최소(동작 구간을 지킨 채 주변 문맥만 줄인 길이, 최소 0.2초), `frameFloor`는 물리적 최소(프레임 한 장).
         var minimum: [Int: Double] = [:]
-        for index in candidates { minimum[index] = sceneDurationBounds(scene: next[index], source: byID[next[index].sourceID]).minimum }
-        var keep = Set(candidates)
-        var minSum = candidates.reduce(0.0) { $0 + minimum[$1]! }
-        if minSum > bodyTarget + 1e-6 {
-            var peakCache: [Int: [VideoTrailerPlan.ActionPeak]] = [:]
-            func peaks(_ source: VideoTrailerSource) -> [VideoTrailerPlan.ActionPeak] {
-                if let cached = peakCache[source.id] { return cached }
-                let ranked = source.plan.rankedActionPeaks()
-                peakCache[source.id] = ranked
-                return ranked
+        var frameFloor: [Int: Double] = [:]
+        // 모두 출력 시간이다. 물리적 최소는 출력 프레임 한 장(1/30초)이며 배속과 무관하다(원본 길이는 그 값 × 배속).
+        for index in candidates {
+            let source = byID[next[index].sourceID]
+            let rate = outputRate(next[index])
+            minimum[index] = max(frameMinimum, sceneDurationBounds(scene: next[index], source: source).minimum / rate)
+            var probe = next[index]
+            probe.actionStart = nil
+            probe.actionEnd = nil
+            // 직접 놓은 자막·키프레임 앵커는 물리적 최소에도 포함된다.
+            // 사진은 논리 사진 시간(0부터 길이까지)에서 지금 보이는 앵커 구간을 그대로 지킨다(`isImage`가 앵커를 무시하는 뜻은 아니다).
+            let anchorLength = source.map { src -> Double in
+                if src.isImage { return photoAnchorLength(probe) }
+                return src.duration > 0 ? protectedLength(probe, sourceDuration: src.duration) : 0
+            } ?? 0
+            frameFloor[index] = min(minimum[index]!, max(frameMinimum, anchorLength / rate))
+        }
+        // `narrowedTo`: 이 길이로 동작 구간을 피크 중심으로 좁힐 장면(그 밖의 장면은 아래 재분배가 문맥만 늘이고 줄인다).
+        var narrowedTo: [Int: Double] = [:]
+        var keep = Set<Int>()
+        var effectiveTarget = bodyTarget
+        let freeForUnlocked = bodyTarget - lockedSum
+        let mandatorySoft = mandatory.reduce(0.0) { $0 + minimum[$1]! }
+        if mandatorySoft > freeForUnlocked + 1e-6 {
+            // 못 빼는 직접 편집 장면이 목표보다 길다: 목표는 그대로 두고 그 장면들을 물리적 최소부터 소프트 최소 사이에서 같은 비율로 좁힌다.
+            // 순수 자동 장면은 모두 빠진다. 고정 장면과 물리적 최소 합이 목표를 넘을 때만 그 합이 목표를 이긴다.
+            let mandatoryFloor = mandatory.reduce(0.0) { $0 + frameFloor[$1]! }
+            let available = max(freeForUnlocked, mandatoryFloor)
+            let span = mandatorySoft - mandatoryFloor
+            let share = span > 1e-9 ? min(1, max(0, (available - mandatoryFloor) / span)) : 1
+            for index in mandatory {
+                let length = frameFloor[index]! + share * (minimum[index]! - frameFloor[index]!)
+                if length < minimum[index]! - 1e-9 { narrowedTo[index] = length }
             }
-            var importance: [Int: Double] = [:]
-            for index in candidates { importance[index] = sceneImportance(next[index], source: byID[next[index].sourceID], peaks: peaks) }
-            var representative = Set<Int>()
-            for group in Dictionary(grouping: candidates, by: { next[$0].sourceID }).values {
-                if let best = group.max(by: { l, r in
+            effectiveTarget = lockedSum + available
+        } else {
+            let freeTarget = freeForUnlocked - mandatorySoft
+            keep = Set(droppable)
+            let minSum = droppable.reduce(0.0) { $0 + minimum[$1]! }
+            if minSum > freeTarget + 1e-6 {
+                var importance: [Int: Double] = [:]
+                for index in droppable { importance[index] = sceneImportance(next[index], source: byID[next[index].sourceID], peaks: peaks) }
+                var representative = Set<Int>()
+                for group in Dictionary(grouping: droppable, by: { next[$0].sourceID }).values {
+                    if let best = group.max(by: { l, r in
+                        if importance[l]! != importance[r]! { return importance[l]! < importance[r]! }
+                        if minimum[l]! != minimum[r]! { return minimum[l]! > minimum[r]! }
+                        return l > r
+                    }) { representative.insert(best) }
+                }
+                // 덜 원하는 것부터: 소스 대표가 아닌 추가 장면, 덜 중요한 것, (같은 중요도면) 보호 최소 길이가 긴 것(완전한 샷이 더 많이 들어가게), 뒤쪽.
+                let order = droppable.sorted { l, r in
+                    let lr = representative.contains(l), rr = representative.contains(r)
+                    if lr != rr { return !lr }
                     if importance[l]! != importance[r]! { return importance[l]! < importance[r]! }
                     if minimum[l]! != minimum[r]! { return minimum[l]! > minimum[r]! }
                     return l > r
-                }) { representative.insert(best) }
-            }
-            // 덜 원하는 것부터: 소스 대표가 아닌 추가 장면, 덜 중요한 것, (같은 중요도면) 보호 최소 길이가 긴 것(완전한 샷이 더 많이 들어가게), 뒤쪽.
-            let order = candidates.sorted { l, r in
-                let lr = representative.contains(l), rr = representative.contains(r)
-                if lr != rr { return !lr }
-                if importance[l]! != importance[r]! { return importance[l]! < importance[r]! }
-                if minimum[l]! != minimum[r]! { return minimum[l]! > minimum[r]! }
-                return l > r
-            }
-            // 장면을 빼야 할 때는 남길 최소 길이 합이 예산의 10%를 비워 두어 컷이 비트로 움직일 여유(와 문맥)를 남긴다(Android BUDGET_SLACK).
-            // 그 여유로는 한 장면도 안 들어가면 예산 전체를 쓴다.
-            // 중요한 것부터(소스마다 가장 중요한 장면이 다른 소스의 추가 장면보다 먼저, 같으면 앞쪽) 통째로 들어가는 장면을 차례로 담는다.
-            func choose(_ limit: Double) {
-                keep = []
-                minSum = 0
-                for index in order.reversed() where minSum + minimum[index]! <= limit + 1e-6 {
-                    keep.insert(index)
-                    minSum += minimum[index]!
+                }
+                let wanted = Array(order.reversed())
+                // 장면을 빼야 할 때는 남길 최소 길이 합이 예산의 10%를 비워 두어 컷이 비트로 움직일 여유(와 문맥)를 남긴다(Android BUDGET_SLACK).
+                // 그 여유로는 한 장면도 안 들어가면 예산 전체를 쓴다.
+                // 중요한 것부터(소스마다 가장 중요한 장면이 다른 소스의 추가 장면보다 먼저, 같으면 앞쪽) 통째로 들어가는 장면을 차례로 담는다.
+                // 더 중요한 장면이 통째로는 안 들어가면, 남은 자리가 그 장면의 실제 물리적 최소(프레임 한 장, UI 최소 0.2초가 아님) 이상인 한
+                // 뒤에 다른 장면이 있든 없든 이 장면의 동작 구간을 피크 중심으로 좁혀 남은 자리에 담고 다음 순위로 넘어가지 않는다.
+                func choose(_ limit: Double) {
+                    keep = []
+                    narrowedTo = [:]
+                    var remaining = limit
+                    for index in wanted {
+                        let need = minimum[index]!
+                        if need <= remaining + 1e-6 {
+                            keep.insert(index)
+                            remaining -= need
+                            continue
+                        }
+                        if remaining >= frameFloor[index]! - 1e-6 {
+                            narrowedTo[index] = remaining
+                            keep.insert(index)
+                            remaining = 0
+                            break
+                        }
+                    }
+                }
+                // 좁히기가 끼면 남은 자리를 전부 쓰므로 10% 여유는 의미가 없다: 그때는 예산 전체로 다시 골라 통째로 들어가는 장면을 좁히지 않는다.
+                choose(freeTarget * 0.9)
+                if keep.isEmpty || !narrowedTo.isEmpty { choose(freeTarget) }
+                // 시간이 고정되었거나 못 빼는 장면이 이미 있으면 순수 자동 장면이 하나도 안 들어가도 맞춤은 성립한다.
+                // 아무것도 없으면 가장 원하는 장면 하나는 남긴다: 동작 구간을 알려진 가장 좋은 지점 중심으로 좁혀 목표(물리적 최소 이상)에 담는다.
+                if keep.isEmpty && locked.isEmpty && mandatory.isEmpty {
+                    guard let best = wanted.first else { return nil }
+                    let length = min(minimum[best]!, max(frameFloor[best]!, freeTarget))
+                    if length < minimum[best]! - 1e-9 { narrowedTo[best] = length }
+                    effectiveTarget = max(bodyTarget, length)
+                    keep = [best]
                 }
             }
-            choose(bodyTarget * 0.9)
-            if keep.isEmpty { choose(bodyTarget) }
-            guard !keep.isEmpty else { return nil }
-            for index in candidates where !keep.contains(index) {
-                next[index].excluded = true
-                next[index].budgetExcluded = true
-            }
+        }
+        for index in droppable where !keep.contains(index) {
+            next[index].excluded = true
+            next[index].budgetExcluded = true
+        }
+        for (index, length) in narrowedTo.sorted(by: { $0.key < $1.key }) {
+            // `length`는 출력 시간이다: 원본 길이로 바꿔 좁힌다.
+            let sourceLength = length * outputRate(next[index])
+            guard let source = byID[next[index].sourceID] else { next[index].length = sourceLength; continue }
+            narrowToLength(&next[index], length: sourceLength, source: source, peaks: peaks(source))
         }
         // capOnly(정한 전체 길이 아래 클립 길이 변경): 예산은 상한일 뿐 남은 장면을 채우려고 늘리지 않는다.
-        let keptSum = next.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
-        redistributeManualTotal(scenes: &next, sources: sources, targetTotal: capOnly ? min(bodyTarget, keptSum) : bodyTarget)
+        // 좁힌 장면은 동작 구간이 좁힌 창이라 재분배가 UI 최소(0.2초) 아래의 물리적 최소까지 인정한다(조용히 다시 늘이지 않는다).
+        let keptSum = next.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length / outputRate($1) }
+        redistributeManualTotal(scenes: &next, sources: sources, targetTotal: capOnly ? min(effectiveTarget, keptSum) : effectiveTarget,
+                                allowSubMinimum: true)
         scenes = next
-        let total = next.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
-        return (total, keep.count, candidates.count - keep.count)
+        let total = next.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length / outputRate($1) }
+        return (total, keep.count + mandatory.count + locked.count, droppable.count - keep.count)
+    }
+
+    /// 장면을 `length`초로 줄인다. 동작 구간이 그보다 길면 피크 중심으로 좁혀 좁힌 창을 새 동작 구간으로 쓰고(`narrowToBestPoint`),
+    /// 이미 그 안이면 동작 구간을 담은 채 길이만 줄인다.
+    private static func narrowToLength(_ scene: inout TrailerEditScene, length: Double, source: VideoTrailerSource,
+                                       peaks: [VideoTrailerPlan.ActionPeak]) {
+        if narrowToBestPoint(&scene, source: source, limit: length, peaks: peaks) { return }
+        guard !source.isImage, source.duration.isFinite, source.duration > 0 else { scene.length = length; return }
+        let kept = startKeepingAction(scene, start: scene.start, length: length, sourceDuration: source.duration)
+        scene.length = length
+        scene.start = min(max(0, kept), max(0, source.duration - length))
+    }
+
+    /// 가장 짧은 한 장면(`limit`초, 물리적 최소 길이 1/30초 아래로는 내려가지 않음)보다 동작 구간이 길 때, 그 구간 안의 가장 좋은 알려진 피크
+    /// (`peaks`는 `rankedActionPeaks` 순서)의 온셋과 타격을 담도록 창을 좁히고 좁힌 창 전체를 새 동작 구간으로 쓴다. 시각은 모두 기존 구간·피크에서
+    /// 나오며 만들어 내지 않는다. 안에 피크가 없으면 구간 시작에서 그 길이만큼만 남긴다. 사진이거나 이미 들어가면 false(그대로).
+    @discardableResult
+    static func narrowToBestPoint(_ scene: inout TrailerEditScene, source: VideoTrailerSource, limit: Double,
+                                  peaks: [VideoTrailerPlan.ActionPeak]) -> Bool {
+        guard !source.isImage, source.duration.isFinite, source.duration > 0, limit.isFinite else { return false }
+        let duration = source.duration
+        // 물리적 최소는 출력 프레임 한 장이다: 원본 길이로는 그 값 × 배속(0.25배속이면 1/120초)이며 원본 1/30초 바닥을 쓰지 않는다.
+        let floor = min(duration, frameMinimum * outputRate(scene))
+        let length = min(duration, max(floor, limit))
+        let span = scene.protectedSpan
+        let a = min(max(0, span?.start ?? scene.start), duration)
+        let b = max(a, min(span?.end ?? (scene.start + scene.length), duration))
+        guard b - a > length + 1e-9 else { return false }
+        var start = a
+        if let peak = peaks.first(where: { $0.time >= a - 1e-6 && $0.time <= b + 1e-6 }) {
+            start = min(max(peak.onset - 0.25 * length, a), max(a, b - length))
+            start = max(start, peak.time - length)
+        }
+        // 직접 놓은 자막·키프레임 앵커는 피크보다 우선해 창 안에 남긴다(앵커가 창보다 길면 앵커 시작을 지킨다).
+        if let anchor = scene.adjustments?.anchorSpan(windowStart: scene.start, windowEnd: scene.start + scene.length) {
+            let lower = anchor.end - length, upper = anchor.start
+            start = lower <= upper ? min(max(start, lower), upper) : upper
+        }
+        start = min(max(0, start), max(0, duration - length))
+        scene.start = start
+        scene.length = length
+        scene.actionStart = start
+        scene.actionEnd = start + length
+        return true
     }
 
     /// 정한 길이로 요청할 수 있는 본편 범위: 가장 짧은 한 장면(통째로) ... 모든 장면(예산으로 뺀 것 포함)의 최대 길이. 사용자 제외는 빼고 센다.
     static func budgetBodyBounds(scenes: [TrailerEditScene], sources: [VideoTrailerSource]) -> (minimum: Double, maximum: Double) {
         let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let bounds = scenes.filter { !$0.excluded || $0.budgetExcluded }.map { sceneDurationBounds(scene: $0, source: byID[$0.sourceID]) }
+        let bounds = scenes.filter { !$0.excluded || $0.budgetExcluded }.map { scene -> (minimum: Double, maximum: Double) in
+            let raw = sceneDurationBounds(scene: scene, source: byID[scene.sourceID])
+            let rate = outputRate(scene)
+            return (max(frameMinimum, raw.minimum / rate), raw.maximum / rate)
+        }
         guard let shortest = bounds.map(\.minimum).min() else { return (0, 0) }
         return (shortest, bounds.reduce(0.0) { $0 + $1.maximum })
     }
@@ -306,8 +925,10 @@ enum TrailerSceneEditor {
                 let span = action.end - action.start
                 let length = min(max(base.length, window.length, span), source.duration)
                 var placed = base
-                placed.start = min(max(0, action.start - (length - span) / 2), max(0, source.duration - length))
-                placed.length = length
+                let centered = min(max(0, action.start - (length - span) / 2), max(0, source.duration - length))
+                let anchored = keepingAnchors(of: base, start: centered, length: length, duration: source.duration)
+                placed.start = anchored.start
+                placed.length = anchored.length
                 placed.actionStart = action.start
                 placed.actionEnd = action.end
                 return placed
@@ -322,6 +943,10 @@ enum TrailerSceneEditor {
                 base.id = nextID
                 nextID += 1
                 base.caption = nil
+                // 새 추천이 만든 장면이지 사용자가 고친 장면이 아니다.
+                base.automationProtected = false
+                // 이웃에서 이어받은 소리·화면 구성 표시만 남기고, 시간·순서·제외는 자동이다.
+                base.manual = base.manual.intersection([.audio, .framing])
                 return place(window, base)
             }
             result += before.map(extra)
@@ -355,23 +980,40 @@ enum TrailerSceneEditor {
             actionStart: protects ? action.start : nil, actionEnd: protects ? action.end : nil)
     }
 
-    /// 장면의 물리적 표시 시간 범위(최소...최대).
-    /// 비디오는 min(.2, duration), 시작점 유효 클램프 0...duration-min, max = duration-validStart.
+    /// 계획·내보내기가 실제로 만들 수 있는 가장 짧은 장면: 프레임 한 장(1/30초). 렌더(`VideoTrailerBatchPlan.fitted`)도 이 길이부터 한 장면으로 센다.
+    /// 직접 다듬기의 최소 길이 0.2초는 사용자 정책이지 물리적 한계가 아니다.
+    static let frameMinimum = 1.0 / 30.0
+
+    /// 장면의 직접 편집(UI) 표시 시간 범위(최소...최대).
+    /// 비디오는 max(min(.2, duration), 동작 보호 구간), 시작점 유효 클램프 0...duration-min, max = duration-validStart.
     /// 사진은 1/30...30초. 유효하지 않거나 누락된 소스는 기존 유한 길이를 고정값으로 유지.
     static func sceneDurationBounds(scene: TrailerEditScene, source: VideoTrailerSource?) -> (minimum: Double, maximum: Double) {
+        durationBounds(scene: scene, source: source, policyMinimum: 0.2)
+    }
+
+    /// 계획 장면이 실제로 가질 수 있는 시간 범위. `sceneDurationBounds`에서 UI 최소 길이(0.2초)만 물리적 최소(`frameMinimum`)로 바꾼 것이다.
+    /// 예산이 동작 구간을 피크 중심으로 좁힌 장면(좁힌 창이 곧 동작 보호 구간)이 미리보기·내보내기·저장 뒤 다시 열기에서 조용히 0.2초로 늘지 않게 한다.
+    static func planDurationBounds(scene: TrailerEditScene, source: VideoTrailerSource?) -> (minimum: Double, maximum: Double) {
+        // 출력 프레임 한 장의 원본 길이(× 배속): 0.25배속이면 1/120초. 원본 1/30초 바닥으로 부풀리지 않는다.
+        durationBounds(scene: scene, source: source, policyMinimum: frameMinimum * outputRate(scene))
+    }
+
+    private static func durationBounds(scene: TrailerEditScene, source: VideoTrailerSource?,
+                                       policyMinimum: Double) -> (minimum: Double, maximum: Double) {
         guard let source else {
             let fixed = scene.length.isFinite && scene.length > 0 ? scene.length : 0.2
             return (fixed, fixed)
         }
         if source.isImage {
-            return (1.0 / 30.0, 30.0)
+            // 직접 놓은 자막·키프레임 앵커가 지금 보이는 사진 시간 안에 있으면 그 끝까지는 물리적 최소다.
+            return (min(30.0, max(frameMinimum, photoAnchorLength(scene))), 30.0)
         }
         guard source.duration.isFinite, source.duration > 0 else {
             let fixed = scene.length.isFinite && scene.length > 0 ? scene.length : 0.2
             return (fixed, fixed)
         }
         let duration = source.duration
-        let minLen = max(min(0.2, duration), protectedLength(scene, sourceDuration: duration))
+        let minLen = max(min(policyMinimum, duration), protectedLength(scene, sourceDuration: duration))
         let validStart = min(max(0.0, scene.start), max(0.0, duration - minLen))
         let maxLen = max(minLen, duration - validStart)
         return (minLen, maxLen)
@@ -393,14 +1035,21 @@ enum TrailerSceneEditor {
     /// 직접 편집 모드에서 총길이 변경 시 기존 장면 길이를 비율에 맞춰 비례 재분배한다.
     /// 제외된 장면은 보존하며, 포함된 장면의 경계(사진 1/30...30초, 영상 소스 잔여 길이)에서
     /// 60단계 이분법 스케일링 후 잔여 분배로 목표 오차까지 정확히 맞춘다.
+    /// `allowSubMinimum`이면 장면 최소 길이를 UI 최소(0.2초)가 아니라 물리적 최소(`planDurationBounds`)로 본다. 예산이 좁힌 장면용이다.
     static func redistributeManualTotal(
         scenes: inout [TrailerEditScene],
         sources: [VideoTrailerSource],
-        targetTotal: Double
+        targetTotal: Double,
+        allowSubMinimum: Bool = false
     ) {
         guard targetTotal.isFinite, targetTotal > 0 else { return }
         let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let includedIndices = scenes.indices.filter { !scenes[$0].excluded }
+        // 시간이 직접 정해진 장면은 길이를 바꾸지 않는다. 그 길이만큼은 목표에서 먼저 떼고 나머지 장면만 나눈다.
+        // 길이는 모두 출력 시간이다(원본 길이 ÷ 배속).
+        let lockedTotal = scenes.filter { !$0.excluded && $0.timingProtected }
+            .reduce(0.0) { $0 + ($1.length.isFinite ? max(0, $1.length) : 0) / outputRate($1) }
+        let freeTotal = targetTotal - lockedTotal
+        let includedIndices = scenes.indices.filter { !scenes[$0].excluded && !scenes[$0].timingProtected }
         guard !includedIndices.isEmpty else { return }
 
         var minBounds: [Int: Double] = [:]
@@ -409,20 +1058,25 @@ enum TrailerSceneEditor {
         var totalMax = 0.0
 
         for index in includedIndices {
-            let bounds = sceneDurationBounds(scene: scenes[index], source: byID[scenes[index].sourceID])
-            minBounds[index] = bounds.minimum
-            maxBounds[index] = bounds.maximum
-            totalMin += bounds.minimum
-            totalMax += bounds.maximum
+            let source = byID[scenes[index].sourceID]
+            let bounds = allowSubMinimum ? planDurationBounds(scene: scenes[index], source: source)
+                : sceneDurationBounds(scene: scenes[index], source: source)
+            let rate = outputRate(scenes[index])
+            let low = max(frameMinimum, bounds.minimum / rate)
+            let high = max(low, bounds.maximum / rate)
+            minBounds[index] = low
+            maxBounds[index] = high
+            totalMin += low
+            totalMax += high
         }
 
-        let clampedTarget = min(totalMax, max(totalMin, targetTotal))
+        let clampedTarget = min(totalMax, max(totalMin, freeTotal))
 
         var lengths: [Int: Double] = [:]
         for index in includedIndices {
             let minB = minBounds[index]!
             let maxB = maxBounds[index]!
-            lengths[index] = min(maxB, max(minB, scenes[index].length))
+            lengths[index] = min(maxB, max(minB, scenes[index].length / outputRate(scenes[index])))
         }
 
         func sumForScale(_ s: Double) -> Double {
@@ -493,16 +1147,34 @@ enum TrailerSceneEditor {
         }
 
         for index in includedIndices {
-            if let len = lengths[index] {
+            if let outLen = lengths[index] {
+                // 출력 길이를 원본 길이로 되돌려 쓴다.
+                let len = outLen * outputRate(scenes[index])
                 scenes[index].length = len
                 let scene = scenes[index]
                 if let source = byID[scene.sourceID], !source.isImage, source.duration > 0 {
-                    let minLen = minBounds[index] ?? min(0.2, source.duration)
+                    let minLen = (minBounds[index] ?? min(0.2, source.duration)) * outputRate(scene)
                     let kept = startKeepingAction(scene, start: scene.start, length: len, sourceDuration: source.duration)
                     scenes[index].start = min(max(0, kept), max(0, source.duration - max(minLen, len)))
                 }
             }
         }
+    }
+
+    /// `redistributeManualTotal`을 본편 출력 길이(겹침을 뺀 길이) 기준으로 맞춘다. 겹침은 장면 길이에 따라 달라 몇 번 반복해 수렴시킨다.
+    static func redistributeOutputBody(scenes: inout [TrailerEditScene], sources: [VideoTrailerSource],
+                                       bodyTarget: Double, outroLength: Double = 0, allowSubMinimum: Bool = false) {
+        guard bodyTarget.isFinite, bodyTarget > 0 else { return }
+        var overlap = bodyOverlapTotal(scenes, outroLength: outroLength)
+        var attempt = scenes
+        for _ in 0..<4 {
+            attempt = scenes
+            redistributeManualTotal(scenes: &attempt, sources: sources, targetTotal: bodyTarget + overlap, allowSubMinimum: allowSubMinimum)
+            let settled = bodyOverlapTotal(attempt, outroLength: outroLength)
+            if abs(settled - overlap) < 0.001 { break }
+            overlap = settled
+        }
+        scenes = attempt
     }
 
     /// 클립 길이 줄(−, 1, 2, 추천, 4, 6, +)의 영상 컷 처리(Android `clipLengthScenes`와 같은 규칙). 추천(`recommended`)은 보호를 아는 길이라
@@ -512,12 +1184,13 @@ enum TrailerSceneEditor {
         guard clipLength.isFinite, clipLength > 0 else { return }
         let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var peakCache: [Int: [VideoTrailerPlan.ActionPeak]] = [:]
-        for index in scenes.indices where !scenes[index].excluded || scenes[index].budgetExcluded {
+        for index in scenes.indices where (!scenes[index].excluded || scenes[index].budgetExcluded) && !scenes[index].timingProtected {
             guard let source = byID[scenes[index].sourceID], !source.isImage, source.duration.isFinite, source.duration > 0 else { continue }
             let scene = scenes[index]
             let duration = source.duration
-            let a = min(max(0, scene.actionStart ?? scene.start), duration)
-            let b = max(a, min(scene.actionEnd ?? (scene.start + scene.length), duration))
+            let span = scene.protectedSpan
+            let a = min(max(0, span?.start ?? scene.start), duration)
+            let b = max(a, min(span?.end ?? (scene.start + scene.length), duration))
             let ranked = peakCache[source.id] ?? source.plan.rankedActionPeaks()
             peakCache[source.id] = ranked
             let peak = ranked.first { $0.time >= a - 1e-6 && $0.time <= b + 1e-6 }
@@ -560,7 +1233,7 @@ enum TrailerSceneEditor {
 
         let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
 
-        for index in scenes.indices where !scenes[index].excluded {
+        for index in scenes.indices where !scenes[index].excluded && !scenes[index].timingProtected {
             let source = byID[scenes[index].sourceID]
             let bounds = sceneDurationBounds(scene: scenes[index], source: source)
             if let source, source.isImage {
@@ -638,7 +1311,8 @@ enum TrailerSceneEditor {
         let photoSourcesByID = Dictionary(sources.filter { changedPhotoSourceIDs.contains($0.id) }.map { ($0.id, $0) },
                                           uniquingKeysWith: { first, _ in first })
 
-        for index in scenes.indices {
+        // 같은 사진 소스의 다른 장면이나 시간이 고정된 장면은 건드리지 않는다. 고르지 않았거나 시간이 고정된 장면의 길이는 그대로다.
+        for index in scenes.indices where ids.contains(scenes[index].id) && !scenes[index].timingProtected {
             if let photoSource = photoSourcesByID[scenes[index].sourceID] {
                 let bounds = sceneDurationBounds(scene: scenes[index], source: photoSource)
                 let newLength = photoSource.weightedImageLength(clipLength: clipLength)
@@ -653,6 +1327,7 @@ enum TrailerSceneEditor {
     /// 영상은 시작 위치를 그대로 두고, 자막·프레이밍·순서와 제외 장면은 보존된다.
     /// 음악 길이 맞춤이면 남은 장면들의 최소/최대 길이 합으로 끝점을 미리 제한해 마지막 장면이 남은 시간을 받아 음악 끝에 정확히 닿게 하며,
     /// 이미 맞춘 중간 컷은 다시 옮기지 않는다. 범위상 불가능한 장면은 그대로 두고 unalignedCount/fitResidual로 알린다.
+    /// 시간이 고정된 장면과 `selectedIDs`(nil이면 전체)에 없는 장면은 길이를 바꾸지 않고, 타임라인 위치만 기존 길이만큼 차지한다.
     @discardableResult
     static func syncScenesToBeatOnsets(
         scenes: inout [TrailerEditScene],
@@ -661,7 +1336,10 @@ enum TrailerSceneEditor {
         musicDuration: Double,
         introOffset: Double = 0,
         policy: TrailerMusicPolicy = .loopMusic,
-        maxBudget: Double? = nil
+        maxBudget: Double? = nil,
+        selectedIDs: Set<Int>? = nil,
+        outroLength: Double = 0,
+        refinePasses: Int = 3
     ) -> (adjustedCount: Int, averageShift: Double, unalignedCount: Int, fitResidual: Double) {
         guard !scenes.isEmpty, musicDuration.isFinite, musicDuration > 0 else { return (0, 0.0, 0, 0.0) }
         // 음악 반복과 음악 길이 맞춤은 같은 반복 타임라인을 쓴다. 반복에서는 길이 끝 비트가 다음 반복 첫 비트와 겹치므로 뺀다.
@@ -674,13 +1352,50 @@ enum TrailerSceneEditor {
         let byID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let n = order.count
         var minLen = [Double](), maxLen = [Double](), origLen = [Double](), fixed = [Bool]()
-        for index in order {
+        // 모든 길이는 출력 시간 기준의 "슬롯"(출력 길이 − 다음 장면과 겹치는 길이)이다. 다음 장면은 이 슬롯이 끝나는 시각에 시작하므로 비트 창이 곧 슬롯 끝이다.
+        // 겹침은 합성기와 같은 시간표 팩토리가 현재 길이로 정하고, 저장된 배속·전환 값은 그대로 두고 조절 중에는 그 겹침 길이를 유지한다.
+        // 마지막 장면과 마지막 화면(outro) 사이의 겹침도 같은 팩토리가 정하며, 마지막 슬롯에서 한 번만 센다.
+        func overlapsNow() -> [Double] {
+            var inputs = order.enumerated().map { k, index -> TrailerClipInput in
+                let scene = scenes[index]
+                return TrailerClipInput(sceneID: k, sourceID: scene.sourceID, sourceStart: max(0, scene.start),
+                                        sourceLength: max(frameMinimum, scene.length.isFinite ? scene.length : frameMinimum), rate: outputRate(scene),
+                                        requestedOutgoingOverlap: scene.adjustments?.transition?.dissolveDuration ?? 0)
+            }
+            let sceneCount = inputs.count
+            guard inputs.contains(where: { $0.requestedOutgoingOverlap > 0 }) else { return [Double](repeating: 0, count: sceneCount) }
+            if outroLength.isFinite, outroLength > 0.0001 {
+                inputs.append(TrailerClipInput(sceneID: inputs.count, sourceID: -2, sourceStart: 0, sourceLength: outroLength))
+            }
+            guard let maps = try? TrailerClipTimeMappingFactory.buildTimelineMappings(clips: inputs), maps.count == inputs.count else {
+                return [Double](repeating: 0, count: sceneCount)
+            }
+            return maps.prefix(sceneCount).map { $0.outgoingOverlap.isFinite ? max(0, $0.outgoingOverlap) : 0 }
+        }
+        let overlaps = overlapsNow()
+        for (k, index) in order.enumerated() {
             let scene = scenes[index]
             let source = byID[scene.sourceID]
             let bounds = sceneDurationBounds(scene: scene, source: source)
-            minLen.append(bounds.minimum)
-            maxLen.append(bounds.maximum)
-            origLen.append(min(bounds.maximum, max(bounds.minimum, scene.length.isFinite ? scene.length : bounds.minimum)))
+            let rate = outputRate(scene)
+            let overlap = overlaps[k]
+            // 시간을 직접 자르거나 나눈 장면(`timingProtected`)과 선택 범위 밖 장면만 길이를 그대로 두고, 타임라인에는 출력 슬롯만큼 자리를 차지한다.
+            // 배속·전환·자막·음성만 손본 장면은 문맥에 따라 줄거나 움직일 수 있다(저장된 배속·전환 값은 그대로).
+            if scene.timingProtected || (selectedIDs.map { !$0.contains(scene.id) } ?? false) {
+                let existing = scene.length.isFinite && scene.length > 0 ? scene.length / rate : bounds.minimum / rate
+                let slot = max(frameMinimum, existing - overlap)
+                minLen.append(slot)
+                maxLen.append(slot)
+                origLen.append(slot)
+                fixed.append(true)
+                continue
+            }
+            let outMin = max(frameMinimum, bounds.minimum / rate, overlap + frameMinimum)
+            let outMax = max(outMin, bounds.maximum / rate)
+            let outOrig = min(outMax, max(outMin, (scene.length.isFinite ? scene.length : bounds.minimum) / rate))
+            minLen.append(outMin - overlap)
+            maxLen.append(outMax - overlap)
+            origLen.append(outOrig - overlap)
             fixed.append(source == nil || (!source!.isImage && !(source!.duration.isFinite && source!.duration > 0)))
         }
         // 보호된 영상이 줄지 못하면 남는 박자 흡수를 사진이 떠맡아 0.2초 깜빡임이나 7초 정지가 생긴다. 사진은 원래 길이의 절반~2배 안에서만 움직인다.
@@ -799,10 +1514,12 @@ enum TrailerSceneEditor {
             // 이미 비트에서 20ms 이내이고 예산 범위 안이면 길이를 건드리지 않는다.
             if pick != nil, abs(newLen - origLen[i]) <= 0.02, currentEnd >= window.lo - eps, currentEnd <= window.hi + eps { newLen = origLen[i] }
             let index = order[i]
-            if abs(newLen - scenes[index].length) > 1e-9 {
-                scenes[index].length = newLen
+            // 슬롯(출력)을 원본 길이로 되돌린다: 원본 = (슬롯 + 겹침) × 배속. 저장된 배속·전환 값은 건드리지 않는다.
+            let sourceLength = (newLen + overlaps[i]) * outputRate(scenes[index])
+            if abs(sourceLength - scenes[index].length) > 1e-9 {
+                scenes[index].length = sourceLength
                 if let src = sources.first(where: { $0.id == scenes[index].sourceID }), !src.isImage, src.duration > 0 {
-                    scenes[index].start = startKeepingAction(scenes[index], start: scenes[index].start, length: newLen, sourceDuration: src.duration)
+                    scenes[index].start = startKeepingAction(scenes[index], start: scenes[index].start, length: sourceLength, sourceDuration: src.duration)
                 }
             }
             if pick != nil, abs(newLen - origLen[i]) > 0.02 {
@@ -812,9 +1529,32 @@ enum TrailerSceneEditor {
             cursor += newLen
         }
 
-        let residual = maxBudget.map { $0 - cursor } ?? 0.0
         let avgShift = adjustedCount > 0 ? totalShift / Double(adjustedCount) : 0.0
-        return (adjustedCount, avgShift, unalignedCount, abs(residual) <= 0.01 ? 0.0 : residual)
+
+        // 길이가 바뀌면 팩토리가 겹침을 다시 자를 수 있다(짧아진 이웃 등). 최종 시간표의 겹침이 쓴 값과 다르면 그 값으로 다시 맞춘다.
+        // 저장된 배속·전환 값은 그대로이고, 보호·선택 밖 장면은 길이를 바꾸지 않으며, 예산은 같은 maxBudget으로 다시 받는다.
+        let finalOverlaps = overlapsNow()
+        if refinePasses > 0, zip(overlaps, finalOverlaps).contains(where: { abs($0 - $1) > 0.001 }) {
+            let again = syncScenesToBeatOnsets(
+                scenes: &scenes, sources: sources, beatOnsets: beatOnsets, musicDuration: musicDuration, introOffset: introOffset,
+                policy: policy, maxBudget: maxBudget, selectedIDs: selectedIDs, outroLength: outroLength, refinePasses: refinePasses - 1)
+            let count = adjustedCount + again.adjustedCount
+            let shift = count > 0 ? (avgShift * Double(adjustedCount) + again.averageShift * Double(again.adjustedCount)) / Double(count) : 0.0
+            return (count, shift, again.unalignedCount, again.fitResidual)
+        }
+
+        // 최종 시간표(최종 겹침)에서 실제로 비트에 닿은 컷만 센다. 닿지 못한 조절 장면은 unalignedCount, 예산 차이는 최종 끝에서 잰다.
+        var finalCursor = start
+        var finalUnaligned = 0
+        for (k, index) in order.enumerated() {
+            let scene = scenes[index]
+            let out = (scene.length.isFinite ? max(0, scene.length) : 0) / outputRate(scene)
+            finalCursor += max(0, out - finalOverlaps[k])
+            if fixed[k] || (budget != nil && k == lastAdjustable) { continue }
+            if beatsIn(finalCursor - 0.02, finalCursor + 0.02).isEmpty { finalUnaligned += 1 }
+        }
+        let residual = maxBudget.map { $0 - finalCursor } ?? 0.0
+        return (adjustedCount, avgShift, finalUnaligned, abs(residual) <= 0.01 ? 0.0 : residual)
     }
 
     /// 비트 맞춤. 음악 반복 횟수는 고른 그대로이고(자동으로 늘리지 않는다) 예산을 넘기지 않는다: 음악 길이 맞춤은 음악 끝,
@@ -827,16 +1567,19 @@ enum TrailerSceneEditor {
         music: TrailerMusicSelection,
         cardsDuration: Double,
         introOffset: Double,
-        outroDuration: Double
+        outroDuration: Double,
+        selectedIDs: Set<Int>? = nil
     ) -> (scenes: [TrailerEditScene], fitCount: Int,
           result: (adjustedCount: Int, averageShift: Double, unalignedCount: Int, fitResidual: Double)) {
         let fit = music.policy == .fitMusic && music.duration.isFinite && music.duration > 0
         var next = scenes
-        let body = scenes.filter { !$0.excluded }.reduce(0.0) { $0 + $1.length }
+        // 본편 길이는 마지막 장면↔마지막 화면 겹침까지 센 같은 시간표 값이며, 카드(인트로·아웃트로)는 한 번만 센다.
+        let body = outputBodyDuration(scenes, outroLength: outroDuration)
         let result = syncScenesToBeatOnsets(
             scenes: &next, sources: sources, beatOnsets: beatOnsets, musicDuration: music.duration,
             introOffset: introOffset, policy: music.policy,
-            maxBudget: fit ? music.duration * Double(music.fitCount) - outroDuration : introOffset + body)
+            maxBudget: fit ? music.duration * Double(music.fitCount) - outroDuration : introOffset + body,
+            selectedIDs: selectedIDs, outroLength: outroDuration)
         return (next, music.fitCount, result)
     }
 }
@@ -873,7 +1616,8 @@ extension TrailerSettingsDraft {
             importances: sources.map(\.isImportant),
             batchCaption: batchCaption,
             introCard: introCard,
-            outroCard: outroCard)
+            outroCard: outroCard,
+            voiceovers: voiceovers)
     }
 }
 
@@ -890,6 +1634,7 @@ struct TrailerDraftSignature: Equatable {
     var batchCaption: TrailerCaption? = nil
     var introCard: TrailerTitleCard = TrailerTitleCard()
     var outroCard: TrailerTitleCard = TrailerTitleCard()
+    var voiceovers: [TrailerVoiceoverTake] = []
 }
 
 // MARK: - 되돌리기 / 다시 실행
@@ -971,6 +1716,14 @@ struct TrailerEditorChrome {
     var projectID: UUID?
     /// 적용하지 않은 자막이 있으면 적용/입력 취소를 먼저 묻고, 고른 뒤에 동작을 이어 간다.
     var guarded: (@escaping () -> Void) -> Void = { $0() }
+    /// 음성 해설 id → 이 세션이 들고 있는 사본(없으면 nil).
+    var voiceURL: (UUID) -> URL? = { _ in nil }
+    /// 가져오거나 녹음한 파일을 세션 사본으로 두고 프로젝트 상대 경로를 돌려준다. 원본은 읽기만 한다.
+    var stageVoiceover: (URL, UUID) throws -> String = { _, _ in throw CocoaError(.fileWriteUnknown) }
+    /// 녹음 임시 파일을 둘 폴더(이 세션의 작업 폴더).
+    var voiceWorkFolder: () -> URL? = { nil }
+    /// 지금 편집본을 저장하고 성공 여부를 돌려준다(녹음 산출물의 소유권을 넘기기 전 확인).
+    var saveDraftNow: () async -> Bool = { false }
 }
 
 // MARK: - 자막 입력 초안
@@ -1076,6 +1829,7 @@ final class TrailerCaptionDraft: ObservableObject {
             c.hasShadow = sample.hasShadow; c.fontName = sample.fontName; c.captionSize = sample.captionSize
             c.shadowColorHex = sample.shadowColorHex; c.shadowOpacity = sample.shadowOpacity
             c.lineSpacing = sample.lineSpacing
+            if scenes![index].caption != c { scenes![index].manual.insert(.caption) }
             scenes![index].caption = c
         }
         isDirty = false
@@ -1109,8 +1863,9 @@ final class TrailerCaptionDraft: ObservableObject {
                 }
             }
         case .all:
-            for index in scenes!.indices {
+            for index in scenes!.indices where scenes![index].caption != value {
                 scenes![index].caption = value
+                scenes![index].manual.insert(.caption)
             }
             batchCaption = value
         case .startScreen, .endScreen:
@@ -1231,11 +1986,294 @@ struct TrailerTimelineSegment: Identifiable, Equatable {
     var fitsFrame = false
     var offsetX = 0.0
     var offsetY = 0.0
+    var volume = 1.0
+    /// 고급 편집(배속·색상·키프레임·디졸브·자막 큐). `length`는 원본 구간 길이, 출력 길이는 `length / rate`.
+    var adjustments: TrailerClipAdjustments? = nil
+    /// 앞 장면과 실제로 겹치는 길이(디졸브). 출력 시간표에서 한 번만 뺀다.
+    var incomingOverlap = 0.0
+    var rate: Double { adjustments?.rate ?? 1 }
+    /// 타임라인에서 이 장면이 차지하는 길이: 배속을 적용한 출력 길이에서 들어오는 겹침을 한 번 뺀 값.
+    /// 별도의 표시용 하한을 두지 않는다(합성기의 시간표 한 칸 1/600초만 넘으면 된다). 물리적 프레임 하한(1/30초)은 예산이 지킨다.
+    var timelineLength: Double { max(1.0 / 600.0, length / rate - incomingOverlap) }
 
     /// 사진 내보내기와 같은 규칙: 직접 정한 구성이 있을 때만 고정 구성, 없으면 자동 효과(nil).
     var framing: VideoTrailerImageClip.Framing? {
         (fitsFrame || offsetX != 0 || offsetY != 0)
             ? .init(fitsFrame: fitsFrame, offsetX: offsetX, offsetY: offsetY) : nil
+    }
+}
+
+/// 필름스트립과 편집 줄이 함께 쓰는 시간 규칙. 구간 길이는 합성기와 같은 출력 시간으로 세고, 플레이어 위치는 전체 길이에 대한 비율로 읽는다.
+enum TrailerTimelineGeometry {
+    static func weightedLength(_ segment: TrailerTimelineSegment) -> Double { segment.timelineLength }
+
+    static func total(_ segments: [TrailerTimelineSegment]) -> Double {
+        max(0.001, segments.reduce(0) { $0 + weightedLength($1) })
+    }
+
+    /// 출력 초로 센 재생 위치. 플레이어가 없거나 길이를 모르면 nil이다.
+    static func playheadSeconds(currentSeconds: Double, durationSeconds: Double, hasPlayer: Bool,
+                                segments: [TrailerTimelineSegment]) -> Double? {
+        guard hasPlayer, durationSeconds > 0, currentSeconds.isFinite, !segments.isEmpty else { return nil }
+        return min(max(currentSeconds / durationSeconds, 0), 1) * total(segments)
+    }
+
+    /// 선택한 본편 장면 안에서 `playhead`(출력 초)가 놓인 장면 안 시각. 선택한 장면 밖이거나 시작/마지막 화면 위면 nil이다.
+    static func localTime(ofScene sceneID: Int?, atSeconds playhead: Double?, segments: [TrailerTimelineSegment]) -> Double? {
+        guard let sceneID, let playhead, playhead.isFinite else { return nil }
+        var start = 0.0
+        for segment in segments {
+            let length = weightedLength(segment)
+            if segment.kind == .clip, segment.sceneID == sceneID {
+                guard playhead >= start, playhead <= start + length else { return nil }
+                return playhead - start
+            }
+            start += length
+        }
+        return nil
+    }
+
+    /// 눈금 간격(초): 눈금 글자가 겹치지 않도록 간격이 `minimumPoints` 이상 되는 가장 짧은 값.
+    static func tickStep(total: Double, width: Double, minimumPoints: Double = 46) -> Double {
+        let steps: [Double] = [1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 1_800, 3_600]
+        guard total > 0, width > 0 else { return steps[0] }
+        return steps.first { $0 / total * width >= minimumPoints } ?? steps[steps.count - 1]
+    }
+}
+
+/// 필름스트립 바로 아래의 장면 편집 줄: 출력 초 눈금자, 장면마다 길이, 선택한 장면의 양끝 손잡이로 직접 다듬기, 이동·잠금 메뉴.
+/// 필름스트립과 같은 구간 목록·같은 폭 규칙을 쓰므로 시작/마지막 화면, 제외된 장면, 재생 위치가 서로 어긋나지 않는다.
+/// 손잡이를 끄는 동안은 새 길이만 보여 주고 손을 뗄 때 한 번 적용한다(그동안 재생하거나 다시 그리지 않는다).
+struct TrailerSceneEditLane: View {
+    static let rulerHeight: CGFloat = 14
+    static let laneHeight: CGFloat = 32
+    /// 눈금자 + 줄 + 둘 사이 간격.
+    static var totalHeight: CGFloat { rulerHeight + laneHeight + 2 }
+
+    let segments: [TrailerTimelineSegment]
+    let scenes: [TrailerEditScene]
+    let sources: [VideoTrailerSource]
+    let selectedSceneID: Int?
+    @ObservedObject var bridge: TrailerTimelineBridge
+    var onSelect: (Int) -> Void
+    /// 장면 id, 끝 손잡이, 끈 거리(출력 초). 적용 가능 여부는 호출한 쪽의 `trim`이 정한다.
+    var onTrim: (Int, TrailerSceneEditor.TrimEdge, Double) -> Void
+    /// 장면 id, 포함된 이웃 기준 이동 칸(-1 앞, +1 뒤).
+    var onMove: (Int, Int) -> Void
+    var onToggleProtection: (Int) -> Void
+
+    private struct DragState: Equatable {
+        var sceneID: Int
+        var edge: TrailerSceneEditor.TrimEdge
+        var seconds: Double
+    }
+    @State private var drag: DragState?
+
+    private var total: Double { TrailerTimelineGeometry.total(segments) }
+
+    var body: some View {
+        let sceneByID = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let sourceByID = Dictionary(sources.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        GeometryReader { proxy in
+            let width = max(1, proxy.size.width)
+            VStack(alignment: .leading, spacing: 2) {
+                ruler(width: width)
+                    .frame(width: width, height: Self.rulerHeight, alignment: .topLeading)
+                lane(width: width, scenes: sceneByID, sources: sourceByID)
+                    .frame(width: width, height: Self.laneHeight, alignment: .topLeading)
+            }
+            .frame(width: width, height: proxy.size.height, alignment: .topLeading)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("장면 편집 줄")
+    }
+
+    // MARK: 눈금자
+
+    private func ruler(width: CGFloat) -> some View {
+        let step = TrailerTimelineGeometry.tickStep(total: total, width: Double(width))
+        let count = Int((total / step).rounded(.down))
+        return ZStack(alignment: .topLeading) {
+            ForEach(0...max(0, count), id: \.self) { index in
+                tick(seconds: Double(index) * step, width: width)
+            }
+            Text("출력 \(videoTrailerTime(total))")
+                .font(.system(size: 9, weight: .semibold).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.9))
+                .fixedSize()
+                .frame(width: width, alignment: .trailing)
+        }
+        .accessibilityElement()
+        .accessibilityLabel("출력 시간 눈금자")
+        .accessibilityValue("전체 \(videoTrailerTime(total))")
+    }
+
+    private func tick(seconds: Double, width: CGFloat) -> some View {
+        let x = CGFloat(seconds / total) * width
+        return ZStack(alignment: .topLeading) {
+            Rectangle().fill(.white.opacity(0.5)).frame(width: 1, height: 5)
+            Text(videoTrailerTime(seconds))
+                .font(.system(size: 9).monospacedDigit())
+                .foregroundStyle(.white.opacity(0.7))
+                .fixedSize()
+                .offset(x: 3, y: 0)
+        }
+        .offset(x: x)
+        .allowsHitTesting(false)
+    }
+
+    // MARK: 장면 줄
+
+    private func lane(width: CGFloat, scenes sceneByID: [Int: TrailerEditScene],
+                      sources sourceByID: [Int: VideoTrailerSource]) -> some View {
+        let totalSeconds = total
+        let numbers = clipNumbers()
+        return ZStack(alignment: .topLeading) {
+            HStack(spacing: 0) {
+                ForEach(segments) { segment in
+                    block(segment, width: max(1, width * CGFloat(TrailerTimelineGeometry.weightedLength(segment) / totalSeconds)),
+                          number: numbers[segment.id], scene: segment.sceneID.flatMap { sceneByID[$0] },
+                          source: segment.sourceID.flatMap { sourceByID[$0] }, pointsPerSecond: width / CGFloat(totalSeconds))
+                }
+            }
+            playhead(width: width)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+    }
+
+    private func clipNumbers() -> [String: Int] {
+        var result: [String: Int] = [:]
+        var number = 0
+        for segment in segments where segment.kind == .clip {
+            number += 1
+            result[segment.id] = number
+        }
+        return result
+    }
+
+    @ViewBuilder
+    private func playhead(width: CGFloat) -> some View {
+        if let seconds = TrailerTimelineGeometry.playheadSeconds(
+            currentSeconds: bridge.currentSeconds, durationSeconds: bridge.durationSeconds,
+            hasPlayer: bridge.hasPlayer, segments: segments) {
+            Rectangle().fill(.white)
+                .frame(width: 2, height: Self.laneHeight)
+                .shadow(color: .black.opacity(0.7), radius: 1.5)
+                .offset(x: min(max(CGFloat(seconds / total) * width - 1, 0), width - 2))
+                .allowsHitTesting(false)
+        }
+    }
+
+    @ViewBuilder
+    private func block(_ segment: TrailerTimelineSegment, width: CGFloat, number: Int?, scene: TrailerEditScene?,
+                       source: VideoTrailerSource?, pointsPerSecond: CGFloat) -> some View {
+        if segment.kind == .clip, let scene {
+            clipBlock(segment, width: width, number: number ?? 0, scene: scene, source: source, pointsPerSecond: pointsPerSecond)
+        } else {
+            ZStack {
+                Color.white.opacity(0.08)
+                if width >= 34 {
+                    Text(segment.kind == .intro ? "시작" : "마지막")
+                        .font(.system(size: 9, weight: .medium)).foregroundStyle(.white.opacity(0.75))
+                }
+            }
+            .frame(width: width, height: Self.laneHeight)
+            .overlay(alignment: .trailing) { Rectangle().fill(.black.opacity(0.6)).frame(width: 1) }
+            .accessibilityElement()
+            .accessibilityLabel(segment.kind == .intro ? "시작 화면" : "마지막 화면")
+            .accessibilityValue(String(format: "%.1f초", segment.length))
+        }
+    }
+
+    private func clipBlock(_ segment: TrailerTimelineSegment, width: CGFloat, number: Int, scene: TrailerEditScene,
+                           source: VideoTrailerSource?, pointsPerSecond: CGFloat) -> some View {
+        let isSelected = selectedSceneID == scene.id
+        let candidate = drag.flatMap { state -> (start: Double, length: Double)? in
+            guard state.sceneID == scene.id else { return nil }
+            return TrailerSceneEditor.trimCandidate(scene, edge: state.edge, by: state.seconds, source: source)
+        }
+        // 라벨은 눈금자와 같은 출력 길이다(배속이 있으면 원본 길이 ÷ 배속).
+        let shownLength = (candidate?.length ?? segment.length) / segment.rate
+        let protectedNote = scene.timingProtected ? ", 직접 편집 보호됨" : ""
+        let spoken = "클립 \(number), " + String(format: "%.1f", shownLength) + "초" + protectedNote
+        return ZStack {
+            (isSelected ? PorcelainMetrics.accent.opacity(0.55) : Color.white.opacity(0.16))
+            blockLabel(number: number, length: shownLength, isProtected: scene.timingProtected, width: width,
+                       isTrimming: candidate != nil)
+        }
+        .frame(width: width, height: Self.laneHeight)
+        .overlay(alignment: .trailing) { Rectangle().fill(.black.opacity(0.6)).frame(width: 1) }
+        .overlay { if isSelected { RoundedRectangle(cornerRadius: 3).stroke(.white.opacity(0.9), lineWidth: 1.5) } }
+        .overlay(alignment: .leading) { if isSelected { handle(.start, scene: scene, width: width, pointsPerSecond: pointsPerSecond) } }
+        .overlay(alignment: .trailing) { if isSelected { handle(.end, scene: scene, width: width, pointsPerSecond: pointsPerSecond) } }
+        .contentShape(Rectangle())
+        .onTapGesture { onSelect(scene.id) }
+        .contextMenu { blockMenu(scene) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(spoken)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+        .accessibilityAction(named: "선택") { onSelect(scene.id) }
+        .accessibilityAction(named: "앞으로 이동") { onMove(scene.id, -1) }
+        .accessibilityAction(named: "뒤로 이동") { onMove(scene.id, 1) }
+        .accessibilityAction(named: scene.timingProtected ? "보호 해제" : "보호") { onToggleProtection(scene.id) }
+    }
+
+    private func blockLabel(number: Int, length: Double, isProtected: Bool, width: CGFloat, isTrimming: Bool) -> some View {
+        HStack(spacing: 2) {
+            if width >= 30 {
+                Text(isTrimming || width >= 52 ? String(format: "%.1f초", length) : String(format: "%.1f", length))
+                    .font(.system(size: 10, weight: isTrimming ? .bold : .medium).monospacedDigit())
+                    .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.6)
+            }
+            if isProtected && width >= 44 {
+                Image(systemName: "lock.fill").font(.system(size: 8)).foregroundStyle(.white.opacity(0.85))
+            }
+        }
+        .padding(.horizontal, 14)
+        .allowsHitTesting(false)
+    }
+
+    @ViewBuilder
+    private func blockMenu(_ scene: TrailerEditScene) -> some View {
+        Button("앞으로 이동") { onMove(scene.id, -1) }
+        Button("뒤로 이동") { onMove(scene.id, 1) }
+        Button(scene.timingProtected ? "보호 해제 (자동 추천 허용)" : "보호 (자동 추천 제외)") { onToggleProtection(scene.id) }
+    }
+
+    /// 선택한 장면의 한쪽 끝을 끌어 다듬는 손잡이. 폭이 좁은 장면은 손잡이도 좁아지지만 양쪽이 겹치지 않는다.
+    private func handle(_ edge: TrailerSceneEditor.TrimEdge, scene: TrailerEditScene, width: CGFloat,
+                        pointsPerSecond: CGFloat) -> some View {
+        let name = edge == .start ? "시작 위치" : "끝 위치"
+        return Rectangle()
+            .fill(.white.opacity(0.001))
+            .frame(width: max(8, min(16, width / 2)), height: Self.laneHeight)
+            .overlay(Capsule().fill(.white).frame(width: 3, height: 16).shadow(color: .black.opacity(0.6), radius: 1))
+            .contentShape(Rectangle())
+            // Catalyst 합성 뷰는 SwiftUI DragGesture를 받지 못하므로(필름스트립과 같은 이유) 실제 UIKit 입력 뷰로 끈다.
+            // 끈 거리는 눌린 점 기준 창 좌표라 손잡이 폭 밖까지 이어지고, 전체 타임라인의 pt/초(`pointsPerSecond`)로 초로 바꾼다.
+            // 끄는 동안은 후보 길이만 보여 주고(`drag`), 놓을 때 한 번만 `onTrim`으로 적용한다. 시스템이 끊으면 적용하지 않는다.
+            .overlay {
+                TrailerTimelineNativeInput(onTranslation: { points, phase in
+                    guard pointsPerSecond > 0 else { return }
+                    let seconds = Double(points / pointsPerSecond)
+                    switch phase {
+                    case .changed:
+                        drag = DragState(sceneID: scene.id, edge: edge, seconds: seconds)
+                    case .ended:
+                        drag = nil
+                        if abs(points) >= 1 { onTrim(scene.id, edge, seconds) }
+                    case .cancelled:
+                        drag = nil
+                    }
+                })
+            }
+            .accessibilityElement()
+            .accessibilityLabel("\(name) 다듬기")
+            .accessibilityValue(String(format: "클립 길이 %.1f초", scene.length))
+            .accessibilityHint("끌어서 원본 안에서 구간을 조절합니다. 위아래로 넘기면 0.1초씩 조절합니다.")
+            .accessibilityAdjustableAction { direction in
+                onTrim(scene.id, edge, direction == .increment ? 0.1 : -0.1)
+            }
     }
 }
 
@@ -1255,10 +2293,10 @@ struct TrailerTimelineFilmstrip: View {
     @State private var lastHoverSeek = Date.distantPast
     @State private var pendingHoverSeek: Task<Void, Never>?
 
-    private var total: Double { max(0.001, segments.reduce(0) { $0 + max(0.05, $1.length) }) }
+    private var total: Double { max(0.001, segments.reduce(0) { $0 + $1.timelineLength }) }
     private var clipCount: Int { segments.filter { $0.kind == .clip }.count }
 
-    private func weight(_ segment: TrailerTimelineSegment) -> Double { max(0.05, segment.length) / total }
+    private func weight(_ segment: TrailerTimelineSegment) -> Double { segment.timelineLength / total }
 
     private func segmentIndex(atFraction fraction: Double) -> Int? {
         var acc = 0.0
@@ -1420,13 +2458,19 @@ struct TrailerTimelineFilmstrip: View {
     }
 }
 
-/// 필름스트립 위의 실제 UIKit 입력 뷰. hover(마우스 이동)와 눌러서 끌기/클릭을 0...1 비율로 알려 준다.
+/// 타임라인 위의 실제 UIKit 입력 뷰. hover(마우스 이동)와 눌러서 끌기/클릭을 0...1 비율로 알려 준다.
+/// 필름스트립은 비율 콜백만 쓰고(기본값은 아무것도 하지 않음), 편집 줄 손잡이는 `onTranslation`으로 가로 끈 거리를 받는다.
 struct TrailerTimelineNativeInput: UIViewRepresentable {
-    var onHover: (Double) -> Void
-    var onHoverEnd: () -> Void
-    var onPress: (Double) -> Void
-    var onDrag: (Double) -> Void
-    var onRelease: (Double, Bool) -> Void
+    enum TranslationPhase: Equatable { case changed, ended, cancelled }
+
+    var onHover: (Double) -> Void = { _ in }
+    var onHoverEnd: () -> Void = {}
+    var onPress: (Double) -> Void = { _ in }
+    var onDrag: (Double) -> Void = { _ in }
+    var onRelease: (Double, Bool) -> Void = { _, _ in }
+    /// 눌린 점에서 가로로 끈 거리(pt, 창 좌표 기준). 보기 경계로 자르지 않아 손잡이 폭 밖까지 끌어도 그대로 이어진다.
+    /// 놓으면 `.ended` 한 번, 시스템이 끊으면 `.cancelled`로 끝난다. nil이면 아무것도 보내지 않는다.
+    var onTranslation: ((CGFloat, TranslationPhase) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -1452,8 +2496,15 @@ struct TrailerTimelineNativeInput: UIViewRepresentable {
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var parent: TrailerTimelineNativeInput
         private var pressStart: CGPoint?
+        private var pressOrigin: CGPoint?
         private var moved = false
         init(_ parent: TrailerTimelineNativeInput) { self.parent = parent }
+
+        /// 눌린 점 기준 가로 끈 거리. 창 좌표라 보기 안에 갇히지 않고, 끄는 동안 보기가 움직여도 흔들리지 않는다.
+        private func translation(_ recognizer: UIGestureRecognizer) -> CGFloat {
+            guard let origin = pressOrigin else { return 0 }
+            return recognizer.location(in: nil).x - origin.x
+        }
 
         private func fraction(_ recognizer: UIGestureRecognizer) -> Double {
             guard let view = recognizer.view, view.bounds.width > 0 else { return 0 }
@@ -1475,17 +2526,23 @@ struct TrailerTimelineNativeInput: UIViewRepresentable {
             switch recognizer.state {
             case .began:
                 pressStart = point
+                pressOrigin = recognizer.location(in: nil)
                 moved = false
                 parent.onPress(fraction(recognizer))
             case .changed:
                 if let start = pressStart, hypot(point.x - start.x, point.y - start.y) >= 4 { moved = true }
                 parent.onDrag(fraction(recognizer))
+                parent.onTranslation?(translation(recognizer), .changed)
             case .ended:
                 parent.onRelease(fraction(recognizer), moved)
+                parent.onTranslation?(translation(recognizer), .ended)
                 pressStart = nil
+                pressOrigin = nil
             case .cancelled, .failed:
                 parent.onRelease(fraction(recognizer), true)
+                parent.onTranslation?(translation(recognizer), .cancelled)
                 pressStart = nil
+                pressOrigin = nil
             default: break
             }
         }
@@ -2879,6 +3936,10 @@ struct TrailerDraftPreviewInput {
     var selectedSceneID: Int?
     /// 배경음악. nil이면 음악 없이 재생한다.
     var music: TrailerMusicSelection?
+    /// 독립 음성 해설 1레인(사본 파일이 있는 것).
+    var voices: [TrailerComposerVoice] = []
+    /// 사본 파일을 찾지 못한 직접 놓은 해설 수. 0이 아니면 미리보기가 조용히 빼지 않고 오류로 알린다.
+    var missingVoiceCount = 0
 
     /// 음악 배치·음량이 달라질 때만 바뀌는 키. 시계 재생은 이 키와 무관하다.
     var musicKey: String {
@@ -2889,13 +3950,18 @@ struct TrailerDraftPreviewInput {
         return "\(projStr)|\(music.recordID)|\(music.url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)|\(music.policy.rawValue)|\(music.fitCount)|\(music.autoDuck)|\(music.level)|\(layout)"
     }
 
-    /// 타임라인 필름스트립과 같은 가중치(최소 0.05초)로 센 전체 길이.
-    var totalDuration: Double { segments.reduce(0) { $0 + max(0.05, $1.length) } }
+    /// 타임라인 필름스트립과 같은 가중치로 센 전체 길이.
+    var totalDuration: Double {
+        max(segments.reduce(0) { $0 + $1.timelineLength }, voiceFloor)
+    }
+    /// 직접 놓은 음성 해설이 요구하는 출력 끝. 영상이 더 짧아도 해설을 자르지 않는다.
+    var voiceFloor: Double { voices.compactMap { $0.take.requiredOutputEnd }.max() ?? 0 }
+    var usesAdvanced: Bool { !voices.isEmpty || missingVoiceCount > 0 || segments.contains { $0.adjustments?.isAdvanced == true } }
 
     func location(at seconds: Double) -> (index: Int, offset: Double)? {
         var acc = 0.0
         for (index, segment) in segments.enumerated() {
-            let length = max(0.05, segment.length)
+            let length = segment.timelineLength
             if seconds < acc + length || index == segments.count - 1 {
                 return (index, min(max(seconds - acc, 0), length))
             }
@@ -2908,7 +3974,7 @@ struct TrailerDraftPreviewInput {
         var acc = 0.0
         for segment in segments {
             if segment.sceneID == id { return acc }
-            acc += max(0.05, segment.length)
+            acc += segment.timelineLength
         }
         return nil
     }
@@ -3575,6 +4641,8 @@ struct TrailerDraftPreviewPlayer: View {
     @State private var originalVideoSize: (url: URL, size: CGSize)?
     @StateObject private var video = TrailerDraftVideoDriver()
     @StateObject private var music = TrailerDraftMusicDriver()
+    /// 고급 편집이 있을 때만 쓰는 단일 합성 플레이어(내보내기와 같은 시간표·합성기).
+    @StateObject private var advanced = TrailerAdvancedPreviewDriver()
     @State private var isPreparingProject = false
     @State private var preparationProgress: Double?
     @State private var preparationGeneration = 0
@@ -3595,6 +4663,7 @@ struct TrailerDraftPreviewPlayer: View {
     }
 
     private func syncVideo() {
+        guard !input.usesAdvanced else { return }
         let segment = currentSegment
         video.sync(segment: segment, url: currentVideoSource?.url,
                    offset: location?.offset ?? 0, playing: bridge.isPlaying,
@@ -3654,7 +4723,50 @@ struct TrailerDraftPreviewPlayer: View {
     }
 
     private var attachKey: String {
-        "\(input.segments.map { "\($0.id):\($0.length)" }.joined(separator: ","))"
+        "\(input.usesAdvanced)|\(input.segments.map { "\($0.id):\($0.length):\($0.timelineLength)" }.joined(separator: ","))"
+    }
+
+    /// 고급 합성의 입력 전체(모든 수동 값·해설 id·큐·배속·겹침·색상·키프레임·카드·음악·크기). 하나라도 달라지면 다시 만든다.
+    private var advancedKey: String {
+        guard input.usesAdvanced else { return "legacy" }
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let segKey = input.segments.map { segment in
+            let adjust = segment.adjustments.flatMap { try? encoder.encode($0) }.flatMap { String(data: $0, encoding: .utf8) } ?? "-"
+            let caption = Self.encodeCaption(input.captions[segment.id])
+            return "\(segment.id):\(segment.sourceID ?? -1):\(segment.start):\(segment.length):\(segment.fitsFrame):\(segment.offsetX):\(segment.offsetY):\(segment.muted):\(segment.volume):\(segment.incomingOverlap):\(adjust):\(caption)"
+        }.joined(separator: ";")
+        let voiceKey = "\(input.missingVoiceCount)|" + input.voices.map { voice in
+            let take = (try? encoder.encode(voice.take)).flatMap { String(data: $0, encoding: .utf8) } ?? ""
+            let attrs = TrailerDraftPreviewCache.sourceFileAttributes(for: voice.url)
+            return "\(take):\(voice.url.lastPathComponent):\(attrs.fileSize):\(attrs.mtime)"
+        }.joined(separator: ";")
+        let introKey = cardKey(isIntro: true, card: input.introCard, renderSize: renderSize)
+        let outroKey = cardKey(isIntro: false, card: input.outroCard, renderSize: renderSize)
+        let projStr = input.projectID?.uuidString ?? "default"
+        return "adv:v1:\(projStr)|\(segKey)|\(projectSourcesKey)|\(voiceKey)|\(input.musicKey)|\(introKey)|\(outroKey)|\(Int(renderSize.width))x\(Int(renderSize.height))"
+    }
+
+    /// 카드 이미지를 미리보기 캐시에서 읽거나, 없으면 같은 규칙으로 그려 캐시에 둔다.
+    private func resolveCard(isIntro: Bool) async -> UIImage? {
+        let card = isIntro ? input.introCard : input.outroCard
+        guard card.isEnabled, card.duration > 0 else { return nil }
+        let key = cardKey(isIntro: isIntro, card: card, renderSize: renderSize)
+        if let cached = await TrailerDraftPreviewCache.shared.hasOrLoadCard(for: key) { return cached }
+        let scale = min(1, 960 / max(renderSize.width, renderSize.height))
+        let size = CGSize(width: renderSize.width * scale, height: renderSize.height * scale)
+        var background = card.usesFirstOrLastImage ? (isIntro ? input.introBackground : input.outroBackground) : nil
+        if background == nil, card.usesFirstOrLastImage, let id = card.backgroundSourceID,
+           let source = input.sources.first(where: { $0.id == id }) {
+            let ts = card.backgroundTimestamp ?? 0.0
+            let clamped = max(0.0, source.duration > 0 ? min(ts, source.duration - 0.05) : 0.0)
+            background = try? await VideoTrailerModel.extractStillImage(source: source, at: source.isImage ? 0.0 : clamped, maxPixelSize: 1280)
+        }
+        let rendered = TrailerTitleCardRenderer.renderCardImage(
+            card: card, sourceImage: background, renderSize: size,
+            bodyTypography: card.usesBodyTypography ? input.bodyTypography : nil)
+        if let rendered { TrailerDraftPreviewCache.shared.setCard(rendered, for: key) }
+        return rendered
     }
 
     private var frameKey: String {
@@ -3750,7 +4862,9 @@ struct TrailerDraftPreviewPlayer: View {
                                 Image(uiImage: cardImg).resizable().scaledToFit()
                             }
                         case .clip:
-                            if currentVideoSource != nil {
+                            if input.usesAdvanced {
+                                EmptyView()
+                            } else if currentVideoSource != nil {
 #if targetEnvironment(macCatalyst)
                                 SharedVideoPlayerSurface(
                                     player: video.player,
@@ -3768,10 +4882,39 @@ struct TrailerDraftPreviewPlayer: View {
                             } else {
                                 Image(systemName: "photo").font(.system(size: 36)).foregroundStyle(.white.opacity(0.6))
                             }
-                            if let caption = input.captions[segment.id] { CaptionOverlayView(caption: caption) }
+                            if !input.usesAdvanced, let caption = input.captions[segment.id] { CaptionOverlayView(caption: caption) }
                         }
                     }
                 }
+            }
+            .overlay {
+                if input.usesAdvanced {
+                    ZStack {
+#if targetEnvironment(macCatalyst)
+                        SharedVideoPlayerSurface(player: video.player, videoGravity: .resizeAspect,
+                                                 onScrollVolume: { dy in handleDraftVolumeScroll(delta: dy) })
+#else
+                        SharedVideoPlayerSurface(player: video.player, videoGravity: .resizeAspect)
+#endif
+                        if advanced.isPreparing {
+                            ProgressView().controlSize(.small).tint(.white)
+                                .padding(10).background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+                        }
+                    }
+                    .allowsHitTesting(true)
+                }
+            }
+            .task(id: advancedKey) {
+                guard input.usesAdvanced else { advanced.stop(); return }
+                advanced.attach(player: video.player)
+                // 디바운스: 슬라이더를 끄는 동안 매번 다시 만들지 않는다.
+                try? await Task.sleep(for: .milliseconds(150))
+                guard !Task.isCancelled else { return }
+                let intro = await resolveCard(isIntro: true)
+                let outro = await resolveCard(isIntro: false)
+                guard !Task.isCancelled else { return }
+                await advanced.prepare(input: input, key: advancedKey, renderSize: renderSize,
+                                       introImage: intro, outroImage: outro, resumeAt: bridge.currentSeconds)
             }
             .contentShape(Rectangle())
             .onTapGesture {
@@ -3796,6 +4939,7 @@ struct TrailerDraftPreviewPlayer: View {
             }
             .task(id: attachKey) { await runClock() }
             .task(id: input.musicKey) {
+                guard !input.usesAdvanced else { music.stop(); return }
                 await music.prepare(input)
                 // 준비가 끝난 시점의 재생 위치로 바로 이어 붙는다(재생 중에 음악을 바꾼 경우).
                 music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying)
@@ -3803,9 +4947,19 @@ struct TrailerDraftPreviewPlayer: View {
                 music.player.volume = bridge.masterVolume
 #endif
             }
-            .onChange(of: bridge.currentSeconds) { _, _ in syncVideo(); music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying) }
+            .onChange(of: bridge.currentSeconds) { _, _ in
+                guard !input.usesAdvanced else { return }
+                syncVideo(); music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying)
+            }
             .onChange(of: videoLayoutKey) { _, _ in syncVideo() }
-            .onChange(of: bridge.isPlaying) { _, _ in syncVideo(); music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying) }
+            .onChange(of: bridge.isPlaying) { _, _ in
+                guard !input.usesAdvanced else { return }
+                syncVideo(); music.sync(seconds: bridge.currentSeconds, playing: bridge.isPlaying)
+            }
+            .onChange(of: input.usesAdvanced) { _, isAdvanced in
+                // 방식이 바뀌면 이전 방식의 플레이어는 멈춘다(두 소리가 겹치지 않게).
+                if isAdvanced { video.stop(); music.stop() } else { advanced.stop() }
+            }
             .overlay(alignment: .center) {
 #if targetEnvironment(macCatalyst)
                 if let volume = draftVolumeHUD {
@@ -3837,7 +4991,7 @@ struct TrailerDraftPreviewPlayer: View {
                         .padding(8)
                 }
             }
-            .onDisappear { video.stop(); music.stop() }
+            .onDisappear { video.stop(); music.stop(); advanced.stop() }
             .onChange(of: input.selectedSceneID) { _, id in
                 guard !bridge.isPlaying, let id, let start = input.startSeconds(ofScene: id) else { return }
                 bridge.currentSeconds = start
@@ -4129,6 +5283,22 @@ struct TrailerDraftPreviewPlayer: View {
         video.player.volume = bridge.masterVolume
         music.player.volume = bridge.masterVolume
 #endif
+        if input.usesAdvanced {
+            // 고급 합성은 플레이어가 시계의 기준이다. 시계는 그 위치와 실제 합성 길이를 따라간다.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(33))
+                if advanced.duration > 0, abs(bridge.durationSeconds - advanced.duration) > 0.001 {
+                    bridge.durationSeconds = advanced.duration
+                }
+#if targetEnvironment(macCatalyst)
+                video.player.volume = bridge.masterVolume
+#endif
+                advanced.attach(player: video.player)
+                advanced.follow(bridge)
+            }
+            bridge.detach(ifOwner: token)
+            return
+        }
         var last = Date()
         while !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(33))
@@ -4182,4 +5352,507 @@ struct TrailerDraftPreviewPlayer: View {
         .allowsHitTesting(false)
     }
 #endif
+}
+
+// MARK: - 효과 탭: 속도·색상·전환·키프레임·시간별 자막·음성 해설
+
+/// 음성 해설 녹음과 자막 자동 생성을 실제 어댑터에 연결하는 컨트롤러. 버튼을 눌렀을 때만 마이크/음성 인식을 쓴다.
+/// 로그에는 전사 문구나 소스 주소를 남기지 않는다.
+@MainActor
+final class TrailerVoiceCoordinator: ObservableObject {
+    enum Phase: Equatable { case idle, requesting, recording, stopping, saving }
+    @Published private(set) var phase = Phase.idle
+    @Published private(set) var message: String?
+    @Published private(set) var isGenerating = false
+    private let recorder = TrailerVoiceoverRecorder()
+    private let transcriber = TrailerOnDeviceCaptionTranscriber()
+    /// 마지막 자막 생성 요청 번호. 취소·재요청으로 바뀌면 늦게 온 결과는 버린다.
+    private var captionGeneration = 0
+    /// 저장이 성공할 때까지 소유권을 넘기지 않은 녹음 산출물.
+    private var pending: TrailerVoiceoverArtifact?
+
+    var hasUncommittedRecording: Bool { pending != nil }
+
+    func startRecording(in folder: URL?) {
+        guard phase == .idle, let folder else { return }
+        phase = .requesting
+        message = nil
+        Task { @MainActor in
+            do {
+                try await recorder.startRecording(in: folder)
+                phase = .recording
+            } catch {
+                phase = .idle
+                message = (error as? LocalizedError)?.errorDescription ?? "녹음을 시작하지 못했습니다."
+            }
+        }
+    }
+
+    /// 녹음을 끝내고 `commit`이 프로젝트 사본을 만들어 저장까지 성공했을 때만 산출물의 소유권을 넘긴다.
+    func stopRecording(commit: @escaping (TrailerVoiceoverArtifact) async -> Bool) {
+        guard phase == .recording else { return }
+        phase = .stopping
+        Task { @MainActor in
+            do {
+                let artifact = try await recorder.stopRecording()
+                pending = artifact
+                phase = .saving
+                if await commit(artifact) {
+                    _ = recorder.markCommitted()
+                    pending = nil
+                    message = nil
+                } else {
+                    message = "저장하지 못했어요. 녹음은 지워지지 않았습니다. 다시 저장해 주세요."
+                }
+                phase = .idle
+            } catch {
+                phase = .idle
+                message = (error as? LocalizedError)?.errorDescription ?? "녹음을 끝내지 못했습니다."
+            }
+        }
+    }
+
+    /// 저장에 실패해 남은 녹음을 다시 저장해 본다.
+    func retryCommit(commit: @escaping (TrailerVoiceoverArtifact) async -> Bool) {
+        guard phase == .idle, let artifact = pending else { return }
+        phase = .saving
+        Task { @MainActor in
+            if await commit(artifact) {
+                _ = recorder.markCommitted()
+                pending = nil
+                message = nil
+            }
+            phase = .idle
+        }
+    }
+
+    /// 사용자가 직접 취소할 때만: 이번 녹음이 만든 파일만 지운다(소스·프로젝트 파일은 건드리지 않는다).
+    func cancelRecording() {
+        guard phase == .recording || phase == .saving || pending != nil else { return }
+        Task { @MainActor in
+            await recorder.cancel()
+            pending = nil
+            phase = .idle
+            message = nil
+        }
+    }
+
+    /// 화면이 닫힐 때: 녹음 중이면 마무리하되 지우지 않는다.
+    func shutdown() {
+        captionGeneration += 1
+        transcriber.cancel()
+        isGenerating = false
+        Task { @MainActor in await recorder.handleViewCloseOrShutdown() }
+    }
+
+    func cancelGeneration() {
+        captionGeneration += 1
+        transcriber.cancel()
+        isGenerating = false
+        message = nil
+    }
+
+    /// 선택한 영상 장면의 소리에서 자막 큐를 만든다. 결과는 `apply`가 그 시점의 최신 큐와 병합한다.
+    func generateCaptions(source: VideoTrailerSource, scene: TrailerEditScene, workFolder: URL?, style: TrailerCaption,
+                          apply: @escaping (_ generated: [TrailerTimedCaptionCue]) -> Void) {
+        guard !isGenerating, !source.isImage, let workFolder else { return }
+        captionGeneration += 1
+        let generation = captionGeneration
+        isGenerating = true
+        message = nil
+        let start = scene.start, length = scene.length
+        Task { @MainActor in
+            let audioURL = workFolder.appendingPathComponent("caption-audio-\(UUID().uuidString).m4a")
+            defer { try? FileManager.default.removeItem(at: audioURL) }
+            do {
+                let asset = AVURLAsset(url: source.url)
+                guard try await !asset.loadTracks(withMediaType: .audio).isEmpty,
+                      let session = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+                    throw TrailerTranscriptionError.invalidSource("이 영상에는 인식할 소리가 없습니다.")
+                }
+                session.outputURL = audioURL
+                session.outputFileType = .m4a
+                session.timeRange = CMTimeRange(start: CMTime(seconds: start, preferredTimescale: 600),
+                                                duration: CMTime(seconds: length, preferredTimescale: 600))
+                await session.export()
+                guard session.status == .completed else { throw session.error ?? TrailerTranscriptionError.invalidSource("소리를 준비하지 못했습니다.") }
+                guard generation == captionGeneration else { return }
+                let cues = try await transcriber.generateCaptions(
+                    for: audioURL, sourceID: source.id, sourceOffset: start,
+                    localeIdentifier: Locale.current.identifier, style: style)
+                guard generation == captionGeneration else { return }
+                apply(cues)
+                message = cues.isEmpty ? "인식된 말이 없어요." : nil
+            } catch {
+                guard generation == captionGeneration else { return }
+                message = (error as? LocalizedError)?.errorDescription ?? "자막을 만들지 못했습니다. 직접 입력은 그대로 쓸 수 있어요."
+            }
+            if generation == captionGeneration { isGenerating = false }
+        }
+    }
+}
+
+enum EffectTool: String, CaseIterable, Identifiable {
+    case speed = "속도", color = "색상", transition = "전환", motion = "움직임", captions = "자막"
+    var id: String { rawValue }
+}
+
+/// '효과' 탭. 선택한 클립의 속도·색상·전환·키프레임·시간별 자막과, 프로젝트 전체의 음성 해설 한 레인.
+/// 모든 값은 미리보기와 내보내기가 같이 쓰는 합성기(`TrailerAdvancedComposer`)에 그대로 들어간다.
+struct TrailerEffectsInspector: View {
+    let sources: [VideoTrailerSource]
+    @Binding var scenes: [TrailerEditScene]?
+    @Binding var selectedID: Int?
+    @Binding var voiceovers: [TrailerVoiceoverTake]
+    let segments: [TrailerTimelineSegment]
+    @ObservedObject var bridge: TrailerTimelineBridge
+    let chrome: TrailerEditorChrome
+    /// true면 프로젝트 전체(음성 해설)만, false면 선택 클립 속성만, nil이면 둘 다.
+    var projectScope: Bool? = nil
+    @State private var tool: EffectTool = .speed
+    @StateObject private var voice = TrailerVoiceCoordinator()
+    @State private var importing = false
+    @State private var importMessage: String?
+
+    private var scene: TrailerEditScene? { selectedID.flatMap { id in scenes?.first { $0.id == id } } }
+    private var source: VideoTrailerSource? { scene.flatMap { s in sources.first { $0.id == s.sourceID } } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if projectScope != true {
+                if let scene, let source {
+                    clipEffects(scene: scene, source: source)
+                } else {
+                    Text("편집할 클립을 고르면 속도·색상·움직임·자막을 바꿀 수 있어요.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            if projectScope == nil { Divider() }
+            if projectScope != false { voiceoverSection }
+        }
+        .onDisappear { voice.shutdown() }
+        .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: false) { result in
+            importVoiceover(result)
+        }
+    }
+
+    // MARK: 클립 효과
+
+    private func adjust(_ change: @escaping (inout TrailerClipAdjustments) -> Void) {
+        guard let id = selectedID, scenes != nil else { return }
+        TrailerSceneEditor.update(id, in: &scenes!) { scene in
+            var value = scene.adjustments ?? TrailerClipAdjustments()
+            change(&value)
+            scene.adjustments = value == TrailerClipAdjustments() ? nil : value
+        }
+    }
+
+    private func playheadSourceTime(_ scene: TrailerEditScene) -> Double {
+        guard let local = TrailerTimelineGeometry.localTime(ofScene: scene.id, atSeconds: bridge.currentSeconds, segments: segments) else {
+            return scene.start
+        }
+        let overlap = segments.first { $0.sceneID == scene.id }?.incomingOverlap ?? 0
+        let rate = scene.adjustments?.rate ?? 1
+        return min(scene.start + scene.length, max(scene.start, scene.start + (local + overlap) * rate))
+    }
+
+    /// 도구 이름 옆 점: 이 클립에서 값이 바뀐 도구.
+    private func toolTitle(_ tool: EffectTool, _ adjustments: TrailerClipAdjustments) -> String {
+        let edited: Bool
+        switch tool {
+        case .speed: edited = adjustments.rate != 1
+        case .color: edited = !(adjustments.color?.isNeutral ?? true)
+        case .transition: edited = (adjustments.transition?.dissolveDuration ?? 0) > 0
+        case .motion: edited = !adjustments.keyframes.isEmpty
+        case .captions: edited = !adjustments.cues.isEmpty
+        }
+        return edited ? tool.rawValue + " •" : tool.rawValue
+    }
+
+    @ViewBuilder
+    private func clipEffects(scene: TrailerEditScene, source: VideoTrailerSource) -> some View {
+        let adjustments = scene.adjustments ?? TrailerClipAdjustments()
+        let tools = EffectTool.allCases.filter { !($0 == .speed && source.isImage) }
+        let active = tools.contains(tool) ? tool : (tools.first ?? .color)
+        Text("선택한 클립 · \(source.name)").font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+        Picker("효과 도구", selection: Binding(get: { active }, set: { tool = $0 })) {
+            ForEach(tools) { Text(toolTitle($0, adjustments)).tag($0) }
+        }
+        .pickerStyle(.segmented).labelsHidden()
+
+        switch active {
+        case .speed:
+            labeled("속도 \(String(format: "%.2f", adjustments.rate))배", reset: adjustments.rate != 1 ? { adjust { $0.rate = 1 } } : nil) {
+                Slider(value: Binding(get: { adjustments.rate }, set: { value in adjust { $0.rate = (value * 20).rounded() / 20 } }), in: 0.25...4)
+                HStack(spacing: 6) {
+                    ForEach([0.5, 1.0, 2.0], id: \.self) { preset in
+                        Button("\(String(format: "%g", preset))×") { adjust { $0.rate = preset } }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
+            }
+            Text("출력 길이 \(String(format: "%.1f", scene.length / adjustments.rate))초 (원본 \(String(format: "%.1f", scene.length))초)")
+                .font(.caption).foregroundStyle(.secondary)
+        case .color:
+            let color = adjustments.color ?? TrailerColorAdjustment()
+            labeled("색상", reset: color.isNeutral ? nil : { adjust { $0.color = nil } }) {
+                colorSlider("밝기", value: color.brightness, range: -1...1) { value in adjust { var c = $0.color ?? TrailerColorAdjustment(); c.brightness = value; $0.color = c.isNeutral ? nil : c } }
+                colorSlider("대비", value: color.contrast, range: 0.25...4) { value in adjust { var c = $0.color ?? TrailerColorAdjustment(); c.contrast = value; $0.color = c.isNeutral ? nil : c } }
+                colorSlider("채도", value: color.saturation, range: 0...3) { value in adjust { var c = $0.color ?? TrailerColorAdjustment(); c.saturation = value; $0.color = c.isNeutral ? nil : c } }
+            }
+        case .transition:
+            let dissolve = adjustments.transition?.dissolveDuration ?? 0
+            labeled(dissolve > 0 ? "다음 장면과 겹치기 \(String(format: "%.1f", dissolve))초" : "다음 장면과 겹치기 없음(컷)",
+                    reset: dissolve > 0 ? { adjust { $0.transition = nil } } : nil) {
+                Slider(value: Binding(get: { dissolve }, set: { value in
+                    adjust { $0.transition = value < 0.05 ? nil : TrailerTransition(dissolveDuration: (value * 10).rounded() / 10) }
+                }), in: 0...3)
+            }
+        case .motion:
+            keyframeSection(scene: scene, adjustments: adjustments)
+        case .captions:
+            cueSection(scene: scene, source: source, adjustments: adjustments)
+        }
+    }
+
+    private func labeled<Content: View>(_ title: String, reset: (() -> Void)? = nil, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text(title).font(.caption.weight(.semibold))
+                Spacer()
+                if let reset { Button("초기화", action: reset).font(.caption).buttonStyle(.borderless) }
+            }
+            content()
+        }
+    }
+
+    private func colorSlider(_ title: String, value: Double, range: ClosedRange<Double>, set: @escaping (Double) -> Void) -> some View {
+        HStack {
+            Text(title).font(.caption).frame(width: 34, alignment: .leading)
+            Slider(value: Binding(get: { value }, set: set), in: range)
+            Text(String(format: "%.2f", value)).font(.caption).monospacedDigit().frame(width: 40, alignment: .trailing)
+        }
+    }
+
+    // MARK: 키프레임
+
+    @ViewBuilder
+    private func keyframeSection(scene: TrailerEditScene, adjustments: TrailerClipAdjustments) -> some View {
+        let sorted = TrailerTransformKeyframe.sanitizeAndSort(adjustments.keyframes)
+        labeled("키프레임 \(sorted.count)개") {
+            Button {
+                let time = playheadSourceTime(scene)
+                let seed = TrailerTransformKeyframe.interpolate(keyframes: adjustments.keyframes, at: time)
+                adjust { $0.keyframes.append(TrailerTransformKeyframe(sourceTime: time, offsetX: seed.offsetX, offsetY: seed.offsetY,
+                                                                      scale: seed.scale, opacity: seed.opacity)) }
+            } label: { Label("현재 위치에 추가", systemImage: "plus.circle") }
+                .buttonStyle(.bordered).controlSize(.small)
+            ForEach(sorted) { keyframe in
+                let inWindow = keyframe.sourceTime >= scene.start - 1e-6 && keyframe.sourceTime <= scene.start + scene.length + 1e-6
+                DisclosureGroup {
+                    keyframeEditor(keyframe)
+                } label: {
+                    HStack {
+                        Text(String(format: "원본 %.2f초", keyframe.sourceTime)).font(.caption).monospacedDigit()
+                        if !inWindow { Text("(잘린 구간 · 보관됨)").font(.caption2).foregroundStyle(.secondary) }
+                        Spacer()
+                        Button(role: .destructive) { adjust { $0.keyframes.removeAll { $0.stableID == keyframe.stableID } } } label: {
+                            Image(systemName: "trash")
+                        }.buttonStyle(.borderless).accessibilityLabel("키프레임 삭제")
+                    }
+                }
+            }
+        }
+    }
+
+    private func updateKeyframe(_ id: UUID, _ change: @escaping (inout TrailerTransformKeyframe) -> Void) {
+        adjust { value in
+            guard let index = value.keyframes.firstIndex(where: { $0.stableID == id }) else { return }
+            change(&value.keyframes[index])
+        }
+    }
+
+    @ViewBuilder
+    private func keyframeEditor(_ keyframe: TrailerTransformKeyframe) -> some View {
+        let id = keyframe.stableID
+        VStack(spacing: 4) {
+            HStack {
+                Text("시간").font(.caption).frame(width: 34, alignment: .leading)
+                Stepper(value: Binding(get: { keyframe.sourceTime }, set: { value in updateKeyframe(id) { $0.sourceTime = max(0, value) } }),
+                        in: 0...100_000, step: 0.1) { Text(String(format: "%.1f초", keyframe.sourceTime)).font(.caption).monospacedDigit() }
+            }
+            colorSlider("좌우", value: keyframe.offsetX, range: -1...1) { v in updateKeyframe(id) { $0.offsetX = v } }
+            colorSlider("상하", value: keyframe.offsetY, range: -1...1) { v in updateKeyframe(id) { $0.offsetY = v } }
+            colorSlider("크기", value: keyframe.scale, range: 0.1...4) { v in updateKeyframe(id) { $0.scale = v } }
+            colorSlider("투명", value: keyframe.opacity, range: 0...1) { v in updateKeyframe(id) { $0.opacity = v } }
+        }
+    }
+
+    // MARK: 시간별 자막
+
+    @ViewBuilder
+    private func cueSection(scene: TrailerEditScene, source: VideoTrailerSource, adjustments: TrailerClipAdjustments) -> some View {
+        let cues = adjustments.cues.sorted { $0.sourceStart < $1.sourceStart }
+        labeled("시간별 자막 \(cues.count)개") {
+            HStack(spacing: 6) {
+                Button {
+                    let start = playheadSourceTime(scene)
+                    let end = min(scene.start + scene.length, start + 2)
+                    adjust { $0.cues.append(TrailerTimedCaptionCue(sourceID: scene.sourceID, sourceStart: start, sourceEnd: max(end, start + 0.5),
+                                                                    text: "자막", style: TrailerSceneEditor.cueStyle(for: scene), origin: .manual, manuallyEdited: true)) }
+                } label: { Label("현재 위치에 추가", systemImage: "plus.circle") }
+                    .buttonStyle(.bordered).controlSize(.small)
+                if !source.isImage {
+                    if voice.isGenerating {
+                        Button("만드는 중 · 취소") { voice.cancelGeneration() }.buttonStyle(.bordered).controlSize(.small)
+                    } else {
+                        Button {
+                            voice.generateCaptions(source: source, scene: scene, workFolder: chrome.voiceWorkFolder(),
+                                                   style: TrailerSceneEditor.cueStyle(for: scene)) { generated in
+                                // 늦게 온 결과는 그 시점의 최신 큐·삭제 기록과 병합한다: 직접 고친 큐와 지운 구간은 그대로고,
+                                // 자동 병합이라 직접 편집 표시는 켜지지 않는다.
+                                guard scenes != nil else { return }
+                                TrailerSceneEditor.mergeGeneratedCues(generated, intoSceneID: scene.id, in: &scenes!)
+                            }
+                        } label: { Label("자막 만들기", systemImage: "waveform") }
+                            .buttonStyle(.bordered).controlSize(.small)
+                    }
+                }
+            }
+            if let message = voice.message { Text(message).font(.caption).foregroundStyle(.secondary) }
+            if let caption = scene.caption, !caption.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, !cues.isEmpty {
+                Text("클립 자막 “\(caption.text)”은 시간별 자막과 함께 계속 보여요.").font(.caption2).foregroundStyle(.secondary)
+            }
+            ForEach(cues) { cue in cueRow(cue, scene: scene) }
+        }
+    }
+
+    private func updateCue(_ id: UUID, _ change: @escaping (inout TrailerTimedCaptionCue) -> Void) {
+        adjust { value in
+            guard let index = value.cues.firstIndex(where: { $0.stableID == id }) else { return }
+            change(&value.cues[index])
+            value.cues[index].origin = .manual
+            value.cues[index].manuallyEdited = true
+        }
+    }
+
+    private func cueRow(_ cue: TrailerTimedCaptionCue, scene: TrailerEditScene) -> some View {
+        let id = cue.stableID
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                TextField("자막 문구", text: Binding(get: { cue.text }, set: { value in updateCue(id) { $0.text = value } }))
+                    .textFieldStyle(.roundedBorder)
+                Button(role: .destructive) {
+                    adjust { value in
+                        value.cues.removeAll { $0.stableID == id }
+                        // 사용자가 지운 자막은 자동이든 직접 만든 것이든 구간을 기록해, 새 id로 다시 만들어도 되살아나지 않게 한다.
+                        let tombstone = TrailerCueSuppression(sourceID: cue.sourceID, sourceStart: cue.sourceStart, sourceEnd: cue.sourceEnd)
+                        if !value.suppressions.contains(tombstone) { value.suppressions.append(tombstone) }
+                    }
+                } label: { Image(systemName: "trash") }.buttonStyle(.borderless).accessibilityLabel("자막 삭제")
+            }
+            HStack(spacing: 10) {
+                Stepper(value: Binding(get: { cue.sourceStart }, set: { value in updateCue(id) { $0.sourceStart = min(max(0, value), $0.sourceEnd - 0.1) } }),
+                        in: 0...100_000, step: 0.1) { Text(String(format: "시작 %.1f", cue.sourceStart)).font(.caption).monospacedDigit() }
+                Stepper(value: Binding(get: { cue.sourceEnd }, set: { value in updateCue(id) { $0.sourceEnd = max(value, $0.sourceStart + 0.1) } }),
+                        in: 0...100_000, step: 0.1) { Text(String(format: "끝 %.1f", cue.sourceEnd)).font(.caption).monospacedDigit() }
+            }
+            if cue.sourceStart >= scene.start + scene.length || cue.sourceEnd <= scene.start {
+                Text("잘린 구간 밖 · 보관됨").font(.caption2).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    // MARK: 음성 해설
+
+    private var voiceoverSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("음성 해설").font(.subheadline.weight(.semibold))
+            HStack(spacing: 6) {
+                switch voice.phase {
+                case .idle:
+                    Button { voice.startRecording(in: chrome.voiceWorkFolder()) } label: { Label("녹음", systemImage: "mic") }
+                        .buttonStyle(.bordered).controlSize(.small)
+                    Button { importing = true } label: { Label("가져오기", systemImage: "square.and.arrow.down") }
+                        .buttonStyle(.bordered).controlSize(.small)
+                    if voice.hasUncommittedRecording {
+                        Button("다시 저장") { voice.retryCommit(commit: commitRecording) }.buttonStyle(.bordered).controlSize(.small)
+                        Button("녹음 취소") { voice.cancelRecording() }.buttonStyle(.borderless).controlSize(.small)
+                    }
+                case .requesting:
+                    ProgressView().controlSize(.small)
+                    Text("마이크 확인 중").font(.caption)
+                case .recording:
+                    Button { voice.stopRecording(commit: commitRecording) } label: { Label("정지", systemImage: "stop.circle.fill") }
+                        .buttonStyle(.borderedProminent).controlSize(.small).tint(.red)
+                    Button("취소") { voice.cancelRecording() }.buttonStyle(.bordered).controlSize(.small)
+                    Text("녹음 중").font(.caption).foregroundStyle(.red)
+                case .stopping, .saving:
+                    ProgressView().controlSize(.small)
+                    Text("저장 중").font(.caption)
+                }
+            }
+            if let message = voice.message ?? importMessage { Text(message).font(.caption).foregroundStyle(.secondary) }
+            ForEach(voiceovers) { take in voiceRow(take) }
+            if voiceovers.isEmpty { Text("현재 위치에서 녹음하거나 소리 파일을 가져오세요.").font(.caption).foregroundStyle(.secondary) }
+        }
+    }
+
+    private func updateTake(_ id: UUID, _ change: @escaping (inout TrailerVoiceoverTake) -> Void) {
+        guard let index = voiceovers.firstIndex(where: { $0.stableID == id }) else { return }
+        change(&voiceovers[index])
+    }
+
+    private func voiceRow(_ take: TrailerVoiceoverTake) -> some View {
+        let id = take.stableID
+        let length = take.sourceOut - take.sourceIn
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text(String(format: "해설 %.1f초 · %.1f초부터", length, take.outputStart)).font(.caption).monospacedDigit()
+                if chrome.voiceURL(id) == nil { Text("파일 없음").font(.caption2).foregroundStyle(.red) }
+                Spacer()
+                Button("현재 위치로") { updateTake(id) { $0.outputStart = max(0, bridge.currentSeconds) } }.font(.caption).buttonStyle(.borderless)
+                Button(role: .destructive) { voiceovers.removeAll { $0.stableID == id } } label: { Image(systemName: "trash") }
+                    .buttonStyle(.borderless).accessibilityLabel("해설 삭제")
+            }
+            Stepper(value: Binding(get: { take.outputStart }, set: { value in updateTake(id) { $0.outputStart = max(0, value) } }),
+                    in: 0...100_000, step: 0.1) { Text("시작 위치").font(.caption) }
+            colorSlider("음량", value: take.volume, range: 0...2) { v in updateTake(id) { $0.volume = v } }
+        }
+    }
+
+    /// 녹음 산출물을 세션 사본 → 해설로 넣고 편집본을 저장한다. 저장이 성공해야 true.
+    private func commitRecording(_ artifact: TrailerVoiceoverArtifact) async -> Bool {
+        let id = artifact.id
+        if !voiceovers.contains(where: { $0.stableID == id }) {
+            guard let relative = try? chrome.stageVoiceover(artifact.url, id) else { return false }
+            voiceovers.append(TrailerVoiceoverTake(stableID: id, relativeFile: relative, outputStart: max(0, bridge.currentSeconds),
+                                                   sourceIn: 0, sourceOut: artifact.duration, volume: 1))
+        }
+        return await chrome.saveDraftNow()
+    }
+
+    private func importVoiceover(_ result: Result<[URL], Error>) {
+        importMessage = nil
+        guard case .success(let urls) = result, let url = urls.first else { return }
+        let scoped = url.startAccessingSecurityScopedResource()
+        Task { @MainActor in
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let asset = AVURLAsset(url: url)
+                guard let track = try await asset.loadTracks(withMediaType: .audio).first, try await track.load(.isDecodable) else {
+                    importMessage = "이 파일의 소리를 읽을 수 없어요."
+                    return
+                }
+                let duration = try await asset.load(.duration).seconds
+                guard duration.isFinite, duration > 0.05 else { importMessage = "소리 길이를 알 수 없어요."; return }
+                let id = UUID()
+                let relative = try chrome.stageVoiceover(url, id)
+                voiceovers.append(TrailerVoiceoverTake(stableID: id, relativeFile: relative, outputStart: max(0, bridge.currentSeconds),
+                                                       sourceIn: 0, sourceOut: duration, volume: 1))
+            } catch {
+                importMessage = "가져오지 못했어요. 파일은 그대로입니다."
+            }
+        }
+    }
 }
