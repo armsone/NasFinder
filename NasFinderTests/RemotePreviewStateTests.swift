@@ -1632,9 +1632,15 @@ final class RemotePreviewStateTests: XCTestCase {
         }
         createdSingleModel.videoDidFinish()
         XCTAssertFalse(createdSingleModel.isPlaying)
-        createdSingleModel.toggleVideoLoop()
-        createdSingleModel.videoDidFinish()
-        XCTAssertTrue(createdSingleModel.isPlaying)
+        let loopingModel = RemotePreviewViewModel(
+            items: [first],
+            initialItemID: first.id,
+            service: service
+        )
+        defer { loopingModel.tearDown() }
+        loopingModel.setVideoLoop(true)
+        loopingModel.videoDidFinish()
+        XCTAssertTrue(loopingModel.isPlaying)
 
         XCTAssertEqual(PhotoAdvanceInterval.allCases.map(\.rawValue), [1, 2, 3, 5, 10, 15, 30])
         defaults.removeObject(forKey: intervalKey)
