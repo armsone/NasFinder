@@ -1430,6 +1430,7 @@ private struct PorcelainDraftCard: View {
     let onDelete: () -> Void
     var onRename: () -> Void = {}
     var onDuplicate: () -> Void = {}
+    var onDuplicateRebuilt: () -> Void = {}
     var onSetPrivate: (Bool) -> Void = { _ in }
     var showsEditingMenu: Bool = true
     @State private var thumbnail: UIImage?
@@ -1499,6 +1500,7 @@ private struct PorcelainDraftCard: View {
                 Button("이어서 편집", interfaceSystemImage: "play.fill", action: onResume)
                 Button("이름 바꾸기", interfaceSystemImage: "pencil", action: onRename)
                 Button("복제", interfaceSystemImage: "plus.square.on.square", action: onDuplicate)
+                Button("추천으로 다시 맞춘 사본", interfaceSystemImage: "wand.and.stars", action: onDuplicateRebuilt)
                 if entry.isPrivate == true {
                     Button("공개로 전환", interfaceSystemImage: "eye") { onSetPrivate(false) }
                 } else {
@@ -1746,6 +1748,7 @@ struct TrailerDraftManagerView: View {
                                 onDelete: { confirmingDeleteID = entry.id },
                                 onRename: { renamingID = entry.id; renameText = entry.customTitle ?? "" },
                                 onDuplicate: { Task { await draftStore.duplicate(entry.id) } },
+                                onDuplicateRebuilt: { Task { await draftStore.duplicateRebuiltFromRecommendation(entry.id) } },
                                 onSetPrivate: { draftStore.setPrivate(entry.id, $0) }
                             )
                         }
@@ -1774,6 +1777,7 @@ struct TrailerDraftManagerView: View {
                                 onDelete: { confirmingDeleteID = entry.id },
                                 onRename: { renamingID = entry.id; renameText = entry.customTitle ?? "" },
                                 onDuplicate: { Task { await draftStore.duplicate(entry.id) } },
+                                onDuplicateRebuilt: { Task { await draftStore.duplicateRebuiltFromRecommendation(entry.id) } },
                                 onSetPrivate: { draftStore.setPrivate(entry.id, $0) }
                             )
                         }
