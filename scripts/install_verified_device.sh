@@ -39,6 +39,12 @@ if [[ "$skip_tests" == "1" && ( -n "$test_only" || "$full_tests" == "1" ) ]]; th
     exit 2
 fi
 
+device_configuration="${NASFINDER_DEVICE_CONFIGURATION:-Debug}"
+if [[ "$device_configuration" != "Debug" && "$device_configuration" != "Release" ]]; then
+    echo "error: NASFINDER_DEVICE_CONFIGURATION은 Debug 또는 Release여야 합니다: $device_configuration" >&2
+    exit 2
+fi
+
 if [[ "$device_identifier" == "mac" ]]; then
     if [[ "$skip_tests" != "1" ]]; then
         echo "error: Mac 설치는 SKIP_TESTS=1을 명시해야 합니다(테스트 모드는 지원하지 않습니다)." >&2
@@ -226,16 +232,17 @@ cmp -s "$source_state_file" <(git status --porcelain=v1 --untracked-files=all) |
     exit 1
 }
 
-echo "[2/5] Building the signed device app"
+echo "[2/5] Building the signed device app ($device_configuration)"
 "$repository_root/scripts/xcodebuild_project.sh" \
     -project "$project" \
     -scheme "$scheme" \
+    -configuration "$device_configuration" \
     -destination "id=$device_identifier" \
     -derivedDataPath "$derived_data-device" \
     -allowProvisioningUpdates \
     build
 
-app_path="$derived_data-device/Build/Products/Debug-iphoneos/NasFinder.app"
+app_path="$derived_data-device/Build/Products/$device_configuration-iphoneos/NasFinder.app"
 info_plist="$app_path/Info.plist"
 assets_car="$app_path/Assets.car"
 
@@ -304,7 +311,7 @@ grep -q '"Name" : "AppIconEnamel"' <<< "$asset_info"
     exit 1
 }
 
-echo "[4/5] Installing verified commit $verified_sha"
+echo "[4/5] Installing verified commit $verified_sha ($device_configuration)"
 xcrun devicectl device install app \
     --device "$device_identifier" \
     "$app_path"
@@ -318,3 +325,4 @@ xcrun devicectl device process launch \
 echo "Verified install complete"
 echo "commit: $verified_sha"
 echo "device: $device_identifier"
+echo "configuration: $device_configuration"

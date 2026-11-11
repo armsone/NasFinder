@@ -2684,15 +2684,19 @@ private struct VideoTrailerSettings: View {
         let base = previewBounds(bodyHeight: bodyHeight)
         // 폰은 스크롤 한 번을 최대한 쓰도록 직접 키우지 않은 기본 미리보기를 120pt 이하로 둔다(수동 최소·최대는 그대로).
         #if targetEnvironment(macCatalyst)
-        let defaultHeight = min(120, base.maximum)
+        let maximumHeight = base.maximum
+        let defaultHeight = min(120, maximumHeight)
         let minimumHeight = base.minimum
         #else
-        // iPhone: 클립에 자리를 주려고 기본은 96pt 이하이며, 낮은 화면에서는 본문 높이의 25%를 넘지 않는다(수동 키우기·최대는 그대로).
+        // iPhone: 고정 도구(타임라인·편집 줄·선택 문맥·탭)와 아래 스크롤 본문의 최소 높이를 먼저 남기고, 미리보기는 남는 높이만 쓴다.
+        let showsTools = phoneShowsEditTools(bodyHeight: bodyHeight)
+        let maximumHeight = max(0, min(base.maximum, bodyHeight - phoneFixedHeight(showsTools: showsTools) - phoneScrollMinimum))
+        // 클립에 자리를 주려고 기본은 96pt 이하이며, 낮은 화면에서는 본문 높이의 25%를 넘지 않는다(수동 키우기·최대는 그대로).
         // 최소는 기본보다 충분히 낮아야 compactTimeline의 축소 비율(<=0.6)에 닿을 수 있다.
-        let defaultHeight = min(96, base.maximum, bodyHeight * 0.25)
-        let minimumHeight = min(48, base.maximum)
+        let defaultHeight = min(96, maximumHeight, bodyHeight * 0.25)
+        let minimumHeight = min(48, maximumHeight)
         #endif
-        let bounds = (minimum: minimumHeight, preferred: max(minimumHeight, defaultHeight), maximum: base.maximum)
+        let bounds = (minimum: minimumHeight, preferred: max(minimumHeight, defaultHeight), maximum: maximumHeight)
         let height = min(bounds.maximum, max(bounds.minimum, previewHeight ?? bounds.preferred))
         return VStack(spacing: 0) {
             previewSection(showsOutput: previewingOutput && isOutputCurrent,
@@ -2702,12 +2706,20 @@ private struct VideoTrailerSettings: View {
             #if !targetEnvironment(macCatalyst)
             // iPhone 좁은 편집기: Mac·Android처럼 미리보기 바로 아래에 같은 필름스트립을 둔다.
             if !isPreviewFullscreen, !timelineSegments.isEmpty {
-                compactTimeline(sizeRatio: height / max(1, bounds.preferred))
+                compactTimeline(sizeRatio: height / max(1, bounds.preferred), editTools: showsTools)
             }
             #endif
             if !isPreviewFullscreen {
                 // 크기 조절과 더블탭은 이 작은 손잡이에서만 한다. 탭 줄에서 시작한 스와이프는 페이지 스크롤이다.
                 previewGrip(current: height, bounds: bounds)
+                #if !targetEnvironment(macCatalyst)
+                // 지금 고치는 클립을 탭 위에 고정해 둔다(아래 본문이 스크롤돼도, 편집 도구가 스크롤 본문으로 내려가도 그대로).
+                if scenes != nil {
+                    macSelectionHeader(projectScope: false)
+                        .padding(.horizontal, MacUIScale.defaultPadding ?? 16)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                #endif
                 tabStrip(bounds: bounds, currentHeight: height)
             }
         }
@@ -2716,31 +2728,35 @@ private struct VideoTrailerSettings: View {
     #if !targetEnvironment(macCatalyst)
     /// 좁은 편집기의 타임라인: 현재 위치/전체 길이와 필름스트립. 탭·끌기는 기존 UIKit 입력 뷰가 터치로 받아 같은 다리로 탐색·재생한다.
     /// `sizeRatio`는 지금 미리보기 높이를 기본 높이로 나눈 값(1 = 기본). 기본보다 작아지면 필름이 40pt에서 24pt까지 얇아지고,
-    /// 0.6 이하에서는 시계를 숨겨 내용이 위로 당겨진다. 재생/일시 정지 단추는 그대로 남는다.
-    private func compactTimeline(sizeRatio: CGFloat) -> some View {
+    /// 0.6 이하에서는 시계를 숨겨 내용이 위로 당겨진다(`inlineTools`일 때는 한 줄에 자리가 있어 시계를 남긴다). 재생/일시 정지 단추는 그대로 남는다.
+    /// `editTools`면 Mac과 같은 편집 단추(이동·나누기·잠금·제외)와 필름스트립 아래 다듬기 줄(`sceneEditLane`)이 붙고 단추는 터치 크기가 된다.
+    /// 단추는 `inlineTools`(넓은 화면)이면 재생 줄 안에, 아니면 재생 줄 아래 한 줄에 둔다. 같은 다리로 재생 위치와 선택을 읽고 편집한다.
+    private func compactTimeline(sizeRatio: CGFloat, editTools: Bool = false, inlineTools: Bool = false) -> some View {
         let filmHeight = 24 + 16 * min(1, max(0, (sizeRatio - 0.5) / 0.5))
         let isCompact = sizeRatio <= 0.6
+        let buttonSize = editTools ? sceneToolSize : CGSize(width: 32, height: 28)
         return VStack(spacing: isCompact ? ui(3) : ui(4)) {
             HStack(spacing: 10) {
                 Button { timelineBridge.togglePlayback() } label: {
                     Image(systemName: timelineBridge.isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 32, height: 28)
+                        .frame(width: buttonSize.width, height: buttonSize.height)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .disabled(!timelineBridge.hasPlayer)
                 .opacity(timelineBridge.hasPlayer ? 1 : 0.5)
                 .accessibilityLabel(timelineBridge.isPlaying ? "일시 정지" : "재생")
-                if !isCompact {
+                if !isCompact || inlineTools {
                     Text("\(videoTrailerTime(timelineBridge.currentSeconds)) / \(videoTrailerTime(timelineBridge.durationSeconds))")
                         .font(.caption.monospacedDigit())
                 }
                 Spacer(minLength: 0)
+                if editTools, inlineTools { macSceneEditButtons }
                 Button { setFullscreen(!isPreviewFullscreen) } label: {
                     Image(systemName: isPreviewFullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right")
                         .font(.system(size: 13, weight: .semibold))
-                        .frame(width: 32, height: 28)
+                        .frame(width: buttonSize.width, height: buttonSize.height)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -2749,8 +2765,17 @@ private struct VideoTrailerSettings: View {
                 .accessibilityLabel(isPreviewFullscreen ? "전체 화면 나가기" : "전체 화면")
             }
             .foregroundStyle(.white)
+            if editTools, !inlineTools {
+                HStack(spacing: ui(8)) { macSceneEditButtons }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+            }
             wideTimeline
                 .frame(height: filmHeight)
+            if editTools, let editScenes = scenes {
+                sceneEditLane(editScenes)
+                    .frame(height: TrailerSceneEditLane.totalHeight)
+            }
         }
         .padding(.horizontal, ui(6)).padding(.vertical, isCompact ? ui(3) : ui(6))
         .frame(maxWidth: .infinity)
@@ -2836,6 +2861,7 @@ private struct VideoTrailerSettings: View {
         #endif
     }
 
+    #if targetEnvironment(macCatalyst)
     private func phoneLayout(size: CGSize) -> some View {
         // 모든 탭이 바깥 세로 스크롤 하나를 쓴다. 미리보기·타임라인·탭은 위에서 함께 스크롤되고,
         // 클립 줄/격자는 안쪽 스크롤 없이 지연(Lazy) 컨테이너로 같은 스크롤에 이어진다.
@@ -2853,6 +2879,68 @@ private struct VideoTrailerSettings: View {
         }
         .scrollBounceBehavior(.basedOnSize, axes: .vertical)
     }
+    #else
+    private func phoneLayout(size: CGSize) -> some View {
+        // 미리보기·타임라인·편집 줄·선택한 클립·탭은 위에 고정하고, 클립 줄/격자와 인스펙터만 아래 가중치 스크롤에서 움직인다.
+        // 고정 부분의 높이는 previewAndTabStrip이 먼저 남기므로 도구가 스크롤 밖으로 밀리지 않는다.
+        // 키보드로 본문이 낮아 도구를 고정할 수 없으면 같은 편집 단추·다듬기 줄을 스크롤 본문 맨 위에 둔다(숨기지 않는다).
+        // 클립 줄/격자는 안쪽 스크롤 없이 지연(Lazy) 컨테이너로 같은 스크롤에 이어진다.
+        let showsFixedTools = phoneShowsEditTools(bodyHeight: size.height)
+        return VStack(alignment: .leading, spacing: 0) {
+            previewAndTabStrip(bodyHeight: size.height)
+            ScrollView {
+                VStack(alignment: .leading, spacing: phoneSectionGap) {
+                    if !showsFixedTools, let editScenes = scenes, !timelineSegments.isEmpty {
+                        phoneScrollEditTools(editScenes)
+                    }
+                    if activeTab == .clips {
+                        phoneClipsContent
+                    } else {
+                        phoneTabContent
+                    }
+                }
+                .padding(.top, phoneSectionGap)
+                .frame(width: size.width, alignment: .leading)
+            }
+            .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+        }
+        .frame(width: size.width, height: size.height, alignment: .top)
+    }
+
+    /// 폰에서 아래 스크롤 본문이 최소로 가져가는 높이. 미리보기는 이 높이와 고정 도구를 뺀 나머지만 쓴다.
+    private var phoneScrollMinimum: CGFloat { 120 }
+
+    /// 고정 머리(미리보기 제외)의 대략 높이: 타임라인(재생 줄·필름스트립[·편집 단추 줄·다듬기 줄]) + 손잡이 + [선택한 클립] + 탭 줄.
+    private func phoneFixedHeight(showsTools: Bool) -> CGFloat {
+        let transport: CGFloat = showsTools ? sceneToolSize.height : 28
+        let tools: CGFloat = showsTools ? sceneToolSize.height + TrailerSceneEditLane.totalHeight : 0
+        // 선택한 클립 머리글은 도구를 스크롤 본문으로 내려도 고정이므로 항상 높이를 남긴다.
+        let selection: CGFloat = scenes != nil ? 40 : 0
+        return transport + 40 + tools + ui(12) + ui(12) + 20 + selection + 32 + phoneToolGap * 2
+    }
+
+    /// 직접 편집 중이고 고정 도구와 스크롤 최소 높이가 모두 들어갈 때만 편집 도구를 고정 영역에 둔다
+    /// (키보드가 올라와 본문이 낮아지면 같은 도구를 스크롤 본문 맨 위로 옮겨 자리를 돌려준다. 도구를 없애지는 않는다).
+    private func phoneShowsEditTools(bodyHeight: CGFloat) -> Bool {
+        scenes != nil && !timelineSegments.isEmpty
+            && bodyHeight >= phoneFixedHeight(showsTools: true) + phoneScrollMinimum + 48
+    }
+
+    /// 도구를 고정할 수 없을 때 스크롤 본문 맨 위에 두는 같은 편집 단추(이동·나누기·잠금·제외)와 다듬기 줄.
+    private func phoneScrollEditTools(_ editScenes: [TrailerEditScene]) -> some View {
+        VStack(spacing: ui(4)) {
+            HStack(spacing: ui(8)) { macSceneEditButtons }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+            sceneEditLane(editScenes)
+                .frame(height: TrailerSceneEditLane.totalHeight)
+        }
+        .padding(.horizontal, ui(6)).padding(.vertical, ui(6))
+        .frame(maxWidth: .infinity)
+        .background(Color.black)
+        .clipShape(RoundedRectangle(cornerRadius: ui(12), style: .continuous))
+    }
+    #endif
 
     /// 폰 클립 탭 본문: 보기 전환, 압축 관리줄, 지연 클립 줄/격자. 타이밍 인스펙터는 자막·구간 탭에 있다.
     @ViewBuilder
@@ -3006,7 +3094,10 @@ private struct VideoTrailerSettings: View {
         if !tabs.contains(activeTab), let first = tabs.first { activeTab = first }
     }
 
+    #endif
+
     /// 지금 무엇을 고치고 있는지 한눈에: 선택한 클립(번호·구간·길이·잠금/제외 상태)이나 프로젝트 전체 길이.
+    /// iPhone·iPad도 같은 머리글을 쓴다(선택이 없을 때의 긴 안내는 Mac만).
     @ViewBuilder
     private func macSelectionHeader(projectScope: Bool) -> some View {
         if projectScope {
@@ -3032,12 +3123,15 @@ private struct VideoTrailerSettings: View {
         } else {
             VStack(alignment: .leading, spacing: 2) {
                 Text("클립을 선택하세요").font(.subheadline.weight(.semibold))
+                #if targetEnvironment(macCatalyst)
                 Text("왼쪽 목록이나 아래 타임라인에서 클립을 누르면 여기서 고칠 수 있어요.")
                     .font(.caption).foregroundStyle(.secondary)
+                #endif
             }
         }
     }
 
+    #if targetEnvironment(macCatalyst)
     private func macInspectorPane(width: CGFloat) -> some View {
         let projectScope = macLayout == .settings
         let tabs = macInspectorTabs(projectScope: projectScope)
@@ -3205,6 +3299,8 @@ private struct VideoTrailerSettings: View {
         .background(Color.black)
     }
 
+    #endif
+
     /// 필름스트립 아래 편집 줄. 필름스트립과 같은 구간 목록을 쓰므로 시작/마지막 화면·제외된 클립·재생 위치가 서로 어긋나지 않는다.
     private func sceneEditLane(_ editScenes: [TrailerEditScene]) -> some View {
         TrailerSceneEditLane(
@@ -3219,6 +3315,16 @@ private struct VideoTrailerSettings: View {
             })
     }
 
+    /// 편집 단추 한 칸의 크기. Mac은 기존 32×28 그대로이고, 터치는 44pt다.
+    private var sceneToolSize: CGSize {
+        #if targetEnvironment(macCatalyst)
+        return CGSize(width: 32, height: 28)
+        #else
+        return CGSize(width: 44, height: 44)
+        #endif
+    }
+
+    #if targetEnvironment(macCatalyst)
     /// 타임라인 바로 옆의 되돌리기·다시 실행(머리글 것과 같은 동작).
     @ViewBuilder
     private var macUndoRedoButtons: some View {
@@ -3235,6 +3341,7 @@ private struct VideoTrailerSettings: View {
         .buttonStyle(.plain).disabled(!chrome.canRedo).opacity(chrome.canRedo ? 1 : 0.5)
         .accessibilityLabel("다시 실행").help("되돌린 편집을 다시 적용합니다")
     }
+    #endif
 
     /// 선택한 클립을 쓸지(포함/제외) 바꾼다. 제외해도 목록에는 남고 다시 포함할 수 있다.
     private func toggleIncluded(_ id: Int) {
@@ -3252,7 +3359,7 @@ private struct VideoTrailerSettings: View {
         let selected = scenes?.first { $0.id == selectedSceneID }
         Button { moveSceneStep(selectedSceneID ?? -1, -1) } label: {
             Image(systemName: "chevron.left.2").font(.system(size: 12, weight: .semibold))
-                .frame(width: 32, height: 28).contentShape(Rectangle())
+                .frame(width: sceneToolSize.width, height: sceneToolSize.height).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(selectedSceneID == nil || isBusy)
@@ -3261,7 +3368,7 @@ private struct VideoTrailerSettings: View {
         .help("선택한 클립을 앞으로 한 칸 옮깁니다")
         Button { moveSceneStep(selectedSceneID ?? -1, 1) } label: {
             Image(systemName: "chevron.right.2").font(.system(size: 12, weight: .semibold))
-                .frame(width: 32, height: 28).contentShape(Rectangle())
+                .frame(width: sceneToolSize.width, height: sceneToolSize.height).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(selectedSceneID == nil || isBusy)
@@ -3270,7 +3377,7 @@ private struct VideoTrailerSettings: View {
         .help("선택한 클립을 뒤로 한 칸 옮깁니다")
         Button { splitSelectedAtPlayhead() } label: {
             Image(systemName: "scissors").font(.system(size: 13, weight: .semibold))
-                .frame(width: 32, height: 28).contentShape(Rectangle())
+                .frame(width: sceneToolSize.width, height: sceneToolSize.height).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!canSplit)
@@ -3281,7 +3388,7 @@ private struct VideoTrailerSettings: View {
         Button { if let selected { setProtection(!selected.timingProtected, ids: [selected.id]) } } label: {
             Image(systemName: selected?.timingProtected == true ? "lock.fill" : "lock.open")
                 .font(.system(size: 13, weight: .semibold))
-                .frame(width: 32, height: 28).contentShape(Rectangle())
+                .frame(width: sceneToolSize.width, height: sceneToolSize.height).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(selected == nil || isBusy)
@@ -3291,7 +3398,7 @@ private struct VideoTrailerSettings: View {
         Button { if let selected { toggleIncluded(selected.id) } } label: {
             Image(systemName: selected?.excluded == true ? "eye.slash" : "eye")
                 .font(.system(size: 13, weight: .semibold))
-                .frame(width: 32, height: 28).contentShape(Rectangle())
+                .frame(width: sceneToolSize.width, height: sceneToolSize.height).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(selected == nil || isBusy)
@@ -3299,8 +3406,6 @@ private struct VideoTrailerSettings: View {
         .accessibilityLabel(selected?.excluded == true ? "선택한 클립 포함" : "선택한 클립 제외")
         .help(selected?.excluded == true ? "이 클립은 영상에서 빠져 있어요. 누르면 다시 넣어요" : "이 클립은 영상에 들어가요. 누르면 영상에서 뺍니다")
     }
-
-    #endif
 
     /// 클립 줄을 눌렀을 때: 편집 대상을 그 클립으로 바꾸고(적용 안 한 자막이 있으면 먼저 묻는다) 미리보기를 그 클립 시작으로 옮긴다.
     private func focusClip(_ id: Int) {
@@ -3324,57 +3429,50 @@ private struct VideoTrailerSettings: View {
         timelineBridge.seek(toFraction: before / total)
     }
 
+    #if !targetEnvironment(macCatalyst)
+    /// iPad·가로 iPhone: 위쪽은 왼쪽 미리보기와 오른쪽 선택한 클립 속성(따로 스크롤), 아래는 전체 폭 타임라인·편집 줄
+    /// (재생, 이동·나누기·잠금·제외, 필름스트립, 다듬기 줄). 아래 도구가 자기 높이를 먼저 가져가므로 낮은 가로 화면에서는 미리보기만 줄어든다.
     private func standardWideLayout(size: CGSize) -> some View {
         let gap: CGFloat = 12
         let leftWidth = max(0, (size.width - gap) * 0.58)
         let rightWidth = max(0, size.width - gap - leftWidth)
-        let maximum = max(48, size.height - 132 - 48)
-        let minimum = min(72, maximum)
-        let bounds = (minimum: minimum, preferred: min(maximum, max(minimum, leftWidth * 9 / 16 + 1)), maximum: maximum)
-        let height = min(bounds.maximum, max(bounds.minimum, previewHeight ?? bounds.preferred))
-        return HStack(alignment: .top, spacing: gap) {
-            VStack(alignment: .leading, spacing: ui(8)) {
-                #if targetEnvironment(macCatalyst)
-                VStack(spacing: 0) {
-                    previewSection(showsOutput: previewingOutput && isOutputCurrent)
-                        .frame(height: height)
-                        .frame(maxWidth: .infinity)
-                    wideTimeline
-                        .frame(height: 56)
-                        .padding(.horizontal, ui(6)).padding(.vertical, ui(6))
-                        .background(Color.black)
-                }
-                .clipShape(RoundedRectangle(cornerRadius: ui(12), style: .continuous))
-                previewGrip(current: height, bounds: bounds, prominent: true)
-                #else
+        // 낮은 가로 화면에서는 필름스트립을 얇게 해 편집 줄과 선택 문맥이 푸터 위에 남게 한다.
+        let timelineRatio: CGFloat = size.height < 320 ? 0.5 : 1
+        return VStack(spacing: ui(8)) {
+            HStack(alignment: .top, spacing: gap) {
                 previewSection(showsOutput: previewingOutput && isOutputCurrent)
-                    .frame(height: height)
-                    .frame(maxWidth: .infinity)
-                previewGrip(current: height, bounds: bounds, prominent: true)
-                wideClipStrip
-                #endif
-                Spacer(minLength: 0)
-            }
-            .frame(width: leftWidth, height: size.height, alignment: .top)
+                    .frame(width: leftWidth)
+                    .frame(maxHeight: .infinity)
 
-            VStack(alignment: .leading, spacing: ui(8)) {
-                Picker("편집 탭", selection: $activeTab) {
-                    ForEach(VideoTrailerTab.allCases) { tab in
-                        Text(tab.rawValue).tag(tab)
+                VStack(alignment: .leading, spacing: ui(8)) {
+                    if scenes != nil { macSelectionHeader(projectScope: false) }
+                    Picker("편집 탭", selection: $activeTab) {
+                        ForEach(VideoTrailerTab.allCases) { tab in
+                            Text(tab.rawValue).tag(tab)
+                        }
                     }
-                }
-                .pickerStyle(.segmented)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: ui(12)) {
-                        wideInspectorContent
+                    .pickerStyle(.segmented)
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: ui(12)) {
+                            wideInspectorContent
+                        }
+                        .frame(width: rightWidth, alignment: .leading)
                     }
-                    .frame(width: rightWidth, alignment: .leading)
+                    .scrollBounceBehavior(.basedOnSize, axes: .vertical)
                 }
-                .scrollBounceBehavior(.basedOnSize, axes: .vertical)
+                .frame(width: rightWidth, alignment: .top)
+                .frame(maxHeight: .infinity, alignment: .top)
             }
-            .frame(width: rightWidth, height: size.height, alignment: .top)
+            .frame(maxHeight: .infinity)
+            if !timelineSegments.isEmpty {
+                compactTimeline(sizeRatio: timelineRatio, editTools: scenes != nil, inlineTools: true)
+                    .clipShape(RoundedRectangle(cornerRadius: ui(12), style: .continuous))
+            }
         }
+        .frame(width: size.width, height: size.height, alignment: .top)
+        .clipped()
     }
+    #endif
 
     /// 사진·영상·타이틀 카드로 된 초안의 재생 입력.
     private var draftPreviewInput: TrailerDraftPreviewInput? {
@@ -3499,9 +3597,7 @@ private struct VideoTrailerSettings: View {
             }
         case .caption:
             VStack(alignment: .leading, spacing: ui(12)) {
-                #if targetEnvironment(macCatalyst)
                 if scenes != nil { inspectorPane }
-                #endif
                 captionCardA
                 captionCardB
                 captionCardC
