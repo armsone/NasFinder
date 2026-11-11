@@ -2880,15 +2880,20 @@ private struct VideoTrailerSettings: View {
         // 상세를 열면 영상은 화면 위쪽의 작은 확인 띠(화면 높이의 약 13%)로 줄어 나머지 높이를 상세 도구가 쓴다.
         // 영상 비율은 그대로이고, 상세를 닫으면 큰 미리보기로 돌아온다.
         let openPreviewHeight = min(max(size.height * 0.13, 72), 96, max(72, fitHeight))
-        let previewHeight = isPhoneToolOpen
+        let autoPreviewHeight = isPhoneToolOpen
             ? min(openPreviewHeight, max(72, available - phoneDetailMinimum))
             : max(120, min(available, fitHeight))
+        // 손잡이로 직접 고른 높이는 열림/닫힘 자동 높이보다 우선한다. 상세가 열려 있으면 상세가 쓸 최소 높이만 남긴다.
+        let manualMaximum = max(72, isPhoneToolOpen ? available - phoneManualDetailMinimum : available)
+        let manualBounds = (minimum: CGFloat(72), preferred: autoPreviewHeight, maximum: manualMaximum)
+        let previewHeight = self.previewHeight.map { min(manualBounds.maximum, max(manualBounds.minimum, $0)) } ?? autoPreviewHeight
         // 상세를 닫으면 영상은 화면비 높이까지만 키운다. 타임라인은 가느다란 한 줄 그대로 두고 남는 자리는 비워 둔다.
         let spare: CGFloat = 0
         return VStack(alignment: .leading, spacing: 0) {
             previewSection(showsOutput: previewingOutput && isOutputCurrent, showsPlayOverlay: false)
                 .frame(height: previewHeight)
                 .frame(maxWidth: .infinity)
+            previewGrip(current: previewHeight, bounds: manualBounds)
             if !timelineSegments.isEmpty {
                 phoneTransportRow
                 phoneTimeline(extraLaneHeight: spare)
@@ -2925,12 +2930,15 @@ private struct VideoTrailerSettings: View {
     /// 도구 상세 패널이 열려 있을 때 최소로 남기는 높이. 미리보기는 고정 줄과 이 높이를 뺀 나머지를 쓴다.
     private var phoneDetailMinimum: CGFloat { 200 }
 
+    /// 손잡이로 직접 키울 때 상세 패널에 남기는 최소 높이(자동 높이보다 작게 허용해 중간 높이를 고를 수 있다).
+    private var phoneManualDetailMinimum: CGFloat { 120 }
+
     /// 미리보기 아래 고정 줄들의 높이: 재생 줄 + 타임라인 + [편집 단추] + 도구 탭.
     private func phoneFixedHeight(editing: Bool) -> CGFloat {
         let transport: CGFloat = 40
         let timeline: CGFloat = editing ? TrailerSceneEditLane.filmstripTotalHeight + 8 : 48
         let tools: CGFloat = editing ? sceneToolSize.height : 0
-        return transport + timeline + tools + 40
+        return transport + timeline + tools + 40 + 20
     }
 
     /// 재생·시간·되돌리기·다시 실행·전체 화면 한 줄. 영상 위에는 재생 단추를 겹쳐 두지 않는다.
@@ -2993,6 +3001,7 @@ private struct VideoTrailerSettings: View {
             ForEach(VideoTrailerTab.allCases) { tab in
                 let selected = tab == activeTab
                 Button {
+                    previewHeight = nil
                     if selected {
                         isPhoneToolOpen.toggle()
                     } else {
