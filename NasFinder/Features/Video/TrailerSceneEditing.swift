@@ -2047,14 +2047,21 @@ enum TrailerTimelineGeometry {
 struct TrailerSceneEditLane: View {
     static let rulerHeight: CGFloat = 14
     static let laneHeight: CGFloat = 32
+    static let filmstripLaneHeight: CGFloat = 46
     /// 눈금자 + 줄 + 둘 사이 간격.
     static var totalHeight: CGFloat { rulerHeight + laneHeight + 2 }
+    /// 필름스트립 모드는 눈금자를 손가락으로 끌 수 있게 24pt로 키운다.
+    static let filmstripRulerHeight: CGFloat = 24
+    static var filmstripTotalHeight: CGFloat { filmstripRulerHeight + filmstripLaneHeight + 2 }
 
     let segments: [TrailerTimelineSegment]
     let scenes: [TrailerEditScene]
     let sources: [VideoTrailerSource]
     let selectedSceneID: Int?
     @ObservedObject var bridge: TrailerTimelineBridge
+    var showsFilmstrip: Bool = false
+    /// 필름스트립 모드에서 상세가 닫혀 남는 높이를 장면 블록에 더해 준다(편집 공간으로 쓴다).
+    var extraLaneHeight: CGFloat = 0
     var onSelect: (Int) -> Void
     /// 장면 id, 끝 손잡이, 끈 거리(출력 초). 적용 가능 여부는 호출한 쪽의 `trim`이 정한다.
     var onTrim: (Int, TrailerSceneEditor.TrimEdge, Double) -> Void
@@ -2070,6 +2077,8 @@ struct TrailerSceneEditLane: View {
     @State private var drag: DragState?
 
     private var total: Double { TrailerTimelineGeometry.total(segments) }
+    private var effectiveLaneHeight: CGFloat { showsFilmstrip ? Self.filmstripLaneHeight + max(0, extraLaneHeight) : Self.laneHeight }
+    private var effectiveRulerHeight: CGFloat { showsFilmstrip ? Self.filmstripRulerHeight : Self.rulerHeight }
 
     var body: some View {
         let sceneByID = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -2078,9 +2087,9 @@ struct TrailerSceneEditLane: View {
             let width = max(1, proxy.size.width)
             VStack(alignment: .leading, spacing: 2) {
                 ruler(width: width)
-                    .frame(width: width, height: Self.rulerHeight, alignment: .topLeading)
+                    .frame(width: width, height: effectiveRulerHeight, alignment: .topLeading)
                 lane(width: width, scenes: sceneByID, sources: sourceByID)
-                    .frame(width: width, height: Self.laneHeight, alignment: .topLeading)
+                    .frame(width: width, height: effectiveLaneHeight, alignment: .topLeading)
             }
             .frame(width: width, height: proxy.size.height, alignment: .topLeading)
         }
@@ -2102,6 +2111,25 @@ struct TrailerSceneEditLane: View {
                 .foregroundStyle(.white.opacity(0.9))
                 .fixedSize()
                 .frame(width: width, alignment: .trailing)
+        }
+        .contentShape(Rectangle())
+        .overlay {
+            if showsFilmstrip {
+                TrailerTimelineNativeInput(
+                    onPress: { fraction in
+                        guard bridge.hasPlayer else { return }
+                        bridge.seek(toFraction: fraction)
+                    },
+                    onDrag: { fraction in
+                        guard bridge.hasPlayer else { return }
+                        bridge.seek(toFraction: fraction)
+                    },
+                    onRelease: { fraction, _ in
+                        guard bridge.hasPlayer else { return }
+                        bridge.seek(toFraction: fraction)
+                    }
+                )
+            }
         }
         .accessibilityElement()
         .accessibilityLabel("출력 시간 눈금자")
@@ -2157,7 +2185,7 @@ struct TrailerSceneEditLane: View {
             currentSeconds: bridge.currentSeconds, durationSeconds: bridge.durationSeconds,
             hasPlayer: bridge.hasPlayer, segments: segments) {
             Rectangle().fill(.white)
-                .frame(width: 2, height: Self.laneHeight)
+                .frame(width: 2, height: effectiveLaneHeight)
                 .shadow(color: .black.opacity(0.7), radius: 1.5)
                 .offset(x: min(max(CGFloat(seconds / total) * width - 1, 0), width - 2))
                 .allowsHitTesting(false)
@@ -2177,7 +2205,7 @@ struct TrailerSceneEditLane: View {
                         .font(.system(size: 9, weight: .medium)).foregroundStyle(.white.opacity(0.75))
                 }
             }
-            .frame(width: width, height: Self.laneHeight)
+            .frame(width: width, height: effectiveLaneHeight)
             .overlay(alignment: .trailing) { Rectangle().fill(.black.opacity(0.6)).frame(width: 1) }
             .accessibilityElement()
             .accessibilityLabel(segment.kind == .intro ? "시작 화면" : "마지막 화면")
@@ -2197,13 +2225,21 @@ struct TrailerSceneEditLane: View {
         let protectedNote = scene.timingProtected ? ", 직접 편집 보호됨" : ""
         let spoken = "클립 \(number), " + String(format: "%.1f", shownLength) + "초" + protectedNote
         return ZStack {
-            (isSelected ? PorcelainMetrics.accent.opacity(0.55) : Color.white.opacity(0.16))
+            if showsFilmstrip, let source {
+                TrailerSceneThumb(source: source, time: segment.start)
+                    .frame(width: width, height: effectiveLaneHeight)
+                    .clipped()
+                (isSelected ? PorcelainMetrics.accent.opacity(0.32) : Color.black.opacity(0.28))
+            } else {
+                (isSelected ? PorcelainMetrics.accent.opacity(0.55) : Color.white.opacity(0.16))
+            }
             blockLabel(number: number, length: shownLength, isProtected: scene.timingProtected, width: width,
                        isTrimming: candidate != nil)
         }
-        .frame(width: width, height: Self.laneHeight)
+        .frame(width: width, height: effectiveLaneHeight)
+        .clipped()
         .overlay(alignment: .trailing) { Rectangle().fill(.black.opacity(0.6)).frame(width: 1) }
-        .overlay { if isSelected { RoundedRectangle(cornerRadius: 3).stroke(.white.opacity(0.9), lineWidth: 1.5) } }
+        .overlay { if isSelected { RoundedRectangle(cornerRadius: 3).stroke(.white.opacity(0.95), lineWidth: showsFilmstrip ? 2.0 : 1.5) } }
         .overlay(alignment: .leading) { if isSelected { handle(.start, scene: scene, width: width, pointsPerSecond: pointsPerSecond) } }
         .overlay(alignment: .trailing) { if isSelected { handle(.end, scene: scene, width: width, pointsPerSecond: pointsPerSecond) } }
         .contentShape(Rectangle())
@@ -2222,11 +2258,13 @@ struct TrailerSceneEditLane: View {
         HStack(spacing: 2) {
             if width >= 30 {
                 Text(isTrimming || width >= 52 ? String(format: "%.1f초", length) : String(format: "%.1f", length))
-                    .font(.system(size: 10, weight: isTrimming ? .bold : .medium).monospacedDigit())
-                    .foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.6)
+                    .font(.system(size: 10, weight: isTrimming ? .bold : .semibold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .shadow(color: showsFilmstrip ? .black.opacity(0.75) : .clear, radius: 1.5)
+                    .lineLimit(1).minimumScaleFactor(0.6)
             }
             if isProtected && width >= 44 {
-                Image(systemName: "lock.fill").font(.system(size: 8)).foregroundStyle(.white.opacity(0.85))
+                Image(systemName: "lock.fill").font(.system(size: 8)).foregroundStyle(.white.opacity(0.9))
             }
         }
         .padding(.horizontal, 14)
@@ -2246,8 +2284,8 @@ struct TrailerSceneEditLane: View {
         let name = edge == .start ? "시작 위치" : "끝 위치"
         return Rectangle()
             .fill(.white.opacity(0.001))
-            .frame(width: max(8, min(16, width / 2)), height: Self.laneHeight)
-            .overlay(Capsule().fill(.white).frame(width: 3, height: 16).shadow(color: .black.opacity(0.6), radius: 1))
+            .frame(width: max(8, min(16, width / 2)), height: effectiveLaneHeight)
+            .overlay(Capsule().fill(.white).frame(width: 3, height: showsFilmstrip ? 22 : 16).shadow(color: .black.opacity(0.6), radius: 1))
             .contentShape(Rectangle())
             // Catalyst 합성 뷰는 SwiftUI DragGesture를 받지 못하므로(필름스트립과 같은 이유) 실제 UIKit 입력 뷰로 끈다.
             // 끈 거리는 눌린 점 기준 창 좌표라 손잡이 폭 밖까지 이어지고, 전체 타임라인의 pt/초(`pointsPerSecond`)로 초로 바꾼다.
@@ -5509,9 +5547,12 @@ struct TrailerEffectsInspector: View {
     let chrome: TrailerEditorChrome
     /// true면 프로젝트 전체(음성 해설)만, false면 선택 클립 속성만, nil이면 둘 다.
     var projectScope: Bool? = nil
+    /// 폰 좁은 화면은 위쪽 선택 줄에 클립 정보가 이미 있으므로 반복 제목과 두 겹 세그먼트를 생략한다.
+    var showsClipHeader: Bool = true
     @State private var tool: EffectTool = .speed
     @StateObject private var voice = TrailerVoiceCoordinator()
     @State private var importing = false
+    @State private var voiceOpen = false
     @State private var importMessage: String?
 
     private var scene: TrailerEditScene? { selectedID.flatMap { id in scenes?.first { $0.id == id } } }
@@ -5528,7 +5569,15 @@ struct TrailerEffectsInspector: View {
                 }
             }
             if projectScope == nil { Divider() }
-            if projectScope != false { voiceoverSection }
+            if projectScope != false {
+                if showsClipHeader {
+                    voiceoverSection
+                } else {
+                    DisclosureGroup(isExpanded: $voiceOpen) { voiceoverSection.padding(.top, 6) } label: {
+                        Text("음성 해설" + (voiceovers.isEmpty ? "" : " \(voiceovers.count)개")).font(.subheadline.weight(.semibold))
+                    }
+                }
+            }
         }
         .onDisappear { voice.shutdown() }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.audio], allowsMultipleSelection: false) { result in
@@ -5545,6 +5594,10 @@ struct TrailerEffectsInspector: View {
             change(&value)
             scene.adjustments = value == TrailerClipAdjustments() ? nil : value
         }
+    }
+
+    private func clipNumber(_ id: Int) -> Int {
+        (scenes?.firstIndex { $0.id == id } ?? 0) + 1
     }
 
     private func playheadSourceTime(_ scene: TrailerEditScene) -> Double {
@@ -5574,11 +5627,42 @@ struct TrailerEffectsInspector: View {
         let adjustments = scene.adjustments ?? TrailerClipAdjustments()
         let tools = EffectTool.allCases.filter { !($0 == .speed && source.isImage) }
         let active = tools.contains(tool) ? tool : (tools.first ?? .color)
-        Text("선택한 클립 · \(source.name)").font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
-        Picker("효과 도구", selection: Binding(get: { active }, set: { tool = $0 })) {
-            ForEach(tools) { Text(toolTitle($0, adjustments)).tag($0) }
+        if showsClipHeader {
+            Text("선택한 클립 · \(source.name)").font(.subheadline.weight(.semibold)).lineLimit(1).truncationMode(.middle)
+            Picker("효과 도구", selection: Binding(get: { active }, set: { tool = $0 })) {
+                ForEach(tools) { Text(toolTitle($0, adjustments)).tag($0) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
+        } else {
+            // 폰: 선택한 클립 맥락과 하위 도구 선택을 한 줄에 둔다(도구는 메뉴로 모두 접근).
+            HStack(spacing: 8) {
+                HStack(spacing: 6) {
+                    Text("선택한 클립 \(clipNumber(scene.id))").font(.subheadline.weight(.semibold))
+                    if scene.timingProtected { Image(systemName: "lock.fill").font(.caption).foregroundStyle(.secondary) }
+                    if scene.excluded { Text("제외됨").font(.caption.weight(.semibold)).foregroundStyle(.orange) }
+                }
+                Spacer(minLength: 0)
+                Menu {
+                    ForEach(tools) { item in
+                        Button { tool = item } label: {
+                            if item == active { Label(toolTitle(item, adjustments), systemImage: "checkmark") }
+                            else { Text(toolTitle(item, adjustments)) }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(toolTitle(active, adjustments)).font(.caption.weight(.semibold))
+                        Image(systemName: "chevron.up.chevron.down").font(.caption2)
+                    }
+                    .foregroundStyle(PorcelainMetrics.onAccent)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .frame(minHeight: 36)
+                    .background(PorcelainMetrics.solidAction, in: Capsule())
+                }
+                .accessibilityLabel("효과 도구 \(active.rawValue)")
+                .accessibilityHint("속도, 색상, 전환, 움직임, 자막 중에서 고릅니다")
+            }
         }
-        .pickerStyle(.segmented).labelsHidden()
 
         switch active {
         case .speed:
@@ -5767,7 +5851,7 @@ struct TrailerEffectsInspector: View {
 
     private var voiceoverSection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("음성 해설").font(.subheadline.weight(.semibold))
+            if showsClipHeader { Text("음성 해설").font(.subheadline.weight(.semibold)) }
             HStack(spacing: 6) {
                 switch voice.phase {
                 case .idle:
