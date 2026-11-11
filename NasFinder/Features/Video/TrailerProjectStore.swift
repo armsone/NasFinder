@@ -447,8 +447,9 @@ enum TrailerProjectDisk {
     static func resolve(_ relative: String, in folder: URL) -> URL? {
         guard !relative.isEmpty, !relative.hasPrefix("/"), !relative.contains("..") else { return nil }
         let url = folder.appendingPathComponent(relative)
-        let base = folder.standardizedFileURL.path + "/"
-        return url.standardizedFileURL.path.hasPrefix(base) ? url : nil
+        // 파일 시스템을 거치는 standardizedFileURL은 아직 없는 파일에만 `/private`를 붙여 폴더와 접두사가 어긋날 수 있다(기기).
+        // `..`와 절대 경로를 위에서 이미 막았으므로 같은 방식으로 만든 두 경로의 표현으로 상대 경로 포함 여부만 접두사로 비교한다.
+        return url.path.hasPrefix(folder.path + "/") ? url : nil
     }
 
     private static func referencedFiles(_ record: TrailerProjectRecord) -> Set<String> {

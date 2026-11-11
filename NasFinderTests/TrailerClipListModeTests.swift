@@ -992,6 +992,9 @@ final class TrailerClipListModeTests: XCTestCase {
             TrailerProjectSnapshot(record: record([take]), stagedFiles: [:], musicFile: nil, outputFile: nil,
                                    voiceFiles: [take.stableID: voiceFile]), root: root)
         let folder = TrailerProjectDisk.folder(projectID, root: root)
+        for escape in ["../x.m4a", "media/../../x.m4a", "/tmp/x.m4a", ""] {
+            XCTAssertNil(TrailerProjectDisk.resolve(escape, in: folder), "프로젝트 폴더 밖 경로는 계속 거부됩니다: \(escape)")
+        }
         let stored = try XCTUnwrap(TrailerProjectDisk.resolve(try XCTUnwrap(saved.voiceovers?.first).relativeFile, in: folder))
         XCTAssertEqual(try Data(contentsOf: stored), Data([1, 2, 3, 4]), "프로젝트가 소유한 사본입니다.")
         XCTAssertTrue(files.fileExists(atPath: voiceFile.path), "편집기의 원래 임시 파일은 건드리지 않습니다.")
