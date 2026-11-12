@@ -55,6 +55,18 @@ private func trailerFourCC(_ code: FourCharCode) -> String {
     return bytes.allSatisfy { $0 >= 0x20 && $0 < 0x7F } ? String(decoding: bytes, as: UTF8.self) : String(code)
 }
 
+private extension View {
+    /// 편집 단추 한 칸. `compact`(iPhone 재생 줄 안)는 줄 폭에 맞춰 26~30pt로 줄고 높이는 줄과 같은 40pt이며, 그 밖은 기존 고정 칸이다.
+    @ViewBuilder
+    func sceneToolCell(compact: Bool, size: CGSize) -> some View {
+        if compact {
+            frame(minWidth: 26, maxWidth: 30).frame(height: 40)
+        } else {
+            frame(width: size.width, height: size.height)
+        }
+    }
+}
+
 /// The last failed attempt, kept as one small file in the app's own cache folder so the
 /// stage can be read from the device when its unified log cannot be collected. Counts,
 /// error codes and media format identifiers only: never a file name, path, URL or any
@@ -2597,6 +2609,8 @@ private struct VideoTrailerSettings: View {
             if let cached = outputPlaybackOwner.cachedURL, cached != newURL {
                 outputPlaybackOwner.cleanup()
             }
+            // 폰: 편집 중 줄여 둔 손잡이 높이가 완성 영상까지 이어지지 않게 기본 높이로 돌아간다(넓은 화면은 그대로).
+            if isPhoneWidth, newURL != nil { previewHeight = nil }
         }
         .navigationTitle(settingsTitle)
         .navigationBarTitleDisplayMode(.inline)
@@ -2877,9 +2891,9 @@ private struct VideoTrailerSettings: View {
         let available = max(0, size.height - phoneFixedHeight(editing: editing))
         // 고른 화면비가 있으면 폭에 맞춘 영상 높이 이상은 비워 두지 않고 상세 패널에 돌려준다(세로 영상은 높이를 그대로 쓴다).
         let fitHeight = aspectRatio.map { size.width * $0.renderSize.height / $0.renderSize.width } ?? .infinity
-        // 상세를 열면 영상은 화면 위쪽의 작은 확인 띠(화면 높이의 약 13%)로 줄어 나머지 높이를 상세 도구가 쓴다.
+        // 상세를 열어도 영상은 화면 높이의 약 36%(화면비 높이·상세 최소 높이 안)를 기본으로 지키고 나머지를 상세 도구가 쓴다.
         // 영상 비율은 그대로이고, 상세를 닫으면 큰 미리보기로 돌아온다.
-        let openPreviewHeight = min(max(size.height * 0.13, 72), 96, max(72, fitHeight))
+        let openPreviewHeight = max(72, min(fitHeight, size.height * 0.36, available - phoneDetailMinimum))
         let autoPreviewHeight = isPhoneToolOpen
             ? min(openPreviewHeight, max(72, available - phoneDetailMinimum))
             : max(120, min(available, fitHeight))
@@ -2889,18 +2903,16 @@ private struct VideoTrailerSettings: View {
         let previewHeight = self.previewHeight.map { min(manualBounds.maximum, max(manualBounds.minimum, $0)) } ?? autoPreviewHeight
         // 상세를 닫으면 영상은 화면비 높이까지만 키운다. 타임라인은 가느다란 한 줄 그대로 두고 남는 자리는 비워 둔다.
         let spare: CGFloat = 0
+        // 완성 영상 플레이어가 보이면 재생·시간·전체 화면은 플레이어 안의 조작부 하나가 맡는다(같은 재생기라 아래 줄은 중복).
+        let showsOutputPlayer = previewingOutput && isOutputCurrent && outputURL != nil && renderStillContext == nil
         return VStack(alignment: .leading, spacing: 0) {
             previewSection(showsOutput: previewingOutput && isOutputCurrent, showsPlayOverlay: false)
                 .frame(height: previewHeight)
                 .frame(maxWidth: .infinity)
             previewGrip(current: previewHeight, bounds: manualBounds)
             if !timelineSegments.isEmpty {
-                phoneTransportRow
+                phoneTransportRow(showsEditTools: editing, showsPlayback: !showsOutputPlayer)
                 phoneTimeline(extraLaneHeight: spare)
-                if editing {
-                    HStack(spacing: 0) { macSceneEditButtons }
-                        .frame(maxWidth: .infinity)
-                }
             }
             phoneToolTabs
             if isPhoneToolOpen {
@@ -2933,47 +2945,56 @@ private struct VideoTrailerSettings: View {
     /// 손잡이로 직접 키울 때 상세 패널에 남기는 최소 높이(자동 높이보다 작게 허용해 중간 높이를 고를 수 있다).
     private var phoneManualDetailMinimum: CGFloat { 120 }
 
-    /// 미리보기 아래 고정 줄들의 높이: 재생 줄 + 타임라인 + [편집 단추] + 도구 탭.
+    /// 미리보기 아래 고정 줄들의 높이: 재생 줄(편집 단추 포함) + 타임라인 + 도구 탭.
     private func phoneFixedHeight(editing: Bool) -> CGFloat {
         let transport: CGFloat = 40
         let timeline: CGFloat = editing ? TrailerSceneEditLane.filmstripTotalHeight + 8 : 48
-        let tools: CGFloat = editing ? sceneToolSize.height : 0
-        return transport + timeline + tools + 40 + 20
+        return transport + timeline + 40 + 20
     }
 
-    /// 재생·시간·되돌리기·다시 실행·전체 화면 한 줄. 영상 위에는 재생 단추를 겹쳐 두지 않는다.
-    private var phoneTransportRow: some View {
-        HStack(spacing: 4) {
-            Button { timelineBridge.togglePlayback() } label: {
-                Image(systemName: timelineBridge.isPlaying ? "pause.fill" : "play.fill")
-                    .font(.system(size: 16, weight: .semibold))
-                    .frame(width: 44, height: 40).contentShape(Rectangle())
+    /// 재생·시간 | (직접 편집 중) 앞/뒤 이동·나누기·잠금·제외 | 되돌리기·다시 실행·전체 화면 한 줄. 영상 위에는 재생 단추를 겹쳐 두지 않는다.
+    /// 단추 칸은 줄 폭에 맞춰 26~30pt로 줄고(375pt 폭에서도 겹치지 않는다) 높이 40pt와 모든 단추·순서는 그대로다.
+    /// 현재/전체 시간은 줄이거나 자르지 않고 온전한 폭을 먼저 가져가며, 남는 폭을 단추 칸이 나눠 쓴다.
+    /// `showsPlayback`이 false(완성 영상 플레이어가 보일 때)면 재생·시간·전체 화면은 플레이어 안 조작부만 쓴다.
+    private func phoneTransportRow(showsEditTools: Bool, showsPlayback: Bool) -> some View {
+        HStack(spacing: 0) {
+            if showsPlayback {
+                Button { timelineBridge.togglePlayback() } label: {
+                    Image(systemName: timelineBridge.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.system(size: 16, weight: .semibold))
+                        .sceneToolCell(compact: true, size: sceneToolSize).contentShape(Rectangle())
+                }
+                .disabled(!timelineBridge.hasPlayer)
+                .opacity(timelineBridge.hasPlayer ? 1 : 0.5)
+                .accessibilityLabel(timelineBridge.isPlaying ? "일시 정지" : "재생")
+                Text("\(videoTrailerTime(timelineBridge.currentSeconds)) / \(videoTrailerTime(timelineBridge.durationSeconds))")
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    .lineLimit(1).fixedSize(horizontal: true, vertical: false).layoutPriority(1)
+                    .padding(.horizontal, 3)
             }
-            .disabled(!timelineBridge.hasPlayer)
-            .opacity(timelineBridge.hasPlayer ? 1 : 0.5)
-            .accessibilityLabel(timelineBridge.isPlaying ? "일시 정지" : "재생")
-            Text("\(videoTrailerTime(timelineBridge.currentSeconds)) / \(videoTrailerTime(timelineBridge.durationSeconds))")
-                .font(.footnote.monospacedDigit()).foregroundStyle(.secondary)
             Spacer(minLength: 0)
+            if showsEditTools { sceneEditButtons(compact: true) }
             Button(action: chrome.onUndo) {
                 Image(systemName: "arrow.uturn.backward").font(.system(size: 16, weight: .semibold))
-                    .frame(width: 44, height: 40).contentShape(Rectangle())
+                    .sceneToolCell(compact: true, size: sceneToolSize).contentShape(Rectangle())
             }
             .disabled(!chrome.canUndo).opacity(chrome.canUndo ? 1 : 0.4)
             .accessibilityLabel("되돌리기")
             Button(action: chrome.onRedo) {
                 Image(systemName: "arrow.uturn.forward").font(.system(size: 16, weight: .semibold))
-                    .frame(width: 44, height: 40).contentShape(Rectangle())
+                    .sceneToolCell(compact: true, size: sceneToolSize).contentShape(Rectangle())
             }
             .disabled(!chrome.canRedo).opacity(chrome.canRedo ? 1 : 0.4)
             .accessibilityLabel("다시 실행")
-            Button { setFullscreen(true) } label: {
-                Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 14, weight: .semibold))
-                    .frame(width: 44, height: 40).contentShape(Rectangle())
+            if showsPlayback {
+                Button { setFullscreen(true) } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right").font(.system(size: 14, weight: .semibold))
+                        .sceneToolCell(compact: true, size: sceneToolSize).contentShape(Rectangle())
+                }
+                .disabled(isBusy)
+                .opacity(isBusy ? 0.5 : 1)
+                .accessibilityLabel("전체 화면")
             }
-            .disabled(isBusy)
-            .opacity(isBusy ? 0.5 : 1)
-            .accessibilityLabel("전체 화면")
         }
         .buttonStyle(.plain)
         .foregroundStyle(.primary)
@@ -3467,12 +3488,15 @@ private struct VideoTrailerSettings: View {
 
     /// 재생 줄 안의 선택 클립 편집 단추: 앞/뒤 이동, 재생 위치에서 나누기, 잠금(자동 추천 제외), 포함/제외. 편집은 재생 상태를 바꾸지 않는다.
     @ViewBuilder
-    private var macSceneEditButtons: some View {
+    private var macSceneEditButtons: some View { sceneEditButtons(compact: false) }
+
+    @ViewBuilder
+    private func sceneEditButtons(compact: Bool) -> some View {
         let canSplit = splitLocalTime != nil && !isBusy
         let selected = scenes?.first { $0.id == selectedSceneID }
         Button { moveSceneStep(selectedSceneID ?? -1, -1) } label: {
             Image(systemName: "chevron.left.2").font(.system(size: 12, weight: .semibold))
-                .frame(width: sceneToolSize.width, height: sceneToolSize.height).contentShape(Rectangle())
+                .sceneToolCell(compact: compact, size: sceneToolSize).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(selectedSceneID == nil || isBusy)
@@ -3481,7 +3505,7 @@ private struct VideoTrailerSettings: View {
         .help("선택한 클립을 앞으로 한 칸 옮깁니다")
         Button { moveSceneStep(selectedSceneID ?? -1, 1) } label: {
             Image(systemName: "chevron.right.2").font(.system(size: 12, weight: .semibold))
-                .frame(width: sceneToolSize.width, height: sceneToolSize.height).contentShape(Rectangle())
+                .sceneToolCell(compact: compact, size: sceneToolSize).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(selectedSceneID == nil || isBusy)
@@ -3490,7 +3514,7 @@ private struct VideoTrailerSettings: View {
         .help("선택한 클립을 뒤로 한 칸 옮깁니다")
         Button { splitSelectedAtPlayhead() } label: {
             Image(systemName: "scissors").font(.system(size: 13, weight: .semibold))
-                .frame(width: sceneToolSize.width, height: sceneToolSize.height).contentShape(Rectangle())
+                .sceneToolCell(compact: compact, size: sceneToolSize).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!canSplit)
@@ -3501,7 +3525,7 @@ private struct VideoTrailerSettings: View {
         Button { if let selected { setProtection(!selected.timingProtected, ids: [selected.id]) } } label: {
             Image(systemName: selected?.timingProtected == true ? "lock.fill" : "lock.open")
                 .font(.system(size: 13, weight: .semibold))
-                .frame(width: sceneToolSize.width, height: sceneToolSize.height).contentShape(Rectangle())
+                .sceneToolCell(compact: compact, size: sceneToolSize).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(selected == nil || isBusy)
@@ -3511,7 +3535,7 @@ private struct VideoTrailerSettings: View {
         Button { if let selected { toggleIncluded(selected.id) } } label: {
             Image(systemName: selected?.excluded == true ? "eye.slash" : "eye")
                 .font(.system(size: 13, weight: .semibold))
-                .frame(width: sceneToolSize.width, height: sceneToolSize.height).contentShape(Rectangle())
+                .sceneToolCell(compact: compact, size: sceneToolSize).contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(selected == nil || isBusy)
@@ -6789,7 +6813,7 @@ final class VideoTrailerModel: ObservableObject {
         )
         var cursor = CMTime.zero
         var instructions: [AVMutableVideoCompositionInstruction] = []
-        var originalVolumes: [(time: CMTime, volume: Float)] = []
+        var originalVolumes: [(range: CMTimeRange, volume: Float)] = []
         var captionWindows: [(caption: TrailerCaption, start: Double, duration: Double)] = []
 
         for segment in scenes {
@@ -6870,7 +6894,8 @@ final class VideoTrailerModel: ObservableObject {
                 if overlap.duration.seconds > 0 {
                     let audioStart = CMTimeAdd(cursor, CMTimeSubtract(overlap.start, range.start))
                     try outputAudio.insertTimeRange(overlap, of: audio, at: audioStart)
-                    originalVolumes.append((audioStart, Float(min(1, max(0, segment.volume)))))
+                    originalVolumes.append((CMTimeRange(start: audioStart, duration: overlap.duration),
+                                            Float(min(1, max(0, segment.volume)))))
                 }
             }
             let layer = AVMutableVideoCompositionLayerInstruction(assetTrack: outputVideo)
@@ -6895,7 +6920,11 @@ final class VideoTrailerModel: ObservableObject {
         let keepsOriginalTrack = outputAudio.map { !$0.segments.isEmpty } ?? false
         if keepsOriginalTrack, let outputAudio, originalVolumes.contains(where: { $0.volume != 1 }) {
             let originalParameters = AVMutableAudioMixInputParameters(track: outputAudio)
-            for entry in originalVolumes { originalParameters.setVolume(entry.volume, at: entry.time) }
+            // Explicit spans prevent export from interpolating toward the next clip's gain.
+            for entry in originalVolumes {
+                originalParameters.setVolumeRamp(fromStartVolume: entry.volume, toEndVolume: entry.volume,
+                                                 timeRange: entry.range)
+            }
             let mix = AVMutableAudioMix()
             mix.inputParameters = [originalParameters]
             audioMix = mix

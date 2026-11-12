@@ -2102,11 +2102,15 @@ struct TrailerSceneEditLane: View {
     private func ruler(width: CGFloat) -> some View {
         let step = TrailerTimelineGeometry.tickStep(total: total, width: Double(width))
         let count = Int((total / step).rounded(.down))
+        let totalText = videoTrailerTime(total)
+        // 오른쪽 '출력' 레이블과 겹치는 눈금은 숫자를 숨기고 선만 남긴다.
+        let labelLimit = width - CGFloat(24 + totalText.count * 6) - CGFloat(6 + totalText.count * 6)
         return ZStack(alignment: .topLeading) {
             ForEach(0...max(0, count), id: \.self) { index in
-                tick(seconds: Double(index) * step, width: width)
+                let seconds = Double(index) * step
+                tick(seconds: seconds, width: width, showsLabel: CGFloat(seconds / total) * width <= labelLimit)
             }
-            Text("출력 \(videoTrailerTime(total))")
+            Text("출력 \(totalText)")
                 .font(.system(size: 9, weight: .semibold).monospacedDigit())
                 .foregroundStyle(.white.opacity(0.9))
                 .fixedSize()
@@ -2136,15 +2140,17 @@ struct TrailerSceneEditLane: View {
         .accessibilityValue("전체 \(videoTrailerTime(total))")
     }
 
-    private func tick(seconds: Double, width: CGFloat) -> some View {
+    private func tick(seconds: Double, width: CGFloat, showsLabel: Bool) -> some View {
         let x = CGFloat(seconds / total) * width
         return ZStack(alignment: .topLeading) {
             Rectangle().fill(.white.opacity(0.5)).frame(width: 1, height: 5)
-            Text(videoTrailerTime(seconds))
-                .font(.system(size: 9).monospacedDigit())
-                .foregroundStyle(.white.opacity(0.7))
-                .fixedSize()
-                .offset(x: 3, y: 0)
+            if showsLabel {
+                Text(videoTrailerTime(seconds))
+                    .font(.system(size: 9).monospacedDigit())
+                    .foregroundStyle(.white.opacity(0.7))
+                    .fixedSize()
+                    .offset(x: 3, y: 0)
+            }
         }
         .offset(x: x)
         .allowsHitTesting(false)

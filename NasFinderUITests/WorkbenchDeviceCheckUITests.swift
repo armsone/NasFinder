@@ -71,4 +71,56 @@ final class WorkbenchDeviceCheckUITests: XCTestCase {
         dump(app, "07-finderchooser")
         XCTAssertTrue(el(app, "폰하드").exists)
     }
+
+    /// 호스트 마우스 없이 폰에서만 누르는 점검: 이미 설치된 앱을 bundle id로 띄워(재설치·launch 인자 없음) 만들기 → 제목이
+    /// 정확히 "QA 폰편집 4AEB9DAD"인 편집본 하나만 열고 → 클립 탭 닫기/열기 → 재생/일시 정지 라벨이 바뀌는지만 본다.
+    /// 후보가 정확히 하나가 아니면 아무 편집본도 누르지 않고 멈춘다. 저장·이름 바꾸기·다른 편집본 조작은 없다.
+    func testOwnQAEditorPlayPauseMouseFree() {
+        let app = XCUIApplication(bundleIdentifier: "com.armsone.nasfinder")
+        app.launch()
+        XCTAssertTrue(app.wait(for: .runningForeground, timeout: 20))
+        sleep(2)
+        shot(app, "m01-launch")
+        let makeTab = app.buttons["만들기"].firstMatch
+        XCTAssertTrue(makeTab.waitForExistence(timeout: 10))
+        makeTab.tap()
+        sleep(2)
+        // 카드 버튼 라벨은 "제목, 길이"다. 같은 제목의 "… 편집 메뉴" 단추는 쉼표가 없어 걸리지 않는다.
+        let own = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "QA 폰편집 4AEB9DAD, "))
+        var swipes = 0
+        while own.count == 0, swipes < 4 { app.swipeUp(); sleep(1); swipes += 1 }
+        shot(app, "m02-make")
+        print("NF-MOUSEFREE own candidates=\(own.count) swipes=\(swipes)")
+        guard own.count == 1 else {
+            dump(app, "m02-make")
+            XCTFail("자기 QA 편집본 후보가 정확히 하나가 아닙니다: \(own.count)")
+            return
+        }
+        print("NF-MOUSEFREE own label=\(own.element.label)")
+        own.element.tap()
+        let play = app.buttons["재생"].firstMatch
+        XCTAssertTrue(play.waitForExistence(timeout: 20))
+        sleep(2)
+        shot(app, "m03-editor")
+        let clipTab = app.buttons.matching(NSPredicate(format: "label == %@", "클립"))
+        print("NF-MOUSEFREE clipTab count=\(clipTab.count)")
+        if clipTab.count == 1 {
+            clipTab.element.tap()
+            sleep(1)
+            shot(app, "m04-clip-closed")
+            clipTab.element.tap()
+            sleep(1)
+            shot(app, "m05-clip-open")
+        }
+        app.buttons["재생"].firstMatch.tap()
+        let pause = app.buttons["일시 정지"].firstMatch
+        XCTAssertTrue(pause.waitForExistence(timeout: 5), "재생을 눌렀는데 일시 정지 단추로 바뀌지 않았습니다")
+        sleep(2)
+        shot(app, "m06-playing")
+        pause.tap()
+        XCTAssertTrue(app.buttons["재생"].firstMatch.waitForExistence(timeout: 5), "일시 정지를 눌렀는데 재생 단추로 돌아오지 않았습니다")
+        sleep(1)
+        shot(app, "m07-paused")
+        print("NF-MOUSEFREE play/pause toggled")
+    }
 }
