@@ -5278,10 +5278,12 @@ private struct VideoTrailerSettings: View {
         var budgetExplanation = budgetNotice
         if let editScenes = scenes {
             let actualSum = TrailerSceneEditor.outputBodyDuration(editScenes, outroLength: outroCard.isEnabled ? outroCard.duration : 0)
-            totalValue = actualSum + cards
+            // 저장된 장면 길이는 보호 동작 때문에 계획에서 더 길어질 수 있다. 헤더·만들기 버튼과 같은 실제 영상 길이를 보인다.
+            let shown = actualTotal > 0 ? actualTotal : actualSum + cards
+            totalValue = shown
             let bounds = TrailerSceneEditor.budgetBodyBounds(scenes: editScenes, sources: sources)
-            minTotal = min(actualSum, bounds.minimum) + cards
-            maxTotal = max(actualSum, bounds.maximum) + cards
+            minTotal = min(shown, min(actualSum, bounds.minimum) + cards)
+            maxTotal = max(shown, max(actualSum, bounds.maximum) + cards)
             let reserved = editScenes.filter(\.budgetExcluded).count
             if reserved > 0 {
                 let used = editScenes.filter { !$0.excluded }.count
